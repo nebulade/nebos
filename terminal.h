@@ -3,7 +3,6 @@
 #define TERMINAL_H
 
 #define CURSOR_MS  500
-#define BUSY_MS    33
 
 void terminal_run(void);
 

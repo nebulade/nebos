@@ -2,13 +2,12 @@
 #ifndef IO_H
 #define IO_H
 
-/* Content area: rows 0..(IO_DEBUG_ROW-1). Debug row and busy position. */
+/* Content area: rows 0..(IO_DEBUG_ROW-1). Row IO_DEBUG_ROW is below content. */
 #define IO_VGA_COLS      80
 #define IO_VGA_ROWS      25
 #define IO_DEBUG_ROW     24
 #define IO_CONTENT_ROWS  IO_DEBUG_ROW
 #define IO_CONTENT_SIZE  (IO_CONTENT_ROWS * IO_VGA_COLS)
-#define IO_BUSY_POS      (IO_DEBUG_ROW * IO_VGA_COLS + 79)
 
 void io_init(void);
 void io_clear_screen(void);
