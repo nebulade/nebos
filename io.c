@@ -72,7 +72,7 @@ void io_init(void)
 {
 	disable_hw_cursor();
 	io_clear_screen();
-	cursor = 0;
+	cursor = IO_CONTENT_OFFSET;
 	cursor_cell = (unsigned short)(VGA_ATTR << 8);
 	io_drain_keyboard();
 }
@@ -97,27 +97,27 @@ void io_putchar(char c)
 	if (c == '\n') {
 		hide_cursor_at(cursor);
 		cursor = (cursor / IO_VGA_COLS + 1) * IO_VGA_COLS;
-		if (cursor >= IO_CONTENT_SIZE) {
+		if (cursor >= IO_CONTENT_OFFSET + IO_CONTENT_SIZE) {
 			unsigned int i;
 			for (i = 0; i < (IO_CONTENT_ROWS - 1) * IO_VGA_COLS; i++)
-				VGA_BASE[i] = VGA_BASE[i + IO_VGA_COLS];
+				VGA_BASE[IO_CONTENT_OFFSET + i] = VGA_BASE[IO_CONTENT_OFFSET + i + IO_VGA_COLS];
 			for (i = (IO_CONTENT_ROWS - 1) * IO_VGA_COLS; i < IO_CONTENT_SIZE; i++)
-				VGA_BASE[i] = (unsigned short)(VGA_ATTR << 8);
-			cursor = (IO_CONTENT_ROWS - 1) * IO_VGA_COLS;
+				VGA_BASE[IO_CONTENT_OFFSET + i] = (unsigned short)(VGA_ATTR << 8);
+			cursor = IO_CONTENT_OFFSET + (IO_CONTENT_ROWS - 1) * IO_VGA_COLS;
 			scroll_occurred = 1;
 		}
 		cursor_cell = (unsigned short)(VGA_ATTR << 8);
 		return;
 	}
 	if (c == '\b') {
-		if (cursor > 0) {
+		if (cursor > IO_CONTENT_OFFSET) {
 			hide_cursor_at(cursor);
 			cursor--;
 			cursor_cell = VGA_BASE[cursor];
 		}
 		return;
 	}
-	if (cursor < IO_CONTENT_SIZE) {
+	if (cursor < IO_CONTENT_OFFSET + IO_CONTENT_SIZE) {
 		VGA_BASE[cursor] = (unsigned short)((VGA_ATTR << 8) | (unsigned char)c);
 		cursor++;
 		cursor_cell = (unsigned short)(VGA_ATTR << 8);

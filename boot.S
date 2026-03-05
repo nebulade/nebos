@@ -19,12 +19,12 @@ _start:
 	movw  $0x0003, %ax
 	int   $0x10
 
-	/* Load kernel: 5 sectors from sector 2 into 0x7E00 (ES:BX = 0x07E0:0) */
+	/* Load kernel: 10 sectors from sector 2 into 0x7E00 (ES:BX = 0x07E0:0) */
 	movw  $0x07e0, %ax
 	movw  %ax, %es
 	xorw  %bx, %bx
 	movb  $0x02, %ah          /* int 0x13 read */
-	movb  $5, %al             /* 5 sectors (kernel can be > 2K) */
+	movb  $10, %al            /* 10 sectors (kernel up to 5K) */
 	xorw  %cx, %cx
 	movb  $2, %cl             /* sector 2 (1-based) */
 	xorw  %dx, %dx             /* head 0, drive in DL */
@@ -76,7 +76,7 @@ pm_start:
 	movw  %ax, %fs
 	movw  %ax, %gs
 	movw  %ax, %ss
-	movl  $0x9000, %esp       /* stack above kernel (0x7E00+2K); was 0x8000 and overwrote kernel */
+	movl  $0x10000, %esp      /* stack well above kernel (grows down from 64K) */
 
 	/* Jump to kernel at 0x7E00 (direct; *0x7e00 would be indirect = wrong) */
 	movl  $0x7e00, %eax

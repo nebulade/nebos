@@ -27,6 +27,9 @@ io.o: io.c io.h
 terminal.o: terminal.c terminal.h io.h rtc.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+hello.o: hello.c io.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 rtc.o: rtc.c rtc.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -36,7 +39,7 @@ boot.elf: boot.o
 timer.o: timer.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.o timer.o io.o rtc.o terminal.o
+kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -49,12 +52,14 @@ kernel.bin: kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
 image.bin: boot.bin kernel.bin
-	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
-	dd if=boot.bin of=$@ bs=512 conv=notrunc 2>/dev/null
+	@KERNEL_SECTORS=$$(( ($$(wc -c < kernel.bin) + 511) / 512 )); \
+	TOTAL_SECTORS=$$(( 1 + KERNEL_SECTORS )); \
+	dd if=/dev/zero of=$@ bs=512 count=$$TOTAL_SECTORS 2>/dev/null; \
+	dd if=boot.bin of=$@ bs=512 conv=notrunc 2>/dev/null; \
 	dd if=kernel.bin of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
 
 run: image.bin
 	qemu-system-i386 -M pc -drive file=image.bin,format=raw 2>/dev/null || qemu-system-x86_64 -M pc -drive file=image.bin,format=raw
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin
+	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin
