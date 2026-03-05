@@ -76,7 +76,7 @@ pm_start:
 	movw  %ax, %fs
 	movw  %ax, %gs
 	movw  %ax, %ss
-	movl  $0x8000, %esp       /* stack at 0x8000 */
+	movl  $0x9000, %esp       /* stack above kernel (0x7E00+2K); was 0x8000 and overwrote kernel */
 
 	/* Jump to kernel at 0x7E00 (direct; *0x7e00 would be indirect = wrong) */
 	movl  $0x7e00, %eax

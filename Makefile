@@ -42,7 +42,7 @@ image.bin: boot.bin kernel.bin
 	dd if=kernel.bin of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
 
 run: image.bin
-	qemu-system-i386 -fda image.bin 2>/dev/null || qemu-system-x86_64 -fda image.bin
+	qemu-system-i386 -M pc -drive file=image.bin,format=raw 2>/dev/null || qemu-system-x86_64 -M pc -drive file=image.bin,format=raw
 
 clean:
 	rm -f boot.o kernel.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin
