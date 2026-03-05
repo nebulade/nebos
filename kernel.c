@@ -39,6 +39,9 @@ static const unsigned char scancode_to_ascii[256] __attribute__((section(".rodat
 	[0x35] = '/', [0x39] = ' ',
 };
 
+/* Set 1: left shift make 0x2A break 0xAA, right shift make 0x36 break 0xB6 */
+static int shift_pressed;
+
 static unsigned int cursor;  /* linear position 0 .. CONTENT_SIZE-1 */
 static unsigned char last_scancode;     /* set by getchar for debug line */
 #define BUSY_POS (DEBUG_ROW * VGA_COLS + 79)  /* bottom-right: never overwritten by echo */
@@ -110,6 +113,23 @@ static void putstr(const char *s)
 	while (*s) putchar(*s++);
 }
 
+/* Apply shift to get US layout shifted character. Returns c unchanged if no shift variant. */
+static char apply_shift(char c)
+{
+	if (!shift_pressed) return c;
+	if (c >= 'a' && c <= 'z') return (char)(c - 32);
+	switch ((unsigned char)c) {
+		case '1': return '!';  case '2': return '@';  case '3': return '#';
+		case '4': return '$';  case '5': return '%';  case '6': return '^';
+		case '7': return '&';  case '8': return '*';  case '9': return '(';
+		case '0': return ')';  case '-': return '_';  case '=': return '+';
+		case '[': return '{';  case ']': return '}';  case ';': return ':';
+		case '\'': return '"'; case '`': return '~';  case '\\': return '|';
+		case ',': return '<';  case '.': return '>';  case '/': return '?';
+		default: return c;
+	}
+}
+
 /* Draw busy indicator at bottom-right so we know the event loop runs. */
 static void update_busy(void)
 {
@@ -144,11 +164,19 @@ void kernel_main(void)
 		update_busy();
 		if (inb(KB_STATUS) & 1) {
 			unsigned char sc = inb(KB_DATA);
-			if (sc & 0x80)
-				continue;  /* Set 1 break code: ignore */
+			if (sc & 0x80) {
+				/* Set 1 break: release shift */
+				if (sc == 0xAA || sc == 0xB6) shift_pressed = 0;
+				continue;
+			}
+			if (sc == 0x2A || sc == 0x36) {
+				shift_pressed = 1;
+				continue;
+			}
 			{
 				char c = (char)scancode_to_ascii[sc];
 				if (c) {
+					c = apply_shift(c);
 					last_scancode = sc;
 					debug_line(last_scancode, c);
 					putchar(c);
