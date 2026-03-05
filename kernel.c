@@ -24,6 +24,13 @@ static inline void outb(unsigned short port, unsigned char v)
 	__asm__ volatile ("outb %0, %1" : : "a"(v), "Nd"(port));
 }
 
+/* Disable the VGA hardware cursor (BIOS blinking underline at top-left). */
+static void disable_hw_cursor(void)
+{
+	outb(0x3D4, 0x0A);  /* Cursor Start register */
+	outb(0x3D5, 0x20);  /* Bit 5 = cursor disable */
+}
+
 /* PS/2 keyboard: data port 0x60, status 0x64 (bit 0 = output buffer full) */
 #define KB_DATA  0x60
 #define KB_STATUS 0x64
@@ -246,7 +253,7 @@ static void update_busy(void)
 }
 
 /* String in .text so it loads with the kernel */
-static const char msg[] __attribute__((section(".text"))) = "Hello from C (protected mode)";
+static const char msg[] __attribute__((section(".text"))) = "Nebs OS |o|";
 static const char prompt[] __attribute__((section(".text"))) = "\n> ";
 
 /* Entry point: must be first in .text so bootloader jump to 0x7E00 hits it */
@@ -254,6 +261,8 @@ void kernel_main(void) __attribute__((section(".text.entry")));
 void kernel_main(void)
 {
 	unsigned i;
+
+	disable_hw_cursor();  /* remove BIOS blinking underline at top-left */
 
 	/* Clear screen */
 	for (i = 0; i < VGA_SIZE; i++)
