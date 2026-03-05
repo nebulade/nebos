@@ -24,7 +24,10 @@ kernel.o: kernel.c io.h terminal.h timer.h
 io.o: io.c io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-terminal.o: terminal.c terminal.h io.h timer.h
+terminal.o: terminal.c terminal.h io.h rtc.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+rtc.o: rtc.c rtc.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 boot.elf: boot.o
@@ -33,7 +36,7 @@ boot.elf: boot.o
 timer.o: timer.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.o timer.o io.o terminal.o
+kernel.elf: kernel.o timer.o io.o rtc.o terminal.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -54,4 +57,4 @@ run: image.bin
 	qemu-system-i386 -M pc -drive file=image.bin,format=raw 2>/dev/null || qemu-system-x86_64 -M pc -drive file=image.bin,format=raw
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o terminal.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin
+	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin

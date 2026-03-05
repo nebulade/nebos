@@ -6,6 +6,9 @@
 #define IO_VGA_ROWS      25
 #define IO_CONTENT_ROWS  IO_VGA_ROWS
 #define IO_CONTENT_SIZE  (IO_CONTENT_ROWS * IO_VGA_COLS)
+/* Top-right datetime: row 0, 19 chars "YYYY-MM-DD HH:MM:SS" */
+#define IO_DATETIME_LEN  19
+#define IO_DATETIME_POS  (IO_VGA_COLS - IO_DATETIME_LEN)
 
 void io_init(void);
 void io_clear_screen(void);
