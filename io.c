@@ -45,6 +45,7 @@ static int shift_pressed;
 static unsigned int cursor;
 static unsigned short cursor_cell;
 static unsigned char last_scancode;
+static int scroll_occurred;
 
 static char apply_shift(char c)
 {
@@ -83,6 +84,14 @@ void io_clear_screen(void)
 		VGA_BASE[i] = (unsigned short)(VGA_ATTR << 8);
 }
 
+int io_did_scroll(void)
+{
+	if (!scroll_occurred)
+		return 0;
+	scroll_occurred = 0;
+	return 1;
+}
+
 void io_putchar(char c)
 {
 	if (c == '\n') {
@@ -95,6 +104,7 @@ void io_putchar(char c)
 			for (i = (IO_CONTENT_ROWS - 1) * IO_VGA_COLS; i < IO_CONTENT_SIZE; i++)
 				VGA_BASE[i] = (unsigned short)(VGA_ATTR << 8);
 			cursor = (IO_CONTENT_ROWS - 1) * IO_VGA_COLS;
+			scroll_occurred = 1;
 		}
 		cursor_cell = (unsigned short)(VGA_ATTR << 8);
 		return;

@@ -12,6 +12,7 @@
 
 void io_init(void);
 void io_clear_screen(void);
+int io_did_scroll(void);  /* returns 1 once after a scroll, then 0 until next scroll */
 void io_putchar(char c);
 void io_putstr(const char *s);
 unsigned int io_get_cursor(void);

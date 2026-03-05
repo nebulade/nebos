@@ -12,18 +12,23 @@ static char datetime_buf[IO_DATETIME_LEN + 1];
 static int cursor_visible;
 static unsigned int last_cursor_tick;
 
+static void redraw_datetime(void)
+{
+	rtc_read_datetime(datetime_buf);
+	{
+		unsigned int i;
+		for (i = 0; i < IO_DATETIME_LEN && datetime_buf[i]; i++)
+			io_vga_write(IO_DATETIME_POS + i,
+				(unsigned short)((0x0A << 8) | (unsigned char)datetime_buf[i]));
+	}
+}
+
 static void update_datetime(void)
 {
 	unsigned int t = get_ticks_ms();
 	if (t - last_datetime_tick >= DATETIME_MS) {
 		last_datetime_tick = t;
-		rtc_read_datetime(datetime_buf);
-		{
-			unsigned int i;
-			for (i = 0; i < IO_DATETIME_LEN && datetime_buf[i]; i++)
-				io_vga_write(IO_DATETIME_POS + i,
-					(unsigned short)((0x0A << 8) | (unsigned char)datetime_buf[i]));
-		}
+		redraw_datetime();
 	}
 }
 
@@ -59,8 +64,11 @@ void terminal_run(void)
 			char c = io_poll_key();
 			if (c) {
 				io_putchar(c);
-				if (c == '\n')
+				if (c == '\n') {
 					io_putstr(prompt);
+					if (io_did_scroll())
+						redraw_datetime();
+				}
 			} else {
 				__asm__ volatile ("hlt");
 			}
