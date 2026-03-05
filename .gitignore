@@ -1,0 +1,4 @@
+boot.bin
+boot.elf
+boot.o
+kernel.o
