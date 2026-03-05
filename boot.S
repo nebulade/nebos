@@ -19,12 +19,12 @@ _start:
 	movw  $0x0003, %ax
 	int   $0x10
 
-	/* Load kernel: 4 sectors from sector 2 into 0x7E00 (ES:BX = 0x07E0:0) */
+	/* Load kernel: 5 sectors from sector 2 into 0x7E00 (ES:BX = 0x07E0:0) */
 	movw  $0x07e0, %ax
 	movw  %ax, %es
 	xorw  %bx, %bx
 	movb  $0x02, %ah          /* int 0x13 read */
-	movb  $4, %al             /* 4 sectors */
+	movb  $5, %al             /* 5 sectors (kernel can be > 2K) */
 	xorw  %cx, %cx
 	movb  $2, %cl             /* sector 2 (1-based) */
 	xorw  %dx, %dx             /* head 0, drive in DL */

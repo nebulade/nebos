@@ -24,8 +24,11 @@ kernel.o: kernel.c
 boot.elf: boot.o
 	$(LD) $(BOOT_LDFLAGS) -o $@ $<
 
-kernel.elf: kernel.o
-	$(LD) $(KERNEL_LDFLAGS) -o $@ $<
+timer.o: timer.S
+	$(AS) $(ASFLAGS) -o $@ $<
+
+kernel.elf: kernel.o timer.o
+	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
 	$(OBJCOPY) -O binary --only-section=.boot $< $@.tmp
@@ -45,4 +48,4 @@ run: image.bin
 	qemu-system-i386 -M pc -drive file=image.bin,format=raw 2>/dev/null || qemu-system-x86_64 -M pc -drive file=image.bin,format=raw
 
 clean:
-	rm -f boot.o kernel.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin
+	rm -f boot.o kernel.o timer.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin
