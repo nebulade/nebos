@@ -1,22 +1,19 @@
-# Minimal x86 floppy boot: build boot.bin and optionally write to floppy.
-# Usage: make [all] && [sudo] make floppy
+# Bootloader: 512-byte boot sector + kernel at sector 2. Builds image.bin for QEMU.
 
-CC     = gcc
-AS     = as
-LD     = ld
+CC      = gcc
+AS      = as
+LD      = ld
 OBJCOPY = objcopy
 
-CFLAGS  = -ffreestanding -fno-pie -m16 -nostdlib -fno-stack-protector -fno-asynchronous-unwind-tables -Wall -Wextra -O2 -c
-ASFLAGS = --32
-LDFLAGS = -T linker.ld -nostdlib -m elf_i386
+CFLAGS   = -ffreestanding -fno-pie -m32 -nostdlib -fno-stack-protector \
+           -fno-asynchronous-unwind-tables -Wall -Wextra -O2 -c
+ASFLAGS  = --32
+BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
+KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-FLOPPY ?= /dev/fd0
+.PHONY: all clean run
 
-OBJS = boot.o kernel.o
-
-.PHONY: all clean floppy run
-
-all: boot.bin
+all: image.bin
 
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
@@ -24,8 +21,11 @@ boot.o: boot.S
 kernel.o: kernel.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-boot.elf: $(OBJS)
-	$(LD) $(LDFLAGS) -o $@ $(OBJS)
+boot.elf: boot.o
+	$(LD) $(BOOT_LDFLAGS) -o $@ $<
+
+kernel.elf: kernel.o
+	$(LD) $(KERNEL_LDFLAGS) -o $@ $<
 
 boot.bin: boot.elf
 	$(OBJCOPY) -O binary --only-section=.boot $< $@.tmp
@@ -33,14 +33,16 @@ boot.bin: boot.elf
 	printf '\x55\xaa' >> $@
 	rm -f $@.tmp
 
-# Write first sector to floppy (often requires: sudo make floppy)
-floppy: boot.bin
-	dd if=boot.bin of=$(FLOPPY) bs=512 count=1 conv=notrunc
+kernel.bin: kernel.elf
+	$(OBJCOPY) -O binary $< $@
 
-# Test in QEMU (optional: install qemu-system-i386 or qemu-system-x86)
-# Use -display gtk for a window; install qemu-system-gtk or run in a graphical session
-run: boot.bin
-	qemu-system-i386 -display gtk -drive file=boot.bin,format=raw,if=floppy || qemu-system-x86_64 -display gtk -drive file=boot.bin,format=raw,if=floppy
+image.bin: boot.bin kernel.bin
+	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
+	dd if=boot.bin of=$@ bs=512 conv=notrunc 2>/dev/null
+	dd if=kernel.bin of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
+
+run: image.bin
+	qemu-system-i386 -fda image.bin 2>/dev/null || qemu-system-x86_64 -fda image.bin
 
 clean:
-	rm -f $(OBJS) boot.elf boot.bin boot.bin.tmp
+	rm -f boot.o kernel.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin
