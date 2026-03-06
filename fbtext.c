@@ -10,11 +10,11 @@ static unsigned int fbtext_cur_col, fbtext_cur_row;
 static int fbtext_cursor_visible;
 
 /* Layout: header 5px down, rainbow 5px below header text, content 5px below rainbow. */
-#define HEADER_TOP     5   /* row 0 text at y 5..20 */
-#define RAINBOW_TOP   18   /* 5px below header text; line at y 26..27 */
-#define CONTENT_TOP   25   /* 5px below rainbow; first content row at y 33..48 */
+#define HEADER_TOP     5   /* row 0 text at y 5..14 (only ROW_HEIGHT scanlines drawn) */
+#define RAINBOW_TOP   18   /* 5px below header text; line at y 18..19 */
+#define CONTENT_TOP   25   /* 5px below rainbow; first content row at y 25..34 */
 
-#define ROW_HEIGHT    16
+#define ROW_HEIGHT    10   /* drawn height per line (top 10 rows of 8x16 font); avoids clearing rainbow */
 
 static inline unsigned int row_to_y0(unsigned int row)
 {
@@ -103,7 +103,7 @@ static void draw_glyph(unsigned int col, unsigned int row, unsigned char c, unsi
 	attr_to_rgb(attr, 0, &r_bg, &g_bg, &b_bg);
 
 	glyph = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
-	for (y = 0; y < 16; y++) {
+	for (y = 0; y < ROW_HEIGHT; y++) {
 		unsigned char row_bits = glyph[y];
 		for (x = 0; x < 8; x++) {
 			unsigned int px = x0 + x;
@@ -158,9 +158,9 @@ void fbtext_set_cursor(unsigned int col, unsigned int row)
 	fbtext_cur_row = row;
 }
 
-/* Slim vertical line cursor: 2px wide, full cell height. */
+/* Slim vertical line cursor: 2px wide, matches row height. */
 #define CURSOR_W  2
-#define CURSOR_H  8
+#define CURSOR_H  ROW_HEIGHT
 
 void fbtext_show_cursor(void)
 {
@@ -191,7 +191,7 @@ static void draw_glyph_cursor_region(unsigned int col, unsigned int row, unsigne
 	attr_to_rgb(attr, 0, &r_bg, &g_bg, &b_bg);
 
 	glyph = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
-	for (y = 0; y < CURSOR_H; y++) {
+	for (y = 0; y < ROW_HEIGHT && y < CURSOR_H; y++) {
 		unsigned char row_bits = glyph[y];
 		for (x = 0; x < CURSOR_W; x++) {
 			unsigned int px = x0 + x;
