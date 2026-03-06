@@ -16,4 +16,7 @@ void fbtext_show_cursor(void);
 /* Hide cursor and redraw cell with (c, attr) so the character is restored. */
 void fbtext_hide_cursor(unsigned char c, unsigned char attr);
 
+/* Draw a rainbow gradient line just below the header row (between header and content). No-op if not LFB. */
+void fbtext_draw_rainbow_separator(void);
+
 #endif

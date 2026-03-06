@@ -9,6 +9,18 @@ static unsigned int fbtext_cols, fbtext_rows;
 static unsigned int fbtext_cur_col, fbtext_cur_row;
 static int fbtext_cursor_visible;
 
+/* Layout: header 5px down, rainbow 5px below header text, content 5px below rainbow. */
+#define HEADER_TOP     5   /* row 0 text at y 5..20 */
+#define RAINBOW_TOP   18   /* 5px below header text; line at y 26..27 */
+#define CONTENT_TOP   25   /* 5px below rainbow; first content row at y 33..48 */
+
+#define ROW_HEIGHT    16
+
+static inline unsigned int row_to_y0(unsigned int row)
+{
+	return row == 0 ? HEADER_TOP : (CONTENT_TOP + (row - 1) * ROW_HEIGHT);
+}
+
 /* VGA attribute (0-15) to RGB. Standard VGA palette. */
 static void attr_to_rgb(unsigned char attr, int fg, unsigned int *r, unsigned int *g, unsigned int *b)
 {
@@ -46,7 +58,10 @@ void fbtext_init(void)
 	}
 	fbtext_use_lfb = 1;
 	fbtext_cols = vga_fb_width() / 8;
-	fbtext_rows = vga_fb_height() / 16;
+	{
+		unsigned int h = vga_fb_height();
+		fbtext_rows = (h >= CONTENT_TOP + ROW_HEIGHT) ? (1 + (h - CONTENT_TOP) / ROW_HEIGHT) : 25;
+	}
 	if (fbtext_cols == 0) fbtext_cols = 80;
 	if (fbtext_rows == 0) fbtext_rows = 25;
 	fbtext_cur_col = 0;
@@ -79,7 +94,7 @@ void fbtext_clear(void)
 static void draw_glyph(unsigned int col, unsigned int row, unsigned char c, unsigned char attr)
 {
 	unsigned int x0 = col * 8;
-	unsigned int y0 = row * 16;
+	unsigned int y0 = row_to_y0(row);
 	unsigned int r_fg, g_fg, b_fg, r_bg, g_bg, b_bg;
 	unsigned int x, y;
 	const unsigned char *glyph;
@@ -119,15 +134,16 @@ void fbtext_scroll_up_one_line(void)
 
 	if (!fbtext_use_lfb || !fb)
 		return;
-	if (height <= 16)
+	if (height <= CONTENT_TOP + ROW_HEIGHT)
 		return;
-	for (y = 16; y < height - 16; y++) {
-		unsigned int src_off = (y + 16) * pitch;
+	/* Scroll only the content area (below rainbow); header and rainbow stay fixed. */
+	for (y = CONTENT_TOP; y < height - ROW_HEIGHT; y++) {
+		unsigned int src_off = (y + ROW_HEIGHT) * pitch;
 		unsigned int dst_off = y * pitch;
 		for (i = 0; i < pitch; i++)
 			fb[dst_off + i] = fb[src_off + i];
 	}
-	for (y = height - 16; y < height; y++) {
+	for (y = height - ROW_HEIGHT; y < height; y++) {
 		unsigned int off = y * pitch;
 		for (i = 0; i < pitch; i++)
 			fb[off + i] = 0;
@@ -149,7 +165,7 @@ void fbtext_set_cursor(unsigned int col, unsigned int row)
 void fbtext_show_cursor(void)
 {
 	unsigned int x0 = fbtext_cur_col * 8;
-	unsigned int y0 = fbtext_cur_row * 16;
+	unsigned int y0 = row_to_y0(fbtext_cur_row);
 	unsigned int x, y;
 	unsigned int r, g, b;
 
@@ -166,7 +182,7 @@ void fbtext_show_cursor(void)
 static void draw_glyph_cursor_region(unsigned int col, unsigned int row, unsigned char c, unsigned char attr)
 {
 	unsigned int x0 = col * 8;
-	unsigned int y0 = row * 16;
+	unsigned int y0 = row_to_y0(row);
 	unsigned int r_fg, g_fg, b_fg, r_bg, g_bg, b_bg;
 	unsigned int x, y;
 	const unsigned char *glyph;
@@ -195,5 +211,49 @@ void fbtext_hide_cursor(unsigned char c, unsigned char attr)
 	if (fbtext_cursor_visible) {
 		fbtext_cursor_visible = 0;
 		draw_glyph_cursor_region(fbtext_cur_col, fbtext_cur_row, c, attr);
+	}
+}
+
+/* Rainbow gradient: hue 0..1535 (6*256) maps to R→Y→G→C→B→M→R. Integer interpolation. */
+#define RAINBOW_SEG  256
+#define RAINBOW_FULL (6 * RAINBOW_SEG)
+
+static void hue_to_rgb(unsigned int hue, unsigned int *r, unsigned int *g, unsigned int *b)
+{
+	unsigned int seg = hue / RAINBOW_SEG;
+	unsigned int f   = hue % RAINBOW_SEG;
+	unsigned int r1, g1, b1, r2, g2, b2;
+	if (seg >= 6)
+		seg = 0;
+	switch (seg) {
+		case 0: r1=255; g1=0;   b1=0;   r2=255; g2=255; b2=0;   break; /* R → Y */
+		case 1: r1=255; g1=255; b1=0;   r2=0;   g2=255; b2=0;   break; /* Y → G */
+		case 2: r1=0;   g1=255; b1=0;   r2=0;   g2=255; b2=255; break; /* G → C */
+		case 3: r1=0;   g1=255; b1=255; r2=0;   g2=0;   b2=255; break; /* C → B */
+		case 4: r1=0;   g1=0;   b1=255; r2=255; g2=0;   b2=255; break; /* B → M */
+		default: r1=255; g1=0; b1=255; r2=255; g2=0;   b2=0;   break; /* M → R */
+	}
+	*r = (r1 * (RAINBOW_SEG - f) + r2 * f) / RAINBOW_SEG;
+	*g = (g1 * (RAINBOW_SEG - f) + g2 * f) / RAINBOW_SEG;
+	*b = (b1 * (RAINBOW_SEG - f) + b2 * f) / RAINBOW_SEG;
+}
+
+#define RAINBOW_LINE_HEIGHT  2   /* 2-pixel tall line for visibility */
+
+void fbtext_draw_rainbow_separator(void)
+{
+	unsigned int w = vga_fb_width();
+	unsigned int x, y;
+	unsigned int r, g, b;
+
+	if (!fbtext_use_lfb || w == 0)
+		return;
+	for (y = 0; y < RAINBOW_LINE_HEIGHT; y++) {
+		unsigned int py = RAINBOW_TOP + y;
+		for (x = 0; x < w; x++) {
+			unsigned int hue = (x * RAINBOW_FULL) / w;
+			hue_to_rgb(hue, &r, &g, &b);
+			vga_put_pixel_rgb(x, py, r, g, b);
+		}
 	}
 }

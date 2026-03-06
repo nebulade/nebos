@@ -1,6 +1,7 @@
 /* Terminal: prompt, datetime (top right), blinking cursor, echo loop, command dispatch. */
 
 #include "io.h"
+#include "fbtext.h"
 #include "rtc.h"
 #include "terminal.h"
 #include "timer.h"
@@ -69,6 +70,7 @@ static void draw_header_row(void)
 	for (; i < IO_DATETIME_POS; i++)
 		io_vga_write(i, (unsigned short)(0x0A << 8));
 	redraw_datetime();
+	fbtext_draw_rainbow_separator();
 }
 
 static int is_cmd_hello(const char *line, unsigned int line_len)

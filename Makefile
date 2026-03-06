@@ -32,7 +32,7 @@ font_8x16.o: font_8x16.c font_8x16.h
 fbtext.o: fbtext.c fbtext.h font_8x16.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-terminal.o: terminal.c terminal.h io.h rtc.h timer.h disk.h
+terminal.o: terminal.c terminal.h io.h fbtext.h rtc.h timer.h disk.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 hello.o: hello.c io.h

@@ -33,6 +33,18 @@ static void vga_cache_boot_fb(void)
 	vga_fb_h = info->height;
 	vga_fb_pitch_val = info->pitch;
 	vga_fb_bpp_val = info->bpp;
+	/* Some BIOSes (e.g. 1024x768) report pitch in pixels or too small; enforce minimum. */
+	{
+		unsigned int min_pitch = vga_fb_w;
+		if (vga_fb_bpp_val == 16)
+			min_pitch *= 2;
+		else if (vga_fb_bpp_val == 24)
+			min_pitch *= 3;
+		else if (vga_fb_bpp_val == 32)
+			min_pitch *= 4;
+		if (vga_fb_pitch_val < min_pitch)
+			vga_fb_pitch_val = min_pitch;
+	}
 	vga_fb_lfb = (volatile unsigned char *)(unsigned long)info->lfb_base;
 }
 
