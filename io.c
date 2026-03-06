@@ -47,6 +47,30 @@ static unsigned short cursor_cell;
 static unsigned char last_scancode;
 static int scroll_occurred;
 
+#define KBD_BUF_SIZE 16
+static volatile unsigned char kbd_buf[KBD_BUF_SIZE];
+static volatile unsigned int kbd_head, kbd_tail;
+
+void kbd_irq(void)
+{
+	unsigned char sc = inb(KB_DATA);
+	unsigned int next = (kbd_head + 1) % KBD_BUF_SIZE;
+	if (next != kbd_tail) {
+		kbd_buf[kbd_head] = sc;
+		kbd_head = next;
+	}
+	outb(0x20, 0x20);
+}
+
+static int kbd_buf_get(unsigned char *sc)
+{
+	if (kbd_tail == kbd_head)
+		return 0;
+	*sc = kbd_buf[kbd_tail];
+	kbd_tail = (kbd_tail + 1) % KBD_BUF_SIZE;
+	return 1;
+}
+
 static char apply_shift(char c)
 {
 	if (!shift_pressed) return c;
@@ -155,28 +179,27 @@ void io_drain_keyboard(void)
 {
 	while (inb(KB_STATUS) & 1)
 		(void)inb(KB_DATA);
+	kbd_head = kbd_tail = 0;
 }
 
 char io_poll_key(void)
 {
-	if (!(inb(KB_STATUS) & 1))
+	unsigned char sc;
+	if (!kbd_buf_get(&sc))
 		return 0;
+	if (sc & 0x80) {
+		if (sc == 0xAA || sc == 0xB6) shift_pressed = 0;
+		return 0;
+	}
+	if (sc == 0x2A || sc == 0x36) {
+		shift_pressed = 1;
+		return 0;
+	}
 	{
-		unsigned char sc = inb(KB_DATA);
-		if (sc & 0x80) {
-			if (sc == 0xAA || sc == 0xB6) shift_pressed = 0;
-			return 0;
-		}
-		if (sc == 0x2A || sc == 0x36) {
-			shift_pressed = 1;
-			return 0;
-		}
-		{
-			char c = (char)scancode_to_ascii[sc];
-			if (c) {
-				last_scancode = sc;
-				return apply_shift(c);
-			}
+		char c = (char)scancode_to_ascii[sc];
+		if (c) {
+			last_scancode = sc;
+			return apply_shift(c);
 		}
 	}
 	return 0;

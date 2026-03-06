@@ -1,19 +1,21 @@
-# Bootloader: 512-byte boot sector + kernel at sector 2. Builds image.bin for QEMU.
+# Bootloader: 512-byte boot sector + contiguous kernel at sector 1. Builds image.bin for QEMU.
 
 CC      = gcc
 AS      = as
 LD      = ld
 OBJCOPY = objcopy
 
-CFLAGS   = -ffreestanding -fno-pie -m32 -nostdlib -fno-stack-protector \
-           -fno-asynchronous-unwind-tables -Wall -Wextra -O2 -c
+# -march=i586: first-gen Pentium (P5); avoids CMOV etc. (P6+)
+CFLAGS   = -ffreestanding -fno-pie -m32 -march=i586 -nostdlib -fno-stack-protector \
+           -fno-asynchronous-unwind-tables -mno-sse -mno-sse2 -mno-mmx \
+           -Wall -Wextra -O2 -c
 ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
 .PHONY: all clean run
 
-all: image.bin
+all: image.bin final.bin root.img
 
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
@@ -24,10 +26,22 @@ kernel.o: kernel.c io.h terminal.h timer.h
 io.o: io.c io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-terminal.o: terminal.c terminal.h io.h rtc.h timer.h
+terminal.o: terminal.c terminal.h io.h rtc.h timer.h disk.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 hello.o: hello.c io.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+disk.o: disk.c disk.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+fat.o: fat.c fat.h disk.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+ls.o: ls.c fat.h io.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+cat.o: cat.c fat.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 rtc.o: rtc.c rtc.h
@@ -39,7 +53,7 @@ boot.elf: boot.o
 timer.o: timer.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o
+kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o disk.o fat.o ls.o cat.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -51,15 +65,31 @@ boot.bin: boot.elf
 kernel.bin: kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
+KERNEL_SECTORS_OFFSET = 62
 image.bin: boot.bin kernel.bin
-	@KERNEL_SECTORS=$$(( ($$(wc -c < kernel.bin) + 511) / 512 )); \
-	TOTAL_SECTORS=$$(( 1 + KERNEL_SECTORS )); \
-	dd if=/dev/zero of=$@ bs=512 count=$$TOTAL_SECTORS 2>/dev/null; \
-	dd if=boot.bin of=$@ bs=512 conv=notrunc 2>/dev/null; \
-	dd if=kernel.bin of=$@ bs=512 seek=1 conv=notrunc 2>/dev/null
+	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
+	cp boot.bin boot.bin.patched; \
+	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	cat boot.bin.patched kernel.bin > $@; \
+	truncate -s 1474560 $@; \
+	rm -f boot.bin.patched
 
-run: image.bin
-	qemu-system-i386 -M pc -drive file=image.bin,format=raw 2>/dev/null || qemu-system-x86_64 -M pc -drive file=image.bin,format=raw
+final.bin: boot.bin kernel.bin
+	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
+	cp boot.bin boot.bin.patched; \
+	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	cat boot.bin.patched kernel.bin > $@; \
+	rm -f boot.bin.patched
+
+root.img:
+	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
+	mkfs.fat -F 12 -n "ROOTDISK" $@
+	echo "Hello from the second floppy!" | mcopy -i $@ - ::HELLO.TXT
+	echo "This is a test file on drive 1." | mcopy -i $@ - ::TEST.TXT
+
+run: image.bin root.img
+	qemu-system-i386 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp image.bin
+	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o fat.o ls.o cat.o disk.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img

@@ -6,6 +6,10 @@
 #include "timer.h"
 
 extern void program_hello_main(void);
+extern void program_ls_main(void);
+extern void program_cat_main(const char *filename);
+extern void disk_set_drive(unsigned int drive);
+extern unsigned int disk_get_drive(void);
 
 #define DATETIME_MS 1000
 #define LINE_MAX 64
@@ -79,6 +83,64 @@ static int is_cmd_hello(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
+static int is_cmd_ls(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 2 > line_len)
+		return 0;
+	if (line[i] != 'l' || line[i+1] != 's')
+		return 0;
+	i += 2;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+#define CAT_FNAME_MAX 64
+static int is_cmd_cat(const char *line, unsigned int line_len, char *filename_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 3 > line_len)
+		return 0;
+	if (line[i] != 'c' || line[i+1] != 'a' || line[i+2] != 't')
+		return 0;
+	i += 3;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len)
+		return 0;
+	j = 0;
+	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
+		filename_buf[j++] = line[i++];
+	filename_buf[j] = '\0';
+	return (j > 0);
+}
+
+static int is_cmd_drive(const char *line, unsigned int line_len, unsigned int *drive_num)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 'd' || line[i+1] != 'r' || line[i+2] != 'i' || line[i+3] != 'v' || line[i+4] != 'e')
+		return 0;
+	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len || line[i] < '0' || line[i] > '1')
+		return 0;
+	*drive_num = (unsigned int)(line[i] - '0');
+	i++;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 void terminal_run(void)
 {
 	static char line[LINE_MAX];
@@ -107,11 +169,26 @@ void terminal_run(void)
 						io_putchar(c);
 					}
 				} else if (c == '\n') {
+					static char cat_fname[CAT_FNAME_MAX];
+					unsigned int drive_sel;
 					io_putchar(c);
 					if (is_cmd_hello(line, line_len)) {
 						program_hello_main();
 						io_drain_keyboard();
 						draw_header_row();
+					} else if (is_cmd_ls(line, line_len)) {
+						program_ls_main();
+						io_drain_keyboard();
+						draw_header_row();
+					} else if (is_cmd_cat(line, line_len, cat_fname, CAT_FNAME_MAX)) {
+						program_cat_main(cat_fname);
+						io_drain_keyboard();
+						draw_header_row();
+					} else if (is_cmd_drive(line, line_len, &drive_sel)) {
+						disk_set_drive(drive_sel);
+						io_putstr("drive ");
+						io_putchar((char)('0' + disk_get_drive()));
+						io_putstr(" selected\n");
 					}
 					line_len = 0;
 					line[0]  = '\0';
