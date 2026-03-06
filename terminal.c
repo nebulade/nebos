@@ -248,6 +248,7 @@ void terminal_run(void)
 					} else if (is_cmd_clock(line, line_len)) {
 						program_clock_main();
 						io_drain_keyboard();
+						io_clear_screen();
 						draw_header_row();
 					} else if (is_cmd_cat(line, line_len, cat_fname, CAT_FNAME_MAX)) {
 						program_cat_main(cat_fname);

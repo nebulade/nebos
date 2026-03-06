@@ -1,9 +1,40 @@
-/* VGA mode 13h / mode 03h via direct register programming.
-   Saves and restores the 8x16 font from plane 2 so text mode survives. */
+/* VGA: VESA LFB (from boot) or legacy mode 13h / mode 03h. */
 
 #include "vga.h"
 
 #define VGA_FB ((volatile unsigned char *)0xA0000)
+
+/* Cached boot framebuffer info (set once when vga_fb_* first used). */
+static unsigned int vga_fb_w, vga_fb_h, vga_fb_pitch_val, vga_fb_bpp_val;
+static volatile unsigned char *vga_fb_lfb;
+static int vga_fb_cached;
+
+static volatile struct vga_boot_fb_info *vga_get_boot_fb(void)
+{
+	volatile struct vga_boot_fb_info *p = VGA_BOOT_FB;
+	__asm__ volatile ("" : "+r"(p));
+	return p;
+}
+
+static void vga_cache_boot_fb(void)
+{
+	volatile struct vga_boot_fb_info *info;
+
+	if (vga_fb_cached)
+		return;
+	vga_fb_cached = 1;
+	info = vga_get_boot_fb();
+	if (!info->valid) {
+		vga_fb_w = vga_fb_h = vga_fb_pitch_val = vga_fb_bpp_val = 0;
+		vga_fb_lfb = 0;
+		return;
+	}
+	vga_fb_w = info->width;
+	vga_fb_h = info->height;
+	vga_fb_pitch_val = info->pitch;
+	vga_fb_bpp_val = info->bpp;
+	vga_fb_lfb = (volatile unsigned char *)(unsigned long)info->lfb_base;
+}
 
 static inline void outb(unsigned short port, unsigned char v)
 {
@@ -190,4 +221,118 @@ void vga_clear(unsigned char color)
 
 	for (i = 0; i < n; i++)
 		VGA_FB[i] = color;
+}
+
+/* ---- LFB API ---- */
+
+unsigned int vga_fb_width(void)
+{
+	vga_cache_boot_fb();
+	return vga_fb_w;
+}
+
+unsigned int vga_fb_height(void)
+{
+	vga_cache_boot_fb();
+	return vga_fb_h;
+}
+
+unsigned int vga_fb_pitch(void)
+{
+	vga_cache_boot_fb();
+	return vga_fb_pitch_val;
+}
+
+unsigned int vga_fb_bpp(void)
+{
+	vga_cache_boot_fb();
+	return vga_fb_bpp_val;
+}
+
+void *vga_fb_ptr(void)
+{
+	vga_cache_boot_fb();
+	return (void *)vga_fb_lfb;
+}
+
+int vga_has_vesa(void)
+{
+	vga_cache_boot_fb();
+	return (vga_fb_w != 0 && vga_fb_lfb != 0);
+}
+
+/* 16bpp: RGB 5:6:5.  32bpp: BGRX byte order (standard VBE / QEMU). */
+static void vga_lfb_put_pixel(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
+{
+	unsigned int pitch = vga_fb_pitch_val;
+	unsigned int bpp = vga_fb_bpp_val;
+	unsigned char *p;
+
+	if (x >= vga_fb_w || y >= vga_fb_h || !vga_fb_lfb)
+		return;
+	p = (unsigned char *)vga_fb_lfb + (unsigned long)y * pitch;
+	if (bpp == 16) {
+		unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+		unsigned int off = x * 2;
+		p[off] = (unsigned char)(rgb16 & 0xFF);
+		p[off + 1] = (unsigned char)(rgb16 >> 8);
+	} else if (bpp == 24) {
+		unsigned int off = x * 3;
+		p[off]     = (unsigned char)b;
+		p[off + 1] = (unsigned char)g;
+		p[off + 2] = (unsigned char)r;
+	} else if (bpp == 32) {
+		unsigned int off = x * 4;
+		p[off]     = (unsigned char)b;
+		p[off + 1] = (unsigned char)g;
+		p[off + 2] = (unsigned char)r;
+		p[off + 3] = 0;
+	}
+}
+
+void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
+{
+	vga_cache_boot_fb();
+	if (!vga_fb_lfb)
+		return;
+	vga_lfb_put_pixel(x, y, r, g, b);
+}
+
+void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
+{
+	unsigned int pitch = vga_fb_pitch_val;
+	unsigned int bpp = vga_fb_bpp_val;
+
+	vga_cache_boot_fb();
+	if (!vga_fb_lfb)
+		return;
+	if (bpp == 16) {
+		unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+		unsigned short val = (unsigned short)((rgb16 & 0xFF) | ((rgb16 >> 8) << 8));
+		volatile unsigned short *fb = (volatile unsigned short *)vga_fb_lfb;
+		unsigned int n = (pitch / 2) * vga_fb_h;
+		unsigned int i;
+		for (i = 0; i < n; i++)
+			fb[i] = val;
+	} else if (bpp == 24) {
+		volatile unsigned char *p = vga_fb_lfb;
+		unsigned int row, x;
+		for (row = 0; row < vga_fb_h; row++) {
+			unsigned int row_off = row * pitch;
+			for (x = 0; x < vga_fb_w; x++) {
+				unsigned int off = row_off + x * 3;
+				p[off]     = (unsigned char)b;
+				p[off + 1] = (unsigned char)g;
+				p[off + 2] = (unsigned char)r;
+			}
+		}
+	} else if (bpp == 32) {
+		volatile unsigned int *fb = (volatile unsigned int *)vga_fb_lfb;
+		unsigned int pixel = ((unsigned int)r << 16) | ((unsigned int)g << 8) | b;
+		unsigned int stride = pitch / 4;
+		unsigned int row, x;
+		for (row = 0; row < vga_fb_h; row++)
+			for (x = 0; x < vga_fb_w; x++)
+				fb[row * stride + x] = pixel;
+	}
 }

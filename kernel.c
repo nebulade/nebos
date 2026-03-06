@@ -122,9 +122,15 @@ static void timer_init(void)
 	__asm__ volatile ("sti");
 }
 
+extern unsigned char __bss_start[], __bss_end[];
+
 void kernel_main(void) __attribute__((section(".text.entry")));
 void kernel_main(void)
 {
+	unsigned char *p = __bss_start;
+	while (p < __bss_end)
+		*p++ = 0;
+
 	io_init();
 	timer_init();
 	terminal_run();

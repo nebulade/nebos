@@ -23,6 +23,53 @@ loader_start:
 	movw  $0x0003, %ax
 	int   $0x10
 
+	/* VESA: try fixed mode list, use 0x6000 for mode info (256 bytes). */
+	xorw  %ax, %ax
+	movw  %ax, %es
+	movw  $0x6000, %di
+	/* Try modes: 0x11C, 0x11B, 0x118, 0x114 (descending res, >= 16bpp). */
+	movw  $0x11C, %cx
+1:	movw  $0x4F01, %ax
+	int   $0x10
+	cmpw  $0x004F, %ax
+	jnz   2f
+	cmpb  $16, 0x19(%di)	/* BitsPerPixel >= 16 */
+	jb    2f
+	testw $0x80, (%di)	/* ModeAttributes bit 7 = LFB */
+	jz    2f
+	movw  %cx, %bx
+	orw   $0x4000, %bx	/* Set mode with LFB */
+	movw  $0x4F02, %ax
+	int   $0x10
+	cmpw  $0x004F, %ax
+	jz    vesa_ok
+2:	cmpw  $0x114, %cx
+	jz   vesa_fail
+	subw  $1, %cx		/* 0x11C -> 0x11B -> 0x118 -> 0x114 */
+	jmp   1b
+vesa_fail:
+	xorw  %ax, %ax
+	movw  $0x600, %bx
+	movb  %al, (%bx)	/* valid = 0 */
+	jmp   load_kernel
+vesa_ok:
+	movw  $0x6000, %di	/* Reload: int 0x10/4F02 may trash DI */
+	movw  $0x600, %bx
+	movb  $1, (%bx)		/* valid = 1 */
+	movw  0x12(%di), %ax
+	movw  %ax, 1(%bx)	/* width */
+	movw  0x14(%di), %ax
+	movw  %ax, 3(%bx)	/* height */
+	movw  0x10(%di), %ax
+	movw  %ax, 5(%bx)	/* pitch */
+	movb  0x19(%di), %al
+	movb  %al, 7(%bx)	/* bpp */
+	movw  0x28(%di), %ax
+	movw  %ax, 8(%bx)	/* lfb_base lo */
+	movw  0x2a(%di), %ax
+	movw  %ax, 10(%bx)	/* lfb_base hi */
+
+load_kernel:
 	/* Load kernel: sectors 1..kernel_sectors to 0x7E00. */
 	movw  kernel_sectors, %cx
 	movw  $1, %si

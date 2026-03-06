@@ -2,15 +2,18 @@
 #ifndef IO_H
 #define IO_H
 
-#define IO_VGA_COLS       80
-#define IO_VGA_ROWS       25
 #define IO_HEADER_ROWS    1
-#define IO_CONTENT_OFFSET (IO_HEADER_ROWS * IO_VGA_COLS)   /* row 1 start */
-#define IO_CONTENT_ROWS   (IO_VGA_ROWS - IO_HEADER_ROWS)   /* 24 rows */
-#define IO_CONTENT_SIZE   (IO_CONTENT_ROWS * IO_VGA_COLS)
 /* Row 0: banner left, datetime right (19 chars "YYYY-MM-DD HH:MM:SS") */
 #define IO_DATETIME_LEN   19
-#define IO_DATETIME_POS   (IO_VGA_COLS - IO_DATETIME_LEN)
+
+unsigned int io_get_cols(void);
+unsigned int io_get_rows(void);
+#define IO_VGA_COLS       (io_get_cols())
+#define IO_VGA_ROWS       (io_get_rows())
+#define IO_CONTENT_OFFSET (IO_HEADER_ROWS * io_get_cols())
+#define IO_CONTENT_ROWS   (io_get_rows() - IO_HEADER_ROWS)
+#define IO_CONTENT_SIZE   (IO_CONTENT_ROWS * io_get_cols())
+#define IO_DATETIME_POS   (io_get_cols() - IO_DATETIME_LEN)
 
 void io_init(void);
 void io_clear_screen(void);

@@ -10,7 +10,11 @@ SECTIONS
 	}
 	.rodata : { *(.rodata .rodata.*) }
 	.data : { *(.data .data.*) }
-	.bss : { *(.bss .bss.*) *(COMMON) }
+	.bss : {
+		__bss_start = .;
+		*(.bss .bss.*) *(COMMON)
+		__bss_end = .;
+	}
 	_end = .;
 }
 ASSERT(_end <= 0x20000, "Kernel too large would overwrite stack/DMA at 0x20000");
