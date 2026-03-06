@@ -299,8 +299,11 @@ static int fdc_read_one(unsigned int lba)
 
 static int fdc_init_once(void)
 {
-	/* Reset the FDC first (clears any pending interrupt state left by BIOS).
-	 * IRQ 6 is still masked at this point so no spurious interrupts. */
+	/* Mask IRQ 6 before reset so the completion interrupt doesn't
+	 * fire before we're ready (IRQ 6 may already be unmasked from
+	 * a previous init).  Then clear the flag and release the reset. */
+	outb(PIC1_DATA, inb(PIC1_DATA) | 0x40);
+
 	outb(FDC_DOR, 0x00);
 	motor_on = 0;
 	{
@@ -308,11 +311,11 @@ static int fdc_init_once(void)
 		while ((get_ticks_ms() - t0) < 10)
 			;
 	}
+
+	fdc_irq_fired = 0;
 	outb(FDC_DOR, (unsigned char)(0x0C | current_drive));
 
-	/* Now that the FDC is in a clean state, unmask IRQ 6 at the PIC.
-	 * The reset completion interrupt is latched and fires immediately. */
-	fdc_irq_fired = 0;
+	/* Unmask IRQ 6 — the latched reset-completion interrupt fires now. */
 	outb(PIC1_DATA, inb(PIC1_DATA) & ~0x40);
 
 	if (fdc_wait_irq() != 0)
