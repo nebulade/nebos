@@ -137,7 +137,8 @@ void io_putchar(char c)
 		if (cursor > IO_CONTENT_OFFSET) {
 			hide_cursor_at(cursor);
 			cursor--;
-			cursor_cell = VGA_BASE[cursor];
+			VGA_BASE[cursor] = (unsigned short)((VGA_ATTR << 8) | ' ');  /* erase char on screen */
+			cursor_cell = (unsigned short)((VGA_ATTR << 8) | ' ');
 		}
 		return;
 	}
