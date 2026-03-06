@@ -13,3 +13,4 @@ SECTIONS
 	.bss : { *(.bss .bss.*) *(COMMON) }
 	_end = .;
 }
+ASSERT(_end <= 0x20000, "Kernel too large would overwrite stack/DMA at 0x20000");

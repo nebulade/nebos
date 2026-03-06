@@ -106,7 +106,8 @@ pm_start:
 	movw  %ax, %fs
 	movw  %ax, %gs
 	movw  %ax, %ss
-	movl  $0x10000, %esp
+	/* Stack above DMA buffer 0x20000-0x20200 so DMA does not overwrite stack */
+	movl  $0x20800, %esp
 	movl  $0x7e00, %eax
 	jmp   *%eax
 

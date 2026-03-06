@@ -6,7 +6,7 @@
 #define SECTOR_SIZE       512
 #define SECTORS_PER_TRACK 18
 #define HEADS             2
-#define DMA_BUF_ADDR      0x10000
+#define DMA_BUF_ADDR      0x20000
 
 /* FDC I/O ports */
 #define FDC_DOR   0x3F2
