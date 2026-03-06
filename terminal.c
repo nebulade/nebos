@@ -237,6 +237,12 @@ void terminal_run(void)
 						io_putstr("drive ");
 						io_putchar((char)('0' + disk_get_drive()));
 						io_putstr(" selected\n");
+					} else {
+						unsigned int i = 0;
+						while (i < line_len && line[i] == ' ')
+							i++;
+						if (i < line_len)
+							io_putstr("command not found\n");
 					}
 					line_len  = 0;
 					line_pos  = 0;
