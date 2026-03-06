@@ -69,3 +69,14 @@ void rtc_read_datetime(char *buf)
 	buf[18] = (char)('0' + (s % 10));
 	buf[19] = '\0';
 }
+
+void rtc_read_hms(unsigned int *hour, unsigned int *minute, unsigned int *second)
+{
+	unsigned int n = 0;
+
+	while ((cmos_read(0x0A) & 0x80) && ++n < 10000)
+		;
+	*second = bcd_to_bin(cmos_read(0x00));
+	*minute = bcd_to_bin(cmos_read(0x02));
+	*hour   = bcd_to_bin(cmos_read(0x04));
+}

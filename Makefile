@@ -50,13 +50,19 @@ cat.o: cat.c fat.h io.h
 rtc.o: rtc.c rtc.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+vga.o: vga.c vga.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+clock.o: clock.c io.h rtc.h timer.h vga.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 boot.elf: boot.o
 	$(LD) $(BOOT_LDFLAGS) -o $@ $<
 
 timer.o: timer.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o
+kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o vga.o clock.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -95,4 +101,4 @@ run: image.bin root.img
 	qemu-system-x86_64 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o disk.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img
+	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o disk.o vga.o clock.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img

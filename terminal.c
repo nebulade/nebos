@@ -9,6 +9,7 @@ extern void program_hello_main(void);
 extern void program_reboot_main(void);
 extern void program_ls_main(void);
 extern void program_cat_main(const char *filename);
+extern void program_clock_main(void);
 extern void disk_set_drive(unsigned int drive);
 extern unsigned int disk_get_drive(void);
 
@@ -109,6 +110,22 @@ static int is_cmd_ls(const char *line, unsigned int line_len)
 	if (line[i] != 'l' || line[i+1] != 's')
 		return 0;
 	i += 2;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_clock(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 'c' || line[i+1] != 'l' || line[i+2] != 'o' ||
+	    line[i+3] != 'c' || line[i+4] != 'k')
+		return 0;
+	i += 5;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -226,6 +243,10 @@ void terminal_run(void)
 						program_reboot_main();
 					} else if (is_cmd_ls(line, line_len)) {
 						program_ls_main();
+						io_drain_keyboard();
+						draw_header_row();
+					} else if (is_cmd_clock(line, line_len)) {
+						program_clock_main();
 						io_drain_keyboard();
 						draw_header_row();
 					} else if (is_cmd_cat(line, line_len, cat_fname, CAT_FNAME_MAX)) {

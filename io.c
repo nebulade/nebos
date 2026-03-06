@@ -27,6 +27,7 @@ static void disable_hw_cursor(void)
 
 /* Scancode set 1 (XT) -> ASCII. 0 = ignore. */
 static const unsigned char scancode_to_ascii[256] __attribute__((section(".rodata"))) = {
+	[0x01] = 0x1B,  /* Escape */
 	[0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4', [0x06] = '5',
 	[0x07] = '6', [0x08] = '7', [0x09] = '8', [0x0A] = '9', [0x0B] = '0',
 	[0x0C] = '-', [0x0D] = '=', [0x0E] = '\b', [0x0F] = '\t',
