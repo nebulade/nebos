@@ -191,6 +191,21 @@ static int is_cmd_drive(const char *line, unsigned int line_len, unsigned int *d
 	return (i == line_len);
 }
 
+static int is_cmd_help(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 'h' || line[i+1] != 'e' || line[i+2] != 'l' || line[i+3] != 'p')
+		return 0;
+	i += 4;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 /* Redraw line from index `from` to end, clear one cell after, set cursor to line_pos. */
 static void redraw_line_from(const char *line, unsigned int line_len,
 	unsigned int line_pos, unsigned int line_start, unsigned int from)
@@ -278,6 +293,15 @@ void terminal_run(void)
 						io_putstr("drive ");
 						io_putchar((char)('0' + disk_get_drive()));
 						io_putstr(" selected\n");
+					} else if (is_cmd_help(line, line_len)) {
+						io_putstr("hello\n");
+						io_putstr("reboot\n");
+						io_putstr("ls\n");
+						io_putstr("clock\n");
+						io_putstr("cat <file>\n");
+						io_putstr("display\n");
+						io_putstr("drive <0|1>\n");
+						io_putstr("help\n");
 					} else {
 						unsigned int i = 0;
 						while (i < line_len && line[i] == ' ')
