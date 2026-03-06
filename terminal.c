@@ -157,37 +157,67 @@ static int is_cmd_drive(const char *line, unsigned int line_len, unsigned int *d
 	return (i == line_len);
 }
 
+/* Redraw line from index `from` to end, clear one cell after, set cursor to line_pos. */
+static void redraw_line_from(const char *line, unsigned int line_len,
+	unsigned int line_pos, unsigned int line_start, unsigned int from)
+{
+	unsigned int i;
+	io_set_cursor(line_start + from);
+	for (i = from; i < line_len; i++)
+		io_putchar(line[i]);
+	io_putchar(' ');
+	io_set_cursor(line_start + line_pos);
+}
+
 void terminal_run(void)
 {
 	static char line[LINE_MAX];
 	static unsigned int line_len;
+	static unsigned int line_pos;   /* cursor index in line, 0..line_len */
+	static unsigned int line_start; /* VGA position of first char of line */
 
 	last_cursor_tick   = get_ticks_ms();
 	last_datetime_tick = get_ticks_ms();
 	cursor_visible     = 1;
 	line_len           = 0;
+	line_pos           = 0;
 	line[0]            = '\0';
 
 	io_drain_keyboard();
 	draw_header_row();
 	io_putstr(prompt_first);
+	line_start = io_get_cursor();
 
 	for (;;) {
 		update_datetime();
 		update_cursor_blink();
 		{
-			char c = io_poll_key();
-			if (c) {
-				if (c == '\b') {
-					if (line_len > 0) {
+			int k = io_poll_key();
+			if (k) {
+				if (k == IO_KEY_LEFT) {
+					if (line_pos > 0) {
+						line_pos--;
+						io_set_cursor(line_start + line_pos);
+					}
+				} else if (k == IO_KEY_RIGHT) {
+					if (line_pos < line_len) {
+						line_pos++;
+						io_set_cursor(line_start + line_pos);
+					}
+				} else if (k == '\b') {
+					if (line_pos > 0) {
+						unsigned int i;
+						line_pos--;
+						for (i = line_pos; i < line_len; i++)
+							line[i] = line[i + 1];
 						line_len--;
 						line[line_len] = '\0';
-						io_putchar(c);
+						redraw_line_from(line, line_len, line_pos, line_start, line_pos);
 					}
-				} else if (c == '\n') {
+				} else if (k == '\n') {
 					static char cat_fname[CAT_FNAME_MAX];
 					unsigned int drive_sel;
-					io_putchar(c);
+					io_putchar('\n');
 					if (is_cmd_hello(line, line_len)) {
 						program_hello_main();
 						io_drain_keyboard();
@@ -208,20 +238,27 @@ void terminal_run(void)
 						io_putchar((char)('0' + disk_get_drive()));
 						io_putstr(" selected\n");
 					}
-					line_len = 0;
-					line[0]  = '\0';
+					line_len  = 0;
+					line_pos  = 0;
+					line[0]   = '\0';
 					io_putstr(prompt);
+					line_start = io_get_cursor();
 					if (io_did_scroll())
 						redraw_datetime();
 				} else {
 					{
-						unsigned char u = (unsigned char)c;
+						unsigned char u = (unsigned char)k;
 						if (u >= 0x20 && u < 0x7F && line_len < LINE_MAX - 1) {
-							line[line_len++] = c;
-							line[line_len]   = '\0';
+							unsigned int i;
+							for (i = line_len; i > line_pos; i--)
+								line[i] = line[i - 1];
+							line[line_pos] = (char)k;
+							line_len++;
+							line[line_len] = '\0';
+							line_pos++;
+							redraw_line_from(line, line_len, line_pos, line_start, line_pos - 1);
 						}
 					}
-					io_putchar(c);
 				}
 			} else {
 				__asm__ volatile ("hlt");

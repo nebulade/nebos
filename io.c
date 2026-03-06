@@ -46,6 +46,7 @@ static unsigned int cursor;
 static unsigned short cursor_cell;
 static unsigned char last_scancode;
 static int scroll_occurred;
+static int kbd_extended;  /* 1 after 0xE0, next byte is extended scancode */
 
 #define KBD_BUF_SIZE 16
 static volatile unsigned char kbd_buf[KBD_BUF_SIZE];
@@ -159,6 +160,15 @@ unsigned int io_get_cursor(void)
 	return cursor;
 }
 
+void io_set_cursor(unsigned int pos)
+{
+	if (pos >= IO_VGA_ROWS * IO_VGA_COLS)
+		return;
+	hide_cursor_at(cursor);
+	cursor = pos;
+	cursor_cell = VGA_BASE[cursor];
+}
+
 #define CURSOR_BLOCK ((unsigned short)((VGA_ATTR << 8) | 0xDB))
 
 void io_cursor_show_block(void)
@@ -181,13 +191,26 @@ void io_drain_keyboard(void)
 	while (inb(KB_STATUS) & 1)
 		(void)inb(KB_DATA);
 	kbd_head = kbd_tail = 0;
+	kbd_extended = 0;
 }
 
-char io_poll_key(void)
+int io_poll_key(void)
 {
 	unsigned char sc;
 	if (!kbd_buf_get(&sc))
 		return 0;
+	if (sc == 0xE0) {
+		kbd_extended = 1;
+		return 0;
+	}
+	if (kbd_extended) {
+		kbd_extended = 0;
+		if (sc & 0x80)
+			return 0;  /* key release */
+		if (sc == 0x4B) return IO_KEY_LEFT;
+		if (sc == 0x4D) return IO_KEY_RIGHT;
+		return 0;
+	}
 	if (sc & 0x80) {
 		if (sc == 0xAA || sc == 0xB6) shift_pressed = 0;
 		return 0;
@@ -200,7 +223,7 @@ char io_poll_key(void)
 		char c = (char)scancode_to_ascii[sc];
 		if (c) {
 			last_scancode = sc;
-			return apply_shift(c);
+			return (unsigned char)apply_shift(c);
 		}
 	}
 	return 0;
