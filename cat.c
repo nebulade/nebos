@@ -44,8 +44,13 @@ void program_cat_main(const char *filename)
 		return;
 	}
 	to_8_3(filename, 64, name_8_3);
-	if (fat_init() != 0) {
-		io_putstr("cat: fat init failed\n");
+	n = fat_init();
+	if (n == -2) {
+		io_putstr("cat: disk read error\n");
+		return;
+	}
+	if (n != 0) {
+		io_putstr("cat: no FAT filesystem found\n");
 		return;
 	}
 	n = fat_read_file(name_8_3, buf, DUMP_BUF_SIZE);

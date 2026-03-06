@@ -7,7 +7,7 @@
 typedef void (*fat_root_callback_t)(const char *name, int is_dir, unsigned int size);
 
 /* Parse BPB from sector 0. Call once before list/read.
- * Returns 0 on success, -1 on error. */
+ * Returns 0 on success, -1 if no valid FAT filesystem, -2 on disk I/O error. */
 int fat_init(void);
 
 /* Iterate root directory, call callback for each file/dir.

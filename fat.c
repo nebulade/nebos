@@ -14,6 +14,7 @@
 #define BPB_NUM_FATS        0x10
 #define BPB_ROOT_ENTRIES    0x11
 #define BPB_SEC_PER_FAT     0x16
+#define BPB_SIGNATURE       0x1FE   /* 0x55 0xAA at end of boot sector */
 
 static unsigned int fat_reserved;
 static unsigned int fat_root_start;
@@ -49,7 +50,9 @@ int fat_init(void)
 	unsigned int num_fats, root_entries, sec_per_fat;
 
 	if (fat_read_sector(0) != 0)
-		return -1;
+		return -2;  /* disk I/O error */
+	if (sector_buf[BPB_SIGNATURE] != 0x55 || sector_buf[BPB_SIGNATURE + 1] != 0xAA)
+		return -1;  /* no valid FAT filesystem */
 	fat_reserved = (unsigned int)sector_buf[BPB_RESERVED] | ((unsigned int)sector_buf[BPB_RESERVED + 1] << 8);
 	num_fats = sector_buf[BPB_NUM_FATS];
 	root_entries = (unsigned int)sector_buf[BPB_ROOT_ENTRIES] | ((unsigned int)sector_buf[BPB_ROOT_ENTRIES + 1] << 8);

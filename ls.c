@@ -38,8 +38,13 @@ void program_ls_main(void)
 {
 	int r;
 
-	if (fat_init() != 0) {
-		io_putstr("ls: fat init failed\n");
+	r = fat_init();
+	if (r == -2) {
+		io_putstr("ls: disk read error\n");
+		return;
+	}
+	if (r != 0) {
+		io_putstr("ls: no FAT filesystem found\n");
 		return;
 	}
 	r = fat_list_root(list_cb);
