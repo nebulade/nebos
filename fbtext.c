@@ -142,8 +142,8 @@ void fbtext_set_cursor(unsigned int col, unsigned int row)
 	fbtext_cur_row = row;
 }
 
-/* Cursor matches glyph height: font 'I' and caps use rows 0–7, rest is baseline padding. */
-#define CURSOR_W  8
+/* Slim vertical line cursor: 2px wide, full cell height. */
+#define CURSOR_W  2
 #define CURSOR_H  8
 
 void fbtext_show_cursor(void)
@@ -156,10 +156,36 @@ void fbtext_show_cursor(void)
 	if (!fbtext_use_lfb)
 		return;
 	fbtext_cursor_visible = 1;
-	attr_to_rgb(0x0F, 1, &r, &g, &b); /* white block */
+	attr_to_rgb(0x0F, 1, &r, &g, &b); /* white line */
 	for (y = 0; y < CURSOR_H; y++)
 		for (x = 0; x < CURSOR_W; x++)
 			vga_put_pixel_rgb(x0 + x, y0 + y, r, g, b);
+}
+
+/* Redraw only the cursor region (CURSOR_W x CURSOR_H) so the line is restored. */
+static void draw_glyph_cursor_region(unsigned int col, unsigned int row, unsigned char c, unsigned char attr)
+{
+	unsigned int x0 = col * 8;
+	unsigned int y0 = row * 16;
+	unsigned int r_fg, g_fg, b_fg, r_bg, g_bg, b_bg;
+	unsigned int x, y;
+	const unsigned char *glyph;
+
+	attr_to_rgb(attr, 1, &r_fg, &g_fg, &b_fg);
+	attr_to_rgb(attr, 0, &r_bg, &g_bg, &b_bg);
+
+	glyph = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
+	for (y = 0; y < CURSOR_H; y++) {
+		unsigned char row_bits = glyph[y];
+		for (x = 0; x < CURSOR_W; x++) {
+			unsigned int px = x0 + x;
+			unsigned int py = y0 + y;
+			if (row_bits & (0x80u >> x))
+				vga_put_pixel_rgb(px, py, r_fg, g_fg, b_fg);
+			else
+				vga_put_pixel_rgb(px, py, r_bg, g_bg, b_bg);
+		}
+	}
 }
 
 void fbtext_hide_cursor(unsigned char c, unsigned char attr)
@@ -168,6 +194,6 @@ void fbtext_hide_cursor(unsigned char c, unsigned char attr)
 		return;
 	if (fbtext_cursor_visible) {
 		fbtext_cursor_visible = 0;
-		draw_glyph(fbtext_cur_col, fbtext_cur_row, c, attr);
+		draw_glyph_cursor_region(fbtext_cur_col, fbtext_cur_row, c, attr);
 	}
 }
