@@ -32,6 +32,9 @@ terminal.o: terminal.c terminal.h io.h rtc.h timer.h disk.h
 hello.o: hello.c io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+reboot.o: reboot.c
+	$(CC) $(CFLAGS) -o $@ $<
+
 disk.o: disk.c disk.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -53,7 +56,7 @@ boot.elf: boot.o
 timer.o: timer.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o disk.o fat.o ls.o cat.o
+kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -92,4 +95,4 @@ run: image.bin root.img
 	qemu-system-x86_64 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o fat.o ls.o cat.o disk.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img
+	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o disk.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img

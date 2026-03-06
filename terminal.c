@@ -6,6 +6,7 @@
 #include "timer.h"
 
 extern void program_hello_main(void);
+extern void program_reboot_main(void);
 extern void program_ls_main(void);
 extern void program_cat_main(const char *filename);
 extern void disk_set_drive(unsigned int drive);
@@ -78,6 +79,21 @@ static int is_cmd_hello(const char *line, unsigned int line_len)
 	if (line[i] != 'h' || line[i+1] != 'e' || line[i+2] != 'l' || line[i+3] != 'l' || line[i+4] != 'o')
 		return 0;
 	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_reboot(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 6 > line_len)
+		return 0;
+	if (line[i] != 'r' || line[i+1] != 'e' || line[i+2] != 'b' || line[i+3] != 'o' || line[i+4] != 'o' || line[i+5] != 't')
+		return 0;
+	i += 6;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -176,6 +192,8 @@ void terminal_run(void)
 						program_hello_main();
 						io_drain_keyboard();
 						draw_header_row();
+					} else if (is_cmd_reboot(line, line_len)) {
+						program_reboot_main();
 					} else if (is_cmd_ls(line, line_len)) {
 						program_ls_main();
 						io_drain_keyboard();
