@@ -206,6 +206,22 @@ static int is_cmd_help(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
+static int is_cmd_clear(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 'c' || line[i+1] != 'l' || line[i+2] != 'e' ||
+	    line[i+3] != 'a' || line[i+4] != 'r')
+		return 0;
+	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 /* Redraw line from index `from` to end, clear one cell after, set cursor to line_pos. */
 static void redraw_line_from(const char *line, unsigned int line_len,
 	unsigned int line_pos, unsigned int line_start, unsigned int from)
@@ -266,6 +282,7 @@ void terminal_run(void)
 				} else if (k == '\n') {
 					static char cat_fname[CAT_FNAME_MAX];
 					unsigned int drive_sel;
+					int skip_prompt = 0;
 					io_putchar('\n');
 					if (is_cmd_hello(line, line_len)) {
 						program_hello_main();
@@ -302,6 +319,14 @@ void terminal_run(void)
 						io_putstr("display\n");
 						io_putstr("drive <0|1>\n");
 						io_putstr("help\n");
+						io_putstr("clear\n");
+					} else if (is_cmd_clear(line, line_len)) {
+						io_clear_screen();
+						draw_header_row();
+						io_set_cursor(IO_CONTENT_OFFSET);
+						io_putstr(prompt_first);
+						line_start = io_get_cursor();
+						skip_prompt = 1;
 					} else {
 						unsigned int i = 0;
 						while (i < line_len && line[i] == ' ')
@@ -312,8 +337,10 @@ void terminal_run(void)
 					line_len  = 0;
 					line_pos  = 0;
 					line[0]   = '\0';
-					io_putstr(prompt);
-					line_start = io_get_cursor();
+					if (!skip_prompt) {
+						io_putstr(prompt);
+						line_start = io_get_cursor();
+					}
 					if (io_did_scroll())
 						redraw_datetime();
 				} else {
