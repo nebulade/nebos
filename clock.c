@@ -1,11 +1,11 @@
-/* clock command: analog clock in VESA LFB (or mode 13h fallback). Press ESC to return. */
+/* clock command: analog clock in VESA LFB. Press ESC to return. */
 
 #include "io.h"
 #include "rtc.h"
 #include "timer.h"
 #include "vga.h"
 
-/* VGA palette index to RGB (for LFB). 0=black, 7=gray, 12=light red, 15=white */
+/* Palette index to RGB. 0=black, 7=gray, 12=light red, 15=white */
 static const unsigned int pal_r[16] = { 0, 0, 0, 0, 170, 170, 170, 170, 85, 85, 85, 85, 255, 255, 255, 255 };
 static const unsigned int pal_g[16] = { 0, 0, 170, 170, 0, 0, 85, 170, 85, 85, 255, 255, 85, 85, 255, 255 };
 static const unsigned int pal_b[16] = { 0, 170, 0, 170, 0, 170, 0, 170, 85, 255, 85, 255, 85, 255, 85, 255 };
@@ -38,24 +38,17 @@ static const signed char tab_y[60] = {
 	-47,-51,-55,-59,-62,-63
 };
 
-static int clock_use_vesa;
 static unsigned int clock_cx, clock_cy, clock_radius, clock_rad_hour, clock_rad_min, clock_rad_sec, clock_tick_len;
 
 static void put_pixel(int x, int y, unsigned char color)
 {
-	if (clock_use_vesa)
-		vga_put_pixel_rgb((unsigned int)x, (unsigned int)y,
-			pal_r[color], pal_g[color], pal_b[color]);
-	else
-		vga_put_pixel(x, y, color);
+	vga_put_pixel_rgb((unsigned int)x, (unsigned int)y,
+		pal_r[color], pal_g[color], pal_b[color]);
 }
 
 static void clear_screen(unsigned char color)
 {
-	if (clock_use_vesa)
-		vga_clear_rgb(pal_r[color], pal_g[color], pal_b[color]);
-	else
-		vga_clear(color);
+	vga_clear_rgb(pal_r[color], pal_g[color], pal_b[color]);
 }
 
 static void draw_line(int x0, int y0, int x1, int y1, unsigned char color)
@@ -162,31 +155,19 @@ void program_clock_main(void)
 	unsigned int tick;
 	unsigned int w, h_;
 
-	clock_use_vesa = vga_has_vesa();
-	if (clock_use_vesa) {
-		w = vga_fb_width();
-		h_ = vga_fb_height();
-		clock_cx = w / 2;
-		clock_cy = h_ / 2;
-		clock_radius = (w < h_) ? (w / 2) : (h_ / 2);
-		if (clock_radius > 200)
-			clock_radius = 200;
-		clock_rad_hour = clock_radius / 2;
-		clock_rad_min = clock_radius * 7 / 10;
-		clock_rad_sec = clock_radius * 9 / 10;
-		clock_tick_len = clock_radius / 13;
-		if (clock_tick_len < 2)
-			clock_tick_len = 2;
-	} else {
-		vga_set_mode_13();
-		clock_cx = 160;
-		clock_cy = 100;
-		clock_radius = 80;
-		clock_rad_hour = 40;
-		clock_rad_min = 56;
-		clock_rad_sec = 72;
-		clock_tick_len = 6;
-	}
+	w = vga_fb_width();
+	h_ = vga_fb_height();
+	clock_cx = w / 2;
+	clock_cy = h_ / 2;
+	clock_radius = (w < h_) ? (w / 2) : (h_ / 2);
+	if (clock_radius > 200)
+		clock_radius = 200;
+	clock_rad_hour = clock_radius / 2;
+	clock_rad_min = clock_radius * 7 / 10;
+	clock_rad_sec = clock_radius * 9 / 10;
+	clock_tick_len = clock_radius / 13;
+	if (clock_tick_len < 2)
+		clock_tick_len = 2;
 
 	clear_screen(COL_BG);
 	io_drain_keyboard();
@@ -209,8 +190,4 @@ void program_clock_main(void)
 			__asm__ volatile ("hlt");
 	}
 
-	if (!clock_use_vesa) {
-		vga_set_mode_text();
-		io_clear_screen();
-	}
 }

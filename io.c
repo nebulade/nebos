@@ -1,9 +1,8 @@
-/* I/O library: VGA text output and PS/2 keyboard. */
+/* I/O library: framebuffer text output and PS/2 keyboard. */
 
 #include "io.h"
 #include "fbtext.h"
 
-#define VGA_BASE ((volatile unsigned short *)0xB8000)
 #define VGA_ATTR 0x0A
 
 static unsigned int io_cols = 80;
@@ -21,12 +20,6 @@ static inline unsigned char inb(unsigned short port)
 static inline void outb(unsigned short port, unsigned char v)
 {
 	__asm__ volatile ("outb %0, %1" : : "a"(v), "Nd"(port));
-}
-
-static void disable_hw_cursor(void)
-{
-	outb(0x3D4, 0x0A);
-	outb(0x3D5, 0x20);
 }
 
 /* Scancode set 1 (XT) -> ASCII. 0 = ignore. */
@@ -95,14 +88,10 @@ static char apply_shift(char c)
 
 static void hide_cursor_at(unsigned int pos)
 {
-	if (fbtext_active()) {
-		unsigned int col = pos % io_cols;
-		unsigned int row = pos / io_cols;
-		fbtext_set_cursor(col, row);
-		fbtext_hide_cursor((unsigned char)(cursor_cell & 0xFF), (unsigned char)(cursor_cell >> 8));
-	} else {
-		VGA_BASE[pos] = cursor_cell;
-	}
+	unsigned int col = pos % io_cols;
+	unsigned int row = pos / io_cols;
+	fbtext_set_cursor(col, row);
+	fbtext_hide_cursor((unsigned char)(cursor_cell & 0xFF), (unsigned char)(cursor_cell >> 8));
 }
 
 unsigned int io_get_cols(void)
@@ -118,14 +107,8 @@ unsigned int io_get_rows(void)
 void io_init(void)
 {
 	fbtext_init();
-	if (fbtext_active()) {
-		io_cols = fbtext_get_cols();
-		io_rows = fbtext_get_rows();
-	} else {
-		io_cols = 80;
-		io_rows = 25;
-		disable_hw_cursor();
-	}
+	io_cols = fbtext_get_cols();
+	io_rows = fbtext_get_rows();
 	io_clear_screen();
 	cursor = IO_CONTENT_OFFSET;
 	cursor_cell = (unsigned short)(VGA_ATTR << 8);
@@ -134,15 +117,7 @@ void io_init(void)
 
 void io_clear_screen(void)
 {
-	if (fbtext_active()) {
-		fbtext_clear();
-		return;
-	}
-	{
-		unsigned int i;
-		for (i = 0; i < io_rows * io_cols; i++)
-			VGA_BASE[i] = (unsigned short)(VGA_ATTR << 8);
-	}
+	fbtext_clear();
 }
 
 int io_did_scroll(void)
@@ -163,16 +138,8 @@ void io_putchar(char c)
 		hide_cursor_at(cursor);
 		cursor = (cursor / ncols + 1) * ncols;
 		if (cursor >= content_off + content_size) {
-			if (fbtext_active()) {
-				fbtext_scroll_up_one_line();
-			} else {
-				unsigned int i;
-				for (i = 0; i < (io_rows - 2) * ncols; i++)
-					VGA_BASE[content_off + i] = VGA_BASE[content_off + i + ncols];
-				for (i = (io_rows - 2) * ncols; i < content_size; i++)
-					VGA_BASE[content_off + i] = (unsigned short)(VGA_ATTR << 8);
-			}
-			cursor = content_off + (io_rows - 2) * ncols; /* first cell of last content row */
+			fbtext_scroll_up_one_line();
+			cursor = content_off + (io_rows - 2) * ncols;
 			scroll_occurred = 1;
 		}
 		cursor_cell = (unsigned short)(VGA_ATTR << 8);
@@ -182,24 +149,20 @@ void io_putchar(char c)
 		if (cursor > content_off) {
 			hide_cursor_at(cursor);
 			cursor--;
-			if (fbtext_active()) {
+			{
 				unsigned int col = cursor % ncols;
 				unsigned int row = cursor / ncols;
 				fbtext_put_char_at(col, row, ' ', VGA_ATTR);
-			} else {
-				VGA_BASE[cursor] = (unsigned short)((VGA_ATTR << 8) | ' ');
 			}
 			cursor_cell = (unsigned short)((VGA_ATTR << 8) | ' ');
 		}
 		return;
 	}
 	if (cursor < content_off + content_size) {
-		if (fbtext_active()) {
+		{
 			unsigned int col = cursor % ncols;
 			unsigned int row = cursor / ncols;
 			fbtext_put_char_at(col, row, (unsigned char)c, VGA_ATTR);
-		} else {
-			VGA_BASE[cursor] = (unsigned short)((VGA_ATTR << 8) | (unsigned char)c);
 		}
 		cursor++;
 		cursor_cell = (unsigned short)(VGA_ATTR << 8);
@@ -222,41 +185,26 @@ void io_set_cursor(unsigned int pos)
 		return;
 	hide_cursor_at(cursor);
 	cursor = pos;
-	if (fbtext_active())
-		cursor_cell = (unsigned short)(VGA_ATTR << 8);
-	else
-		cursor_cell = VGA_BASE[cursor];
-	if (fbtext_active())
-		fbtext_set_cursor(cursor % io_cols, cursor / io_cols);
+	cursor_cell = (unsigned short)(VGA_ATTR << 8);
+	fbtext_set_cursor(cursor % io_cols, cursor / io_cols);
 }
 
 void io_cursor_show_block(void)
 {
-	if (fbtext_active()) {
-		fbtext_set_cursor(cursor % io_cols, cursor / io_cols);
-		fbtext_show_cursor();
-	} else {
-		VGA_BASE[cursor] = (unsigned short)((VGA_ATTR << 8) | 0xDB);
-	}
+	fbtext_set_cursor(cursor % io_cols, cursor / io_cols);
+	fbtext_show_cursor();
 }
 
 void io_cursor_hide_block(void)
 {
-	if (fbtext_active())
-		fbtext_hide_cursor((unsigned char)(cursor_cell & 0xFF), (unsigned char)(cursor_cell >> 8));
-	else
-		VGA_BASE[cursor] = cursor_cell;
+	fbtext_hide_cursor((unsigned char)(cursor_cell & 0xFF), (unsigned char)(cursor_cell >> 8));
 }
 
 void io_vga_write(unsigned int pos, unsigned short value)
 {
-	if (fbtext_active()) {
-		unsigned int col = pos % io_cols;
-		unsigned int row = pos / io_cols;
-		fbtext_put_char_at(col, row, (unsigned char)(value & 0xFF), (unsigned char)(value >> 8));
-	} else {
-		VGA_BASE[pos] = value;
-	}
+	unsigned int col = pos % io_cols;
+	unsigned int row = pos / io_cols;
+	fbtext_put_char_at(col, row, (unsigned char)(value & 0xFF), (unsigned char)(value >> 8));
 }
 
 void io_drain_keyboard(void)

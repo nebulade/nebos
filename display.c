@@ -44,33 +44,23 @@ static void put_hex(unsigned int n)
 
 void program_display_main(void)
 {
-	if (vga_has_vesa()) {
-		io_putstr("resolution ");
-		put_uint(vga_fb_width());
-		io_putstr(" x ");
-		put_uint(vga_fb_height());
-		io_putchar('\n');
-		io_putstr("color depth ");
-		put_uint(vga_fb_bpp());
-		io_putstr(" bpp\n");
-		io_putstr("pitch ");
-		put_uint(vga_fb_pitch());
-		io_putstr(" bytes/line\n");
-		io_putstr("LFB ");
-		put_hex((unsigned int)(unsigned long)vga_fb_ptr());
-		io_putchar('\n');
-		if (fbtext_active()) {
-			io_putstr("text ");
-			put_uint(fbtext_get_cols());
-			io_putstr(" x ");
-			put_uint(fbtext_get_rows());
-			io_putstr(" chars\n");
-		}
-	} else {
-		io_putstr("VESA not available; VGA text ");
-		put_uint(io_get_cols());
-		io_putstr(" x ");
-		put_uint(io_get_rows());
-		io_putstr(" chars\n");
-	}
+	io_putstr("resolution ");
+	put_uint(vga_fb_width());
+	io_putstr(" x ");
+	put_uint(vga_fb_height());
+	io_putchar('\n');
+	io_putstr("color depth ");
+	put_uint(vga_fb_bpp());
+	io_putstr(" bpp\n");
+	io_putstr("pitch ");
+	put_uint(vga_fb_pitch());
+	io_putstr(" bytes/line\n");
+	io_putstr("LFB ");
+	put_hex((unsigned int)(unsigned long)vga_fb_ptr());
+	io_putchar('\n');
+	io_putstr("text ");
+	put_uint(fbtext_get_cols());
+	io_putstr(" x ");
+	put_uint(fbtext_get_rows());
+	io_putstr(" chars\n");
 }

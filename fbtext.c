@@ -50,12 +50,6 @@ static void attr_to_rgb(unsigned char attr, int fg, unsigned int *r, unsigned in
 
 void fbtext_init(void)
 {
-	if (!vga_has_vesa()) {
-		fbtext_use_lfb = 0;
-		fbtext_cols = 80;
-		fbtext_rows = 25;
-		return;
-	}
 	fbtext_use_lfb = 1;
 	fbtext_cols = vga_fb_width() / 8;
 	{
@@ -86,8 +80,6 @@ unsigned int fbtext_get_rows(void)
 
 void fbtext_clear(void)
 {
-	if (!fbtext_use_lfb)
-		return;
 	vga_clear_rgb(0, 0, 0);
 }
 
@@ -118,8 +110,6 @@ static void draw_glyph(unsigned int col, unsigned int row, unsigned char c, unsi
 
 void fbtext_put_char_at(unsigned int col, unsigned int row, unsigned char c, unsigned char attr)
 {
-	if (!fbtext_use_lfb)
-		return;
 	if (col >= fbtext_cols || row >= fbtext_rows)
 		return;
 	draw_glyph(col, row, c, attr);
@@ -132,7 +122,7 @@ void fbtext_scroll_up_one_line(void)
 	volatile unsigned char *fb = (volatile unsigned char *)vga_fb_ptr();
 	unsigned int height = vga_fb_height();
 
-	if (!fbtext_use_lfb || !fb)
+	if (!fb)
 		return;
 	if (height <= CONTENT_TOP + ROW_HEIGHT)
 		return;
@@ -169,8 +159,6 @@ void fbtext_show_cursor(void)
 	unsigned int x, y;
 	unsigned int r, g, b;
 
-	if (!fbtext_use_lfb)
-		return;
 	fbtext_cursor_visible = 1;
 	attr_to_rgb(0x0F, 1, &r, &g, &b); /* white line */
 	for (y = 0; y < CURSOR_H; y++)
@@ -206,8 +194,6 @@ static void draw_glyph_cursor_region(unsigned int col, unsigned int row, unsigne
 
 void fbtext_hide_cursor(unsigned char c, unsigned char attr)
 {
-	if (!fbtext_use_lfb)
-		return;
 	if (fbtext_cursor_visible) {
 		fbtext_cursor_visible = 0;
 		draw_glyph_cursor_region(fbtext_cur_col, fbtext_cur_row, c, attr);
@@ -246,7 +232,7 @@ void fbtext_draw_rainbow_separator(void)
 	unsigned int x, y;
 	unsigned int r, g, b;
 
-	if (!fbtext_use_lfb || w == 0)
+	if (w == 0)
 		return;
 	for (y = 0; y < RAINBOW_LINE_HEIGHT; y++) {
 		unsigned int py = RAINBOW_TOP + y;

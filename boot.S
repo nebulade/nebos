@@ -48,10 +48,7 @@ loader_start:
 	subw  $1, %cx		/* 0x11C -> 0x11B -> 0x118 -> 0x114 */
 	jmp   1b
 vesa_fail:
-	xorw  %ax, %ax
-	movw  $0x600, %bx
-	movb  %al, (%bx)	/* valid = 0 */
-	jmp   load_kernel
+	jmp   halt
 vesa_ok:
 	movw  $0x6000, %di	/* Reload: int 0x10/4F02 may trash DI */
 	movw  $0x600, %bx
