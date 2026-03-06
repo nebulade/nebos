@@ -26,10 +26,10 @@ kernel.o: kernel.c io.h terminal.h timer.h
 io.o: io.c io.h fbtext.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-font_8x16.o: font_8x16.c font_8x16.h
+font_8x8.o: font_8x8.c font_8x8.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-fbtext.o: fbtext.c fbtext.h font_8x16.h vga.h
+fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 terminal.o: terminal.c terminal.h io.h fbtext.h rtc.h timer.h disk.h
@@ -71,7 +71,7 @@ boot.elf: boot.o
 timer.o: timer.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o vga.o font_8x16.o fbtext.o clock.o display.o
+kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o vga.o font_8x8.o fbtext.o clock.o display.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -110,4 +110,4 @@ run: image.bin root.img
 	qemu-system-x86_64 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o disk.o vga.o font_8x16.o fbtext.o clock.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img
+	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o disk.o vga.o font_8x8.o fbtext.o clock.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img

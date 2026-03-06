@@ -1,7 +1,7 @@
-/* Framebuffer text: draw 8x16 characters into VESA LFB. */
+/* Framebuffer text: draw 8x8 characters into VESA LFB. */
 
 #include "fbtext.h"
-#include "font_8x16.h"
+#include "font_8x8.h"
 #include "vga.h"
 
 static int fbtext_use_lfb;
@@ -14,7 +14,7 @@ static int fbtext_cursor_visible;
 #define RAINBOW_TOP   18   /* 5px below header text; line at y 18..19 */
 #define CONTENT_TOP   25   /* 5px below rainbow; first content row at y 25..34 */
 
-#define ROW_HEIGHT    10   /* drawn height per line (top 10 rows of 8x16 font); avoids clearing rainbow */
+#define ROW_HEIGHT    10   /* drawn height per line (8x8 glyph + 2 line spacing); avoids clearing rainbow */
 
 static inline unsigned int row_to_y0(unsigned int row)
 {
@@ -102,9 +102,9 @@ static void draw_glyph(unsigned int col, unsigned int row, unsigned char c, unsi
 	attr_to_rgb(attr, 1, &r_fg, &g_fg, &b_fg);
 	attr_to_rgb(attr, 0, &r_bg, &g_bg, &b_bg);
 
-	glyph = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
+	glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
 	for (y = 0; y < ROW_HEIGHT; y++) {
-		unsigned char row_bits = glyph[y];
+		unsigned char row_bits = (y < FONT_8X8_ROWS) ? glyph[y] : 0;
 		for (x = 0; x < 8; x++) {
 			unsigned int px = x0 + x;
 			unsigned int py = y0 + y;
@@ -190,9 +190,9 @@ static void draw_glyph_cursor_region(unsigned int col, unsigned int row, unsigne
 	attr_to_rgb(attr, 1, &r_fg, &g_fg, &b_fg);
 	attr_to_rgb(attr, 0, &r_bg, &g_bg, &b_bg);
 
-	glyph = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
+	glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
 	for (y = 0; y < ROW_HEIGHT && y < CURSOR_H; y++) {
-		unsigned char row_bits = glyph[y];
+		unsigned char row_bits = (y < FONT_8X8_ROWS) ? glyph[y] : 0;
 		for (x = 0; x < CURSOR_W; x++) {
 			unsigned int px = x0 + x;
 			unsigned int py = y0 + y;
