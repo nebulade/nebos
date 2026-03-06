@@ -10,6 +10,7 @@ extern void program_reboot_main(void);
 extern void program_ls_main(void);
 extern void program_cat_main(const char *filename);
 extern void program_clock_main(void);
+extern void program_display_main(void);
 extern void disk_set_drive(unsigned int drive);
 extern unsigned int disk_get_drive(void);
 
@@ -126,6 +127,22 @@ static int is_cmd_clock(const char *line, unsigned int line_len)
 	    line[i+3] != 'c' || line[i+4] != 'k')
 		return 0;
 	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_display(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 'd' || line[i+1] != 'i' || line[i+2] != 's' || line[i+3] != 'p' ||
+	    line[i+4] != 'l' || line[i+5] != 'a' || line[i+6] != 'y')
+		return 0;
+	i += 7;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -254,6 +271,8 @@ void terminal_run(void)
 						program_cat_main(cat_fname);
 						io_drain_keyboard();
 						draw_header_row();
+					} else if (is_cmd_display(line, line_len)) {
+						program_display_main();
 					} else if (is_cmd_drive(line, line_len, &drive_sel)) {
 						disk_set_drive(drive_sel);
 						io_putstr("drive ");
