@@ -142,6 +142,10 @@ void fbtext_set_cursor(unsigned int col, unsigned int row)
 	fbtext_cur_row = row;
 }
 
+/* Cursor matches glyph height: font 'I' and caps use rows 0–7, rest is baseline padding. */
+#define CURSOR_W  8
+#define CURSOR_H  8
+
 void fbtext_show_cursor(void)
 {
 	unsigned int x0 = fbtext_cur_col * 8;
@@ -153,8 +157,8 @@ void fbtext_show_cursor(void)
 		return;
 	fbtext_cursor_visible = 1;
 	attr_to_rgb(0x0F, 1, &r, &g, &b); /* white block */
-	for (y = 0; y < 16; y++)
-		for (x = 0; x < 8; x++)
+	for (y = 0; y < CURSOR_H; y++)
+		for (x = 0; x < CURSOR_W; x++)
 			vga_put_pixel_rgb(x0 + x, y0 + y, r, g, b);
 }
 
