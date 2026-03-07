@@ -1,6 +1,6 @@
 /* Example user program: draws "omg!" centered, runs until ESC. Uses kernel API at PROGRAM_API_ADDR. */
 
-#include "prog_api.h"
+#include "run_api.h"
 
 /* Character cell size used by fbtext (8px wide, 10px row height). */
 #define CHAR_WIDTH  8

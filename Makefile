@@ -53,7 +53,7 @@ ls.o: ls.c fat.h io.h
 cat.o: cat.c fat.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-run.o: run.c fat.h io.h fbtext.h prog_api.h timer.h vga.h
+run.o: run.c fat.h io.h fbtext.h run_api.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 rtc.o: rtc.c rtc.h
@@ -108,7 +108,7 @@ final.bin: boot.bin kernel.bin
 	cat boot.bin.patched kernel.bin > $@; \
 	rm -f boot.bin.patched
 
-prog.o: prog.c prog_api.h
+prog.o: prog.c run_api.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 prog.elf: prog.o
@@ -117,7 +117,7 @@ prog.elf: prog.o
 prog.bin: prog.elf
 	$(OBJCOPY) -O binary $< $@
 
-space.o: space.c prog_api.h
+space.o: space.c run_api.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 space.elf: space.o

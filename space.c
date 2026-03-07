@@ -1,6 +1,6 @@
 /* Simple Space Invaders: pixel graphics, keyboard input. Uses kernel API at PROGRAM_API_ADDR. */
 
-#include "prog_api.h"
+#include "run_api.h"
 
 #define INV_ROWS      5
 #define INV_COLS      10
