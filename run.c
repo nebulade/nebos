@@ -4,6 +4,8 @@
 #include "fbtext.h"
 #include "io.h"
 #include "prog_api.h"
+#include "timer.h"
+#include "vga.h"
 
 #define PROGRAM_LOAD_ADDR 0x21000
 #define PROGRAM_LOAD_MAX  0x10000
@@ -69,6 +71,12 @@ void program_run_main(const char *filename)
 			.get_cols       = fbtext_get_cols,
 			.get_rows       = fbtext_get_rows,
 			.poll_key       = io_poll_key,
+			.poll_key_with_hw = io_poll_key_with_hw,
+			.get_fb_width   = vga_fb_width,
+			.get_fb_height  = vga_fb_height,
+			.clear_rgb      = vga_clear_rgb,
+			.put_pixel_rgb  = vga_put_pixel_rgb,
+			.get_ticks_ms   = get_ticks_ms,
 		};
 		*(struct prog_api *)PROGRAM_API_ADDR = api;
 	}

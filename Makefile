@@ -53,7 +53,7 @@ ls.o: ls.c fat.h io.h
 cat.o: cat.c fat.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-run.o: run.c fat.h io.h fbtext.h prog_api.h
+run.o: run.c fat.h io.h fbtext.h prog_api.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 rtc.o: rtc.c rtc.h
@@ -117,16 +117,26 @@ prog.elf: prog.o
 prog.bin: prog.elf
 	$(OBJCOPY) -O binary $< $@
 
-root.img: prog.bin
+space.o: space.c prog_api.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+space.elf: space.o
+	$(LD) -T user.ld -nostdlib -m elf_i386 -o $@ $<
+
+space.bin: space.elf
+	$(OBJCOPY) -O binary $< $@
+
+root.img: prog.bin space.bin
 	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
 	mkfs.fat -F 12 -n "ROOTDISK" $@
 	echo "Hello from the second floppy!" | mcopy -i $@ - ::HELLO.TXT
 	echo "This is a test file on drive 1." | mcopy -i $@ - ::TEST.TXT
 	mcopy -i $@ prog.bin ::PROG.BIN
+	mcopy -i $@ space.bin ::SPACE.BIN
 
 run: image.bin root.img
 	qemu-system-i386 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
 	qemu-system-x86_64 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img prog.o prog.elf prog.bin
+	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin

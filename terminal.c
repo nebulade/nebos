@@ -168,6 +168,22 @@ static int is_cmd_display(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
+static int is_cmd_space(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 's' || line[i+1] != 'p' || line[i+2] != 'a' ||
+	    line[i+3] != 'c' || line[i+4] != 'e')
+		return 0;
+	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 #define CAT_FNAME_MAX 64
 static int is_cmd_cat(const char *line, unsigned int line_len, char *filename_buf, unsigned int buf_size)
 {
@@ -353,6 +369,10 @@ void terminal_run(void)
 						program_run_main(cat_fname);
 						io_drain_keyboard();
 						draw_header_row();
+					} else if (is_cmd_space(line, line_len)) {
+						program_run_main("space.bin");
+						io_drain_keyboard();
+						draw_header_row();
 					} else if (is_cmd_display(line, line_len)) {
 						program_display_main();
 					} else if (is_cmd_drive(line, line_len, &drive_sel)) {
@@ -368,6 +388,7 @@ void terminal_run(void)
 						io_putstr("colors\n");
 						io_putstr("cat <file>\n");
 						io_putstr("run <file>\n");
+						io_putstr("space\n");
 						io_putstr("display\n");
 						io_putstr("drive <0|1>\n");
 						io_putstr("help\n");

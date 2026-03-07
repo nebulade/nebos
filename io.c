@@ -215,11 +215,9 @@ void io_drain_keyboard(void)
 	kbd_extended = 0;
 }
 
-int io_poll_key(void)
+/* Process one scancode byte; shared by io_poll_key and io_poll_key_with_hw. */
+static int kbd_process_byte(unsigned char sc)
 {
-	unsigned char sc;
-	if (!kbd_buf_get(&sc))
-		return 0;
 	if (sc == 0xE0) {
 		kbd_extended = 1;
 		return 0;
@@ -248,6 +246,30 @@ int io_poll_key(void)
 		}
 	}
 	return 0;
+}
+
+int io_poll_key(void)
+{
+	unsigned char sc;
+	if (!kbd_buf_get(&sc))
+		return 0;
+	return kbd_process_byte(sc);
+}
+
+/* Like io_poll_key but also reads from port 0x60 when buffer is empty.
+   For use by full-screen programs (e.g. space.bin) where IRQ may be missed on real HW. */
+int io_poll_key_with_hw(void)
+{
+	unsigned char sc;
+	if (kbd_tail == kbd_head) {
+		if (!(inb(KB_STATUS) & 1))
+			return 0;
+		sc = inb(KB_DATA);
+	} else {
+		if (!kbd_buf_get(&sc))
+			return 0;
+	}
+	return kbd_process_byte(sc);
 }
 
 unsigned char io_last_scancode(void)
