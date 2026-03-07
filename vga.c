@@ -1,11 +1,72 @@
 /* VGA: VESA LFB (from boot). */
 
 #include "vga.h"
+#include "pci.h"
+#include "ati.h"
+
+static unsigned int vga_pci_id;  /* vendor(lo16) | device(hi16) */
 
 /* Cached boot framebuffer info (set once when vga_fb_* first used). */
 static unsigned int vga_fb_w, vga_fb_h, vga_fb_pitch_val, vga_fb_bpp_val;
+static unsigned int vga_fb_vram_kb_val;
 static volatile unsigned char *vga_fb_lfb;
 static int vga_fb_cached;
+
+/*
+ * Force CRTC Start Address to 0 and Line Compare to max (0x3FF).
+ * Fixes real hardware where VBE mode set leaves stale CRTC state,
+ * causing the display to appear rotated (bottom portion at top).
+ */
+static void vga_reset_crtc(void)
+{
+	unsigned char v;
+
+	/* Start Address High/Low = 0 */
+	port_outb(0x3D4, 0x0C);
+	port_outb(0x3D5, 0x00);
+	port_outb(0x3D4, 0x0D);
+	port_outb(0x3D5, 0x00);
+
+	/* Unlock CRTC registers 0-7: clear bit 7 of register 0x11 */
+	port_outb(0x3D4, 0x11);
+	v = port_inb(0x3D5);
+	port_outb(0x3D5, v & 0x7F);
+
+	/* Line Compare bits 7:0 = 0xFF (register 0x18) */
+	port_outb(0x3D4, 0x18);
+	port_outb(0x3D5, 0xFF);
+
+	/* Line Compare bit 8 = 1 (register 0x07, bit 4) */
+	port_outb(0x3D4, 0x07);
+	v = port_inb(0x3D5);
+	port_outb(0x3D5, v | 0x10);
+
+	/* Line Compare bit 9 = 1 (register 0x09, bit 6) */
+	port_outb(0x3D4, 0x09);
+	v = port_inb(0x3D5);
+	port_outb(0x3D5, v | 0x40);
+}
+
+/* Find PCI VGA device and cache its ID (for non-ATI cards). */
+static void vga_find_pci_vga(void)
+{
+	unsigned int bus, dev, id, class_rev;
+
+	if (vga_pci_id)
+		return;
+	for (bus = 0; bus < 4; bus++) {
+		for (dev = 0; dev < 32; dev++) {
+			id = pci_cfg_read32(bus, dev, 0, 0x00);
+			if (id == 0xFFFFFFFF || id == 0)
+				continue;
+			class_rev = pci_cfg_read32(bus, dev, 0, 0x08);
+			if ((class_rev >> 24) == 0x03) {
+				vga_pci_id = id;
+				return;
+			}
+		}
+	}
+}
 
 static volatile struct vga_boot_fb_info *vga_get_boot_fb(void)
 {
@@ -44,6 +105,19 @@ static void vga_cache_boot_fb(void)
 			vga_fb_pitch_val = min_pitch;
 	}
 	vga_fb_lfb = (volatile unsigned char *)(unsigned long)info->lfb_base;
+	vga_fb_vram_kb_val = (unsigned int)info->vram_64k * 64;
+	/* Clamp height to what fits in VRAM (prevents wrap on small VRAM cards) */
+	if (vga_fb_vram_kb_val > 0 && vga_fb_pitch_val > 0) {
+		unsigned int vram_bytes = vga_fb_vram_kb_val * 1024;
+		unsigned int max_h = vram_bytes / vga_fb_pitch_val;
+		if (max_h < vga_fb_h)
+			vga_fb_h = max_h;
+	}
+	vga_reset_crtc();
+	ati_init();
+	vga_find_pci_vga();
+	if (ati_pci_id())
+		vga_pci_id = ati_pci_id();
 }
 
 /* ---- LFB API ---- */
@@ -70,6 +144,18 @@ unsigned int vga_fb_bpp(void)
 {
 	vga_cache_boot_fb();
 	return vga_fb_bpp_val;
+}
+
+unsigned int vga_fb_vram_kb(void)
+{
+	vga_cache_boot_fb();
+	return vga_fb_vram_kb_val;
+}
+
+unsigned int vga_fb_pci_id(void)
+{
+	vga_cache_boot_fb();
+	return vga_pci_id;
 }
 
 void *vga_fb_ptr(void)
