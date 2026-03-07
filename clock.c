@@ -38,6 +38,18 @@ static const signed char tab_y[60] = {
 	-47,-51,-55,-59,-62,-63
 };
 
+/*
+ * Hour tick positions at radius 256 for exact alignment on the circle.
+ * For hour h (0=12 o'clock): x = 256*sin(h*30°), y = -256*cos(h*30°).
+ * 256*√3/2 ≈ 222.
+ */
+static const short hour_tab_x[12] = {
+	   0,  128,  222,  256,  222,  128,    0, -128, -222, -256, -222, -128
+};
+static const short hour_tab_y[12] = {
+	-256, -222, -128,    0,  128,  222,  256,  222,  128,    0, -128, -222
+};
+
 static unsigned int clock_cx, clock_cy, clock_radius, clock_rad_hour, clock_rad_min, clock_rad_sec, clock_tick_len;
 
 static void put_pixel(int x, int y, unsigned char color)
@@ -110,11 +122,12 @@ static void draw_face(void)
 	draw_circle(clock_cx, clock_cy, clock_radius, COL_FACE);
 	draw_circle(clock_cx, clock_cy, clock_radius - 1, COL_FACE);
 
-	for (i = 0; i < 60; i += 5) {
-		int ox = clock_cx + tab_x[i] * (int)clock_radius / 64;
-		int oy = clock_cy + tab_y[i] * (int)clock_radius / 64;
-		int ix = clock_cx + tab_x[i] * (int)inner / 64;
-		int iy = clock_cy + tab_y[i] * (int)inner / 64;
+	for (i = 0; i < 12; i++) {
+		/* Use high-precision hour table and rounded scaling so ticks sit on the circle */
+		int ox = clock_cx + (hour_tab_x[i] * (int)clock_radius + 128) / 256;
+		int oy = clock_cy + (hour_tab_y[i] * (int)clock_radius + 128) / 256;
+		int ix = clock_cx + (hour_tab_x[i] * (int)inner + 128) / 256;
+		int iy = clock_cy + (hour_tab_y[i] * (int)inner + 128) / 256;
 		draw_line(ix, iy, ox, oy, COL_TICK);
 	}
 }
