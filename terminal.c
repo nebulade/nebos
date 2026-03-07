@@ -11,6 +11,7 @@ extern void program_reboot_main(void);
 extern void program_ls_main(void);
 extern void program_cat_main(const char *filename);
 extern void program_clock_main(void);
+extern void program_colors_main(void);
 extern void program_display_main(void);
 extern void disk_set_drive(unsigned int drive);
 extern unsigned int disk_get_drive(void);
@@ -129,6 +130,22 @@ static int is_cmd_clock(const char *line, unsigned int line_len)
 	    line[i+3] != 'c' || line[i+4] != 'k')
 		return 0;
 	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_colors(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 6 > line_len)
+		return 0;
+	if (line[i] != 'c' || line[i+1] != 'o' || line[i+2] != 'l' ||
+	    line[i+3] != 'o' || line[i+4] != 'r' || line[i+5] != 's')
+		return 0;
+	i += 6;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -301,6 +318,11 @@ void terminal_run(void)
 						io_drain_keyboard();
 						io_clear_screen();
 						draw_header_row();
+					} else if (is_cmd_colors(line, line_len)) {
+						program_colors_main();
+						io_drain_keyboard();
+						io_clear_screen();
+						draw_header_row();
 					} else if (is_cmd_cat(line, line_len, cat_fname, CAT_FNAME_MAX)) {
 						program_cat_main(cat_fname);
 						io_drain_keyboard();
@@ -317,6 +339,7 @@ void terminal_run(void)
 						io_putstr("reboot\n");
 						io_putstr("ls\n");
 						io_putstr("clock\n");
+						io_putstr("colors\n");
 						io_putstr("cat <file>\n");
 						io_putstr("display\n");
 						io_putstr("drive <0|1>\n");

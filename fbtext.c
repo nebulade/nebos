@@ -21,6 +21,29 @@ static inline unsigned int row_to_y0(unsigned int row)
 	return row == 0 ? HEADER_TOP : (CONTENT_TOP + (row - 1) * ROW_HEIGHT);
 }
 
+/* Draw one 8x8 glyph at pixel (x0, y0). height 8 = glyph only; 10 = glyph + 2 rows bg (terminal row).
+   skip_bg: 1 = only draw foreground (transparent background for overlays). */
+static void draw_glyph_at(unsigned int x0, unsigned int y0, unsigned char c,
+		unsigned int r_fg, unsigned int g_fg, unsigned int b_fg,
+		unsigned int r_bg, unsigned int g_bg, unsigned int b_bg,
+		unsigned int height, int skip_bg)
+{
+	unsigned int x, y;
+	const unsigned char *glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
+
+	for (y = 0; y < height; y++) {
+		unsigned char row_bits = (y < FONT_8X8_ROWS) ? glyph[y] : 0;
+		for (x = 0; x < 8; x++) {
+			unsigned int px = x0 + x;
+			unsigned int py = y0 + y;
+			if (row_bits & (0x80u >> x))
+				vga_put_pixel_rgb(px, py, r_fg, g_fg, b_fg);
+			else if (!skip_bg)
+				vga_put_pixel_rgb(px, py, r_bg, g_bg, b_bg);
+		}
+	}
+}
+
 /* VGA attribute (0-15) to RGB. Standard VGA palette. */
 static void attr_to_rgb(unsigned char attr, int fg, unsigned int *r, unsigned int *g, unsigned int *b)
 {
@@ -85,27 +108,11 @@ void fbtext_clear(void)
 
 static void draw_glyph(unsigned int col, unsigned int row, unsigned char c, unsigned char attr)
 {
-	unsigned int x0 = col * 8;
-	unsigned int y0 = row_to_y0(row);
 	unsigned int r_fg, g_fg, b_fg, r_bg, g_bg, b_bg;
-	unsigned int x, y;
-	const unsigned char *glyph;
 
 	attr_to_rgb(attr, 1, &r_fg, &g_fg, &b_fg);
 	attr_to_rgb(attr, 0, &r_bg, &g_bg, &b_bg);
-
-	glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
-	for (y = 0; y < ROW_HEIGHT; y++) {
-		unsigned char row_bits = (y < FONT_8X8_ROWS) ? glyph[y] : 0;
-		for (x = 0; x < 8; x++) {
-			unsigned int px = x0 + x;
-			unsigned int py = y0 + y;
-			if (row_bits & (0x80u >> x))
-				vga_put_pixel_rgb(px, py, r_fg, g_fg, b_fg);
-			else
-				vga_put_pixel_rgb(px, py, r_bg, g_bg, b_bg);
-		}
-	}
+	draw_glyph_at(col * 8, row_to_y0(row), c, r_fg, g_fg, b_fg, r_bg, g_bg, b_bg, ROW_HEIGHT, 0);
 }
 
 void fbtext_put_char_at(unsigned int col, unsigned int row, unsigned char c, unsigned char attr)
@@ -169,16 +176,14 @@ void fbtext_show_cursor(void)
 /* Redraw only the cursor region (CURSOR_W x CURSOR_H) so the line is restored. */
 static void draw_glyph_cursor_region(unsigned int col, unsigned int row, unsigned char c, unsigned char attr)
 {
-	unsigned int x0 = col * 8;
-	unsigned int y0 = row_to_y0(row);
 	unsigned int r_fg, g_fg, b_fg, r_bg, g_bg, b_bg;
 	unsigned int x, y;
-	const unsigned char *glyph;
+	const unsigned char *glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
+	unsigned int x0 = col * 8;
+	unsigned int y0 = row_to_y0(row);
 
 	attr_to_rgb(attr, 1, &r_fg, &g_fg, &b_fg);
 	attr_to_rgb(attr, 0, &r_bg, &g_bg, &b_bg);
-
-	glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
 	for (y = 0; y < ROW_HEIGHT && y < CURSOR_H; y++) {
 		unsigned char row_bits = (y < FONT_8X8_ROWS) ? glyph[y] : 0;
 		for (x = 0; x < CURSOR_W; x++) {
@@ -222,6 +227,17 @@ static void hue_to_rgb(unsigned int hue, unsigned int *r, unsigned int *g, unsig
 	*r = (r1 * (RAINBOW_SEG - f) + r2 * f) / RAINBOW_SEG;
 	*g = (g1 * (RAINBOW_SEG - f) + g2 * f) / RAINBOW_SEG;
 	*b = (b1 * (RAINBOW_SEG - f) + b2 * f) / RAINBOW_SEG;
+}
+
+/* Draw string at pixel (x0, y0) with fg RGB. transparent_bg 1 = only fg pixels (for overlays). */
+void fbtext_draw_string_xy(unsigned int x0, unsigned int y0, const char *str,
+		unsigned int r_fg, unsigned int g_fg, unsigned int b_fg, int transparent_bg)
+{
+	unsigned int i = 0;
+	while (str[i]) {
+		draw_glyph_at(x0 + i * 8, y0, (unsigned char)str[i], r_fg, g_fg, b_fg, 0, 0, 0, FONT_8X8_ROWS, transparent_bg);
+		i++;
+	}
 }
 
 #define RAINBOW_LINE_HEIGHT  2   /* 2-pixel tall line for visibility */
