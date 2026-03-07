@@ -1,6 +1,7 @@
-/* Kernel: entry point at 0x7E00, timer (PIT 1 kHz), then run terminal. */
+/* Kernel: entry point at 0x7E00, timer (PIT 1 kHz), process init, terminal. */
 
 #include "io.h"
+#include "process.h"
 #include "terminal.h"
 #include "timer.h"
 
@@ -32,14 +33,6 @@ extern void kbd_irq_stub(void);
 extern void fdc_irq_stub(void);
 extern void default_irq_stub(void);
 extern unsigned int exc_stub_table[];
-
-void pit_irq(void);
-
-void pit_irq(void)
-{
-	ticks++;
-	outb(0x20, 0x20);
-}
 
 unsigned int get_ticks_ms(void)
 {
@@ -133,5 +126,6 @@ void kernel_main(void)
 
 	io_init();
 	timer_init();
+	process_init();
 	terminal_run();
 }

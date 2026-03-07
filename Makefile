@@ -20,7 +20,7 @@ all: image.bin final.bin root.img
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.o: kernel.c io.h terminal.h timer.h
+kernel.o: kernel.c io.h process.h terminal.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 io.o: io.c io.h fbtext.h
@@ -32,7 +32,7 @@ font_8x8.o: font_8x8.c font_8x8.h
 fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-terminal.o: terminal.c terminal.h io.h fbtext.h rtc.h timer.h disk.h
+terminal.o: terminal.c terminal.h io.h fbtext.h process.h rtc.h timer.h disk.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 hello.o: hello.c io.h
@@ -80,7 +80,13 @@ boot.elf: boot.o
 timer.o: timer.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o run.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o
+switch.o: switch.S
+	$(AS) $(ASFLAGS) -o $@ $<
+
+process.o: process.c process.h io.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+kernel.elf: kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o run.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -139,4 +145,4 @@ run: image.bin root.img
 	qemu-system-x86_64 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
+	rm -f boot.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin

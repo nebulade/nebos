@@ -1,7 +1,9 @@
-/* Terminal: prompt, datetime (top right), blinking cursor, echo loop, command dispatch. */
+/* Terminal: prompt, datetime (top right), blinking cursor, echo loop, command dispatch.
+   Commands are spawned as separate processes for preemptive multitasking. */
 
 #include "io.h"
 #include "fbtext.h"
+#include "process.h"
 #include "rtc.h"
 #include "terminal.h"
 #include "timer.h"
@@ -283,6 +285,49 @@ static int is_cmd_clear(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
+static int is_cmd_ps(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 2 > line_len)
+		return 0;
+	if (line[i] != 'p' || line[i+1] != 's')
+		return 0;
+	i += 2;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_kill(const char *line, unsigned int line_len, unsigned int *pid_out)
+{
+	unsigned int i = 0, num = 0;
+	int has_digit = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 'k' || line[i+1] != 'i' || line[i+2] != 'l' || line[i+3] != 'l')
+		return 0;
+	i += 4;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	while (i < line_len && line[i] >= '0' && line[i] <= '9') {
+		num = num * 10 + (unsigned int)(line[i] - '0');
+		has_digit = 1;
+		i++;
+	}
+	if (!has_digit)
+		return 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i != line_len)
+		return 0;
+	*pid_out = num;
+	return 1;
+}
+
 /* Redraw line from index `from` to end, clear one cell after, set cursor to line_pos. */
 static void redraw_line_from(const char *line, unsigned int line_len,
 	unsigned int line_pos, unsigned int line_start, unsigned int from)
@@ -430,63 +475,57 @@ void terminal_run(void)
 					}
 				} else if (k == '\n') {
 					static char cat_fname[CAT_FNAME_MAX];
-					unsigned int drive_sel;
+					unsigned int drive_sel, kill_pid;
 					int skip_prompt = 0;
 					io_putchar('\n');
 					history_push(line, line_len);
 					history_browse = 0;
 					if (is_cmd_hello(line, line_len)) {
-						program_hello_main();
-						io_drain_keyboard();
-						draw_header_row();
+						if (process_create("hello", program_hello_main) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_reboot(line, line_len)) {
 						program_reboot_main();
 					} else if (is_cmd_ls(line, line_len)) {
-						program_ls_main();
-						io_drain_keyboard();
-						draw_header_row();
+						if (process_create("ls", program_ls_main) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_clock(line, line_len)) {
-						program_clock_main();
-						io_drain_keyboard();
-						io_clear_screen();
-						draw_header_row();
+						if (process_create("clock", program_clock_main) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_colors(line, line_len)) {
-						program_colors_main();
-						io_drain_keyboard();
-						io_clear_screen();
-						draw_header_row();
+						if (process_create("colors", program_colors_main) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_cat(line, line_len, cat_fname, CAT_FNAME_MAX)) {
-						program_cat_main(cat_fname);
-						io_drain_keyboard();
-						draw_header_row();
+						if (process_create_arg("cat", program_cat_main, cat_fname) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_run(line, line_len, cat_fname, CAT_FNAME_MAX)) {
-						program_run_main(cat_fname);
-						io_drain_keyboard();
-						draw_header_row();
+						if (process_create_arg("run", program_run_main, cat_fname) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_space(line, line_len)) {
-						program_run_main("space.bin");
-						io_drain_keyboard();
-						draw_header_row();
+						if (process_create_arg("space", program_run_main, "space.bin") < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_display(line, line_len)) {
-						program_display_main();
+						if (process_create("display", program_display_main) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_drive(line, line_len, &drive_sel)) {
 						disk_set_drive(drive_sel);
 						io_putstr("drive ");
 						io_putchar((char)('0' + disk_get_drive()));
 						io_putstr(" selected\n");
+					} else if (is_cmd_ps(line, line_len)) {
+						process_ps();
+					} else if (is_cmd_kill(line, line_len, &kill_pid)) {
+						if (process_kill(kill_pid) < 0)
+							io_putstr("kill: no such process\n");
+						else
+							io_putstr("killed\n");
 					} else if (is_cmd_help(line, line_len)) {
-						io_putstr("hello\n");
-						io_putstr("reboot\n");
-						io_putstr("ls\n");
-						io_putstr("clock\n");
-						io_putstr("colors\n");
-						io_putstr("cat <file>\n");
-						io_putstr("run <file>\n");
-						io_putstr("space\n");
-						io_putstr("display\n");
-						io_putstr("drive <0|1>\n");
-						io_putstr("help\n");
-						io_putstr("clear\n");
+						io_putstr("hello     reboot\n");
+						io_putstr("ls        cat <file>\n");
+						io_putstr("run <file>  space\n");
+						io_putstr("clock     colors\n");
+						io_putstr("display   drive <0|1>\n");
+						io_putstr("ps        kill <pid>\n");
+						io_putstr("help      clear\n");
 					} else if (is_cmd_clear(line, line_len)) {
 						io_clear_screen();
 						draw_header_row();

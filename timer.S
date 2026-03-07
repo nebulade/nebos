@@ -1,13 +1,7 @@
-/* IRQ stubs: save state, call C handler, restore, iret. */
+/* IRQ stubs: save state, call C handler, restore, iret.
+   PIT stub (pit_irq_stub) lives in switch.S for context switching. */
 .code32
 .text
-
-.globl pit_irq_stub
-pit_irq_stub:
-	pusha
-	call  pit_irq
-	popa
-	iret
 
 .globl kbd_irq_stub
 kbd_irq_stub:
