@@ -19,8 +19,12 @@ extern unsigned int disk_get_drive(void);
 
 #define DATETIME_MS 1000
 #define LINE_MAX 64
+#define HISTORY_SIZE 32
 static unsigned int last_datetime_tick;
 static char datetime_buf[IO_DATETIME_LEN + 1];
+static char history[HISTORY_SIZE][LINE_MAX];
+static unsigned int history_count;
+static unsigned int history_next;
 
 static int cursor_visible;
 static unsigned int last_cursor_tick;
@@ -291,12 +295,64 @@ static void redraw_line_from(const char *line, unsigned int line_len,
 	io_set_cursor(line_start + line_pos);
 }
 
+/* Copy history entry (1 = newest) into line, set line_len/line_pos, redraw from start. */
+static void history_load_into_line(char *line, unsigned int *line_len, unsigned int *line_pos,
+	unsigned int line_start, unsigned int browse)
+{
+	unsigned int slot, len;
+	const char *src;
+	if (browse < 1 || browse > history_count)
+		return;
+	slot = (history_next + HISTORY_SIZE - browse) % HISTORY_SIZE;
+	src = history[slot];
+	for (len = 0; len < LINE_MAX - 1 && src[len]; len++)
+		line[len] = src[len];
+	line[len] = '\0';
+	*line_len = len;
+	*line_pos = len;
+	redraw_line_from(line, len, len, line_start, 0);
+}
+
+/* Push current line to history if non-empty (and not duplicate of newest). */
+static void history_push(const char *line, unsigned int line_len)
+{
+	unsigned int i, slot;
+	int all_spaces = 1;
+	if (line_len == 0)
+		return;
+	for (i = 0; i < line_len; i++) {
+		if (line[i] != ' ') {
+			all_spaces = 0;
+			break;
+		}
+	}
+	if (all_spaces)
+		return;
+	if (history_count > 0) {
+		slot = (history_next + HISTORY_SIZE - 1) % HISTORY_SIZE;
+		for (i = 0; i < line_len && i < LINE_MAX - 1 && history[slot][i]; i++) {
+			if (history[slot][i] != line[i])
+				break;
+		}
+		if (i == line_len && history[slot][i] == '\0')
+			return;  /* duplicate of newest */
+	}
+	slot = history_next;
+	for (i = 0; i < line_len && i < LINE_MAX - 1; i++)
+		history[slot][i] = line[i];
+	history[slot][i] = '\0';
+	history_next = (history_next + 1) % HISTORY_SIZE;
+	if (history_count < HISTORY_SIZE)
+		history_count++;
+}
+
 void terminal_run(void)
 {
 	static char line[LINE_MAX];
 	static unsigned int line_len;
 	static unsigned int line_pos;   /* cursor index in line, 0..line_len */
 	static unsigned int line_start; /* VGA position of first char of line */
+	static unsigned int history_browse; /* 0 = not browsing, 1 = newest, 2 = older, ... */
 
 	last_cursor_tick   = get_ticks_ms();
 	last_datetime_tick = get_ticks_ms();
@@ -304,6 +360,7 @@ void terminal_run(void)
 	line_len           = 0;
 	line_pos           = 0;
 	line[0]            = '\0';
+	history_browse     = 0;
 
 	io_drain_keyboard();
 	draw_header_row();
@@ -326,6 +383,24 @@ void terminal_run(void)
 						line_pos++;
 						io_set_cursor(line_start + line_pos);
 					}
+				} else if (k == IO_KEY_UP) {
+					if (history_count > 0) {
+						if (history_browse < history_count)
+							history_browse++;
+						history_load_into_line(line, &line_len, &line_pos, line_start, history_browse);
+					}
+				} else if (k == IO_KEY_DOWN) {
+					if (history_browse > 0) {
+						history_browse--;
+						if (history_browse == 0) {
+							line_len = 0;
+							line_pos = 0;
+							line[0]  = '\0';
+							redraw_line_from(line, 0, 0, line_start, 0);
+						} else {
+							history_load_into_line(line, &line_len, &line_pos, line_start, history_browse);
+						}
+					}
 				} else if (k == '\b') {
 					if (line_pos > 0) {
 						unsigned int i;
@@ -341,6 +416,8 @@ void terminal_run(void)
 					unsigned int drive_sel;
 					int skip_prompt = 0;
 					io_putchar('\n');
+					history_push(line, line_len);
+					history_browse = 0;
 					if (is_cmd_hello(line, line_len)) {
 						program_hello_main();
 						io_drain_keyboard();
@@ -421,6 +498,7 @@ void terminal_run(void)
 						unsigned char u = (unsigned char)k;
 						if (u >= 0x20 && u < 0x7F && line_len < LINE_MAX - 1) {
 							unsigned int i;
+							history_browse = 0;
 							for (i = line_len; i > line_pos; i--)
 								line[i] = line[i - 1];
 							line[line_pos] = (char)k;

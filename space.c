@@ -197,14 +197,30 @@ void _start(void)
 		update_invaders();
 
 		api->clear_rgb(8, 8, 32);
-		if (api->poll_key() == IO_KEY_ESC)
-			return;
+		while ((k = api->poll_key()) != 0) {
+			if (k == IO_KEY_ESC)
+				return;
+			if (k == IO_KEY_LEFT)
+				want_left = 1;
+			if (k == IO_KEY_RIGHT)
+				want_right = 1;
+			if (k == IO_KEY_SPACE)
+				want_fire = 1;
+		}
 		draw_ship();
 		for (r = 0; r < INV_ROWS; r++) {
 			for (c = 0; c < INV_COLS; c++)
 				draw_invader(r, c);
-			if (api->poll_key() == IO_KEY_ESC)
-				return;
+			while ((k = api->poll_key()) != 0) {
+				if (k == IO_KEY_ESC)
+					return;
+				if (k == IO_KEY_LEFT)
+					want_left = 1;
+				if (k == IO_KEY_RIGHT)
+					want_right = 1;
+				if (k == IO_KEY_SPACE)
+					want_fire = 1;
+			}
 		}
 		draw_bullets();
 

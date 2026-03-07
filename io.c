@@ -241,6 +241,8 @@ static int kbd_process_byte(unsigned char sc)
 			return 0;  /* key release */
 		if (sc == 0x4B) return IO_KEY_LEFT;
 		if (sc == 0x4D) return IO_KEY_RIGHT;
+		if (sc == 0x48) return IO_KEY_UP;
+		if (sc == 0x50) return IO_KEY_DOWN;
 		return 0;
 	}
 	if (sc & 0x80) {
