@@ -10,6 +10,7 @@ extern void program_hello_main(void);
 extern void program_reboot_main(void);
 extern void program_ls_main(void);
 extern void program_cat_main(const char *filename);
+extern void program_run_main(const char *filename);
 extern void program_clock_main(void);
 extern void program_colors_main(void);
 extern void program_display_main(void);
@@ -189,6 +190,27 @@ static int is_cmd_cat(const char *line, unsigned int line_len, char *filename_bu
 	return (j > 0);
 }
 
+static int is_cmd_run(const char *line, unsigned int line_len, char *filename_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 3 > line_len)
+		return 0;
+	if (line[i] != 'r' || line[i+1] != 'u' || line[i+2] != 'n')
+		return 0;
+	i += 3;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len)
+		return 0;
+	j = 0;
+	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
+		filename_buf[j++] = line[i++];
+	filename_buf[j] = '\0';
+	return (j > 0);
+}
+
 static int is_cmd_drive(const char *line, unsigned int line_len, unsigned int *drive_num)
 {
 	unsigned int i = 0;
@@ -327,6 +349,10 @@ void terminal_run(void)
 						program_cat_main(cat_fname);
 						io_drain_keyboard();
 						draw_header_row();
+					} else if (is_cmd_run(line, line_len, cat_fname, CAT_FNAME_MAX)) {
+						program_run_main(cat_fname);
+						io_drain_keyboard();
+						draw_header_row();
 					} else if (is_cmd_display(line, line_len)) {
 						program_display_main();
 					} else if (is_cmd_drive(line, line_len, &drive_sel)) {
@@ -341,6 +367,7 @@ void terminal_run(void)
 						io_putstr("clock\n");
 						io_putstr("colors\n");
 						io_putstr("cat <file>\n");
+						io_putstr("run <file>\n");
 						io_putstr("display\n");
 						io_putstr("drive <0|1>\n");
 						io_putstr("help\n");

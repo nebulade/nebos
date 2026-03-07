@@ -53,6 +53,9 @@ ls.o: ls.c fat.h io.h
 cat.o: cat.c fat.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+run.o: run.c fat.h io.h fbtext.h prog_api.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 rtc.o: rtc.c rtc.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -77,7 +80,7 @@ boot.elf: boot.o
 timer.o: timer.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o
+kernel.elf: kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o run.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -105,15 +108,25 @@ final.bin: boot.bin kernel.bin
 	cat boot.bin.patched kernel.bin > $@; \
 	rm -f boot.bin.patched
 
-root.img:
+prog.o: prog.c prog_api.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+prog.elf: prog.o
+	$(LD) -T user.ld -nostdlib -m elf_i386 -o $@ $<
+
+prog.bin: prog.elf
+	$(OBJCOPY) -O binary $< $@
+
+root.img: prog.bin
 	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
 	mkfs.fat -F 12 -n "ROOTDISK" $@
 	echo "Hello from the second floppy!" | mcopy -i $@ - ::HELLO.TXT
 	echo "This is a test file on drive 1." | mcopy -i $@ - ::TEST.TXT
+	mcopy -i $@ prog.bin ::PROG.BIN
 
 run: image.bin root.img
 	qemu-system-i386 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
 	qemu-system-x86_64 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o disk.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img
+	rm -f boot.o kernel.o timer.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img prog.o prog.elf prog.bin
