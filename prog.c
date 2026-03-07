@@ -8,8 +8,12 @@
 
 static const struct prog_api *const api = (const struct prog_api *)PROGRAM_API_ADDR;
 
+/* Pad binary past 1KB so it uses cluster 8+ (reproduces LBA 0x27 read failure on real HW). */
+static const char prog_padding[3072] __attribute__((used)) = { 0 };
+
 void _start(void)
 {
+	(void)prog_padding;  /* keep in binary */
 	unsigned int cols, rows, cx, cy;
 	const char *msg = "omg!";
 

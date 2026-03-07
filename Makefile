@@ -41,10 +41,10 @@ hello.o: hello.c io.h
 reboot.o: reboot.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-disk.o: disk.c disk.h timer.h
+disk.o: disk.c disk.h io.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-fat.o: fat.c fat.h disk.h
+fat.o: fat.c fat.h disk.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 ls.o: ls.c fat.h io.h

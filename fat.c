@@ -2,6 +2,7 @@
 
 #include "disk.h"
 #include "fat.h"
+#include "io.h"
 
 #define SECTOR_SIZE 512
 #define ROOT_ENTRY_SIZE 32
@@ -49,8 +50,10 @@ int fat_init(void)
 {
 	unsigned int num_fats, root_entries, sec_per_fat;
 
-	if (fat_read_sector(0) != 0)
+	if (fat_read_sector(0) != 0) {
+		io_putstr("run: disk read error (boot sector LBA=0)\n");
 		return -2;  /* disk I/O error */
+	}
 	if (sector_buf[BPB_SIGNATURE] != 0x55 || sector_buf[BPB_SIGNATURE + 1] != 0xAA)
 		return -1;  /* no valid FAT filesystem */
 	fat_reserved = (unsigned int)sector_buf[BPB_RESERVED] | ((unsigned int)sector_buf[BPB_RESERVED + 1] << 8);
@@ -88,8 +91,14 @@ int fat_list_root(fat_root_callback_t callback)
 	if (!fat_ready || !callback)
 		return -1;
 	for (sec = 0; sec < fat_root_sectors; sec++) {
-		if (fat_read_sector(fat_root_start + sec) != 0)
+		if (fat_read_sector(fat_root_start + sec) != 0) {
+			io_putstr("run: disk read error (root dir sec=");
+			io_puthex(sec);
+			io_putstr(" LBA=");
+			io_puthex(fat_root_start + sec);
+			io_putstr(")\n");
 			return -2;
+		}
 		for (off = 0; off < SECTOR_SIZE; off += ROOT_ENTRY_SIZE) {
 			unsigned char *e = sector_buf + off;
 			if (e[0] == 0x00)
@@ -121,8 +130,14 @@ static int fat_find_root(const char *name_8_3, unsigned int *out_cluster, unsign
 	want[11] = '\0';
 
 	for (sec = 0; sec < fat_root_sectors; sec++) {
-		if (fat_read_sector(fat_root_start + sec) != 0)
+		if (fat_read_sector(fat_root_start + sec) != 0) {
+			io_putstr("run: disk read error (find root sec=");
+			io_puthex(sec);
+			io_putstr(" LBA=");
+			io_puthex(fat_root_start + sec);
+			io_putstr(")\n");
 			return -2;
+		}
 		for (off = 0; off < SECTOR_SIZE; off += ROOT_ENTRY_SIZE) {
 			unsigned char *e = sector_buf + off;
 			if (e[0] == 0x00)
@@ -149,6 +164,7 @@ int fat_read_file(const char *name_8_3, void *buf, unsigned int max_len)
 	unsigned int fat_start = fat_reserved;
 	unsigned int copied = 0;
 	unsigned char *dst = (unsigned char *)buf;
+	unsigned int loaded_fat_sec;
 
 	if (!fat_ready || !buf)
 		return -1;
@@ -162,6 +178,18 @@ int fat_read_file(const char *name_8_3, void *buf, unsigned int max_len)
 	if (size > max_len)
 		size = max_len;
 
+	/* Pre-load the FAT sector covering the first cluster so we can follow
+	 * the chain without re-reading the FAT between every data cluster.
+	 * Data reads use DMA + memcpy to dst and never touch sector_buf,
+	 * so the cached FAT data stays valid throughout. */
+	loaded_fat_sec = fat_start + (cluster * 3) / (2 * SECTOR_SIZE);
+	if (fat_read_sector(loaded_fat_sec) != 0) {
+		io_putstr("run: disk read error (FAT preload LBA=");
+		io_puthex(loaded_fat_sec);
+		io_putstr(")\n");
+		return -2;
+	}
+
 	while (cluster >= 2 && cluster < 0xFF8 && copied < size) {
 		unsigned int sector = fat_data_start + (cluster - 2) * fat_sec_per_cluster;
 		unsigned int chunk = fat_sec_per_cluster * SECTOR_SIZE;
@@ -169,14 +197,34 @@ int fat_read_file(const char *name_8_3, void *buf, unsigned int max_len)
 		if (chunk > size - copied)
 			chunk = size - copied;
 		n_sec = (chunk + SECTOR_SIZE - 1) / SECTOR_SIZE;
-		if (disk_read_sectors(sector, dst + copied, n_sec) != 0)
+		if (disk_read_sectors(sector, dst + copied, n_sec) != 0) {
+			io_putstr("run: disk read error (file data cluster=");
+			io_puthex(cluster);
+			io_putstr(" LBA=");
+			io_puthex(sector);
+			io_putstr(" n_sec=");
+			io_puthex(n_sec);
+			io_putstr(")\n");
 			return -2;
+		}
 		copied += chunk;
 		if (copied >= size)
 			break;
-		/* Next cluster from FAT */
-		if (fat_read_sector(fat_start + (cluster * 3) / (2 * SECTOR_SIZE)) != 0)
-			return -2;
+		/* Only re-read FAT if the chain crosses into a different FAT sector. */
+		{
+			unsigned int need_fat_sec = fat_start + (cluster * 3) / (2 * SECTOR_SIZE);
+			if (need_fat_sec != loaded_fat_sec) {
+				if (fat_read_sector(need_fat_sec) != 0) {
+					io_putstr("run: disk read error (FAT cluster=");
+					io_puthex(cluster);
+					io_putstr(" LBA=");
+					io_puthex(need_fat_sec);
+					io_putstr(")\n");
+					return -2;
+				}
+				loaded_fat_sec = need_fat_sec;
+			}
+		}
 		cluster = fat_get_entry(cluster);
 	}
 	return (int)copied;

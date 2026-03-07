@@ -174,6 +174,19 @@ void io_putstr(const char *s)
 	while (*s) io_putchar(*s++);
 }
 
+void io_puthex(unsigned int n)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	char buf[9];
+	unsigned int i = 8;
+	buf[8] = '\0';
+	do {
+		buf[--i] = hex[n & 0xF];
+		n >>= 4;
+	} while (i > 0);
+	io_putstr(buf);
+}
+
 unsigned int io_get_cursor(void)
 {
 	return cursor;

@@ -20,6 +20,7 @@ void io_clear_screen(void);
 int io_did_scroll(void);  /* returns 1 once after a scroll, then 0 until next scroll */
 void io_putchar(char c);
 void io_putstr(const char *s);
+void io_puthex(unsigned int n);  /* print n as 8 hex digits, no 0x prefix */
 unsigned int io_get_cursor(void);
 void io_set_cursor(unsigned int pos);
 void io_cursor_show_block(void);

@@ -175,7 +175,7 @@ void _start(void)
 	for (;;) {
 		int want_left = 0, want_right = 0, want_fire = 0;
 		while (api->get_ticks_ms() - last_tick < FRAME_MS) {
-			k = api->poll_key_with_hw();
+			k = api->poll_key();
 			if (k == IO_KEY_ESC)
 				return;
 			if (k == IO_KEY_LEFT)
@@ -197,10 +197,15 @@ void _start(void)
 		update_invaders();
 
 		api->clear_rgb(8, 8, 32);
+		if (api->poll_key() == IO_KEY_ESC)
+			return;
 		draw_ship();
-		for (r = 0; r < INV_ROWS; r++)
+		for (r = 0; r < INV_ROWS; r++) {
 			for (c = 0; c < INV_COLS; c++)
 				draw_invader(r, c);
+			if (api->poll_key() == IO_KEY_ESC)
+				return;
+		}
 		draw_bullets();
 
 		if (num_alive <= 0)

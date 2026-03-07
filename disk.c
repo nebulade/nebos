@@ -1,6 +1,7 @@
 /* Disk layer: read sectors via direct FDC + ISA DMA in protected mode. */
 
 #include "disk.h"
+#include "io.h"
 #include "timer.h"
 
 #define SECTOR_SIZE       512
@@ -31,12 +32,13 @@
 #define CMD_SPECIFY      0x03
 #define CMD_RECALIBRATE  0x07
 #define CMD_SENSE_INT    0x08
-#define CMD_READ_DATA    0xE6   /* READ | MFM | SK */
+#define CMD_READ_DATA    0x66   /* READ | MFM | SK  (no Multi-Track) */
 #define CMD_SEEK         0x0F
 
 #define MOTOR_DELAY_MS   300
 #define IRQ_TIMEOUT_MS   2000
-#define MAX_RETRIES      3
+#define MAX_RETRIES      10
+#define SEEK_SETTLE_MS   25   /* head settle after seek */
 
 /* PIC master mask port */
 #define PIC1_DATA  0x21
@@ -164,12 +166,15 @@ static int fdc_reset(void)
 
 	outb(FDC_CCR, 0x00); /* 500 kbps for 1.44 MB */
 
-	/* SPECIFY: SRT=3ms, HUT=240ms, HLT=16ms, DMA mode */
+	/* SPECIFY: SRT=12ms, HUT=240ms, HLT=30ms, DMA mode
+	 * Conservative timings for real hardware compatibility.
+	 * Byte 1: SRT_nibble=4 (16-4=12ms), HUT_nibble=F (15*16=240ms) → 0x4F
+	 * Byte 2: HLT=15 (15*2=30ms)<<1 | NDMA=0 → 0x1E */
 	if (fdc_send(CMD_SPECIFY) != 0)
 		return -1;
-	if (fdc_send(0xDF) != 0)
+	if (fdc_send(0x4F) != 0)
 		return -1;
-	if (fdc_send(0x02) != 0)
+	if (fdc_send(0x1E) != 0)
 		return -1;
 
 	return 0;
@@ -216,6 +221,12 @@ static int fdc_seek(unsigned int cylinder, unsigned int head)
 		return -1;
 
 	cur_cylinder = cylinder;
+	/* Let head settle on real hardware before issuing read (avoids LBA 33+ read failures). */
+	{
+		unsigned int t0 = get_ticks_ms();
+		while ((get_ticks_ms() - t0) < SEEK_SETTLE_MS)
+			;
+	}
 	return 0;
 }
 
@@ -268,15 +279,29 @@ static int fdc_do_read(unsigned int cyl, unsigned int head, unsigned int sec)
 	if (fdc_send(0xFF) != 0)            return -1; /* data length */
 
 	if (fdc_wait_irq() != 0)
-		return -1;
+		return -2;
 
 	for (i = 0; i < 7; i++) {
 		if (fdc_recv(&results[i]) != 0)
-			return -1;
+			return -3;
 	}
 
-	if (results[0] & 0xC0)
+	if (results[0] & 0xC0) {
+		io_putstr("fdc: CHS=");
+		io_puthex(cyl);
+		io_putchar('/');
+		io_puthex(head);
+		io_putchar('/');
+		io_puthex(sec);
+		io_putstr(" ST0=");
+		io_puthex(results[0]);
+		io_putstr(" ST1=");
+		io_puthex(results[1]);
+		io_putstr(" ST2=");
+		io_puthex(results[2]);
+		io_putchar('\n');
 		return -1;
+	}
 
 	return 0;
 }
@@ -291,6 +316,22 @@ static int fdc_read_one(unsigned int lba)
 		if (fdc_seek(cyl, head) != 0)
 			return -1;
 	}
+
+	return fdc_do_read(cyl, head, sec);
+}
+
+/* Aggressive retry: seek far away then back to improve head alignment. */
+static int fdc_read_one_retry(unsigned int lba)
+{
+	unsigned int cyl, head, sec;
+
+	lba_to_chs(lba, &cyl, &head, &sec);
+
+	/* Seek to cylinder 40 (mid-disk) first, then to target.
+	 * The long travel forces the stepper to settle accurately. */
+	fdc_seek(cyl > 40 ? 0 : 40, 0);
+	if (fdc_seek(cyl, head) != 0)
+		return -1;
 
 	return fdc_do_read(cyl, head, sec);
 }
@@ -331,9 +372,9 @@ static int fdc_init_once(void)
 
 		if (fdc_send(CMD_SPECIFY) != 0)
 			return -1;
-		if (fdc_send(0xDF) != 0)
+		if (fdc_send(0x4F) != 0)
 			return -1;
-		if (fdc_send(0x02) != 0)
+		if (fdc_send(0x1E) != 0)
 			return -1;
 	}
 
@@ -373,7 +414,15 @@ int disk_read_sectors(unsigned int lba, void *buf, unsigned int count)
 	for (i = 0; i < count; i++) {
 		int attempt, ok = 0;
 		for (attempt = 0; attempt < MAX_RETRIES; attempt++) {
-			if (fdc_read_one(lba + i) == 0) {
+			int rc;
+			if (attempt < 3) {
+				rc = fdc_read_one(lba + i);
+			} else {
+				/* Long-seek retry: seek far away then back to
+				 * force accurate head positioning. */
+				rc = fdc_read_one_retry(lba + i);
+			}
+			if (rc == 0) {
 				ok = 1;
 				break;
 			}
@@ -381,8 +430,16 @@ int disk_read_sectors(unsigned int lba, void *buf, unsigned int count)
 			fdc_motor_on();
 			fdc_recalibrate();
 		}
-		if (!ok)
+		if (!ok) {
+			io_putstr("disk: read failed LBA=");
+			io_puthex(lba + i);
+			io_putstr(" (sector ");
+			io_puthex(i);
+			io_putstr(" of ");
+			io_puthex(count);
+			io_putstr(")\n");
 			return -1;
+		}
 		{
 			unsigned int j;
 			unsigned char *dst = (unsigned char *)buf + (i * SECTOR_SIZE);

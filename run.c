@@ -49,7 +49,7 @@ void program_run_main(const char *filename)
 	to_8_3(filename, 64, name_8_3);
 	n = fat_init();
 	if (n == -2) {
-		io_putstr("run: disk read error\n");
+		io_putstr("run: disk read error (see above)\n");
 		return;
 	}
 	if (n != 0) {
@@ -58,13 +58,14 @@ void program_run_main(const char *filename)
 	}
 	n = fat_read_file(name_8_3, (void *)PROGRAM_LOAD_ADDR, PROGRAM_LOAD_MAX);
 	if (n == -2) {
-		io_putstr("run: disk read error\n");
+		io_putstr("run: disk read error (see above)\n");
 		return;
 	}
 	if (n <= 0) {
 		io_putstr("run: file not found\n");
 		return;
 	}
+	io_drain_keyboard();
 	{
 		struct prog_api api = {
 			.draw_string_xy = fbtext_draw_string_xy,
