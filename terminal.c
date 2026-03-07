@@ -295,14 +295,28 @@ static void redraw_line_from(const char *line, unsigned int line_len,
 	io_set_cursor(line_start + line_pos);
 }
 
+/* Redraw entire line and clear through clear_through (so leftover chars are erased). */
+static void redraw_line_clear(const char *line, unsigned int line_len,
+	unsigned int line_pos, unsigned int line_start, unsigned int clear_through)
+{
+	unsigned int i;
+	io_set_cursor(line_start);
+	for (i = 0; i < line_len; i++)
+		io_putchar(line[i]);
+	for (i = line_len; i <= clear_through; i++)
+		io_putchar(' ');
+	io_set_cursor(line_start + line_pos);
+}
+
 /* Copy history entry (1 = newest) into line, set line_len/line_pos, redraw from start. */
 static void history_load_into_line(char *line, unsigned int *line_len, unsigned int *line_pos,
 	unsigned int line_start, unsigned int browse)
 {
-	unsigned int slot, len;
+	unsigned int slot, len, old_len;
 	const char *src;
 	if (browse < 1 || browse > history_count)
 		return;
+	old_len = *line_len;
 	slot = (history_next + HISTORY_SIZE - browse) % HISTORY_SIZE;
 	src = history[slot];
 	for (len = 0; len < LINE_MAX - 1 && src[len]; len++)
@@ -310,7 +324,7 @@ static void history_load_into_line(char *line, unsigned int *line_len, unsigned 
 	line[len] = '\0';
 	*line_len = len;
 	*line_pos = len;
-	redraw_line_from(line, len, len, line_start, 0);
+	redraw_line_clear(line, len, len, line_start, old_len > len ? old_len : len);
 }
 
 /* Push current line to history if non-empty (and not duplicate of newest). */
@@ -393,10 +407,13 @@ void terminal_run(void)
 					if (history_browse > 0) {
 						history_browse--;
 						if (history_browse == 0) {
-							line_len = 0;
-							line_pos = 0;
-							line[0]  = '\0';
-							redraw_line_from(line, 0, 0, line_start, 0);
+							{
+								unsigned int clear_len = line_len;
+								line_len = 0;
+								line_pos = 0;
+								line[0]  = '\0';
+								redraw_line_clear(line, 0, 0, line_start, clear_len);
+							}
 						} else {
 							history_load_into_line(line, &line_len, &line_pos, line_start, history_browse);
 						}
