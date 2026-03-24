@@ -106,7 +106,25 @@ load_loop:
 	jz    load_done
 	pushw %cx
 	pushw %si
-	/* CHS from LBA in SI */
+	movb  boot_drive, %dl
+	cmpb  $0x80, %dl
+	jb    read_chs
+	/* LBA read via INT 13h AH=42h. DAP at 0:0x500. */
+	xorw  %ax, %ax
+	movw  %ax, 0x50a
+	movw  %ax, 0x50c
+	movw  %ax, 0x50e
+	movb  $0x10, 0x500
+	movb  %al, 0x501
+	incw  %ax
+	movw  %ax, 0x502
+	movw  %bx, 0x504
+	movw  %es, 0x506
+	movw  %si, 0x508
+	movw  $0x500, %si
+	movb  $0x42, %ah
+	jmp   do_int13
+read_chs:
 	movw  %si, %ax
 	xorw  %dx, %dx
 	movw  $18, %di
@@ -121,6 +139,7 @@ load_loop:
 	movb  boot_drive, %dl
 	movb  $0x02, %ah
 	movb  $1, %al
+do_int13:
 	int   $0x13
 	popw  %si
 	popw  %cx
@@ -135,9 +154,8 @@ load_loop:
 	jnz   load_loop
 
 load_done:
-	movw  $0x7DFC, %bx
 	movb  boot_drive, %al
-	movb  %al, (%bx)
+	movb  %al, 0x600
 
 	/* Enable A20 gate (address bit 20).  Try three methods. */
 	movw  $0x2401, %ax	/* Method 1: BIOS */
@@ -165,11 +183,9 @@ load_done:
 	.long pm_start
 	.word 0x08
 
-	.align 4
 boot_drive:
 	.byte 0
-
-	.align 8
+	.align 2
 gdt:
 	.quad 0
 	.word 0xffff, 0x0000
@@ -200,10 +216,8 @@ pm_start:
 	movw  %ax, %fs
 	movw  %ax, %gs
 	movw  %ax, %ss
-	/* Stack above DMA buffer 0x20000-0x20200 so DMA does not overwrite stack */
 	movl  $0x20800, %esp
-	movl  $0x7e00, %eax
-	jmp   *%eax
+	ljmp  $0x08, $0x7e00
 
 .section .bootsig
 .byte 0x55, 0xaa

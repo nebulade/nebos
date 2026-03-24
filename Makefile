@@ -13,9 +13,9 @@ ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run
+.PHONY: all clean run run-floppy run-usb floppy usb
 
-all: image.bin final.bin root.img
+all: floppy.img usb.img final.bin root.img
 
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
@@ -99,13 +99,24 @@ kernel.bin: kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
 KERNEL_SECTORS_OFFSET = 62
-image.bin: boot.bin kernel.bin
+floppy.img: boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
 	cp boot.bin boot.bin.patched; \
 	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
 	cat boot.bin.patched kernel.bin > $@; \
 	truncate -s 1474560 $@; \
 	rm -f boot.bin.patched
+
+usb.img: boot.bin kernel.bin
+	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
+	cp boot.bin boot.bin.patched; \
+	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	cat boot.bin.patched kernel.bin > $@; \
+	truncate -s 64M $@; \
+	rm -f boot.bin.patched
+
+image.bin: floppy.img
+	cp floppy.img image.bin
 
 final.bin: boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
@@ -141,8 +152,19 @@ root.img: prog.bin space.bin
 	mcopy -i $@ space.bin ::SPACE.BIN
 
 run: image.bin root.img
-	qemu-system-i386 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -drive file=image.bin,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	$(MAKE) run-floppy
+
+floppy: floppy.img
+
+usb: usb.img
+
+run-floppy: floppy.img root.img
+	qemu-system-i386 -M pc -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+
+run-usb: usb.img root.img
+	qemu-system-i386 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
+	rm -f boot.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o vga.o ati.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
