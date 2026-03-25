@@ -4,6 +4,7 @@
 #include "io.h"
 #include "fbtext.h"
 #include "idle.h"
+#include "mouse.h"
 #include "process.h"
 #include "rtc.h"
 #include "terminal.h"
@@ -19,7 +20,7 @@ extern void program_clock_main(void);
 extern void program_colors_main(void);
 extern void program_display_main(void);
 extern void program_cpuinfo_main(void);
-extern void program_mouse_main(void);
+extern void program_mouseinfo_main(void);
 extern void program_power_main(const char *args);
 extern void disk_set_drive(unsigned int drive);
 extern unsigned int disk_get_drive(void);
@@ -211,17 +212,18 @@ static int is_cmd_cpuinfo(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
-static int is_cmd_mouse(const char *line, unsigned int line_len)
+static int is_cmd_mouseinfo(const char *line, unsigned int line_len)
 {
 	unsigned int i = 0;
 	while (i < line_len && line[i] == ' ')
 		i++;
-	if (i + 5 > line_len)
+	if (i + 9 > line_len)
 		return 0;
 	if (line[i] != 'm' || line[i+1] != 'o' || line[i+2] != 'u' ||
-	    line[i+3] != 's' || line[i+4] != 'e')
+	    line[i+3] != 's' || line[i+4] != 'e' || line[i+5] != 'i' ||
+	    line[i+6] != 'n' || line[i+7] != 'f' || line[i+8] != 'o')
 		return 0;
-	i += 5;
+	i += 9;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -508,6 +510,7 @@ void terminal_run(void)
 	line_start = io_get_cursor();
 
 	for (;;) {
+		mouse_poll_update();
 		update_datetime();
 		update_cursor_blink();
 		{
@@ -593,8 +596,8 @@ void terminal_run(void)
 					} else if (is_cmd_cpuinfo(line, line_len)) {
 						if (process_create("cpuinfo", program_cpuinfo_main) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_mouse(line, line_len)) {
-						if (process_create("mouse", program_mouse_main) < 0)
+					} else if (is_cmd_mouseinfo(line, line_len)) {
+						if (process_create("mouseinfo", program_mouseinfo_main) < 0)
 							io_putstr("error: too many processes\n");
 					} else if (is_cmd_power(line, line_len, power_args, POWER_ARGS_MAX)) {
 						if (process_create_arg("power", program_power_main, power_args) < 0)
@@ -617,7 +620,7 @@ void terminal_run(void)
 						io_putstr("run <file>  space\n");
 						io_putstr("clock     colors\n");
 						io_putstr("display   cpuinfo\n");
-						io_putstr("mouse\n");
+						io_putstr("mouseinfo\n");
 						io_putstr("power [info|set <low|balanced|max>]\n");
 						io_putstr("drive <0|1>\n");
 						io_putstr("ps        kill <pid>\n");

@@ -2,6 +2,7 @@
 
 #include "idle.h"
 #include "io.h"
+#include "mouse.h"
 #include "process.h"
 #include "terminal.h"
 #include "timer.h"
@@ -131,6 +132,7 @@ void kernel_main(void)
 	io_init();
 	idle_init();
 	timer_init();
+	mouse_init();
 	process_init();
 	terminal_run();
 }

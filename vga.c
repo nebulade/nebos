@@ -185,6 +185,53 @@ void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned 
 	vga_lfb_put_pixel(x, y, r, g, b);
 }
 
+static unsigned int vga_pixel_bytes(void)
+{
+	if (vga_fb_bpp_val == 16)
+		return 2;
+	if (vga_fb_bpp_val == 24)
+		return 3;
+	return 4;
+}
+
+void vga_fb_read_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
+		unsigned char *buf)
+{
+	unsigned int pitch, pb, row, col;
+	unsigned char *fb;
+	volatile unsigned char *src;
+
+	vga_cache_boot_fb();
+	if (!vga_fb_lfb || vga_fb_w == 0 || w == 0 || h == 0)
+		return;
+	pitch = vga_fb_pitch_val;
+	pb = vga_pixel_bytes();
+	fb = (unsigned char *)vga_fb_lfb;
+	for (row = 0; row < h; row++) {
+		src = fb + (unsigned long)(y + row) * pitch + x * pb;
+		for (col = 0; col < w * pb; col++)
+			buf[row * w * pb + col] = src[col];
+	}
+}
+
+void vga_fb_write_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
+		const unsigned char *buf)
+{
+	unsigned int pitch, pb, row, col;
+	volatile unsigned char *dst;
+
+	vga_cache_boot_fb();
+	if (!vga_fb_lfb || vga_fb_w == 0 || w == 0 || h == 0)
+		return;
+	pitch = vga_fb_pitch_val;
+	pb = vga_pixel_bytes();
+	for (row = 0; row < h; row++) {
+		dst = vga_fb_lfb + (unsigned long)(y + row) * pitch + x * pb;
+		for (col = 0; col < w * pb; col++)
+			dst[col] = buf[row * w * pb + col];
+	}
+}
+
 void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
 {
 	unsigned int pitch = vga_fb_pitch_val;

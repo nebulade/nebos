@@ -20,7 +20,7 @@ all: floppy.img usb.img final.bin root.img
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.o: kernel.c idle.h io.h process.h terminal.h timer.h serial.h vga.h
+kernel.o: kernel.c idle.h io.h mouse.h process.h terminal.h timer.h serial.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 io.o: io.c io.h fbtext.h
@@ -32,7 +32,7 @@ font_8x8.o: font_8x8.c font_8x8.h
 fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-terminal.o: terminal.c terminal.h io.h fbtext.h idle.h process.h rtc.h timer.h disk.h
+terminal.o: terminal.c terminal.h io.h fbtext.h idle.h mouse.h process.h rtc.h timer.h disk.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 hello.o: hello.c io.h
@@ -89,7 +89,10 @@ display.o: display.c io.h vga.h gpu.h ati.h fbtext.h
 cpuinfo.o: cpuinfo.c io.h timer.h idle.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-mousecmd.o: mousecmd.c io.h timer.h
+mousecmd.o: mousecmd.c io.h mouse.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+mouse.o: mouse.c mouse.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 idle.o: idle.c idle.h
@@ -110,7 +113,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mousecmd.o idle.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -191,4 +194,4 @@ run-usb: usb.img root.img
 	qemu-system-x86_64 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
