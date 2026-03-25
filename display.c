@@ -2,6 +2,7 @@
 
 #include "io.h"
 #include "vga.h"
+#include "gpu.h"
 #include "ati.h"
 #include "fbtext.h"
 
@@ -65,14 +66,16 @@ void program_display_main(void)
 	{
 		unsigned int pci_id = vga_fb_pci_id();
 		if (pci_id) {
-			io_putstr("PCI ");
+			io_putstr("GPU ");
+			io_putstr(gpu_vendor_name());
+			io_putstr(" PCI ");
 			put_hex(pci_id & 0xFFFF);
 			io_putchar(':');
 			put_hex(pci_id >> 16);
 			io_putchar('\n');
 		}
 	}
-	{
+	if (gpu_vendor() == GPU_VENDOR_ATI) {
 		unsigned int method = ati_mmio_method();
 		if (method) {
 			io_putstr("ATI CRTC ");

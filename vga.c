@@ -2,9 +2,8 @@
 
 #include "vga.h"
 #include "pci.h"
+#include "gpu.h"
 #include "ati.h"
-
-static unsigned int vga_pci_id;  /* vendor(lo16) | device(hi16) */
 
 /* Cached boot framebuffer info (set once when vga_fb_* first used). */
 static unsigned int vga_fb_w, vga_fb_h, vga_fb_pitch_val, vga_fb_bpp_val;
@@ -47,26 +46,6 @@ static void vga_reset_crtc(void)
 	port_outb(0x3D5, v | 0x40);
 }
 
-/* Find PCI VGA device and cache its ID (for non-ATI cards). */
-static void vga_find_pci_vga(void)
-{
-	unsigned int bus, dev, id, class_rev;
-
-	if (vga_pci_id)
-		return;
-	for (bus = 0; bus < 4; bus++) {
-		for (dev = 0; dev < 32; dev++) {
-			id = pci_cfg_read32(bus, dev, 0, 0x00);
-			if (id == 0xFFFFFFFF || id == 0)
-				continue;
-			class_rev = pci_cfg_read32(bus, dev, 0, 0x08);
-			if ((class_rev >> 24) == 0x03) {
-				vga_pci_id = id;
-				return;
-			}
-		}
-	}
-}
 
 static volatile struct vga_boot_fb_info *vga_get_boot_fb(void)
 {
@@ -86,6 +65,7 @@ static void vga_cache_boot_fb(void)
 	if (!info->valid) {
 		vga_fb_w = vga_fb_h = vga_fb_pitch_val = vga_fb_bpp_val = 0;
 		vga_fb_lfb = 0;
+		gpu_init();
 		return;
 	}
 	vga_fb_w = info->width;
@@ -113,11 +93,9 @@ static void vga_cache_boot_fb(void)
 		if (max_h < vga_fb_h)
 			vga_fb_h = max_h;
 	}
-	vga_reset_crtc();
-	ati_init();
-	vga_find_pci_vga();
-	if (ati_pci_id())
-		vga_pci_id = ati_pci_id();
+	gpu_init();
+	if (gpu_vendor() == GPU_VENDOR_ATI)
+		vga_reset_crtc();
 }
 
 /* ---- LFB API ---- */
@@ -155,7 +133,7 @@ unsigned int vga_fb_vram_kb(void)
 unsigned int vga_fb_pci_id(void)
 {
 	vga_cache_boot_fb();
-	return vga_pci_id;
+	return gpu_pci_id();
 }
 
 void *vga_fb_ptr(void)

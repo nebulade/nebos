@@ -4,6 +4,8 @@
 #include "process.h"
 #include "terminal.h"
 #include "timer.h"
+#include "serial.h"
+#include "vga.h"
 
 static inline void outb(unsigned short port, unsigned char v)
 {
@@ -117,13 +119,14 @@ static void timer_init(void)
 
 extern unsigned char __bss_start[], __bss_end[];
 
-void kernel_main(void) __attribute__((section(".text.entry")));
+void kernel_main(void);
 void kernel_main(void)
 {
 	unsigned char *p = __bss_start;
 	while (p < __bss_end)
 		*p++ = 0;
 
+	serial_init();
 	io_init();
 	timer_init();
 	process_init();
