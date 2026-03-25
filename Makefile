@@ -41,6 +41,9 @@ hello.o: hello.c io.h
 reboot.o: reboot.c
 	$(CC) $(CFLAGS) -o $@ $<
 
+poweroff.o: poweroff.c
+	$(CC) $(CFLAGS) -o $@ $<
+
 disk.o: disk.c disk.h io.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -86,6 +89,9 @@ display.o: display.c io.h vga.h gpu.h ati.h fbtext.h
 cpuinfo.o: cpuinfo.c io.h timer.h idle.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+mousecmd.o: mousecmd.c io.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 idle.o: idle.c idle.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -104,7 +110,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o run.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o idle.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mousecmd.o idle.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -185,4 +191,4 @@ run-usb: usb.img root.img
 	qemu-system-x86_64 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
