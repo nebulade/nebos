@@ -16,10 +16,26 @@
 #define MOUSE_CUR_W 16
 #define MOUSE_CUR_H 16
 
+/* Simple triangle cursor bitmap, 16×16.
+   Hotspot is the top-left pixel of the 16×16 box (x0,y0).
+   Each row is encoded as 16 bits; MSB (bit 15) maps to c=0. */
 static const unsigned short mouse_pointer_bits[MOUSE_CUR_H] = {
-	0x0000,
-	0x8000, 0xC000, 0xE000, 0xF000, 0xF800, 0xFC00, 0xFE00, 0xFF00,
-	0xFF80, 0x9780, 0x0380, 0x0180, 0x0180, 0x0000, 0x0000
+	0x8000,  /* 1....... ........  row 0: tip */
+	0xC000,  /* 11...... ........  row 1 */
+	0xE000,  /* 111..... ........  row 2 */
+	0xF000,  /* 1111.... ........  row 3 */
+	0xF800,  /* 11111... ........  row 4 */
+	0xFC00,  /* 111111.. ........  row 5 */
+	0xFE00,  /* 1111111. ........  row 6 */
+	0xFF00,  /* 11111111 ........  row 7 */
+	0xFC00,  /* 111111.. ........  row 8 */
+	0xE000,  /* 111..... ........  row 9 */
+	0x8000,  /* 1....... ........  row 10 */
+	0x0000,  /* ........ ........  row 11 */
+	0x0000,  /* ........ ........  row 12 */
+	0x0000,  /* ........ ........  row 13 */
+	0x0000,  /* ........ ........  row 14 */
+	0x0000   /* ........ ........  row 15 */
 };
 
 static int mouse_present_flag;
@@ -115,21 +131,11 @@ static void mouse_draw_cursor(unsigned int x0, unsigned int y0)
 {
 	unsigned int r, c;
 
+	/* Draw only the cursor fill bitmap (no outline). */
 	for (r = 0; r < MOUSE_CUR_H; r++) {
 		for (c = 0; c < MOUSE_CUR_W; c++) {
 			if (mouse_bit_at((int)r, (int)c))
 				vga_put_pixel_rgb(x0 + c, y0 + r, 255, 255, 255);
-		}
-	}
-	for (r = 0; r < MOUSE_CUR_H; r++) {
-		for (c = 0; c < MOUSE_CUR_W; c++) {
-			if (!mouse_bit_at((int)r, (int)c)) {
-				if (mouse_bit_at((int)r - 1, (int)c) ||
-				    mouse_bit_at((int)r + 1, (int)c) ||
-				    mouse_bit_at((int)r, (int)c - 1) ||
-				    mouse_bit_at((int)r, (int)c + 1))
-					vga_put_pixel_rgb(x0 + c, y0 + r, 0, 0, 0);
-			}
 		}
 	}
 }
