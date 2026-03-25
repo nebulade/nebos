@@ -3,6 +3,7 @@
 
 #include "io.h"
 #include "fbtext.h"
+#include "idle.h"
 #include "process.h"
 #include "rtc.h"
 #include "terminal.h"
@@ -17,6 +18,7 @@ extern void program_clock_main(void);
 extern void program_colors_main(void);
 extern void program_display_main(void);
 extern void program_cpuinfo_main(void);
+extern void program_power_main(const char *args);
 extern void disk_set_drive(unsigned int drive);
 extern unsigned int disk_get_drive(void);
 
@@ -345,6 +347,34 @@ static int is_cmd_kill(const char *line, unsigned int line_len, unsigned int *pi
 	return 1;
 }
 
+#define POWER_ARGS_MAX 32
+static int is_cmd_power(const char *line, unsigned int line_len, char *args_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 'p' || line[i+1] != 'o' || line[i+2] != 'w' || line[i+3] != 'e' || line[i+4] != 'r')
+		return 0;
+	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i == line_len) {
+		if (buf_size > 0)
+			args_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		args_buf[j++] = line[i++];
+	while (j > 0 && args_buf[j - 1] == ' ')
+		j--;
+	args_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 /* Redraw line from index `from` to end, clear one cell after, set cursor to line_pos. */
 static void redraw_line_from(const char *line, unsigned int line_len,
 	unsigned int line_pos, unsigned int line_start, unsigned int from)
@@ -492,6 +522,7 @@ void terminal_run(void)
 					}
 				} else if (k == '\n') {
 					static char cat_fname[CAT_FNAME_MAX];
+					static char power_args[POWER_ARGS_MAX];
 					unsigned int drive_sel, kill_pid;
 					int skip_prompt = 0;
 					io_putchar('\n');
@@ -526,6 +557,9 @@ void terminal_run(void)
 					} else if (is_cmd_cpuinfo(line, line_len)) {
 						if (process_create("cpuinfo", program_cpuinfo_main) < 0)
 							io_putstr("error: too many processes\n");
+					} else if (is_cmd_power(line, line_len, power_args, POWER_ARGS_MAX)) {
+						if (process_create_arg("power", program_power_main, power_args) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_drive(line, line_len, &drive_sel)) {
 						disk_set_drive(drive_sel);
 						io_putstr("drive ");
@@ -544,6 +578,7 @@ void terminal_run(void)
 						io_putstr("run <file>  space\n");
 						io_putstr("clock     colors\n");
 						io_putstr("display   cpuinfo\n");
+						io_putstr("power [info|set <low|balanced|max>]\n");
 						io_putstr("drive <0|1>\n");
 						io_putstr("ps        kill <pid>\n");
 						io_putstr("help      clear\n");
@@ -587,7 +622,7 @@ void terminal_run(void)
 					}
 				}
 			} else {
-				__asm__ volatile ("hlt");
+				cpu_idle();
 			}
 		}
 	}

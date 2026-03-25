@@ -1,5 +1,6 @@
 /* Kernel: entry point at 0x7E00, timer (PIT 1 kHz), process init, terminal. */
 
+#include "idle.h"
 #include "io.h"
 #include "process.h"
 #include "terminal.h"
@@ -128,6 +129,7 @@ void kernel_main(void)
 
 	serial_init();
 	io_init();
+	idle_init();
 	timer_init();
 	process_init();
 	terminal_run();
