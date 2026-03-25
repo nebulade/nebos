@@ -16,6 +16,7 @@ extern void program_run_main(const char *filename);
 extern void program_clock_main(void);
 extern void program_colors_main(void);
 extern void program_display_main(void);
+extern void program_cpuinfo_main(void);
 extern void disk_set_drive(unsigned int drive);
 extern unsigned int disk_get_drive(void);
 
@@ -167,6 +168,22 @@ static int is_cmd_display(const char *line, unsigned int line_len)
 		return 0;
 	if (line[i] != 'd' || line[i+1] != 'i' || line[i+2] != 's' || line[i+3] != 'p' ||
 	    line[i+4] != 'l' || line[i+5] != 'a' || line[i+6] != 'y')
+		return 0;
+	i += 7;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_cpuinfo(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 'c' || line[i+1] != 'p' || line[i+2] != 'u' || line[i+3] != 'i' ||
+	    line[i+4] != 'n' || line[i+5] != 'f' || line[i+6] != 'o')
 		return 0;
 	i += 7;
 	while (i < line_len && line[i] == ' ')
@@ -506,6 +523,9 @@ void terminal_run(void)
 					} else if (is_cmd_display(line, line_len)) {
 						if (process_create("display", program_display_main) < 0)
 							io_putstr("error: too many processes\n");
+					} else if (is_cmd_cpuinfo(line, line_len)) {
+						if (process_create("cpuinfo", program_cpuinfo_main) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_drive(line, line_len, &drive_sel)) {
 						disk_set_drive(drive_sel);
 						io_putstr("drive ");
@@ -523,7 +543,8 @@ void terminal_run(void)
 						io_putstr("ls        cat <file>\n");
 						io_putstr("run <file>  space\n");
 						io_putstr("clock     colors\n");
-						io_putstr("display   drive <0|1>\n");
+						io_putstr("display   cpuinfo\n");
+						io_putstr("drive <0|1>\n");
 						io_putstr("ps        kill <pid>\n");
 						io_putstr("help      clear\n");
 					} else if (is_cmd_clear(line, line_len)) {

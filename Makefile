@@ -83,6 +83,9 @@ colors.o: colors.c fbtext.h io.h timer.h vga.h
 display.o: display.c io.h vga.h gpu.h ati.h fbtext.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+cpuinfo.o: cpuinfo.c io.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 boot.elf: boot.o
 	$(LD) $(BOOT_LDFLAGS) -o $@ $<
 
@@ -98,7 +101,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o run.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o disk.o fat.o ls.o cat.o run.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -179,4 +182,4 @@ run-usb: usb.img root.img
 	qemu-system-x86_64 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o fat.o ls.o cat.o run.o disk.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
