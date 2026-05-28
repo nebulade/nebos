@@ -9,6 +9,7 @@
 #include "rtc.h"
 #include "terminal.h"
 #include "timer.h"
+#include "vga.h"
 
 extern void program_hello_main(void);
 extern void program_reboot_main(void);
@@ -510,6 +511,7 @@ void terminal_run(void)
 	line_start = io_get_cursor();
 
 	for (;;) {
+		vga_fb_flush_pending_check();
 		mouse_poll_update();
 		update_datetime();
 		update_cursor_blink();

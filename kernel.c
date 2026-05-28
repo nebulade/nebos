@@ -134,5 +134,7 @@ void kernel_main(void)
 	timer_init();
 	mouse_init();
 	process_init();
+	vga_shadow_init();
+	vga_fb_flush();
 	terminal_run();
 }

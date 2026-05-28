@@ -68,6 +68,9 @@ serial.o: serial.c serial.h pci.h
 vga.o: vga.c vga.h pci.h gpu.h ati.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+vga_copy.o: vga_copy.S
+	$(AS) $(ASFLAGS) -o $@ $<
+
 gpu.o: gpu.c gpu.h pci.h ati.h nvidia.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -113,7 +116,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -193,5 +196,13 @@ run-usb: usb.img root.img
 	qemu-system-i386 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
 	qemu-system-x86_64 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
 
+scp-final: final.bin
+	scp final.bin root@192.168.0.136:
+	ssh root@192.168.0.136 dd if=final.bin of=/dev/fd0 bs=512
+
+scp-root: root.img
+	scp root.img root@192.168.0.136:
+	ssh root@192.168.0.136 dd if=root.img of=/dev/fd0 bs=512
+
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o vga.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin

@@ -33,7 +33,7 @@ static void hue_to_rgb(unsigned int hue, unsigned int *r, unsigned int *g, unsig
 	*b = (b1 * (RAINBOW_SEG - f) + b2 * f) / RAINBOW_SEG;
 }
 
-static void draw_frame(volatile unsigned char *fb, unsigned int w, unsigned int h,
+static void draw_frame(unsigned char *fb, unsigned int w, unsigned int h,
 		unsigned int pitch, unsigned int bpp, unsigned int phase)
 {
 	/* One full rainbow across width and height (stretched) */
@@ -87,7 +87,7 @@ static void format_fps(unsigned int fps, char *buf)
 
 void program_colors_main(void)
 {
-	volatile unsigned char *fb;
+	unsigned char *fb;
 	unsigned int w, h, pitch, bpp;
 	unsigned int phase = 0;
 	unsigned int frame_start;
@@ -98,7 +98,7 @@ void program_colors_main(void)
 
 	if (!vga_has_vesa())
 		return;
-	fb = (volatile unsigned char *)vga_fb_ptr();
+	fb = (unsigned char *)vga_fb_ptr();
 	if (!fb)
 		return;
 	w = vga_fb_width();

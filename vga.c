@@ -1,15 +1,22 @@
-/* VGA: VESA LFB (from boot). */
+/* VGA: VESA LFB (from boot) with shadow buffer and 30Hz USWC flush. */
 
 #include "vga.h"
 #include "pci.h"
 #include "gpu.h"
 #include "ati.h"
+#include "serial.h"
 
 /* Cached boot framebuffer info (set once when vga_fb_* first used). */
 static unsigned int vga_fb_w, vga_fb_h, vga_fb_pitch_val, vga_fb_bpp_val;
 static unsigned int vga_fb_vram_kb_val;
 static volatile unsigned char *vga_fb_lfb;
 static int vga_fb_cached;
+
+/* Shadow buffer state. */
+static unsigned char *vga_shadow_buf;
+static unsigned int   vga_shadow_pitch;
+static unsigned int   vga_shadow_size;
+int vga_shadow_dirty;
 
 /*
  * Force CRTC Start Address to 0 and Line Compare to max (0x3FF).
@@ -139,6 +146,8 @@ unsigned int vga_fb_pci_id(void)
 void *vga_fb_ptr(void)
 {
 	vga_cache_boot_fb();
+	if (vga_shadow_buf)
+		return (void *)vga_shadow_buf;
 	return (void *)vga_fb_lfb;
 }
 
@@ -149,15 +158,15 @@ int vga_has_vesa(void)
 }
 
 /* 16bpp: RGB 5:6:5.  32bpp: BGRX byte order (standard VBE / QEMU). */
-static void vga_lfb_put_pixel(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
+static void shadow_put_pixel(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
 {
-	unsigned int pitch = vga_fb_pitch_val;
+	unsigned int pitch = vga_shadow_pitch;
 	unsigned int bpp = vga_fb_bpp_val;
 	unsigned char *p;
 
-	if (x >= vga_fb_w || y >= vga_fb_h || !vga_fb_lfb)
+	if (x >= vga_fb_w || y >= vga_fb_h || !vga_shadow_buf)
 		return;
-	p = (unsigned char *)vga_fb_lfb + (unsigned long)y * pitch;
+	p = vga_shadow_buf + (unsigned long)y * pitch;
 	if (bpp == 16) {
 		unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 		unsigned int off = x * 2;
@@ -180,9 +189,10 @@ static void vga_lfb_put_pixel(unsigned int x, unsigned int y, unsigned int r, un
 void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
 {
 	vga_cache_boot_fb();
-	if (!vga_fb_lfb)
+	if (!vga_shadow_buf)
 		return;
-	vga_lfb_put_pixel(x, y, r, g, b);
+	shadow_put_pixel(x, y, r, g, b);
+	vga_shadow_dirty = 1;
 }
 
 static unsigned int vga_pixel_bytes(void)
@@ -199,14 +209,14 @@ void vga_fb_read_rect(unsigned int x, unsigned int y, unsigned int w, unsigned i
 {
 	unsigned int pitch, pb, row, col;
 	unsigned char *fb;
-	volatile unsigned char *src;
+	const unsigned char *src;
 
 	vga_cache_boot_fb();
-	if (!vga_fb_lfb || vga_fb_w == 0 || w == 0 || h == 0)
+	if (!vga_shadow_buf || vga_fb_w == 0 || w == 0 || h == 0)
 		return;
-	pitch = vga_fb_pitch_val;
+	pitch = vga_shadow_pitch;
 	pb = vga_pixel_bytes();
-	fb = (unsigned char *)vga_fb_lfb;
+	fb = vga_shadow_buf;
 	for (row = 0; row < h; row++) {
 		src = fb + (unsigned long)(y + row) * pitch + x * pb;
 		for (col = 0; col < w * pb; col++)
@@ -218,38 +228,39 @@ void vga_fb_write_rect(unsigned int x, unsigned int y, unsigned int w, unsigned 
 		const unsigned char *buf)
 {
 	unsigned int pitch, pb, row, col;
-	volatile unsigned char *dst;
+	unsigned char *dst;
 
 	vga_cache_boot_fb();
-	if (!vga_fb_lfb || vga_fb_w == 0 || w == 0 || h == 0)
+	if (!vga_shadow_buf || vga_fb_w == 0 || w == 0 || h == 0)
 		return;
-	pitch = vga_fb_pitch_val;
+	pitch = vga_shadow_pitch;
 	pb = vga_pixel_bytes();
 	for (row = 0; row < h; row++) {
-		dst = vga_fb_lfb + (unsigned long)(y + row) * pitch + x * pb;
+		dst = vga_shadow_buf + (unsigned long)(y + row) * pitch + x * pb;
 		for (col = 0; col < w * pb; col++)
 			dst[col] = buf[row * w * pb + col];
 	}
+	vga_shadow_dirty = 1;
 }
 
 void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
 {
-	unsigned int pitch = vga_fb_pitch_val;
+	unsigned int pitch = vga_shadow_pitch;
 	unsigned int bpp = vga_fb_bpp_val;
 
 	vga_cache_boot_fb();
-	if (!vga_fb_lfb)
+	if (!vga_shadow_buf)
 		return;
 	if (bpp == 16) {
 		unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 		unsigned short val = (unsigned short)((rgb16 & 0xFF) | ((rgb16 >> 8) << 8));
-		volatile unsigned short *fb = (volatile unsigned short *)vga_fb_lfb;
+		unsigned short *fb = (unsigned short *)vga_shadow_buf;
 		unsigned int n = (pitch / 2) * vga_fb_h;
 		unsigned int i;
 		for (i = 0; i < n; i++)
 			fb[i] = val;
 	} else if (bpp == 24) {
-		volatile unsigned char *p = vga_fb_lfb;
+		unsigned char *p = vga_shadow_buf;
 		unsigned int row, x;
 		for (row = 0; row < vga_fb_h; row++) {
 			unsigned int row_off = row * pitch;
@@ -261,7 +272,7 @@ void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
 			}
 		}
 	} else if (bpp == 32) {
-		volatile unsigned int *fb = (volatile unsigned int *)vga_fb_lfb;
+		unsigned int *fb = (unsigned int *)vga_shadow_buf;
 		unsigned int pixel = ((unsigned int)r << 16) | ((unsigned int)g << 8) | b;
 		unsigned int stride = pitch / 4;
 		unsigned int row, x;
@@ -269,4 +280,110 @@ void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
 			for (x = 0; x < vga_fb_w; x++)
 				fb[row * stride + x] = pixel;
 	}
+	vga_shadow_dirty = 1;
+}
+
+/* ---- Shadow buffer init and flush ---- */
+
+/* Assembly row copy: rep movsl optimized for P5 USWC write-combining to UC memory. */
+extern void vga_fb_copy_row(void *dst, void *src, unsigned int dwords);
+
+int vga_shadow_flush_pending;
+
+void vga_shadow_init(void)
+{
+	vga_cache_boot_fb();
+	if (!vga_fb_lfb || vga_fb_w == 0 || vga_fb_h == 0) {
+		serial_puts("vga: no VESA mode, shadow buffer disabled\n");
+		return;
+	}
+
+	vga_shadow_buf = (unsigned char *)VGA_SHADOW_BASE;
+	vga_shadow_pitch = vga_fb_pitch_val;
+	vga_shadow_size = vga_fb_h * vga_shadow_pitch;
+	vga_shadow_dirty = 0;
+	vga_shadow_flush_pending = 0;
+	serial_puts("vga: shadow buffer ");
+	serial_puthex((unsigned int)VGA_SHADOW_BASE);
+	serial_puts(" size=");
+	serial_putdec(vga_shadow_size / 1024);
+	serial_puts("KB\n");
+}
+
+/* Single bulk copy: shadow pitch == VRAM pitch, so entire buffer is contiguous. */
+static void shadow_bulk_copy(void)
+{
+	unsigned int dwords = vga_shadow_size / 4;
+	vga_fb_copy_row((void *)vga_fb_lfb, (void *)vga_shadow_buf, dwords);
+}
+
+/* Debug square: 32x32 at bottom-right, cycles color each flush. Drawn into shadow buffer
+   so it gets copied to VRAM along with everything else. Uses bright colors to be obvious. */
+static void draw_flush_debug_square(void)
+{
+	static unsigned int flush_color_counter;
+	unsigned int r, g, b;
+	unsigned int x, y;
+	unsigned int sx = vga_fb_w - 32;
+	unsigned int sy = vga_fb_h - 32;
+	unsigned int pitch = vga_shadow_pitch;
+	unsigned int bpp = vga_fb_bpp_val;
+	unsigned char *fb = vga_shadow_buf;
+
+	flush_color_counter++;
+	/* Cycle through bright primary/secondary colors */
+	switch (flush_color_counter % 6) {
+		case 0: r = 255; g = 0;   b = 0;   break; /* red */
+		case 1: r = 0;   g = 255; b = 0;   break; /* green */
+		case 2: r = 0;   g = 0;   b = 255; break; /* blue */
+		case 3: r = 255; g = 255; b = 0;   break; /* yellow */
+		case 4: r = 255; g = 0;   b = 255; break; /* magenta */
+		default: r = 0; g = 255; b = 255; break; /* cyan */
+	}
+
+	for (y = 0; y < 32; y++) {
+		unsigned char *row = fb + (sy + y) * pitch;
+		for (x = 0; x < 32; x++) {
+			if (bpp == 16) {
+				unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+				unsigned short *p = (unsigned short *)(row + (sx + x) * 2);
+				*p = (unsigned short)rgb16;
+			} else if (bpp == 24) {
+				row[(sx + x) * 3]     = (unsigned char)b;
+				row[(sx + x) * 3 + 1] = (unsigned char)g;
+				row[(sx + x) * 3 + 2] = (unsigned char)r;
+			} else if (bpp == 32) {
+				unsigned int *p = (unsigned int *)(row + (sx + x) * 4);
+				*p = (unsigned int)b | ((unsigned int)g << 8) | ((unsigned int)r << 16);
+			}
+		}
+	}
+}
+
+void vga_fb_flush_pending_check(void)
+{
+	if (!vga_shadow_flush_pending)
+		return;
+	vga_shadow_flush_pending = 0;
+	if (!vga_shadow_dirty)
+		return;
+	serial_puts("vga: flush\n");
+	draw_flush_debug_square();
+	shadow_bulk_copy();
+	vga_shadow_dirty = 0;
+}
+
+void vga_fb_flush(void)
+{
+	vga_cache_boot_fb();
+	if (!vga_shadow_buf || !vga_fb_lfb || !vga_shadow_dirty)
+		return;
+	draw_flush_debug_square();
+	shadow_bulk_copy();
+	vga_shadow_dirty = 0;
+}
+
+int vga_shadow_is_active(void)
+{
+	return vga_shadow_buf != 0;
 }

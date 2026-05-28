@@ -63,6 +63,9 @@ void program_display_main(void)
 	io_putstr("LFB ");
 	put_hex((unsigned int)(unsigned long)vga_fb_ptr());
 	io_putchar('\n');
+	io_putstr("rendering: ");
+	io_putstr(vga_shadow_is_active() ? "shadow buffer" : "direct");
+	io_putchar('\n');
 	{
 		unsigned int pci_id = vga_fb_pci_id();
 		if (pci_id) {
