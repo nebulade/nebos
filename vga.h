@@ -53,7 +53,7 @@ void vga_fb_flush_pending_check(void);
 /* Returns 1 if shadow buffer is active, 0 if rendering directly to VRAM. */
 int vga_shadow_is_active(void);
 
-/* Dirty flag: set by any draw operation, checked by timer flush. */
-extern int vga_shadow_dirty;
+/* Mark rows dirty for direct buffer manipulators (e.g. fbtext_scroll). */
+void vga_fb_mark_dirty_rect(unsigned int y, unsigned int h);
 
 #endif

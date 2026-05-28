@@ -16,7 +16,45 @@ static int vga_fb_cached;
 static unsigned char *vga_shadow_buf;
 static unsigned int   vga_shadow_pitch;
 static unsigned int   vga_shadow_size;
-int vga_shadow_dirty;
+
+/* Dirty row bitmap: one bit per row. Max 2048 rows = 256 bytes. */
+#define MAX_DIRTY_ROWS 2048
+static unsigned char vga_shadow_dirty_rows[MAX_DIRTY_ROWS / 8];
+
+static void mark_dirty_row(unsigned int y)
+{
+	if (y < MAX_DIRTY_ROWS)
+		vga_shadow_dirty_rows[y / 8] |= (1 << (y % 8));
+}
+
+static void mark_dirty_rect(unsigned int y, unsigned int h)
+{
+	unsigned int i;
+	for (i = 0; i < h; i++)
+		mark_dirty_row(y + i);
+}
+
+static int any_dirty_rows(void)
+{
+	unsigned int i;
+	unsigned int max_row = vga_fb_h;
+	if (max_row > MAX_DIRTY_ROWS)
+		max_row = MAX_DIRTY_ROWS;
+	for (i = 0; i < (max_row + 7) / 8; i++)
+		if (vga_shadow_dirty_rows[i])
+			return 1;
+	return 0;
+}
+
+static void clear_dirty_rows(void)
+{
+	unsigned int i;
+	unsigned int max_row = vga_fb_h;
+	if (max_row > MAX_DIRTY_ROWS)
+		max_row = MAX_DIRTY_ROWS;
+	for (i = 0; i < (max_row + 7) / 8; i++)
+		vga_shadow_dirty_rows[i] = 0;
+}
 
 /*
  * Force CRTC Start Address to 0 and Line Compare to max (0x3FF).
@@ -184,6 +222,7 @@ static void shadow_put_pixel(unsigned int x, unsigned int y, unsigned int r, uns
 		p[off + 2] = (unsigned char)r;
 		p[off + 3] = 0;
 	}
+	mark_dirty_row(y);
 }
 
 void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
@@ -192,7 +231,6 @@ void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned 
 	if (!vga_shadow_buf)
 		return;
 	shadow_put_pixel(x, y, r, g, b);
-	vga_shadow_dirty = 1;
 }
 
 static unsigned int vga_pixel_bytes(void)
@@ -240,7 +278,7 @@ void vga_fb_write_rect(unsigned int x, unsigned int y, unsigned int w, unsigned 
 		for (col = 0; col < w * pb; col++)
 			dst[col] = buf[row * w * pb + col];
 	}
-	vga_shadow_dirty = 1;
+	mark_dirty_rect(y, h);
 }
 
 void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
@@ -280,7 +318,7 @@ void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
 			for (x = 0; x < vga_fb_w; x++)
 				fb[row * stride + x] = pixel;
 	}
-	vga_shadow_dirty = 1;
+	mark_dirty_rect(0, vga_fb_h);
 }
 
 /* ---- Shadow buffer init and flush ---- */
@@ -301,8 +339,8 @@ void vga_shadow_init(void)
 	vga_shadow_buf = (unsigned char *)VGA_SHADOW_BASE;
 	vga_shadow_pitch = vga_fb_pitch_val;
 	vga_shadow_size = vga_fb_h * vga_shadow_pitch;
-	vga_shadow_dirty = 0;
 	vga_shadow_flush_pending = 0;
+	clear_dirty_rows();
 	serial_puts("vga: shadow buffer ");
 	serial_puthex((unsigned int)VGA_SHADOW_BASE);
 	serial_puts(" size=");
@@ -310,11 +348,28 @@ void vga_shadow_init(void)
 	serial_puts("KB\n");
 }
 
-/* Single bulk copy: shadow pitch == VRAM pitch, so entire buffer is contiguous. */
-static void shadow_bulk_copy(void)
+/* Copy only dirty rows from shadow to VRAM. */
+static void shadow_copy_dirty_rows(void)
 {
-	unsigned int dwords = vga_shadow_size / 4;
-	vga_fb_copy_row((void *)vga_fb_lfb, (void *)vga_shadow_buf, dwords);
+	unsigned int row;
+	unsigned int pb = vga_pixel_bytes();
+	unsigned int row_bytes = vga_fb_w * pb;
+	unsigned int dwords = row_bytes / 4;
+	unsigned char *src = vga_shadow_buf;
+	unsigned char *dst = (unsigned char *)vga_fb_lfb;
+	unsigned int max_row = vga_fb_h;
+	if (max_row > MAX_DIRTY_ROWS)
+		max_row = MAX_DIRTY_ROWS;
+
+	for (row = 0; row < max_row; row++) {
+		if (vga_shadow_dirty_rows[row / 8] & (1 << (row % 8))) {
+			vga_fb_copy_row(
+				(void *)(dst + (unsigned long)row * vga_fb_pitch_val),
+				(void *)(src + (unsigned long)row * vga_shadow_pitch),
+				dwords
+			);
+		}
+	}
 }
 
 /* Debug square: 32x32 at bottom-right, cycles color each flush. Drawn into shadow buffer
@@ -358,6 +413,7 @@ static void draw_flush_debug_square(void)
 			}
 		}
 	}
+	mark_dirty_rect(sy, 32);
 }
 
 void vga_fb_flush_pending_check(void)
@@ -365,25 +421,31 @@ void vga_fb_flush_pending_check(void)
 	if (!vga_shadow_flush_pending)
 		return;
 	vga_shadow_flush_pending = 0;
-	if (!vga_shadow_dirty)
+	if (!any_dirty_rows())
 		return;
-	serial_puts("vga: flush\n");
 	draw_flush_debug_square();
-	shadow_bulk_copy();
-	vga_shadow_dirty = 0;
+	shadow_copy_dirty_rows();
+	clear_dirty_rows();
 }
 
 void vga_fb_flush(void)
 {
 	vga_cache_boot_fb();
-	if (!vga_shadow_buf || !vga_fb_lfb || !vga_shadow_dirty)
+	if (!vga_shadow_buf || !vga_fb_lfb)
+		return;
+	if (!any_dirty_rows())
 		return;
 	draw_flush_debug_square();
-	shadow_bulk_copy();
-	vga_shadow_dirty = 0;
+	shadow_copy_dirty_rows();
+	clear_dirty_rows();
 }
 
 int vga_shadow_is_active(void)
 {
 	return vga_shadow_buf != 0;
+}
+
+void vga_fb_mark_dirty_rect(unsigned int y, unsigned int h)
+{
+	mark_dirty_rect(y, h);
 }

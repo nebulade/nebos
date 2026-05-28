@@ -126,7 +126,7 @@ void fbtext_scroll_up_one_line(void)
 {
 	unsigned int y, i;
 	unsigned int pitch = vga_fb_pitch();
-	volatile unsigned char *fb = (volatile unsigned char *)vga_fb_ptr();
+	unsigned char *fb = (unsigned char *)vga_fb_ptr();
 	unsigned int height = vga_fb_height();
 
 	if (!fb)
@@ -145,6 +145,8 @@ void fbtext_scroll_up_one_line(void)
 		for (i = 0; i < pitch; i++)
 			fb[off + i] = 0;
 	}
+	/* Mark scrolled rows dirty so the flush copies them. */
+	vga_fb_mark_dirty_rect(CONTENT_TOP, height - CONTENT_TOP);
 }
 
 void fbtext_set_cursor(unsigned int col, unsigned int row)

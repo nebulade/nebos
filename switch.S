@@ -6,8 +6,8 @@
  * and -- when the timeslice expires -- call schedule() and swap ESP
  * to the next process.
  *
- * Shadow buffer flush: every ~33 ticks (30Hz), copy the shadow buffer
- * to the video framebuffer using USWC write-combining.
+ * Shadow buffer flush: every ~33 ticks (30Hz), set pending flag.
+ * Main loop checks dirty rows and copies only what changed.
  */
 .code32
 .text
@@ -16,7 +16,6 @@
 .extern current_pid
 .extern procs
 .extern schedule
-.extern vga_shadow_dirty
 .extern vga_shadow_flush_pending
 
 /* struct process offsets (must match process.h / process.c) */
@@ -35,12 +34,10 @@ pit_irq_stub:
 	movb  $0x20, %al
 	outb  %al, $0x20
 
-	/* Shadow buffer flush at 30Hz: just set flag, main loop does the copy. */
+	/* Shadow buffer flush at 30Hz: set pending flag, main loop does the copy. */
 	decl  flush_counter
 	jnz   .no_flush
 	movl  $FLUSH_INTERVAL, flush_counter
-	cmpl  $0, vga_shadow_dirty
-	jz    .no_flush
 	movl  $1, vga_shadow_flush_pending
 .no_flush:
 
