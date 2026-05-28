@@ -4,7 +4,6 @@
 #include "pci.h"
 #include "gpu.h"
 #include "ati.h"
-#include "serial.h"
 
 /* Cached boot framebuffer info (set once when vga_fb_* first used). */
 static unsigned int vga_fb_w, vga_fb_h, vga_fb_pitch_val, vga_fb_bpp_val;
@@ -331,21 +330,14 @@ int vga_shadow_flush_pending;
 void vga_shadow_init(void)
 {
 	vga_cache_boot_fb();
-	if (!vga_fb_lfb || vga_fb_w == 0 || vga_fb_h == 0) {
-		serial_puts("vga: no VESA mode, shadow buffer disabled\n");
+	if (!vga_fb_lfb || vga_fb_w == 0 || vga_fb_h == 0)
 		return;
-	}
 
 	vga_shadow_buf = (unsigned char *)VGA_SHADOW_BASE;
 	vga_shadow_pitch = vga_fb_pitch_val;
 	vga_shadow_size = vga_fb_h * vga_shadow_pitch;
 	vga_shadow_flush_pending = 0;
 	clear_dirty_rows();
-	serial_puts("vga: shadow buffer ");
-	serial_puthex((unsigned int)VGA_SHADOW_BASE);
-	serial_puts(" size=");
-	serial_putdec(vga_shadow_size / 1024);
-	serial_puts("KB\n");
 }
 
 /* Copy only dirty rows from shadow to VRAM. */

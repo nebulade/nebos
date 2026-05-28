@@ -1,4 +1,4 @@
-/* colors command: full-screen animated rainbow in VESA LFB. Target 60fps. Press ESC to return. */
+/* colors command: full-screen animated rainbow in VESA LFB. Target 30fps (matches flush rate). Press ESC to return. */
 
 #include "fbtext.h"
 #include "io.h"
@@ -7,62 +7,127 @@
 
 #define RAINBOW_SEG   256
 #define RAINBOW_FULL  (6 * RAINBOW_SEG)
-#define FRAME_MS      16
+#define FRAME_MS      33 /* matches 30Hz flush rate */
 #define PHASE_STEP    32
 /* FPS overlay: 7 chars × 8 px wide, 8 px tall. Rainbow must not draw here. */
 #define FPS_RECT_W    (7 * 8)
 #define FPS_RECT_H    8
 
-static void hue_to_rgb(unsigned int hue, unsigned int *r, unsigned int *g, unsigned int *b)
+/* Precomputed hue-to-RGB lookup table. Packed as 0x00BBGGRR for fast 32-bit load. */
+static unsigned int hue_lut[RAINBOW_FULL];
+
+static void build_hue_lut(void)
 {
-	unsigned int seg = hue / RAINBOW_SEG;
-	unsigned int f   = hue % RAINBOW_SEG;
-	unsigned int r1, g1, b1, r2, g2, b2;
-	if (seg >= 6)
-		seg = 0;
-	switch (seg) {
-		case 0: r1=255; g1=0;   b1=0;   r2=255; g2=255; b2=0;   break; /* R → Y */
-		case 1: r1=255; g1=255; b1=0;   r2=0;   g2=255; b2=0;   break; /* Y → G */
-		case 2: r1=0;   g1=255; b1=0;   r2=0;   g2=255; b2=255; break; /* G → C */
-		case 3: r1=0;   g1=255; b1=255; r2=0;   g2=0;   b2=255; break; /* C → B */
-		case 4: r1=0;   g1=0;   b1=255; r2=255; g2=0;   b2=255; break; /* B → M */
-		default: r1=255; g1=0; b1=255; r2=255; g2=0;   b2=0;   break; /* M → R */
+	unsigned int i;
+	for (i = 0; i < RAINBOW_FULL; i++) {
+		unsigned int seg = i / RAINBOW_SEG;
+		unsigned int f   = i % RAINBOW_SEG;
+		unsigned int r1, g1, b1, r2, g2, b2;
+		if (seg >= 6)
+			seg = 0;
+		switch (seg) {
+			case 0: r1=255; g1=0;   b1=0;   r2=255; g2=255; b2=0;   break;
+			case 1: r1=255; g1=255; b1=0;   r2=0;   g2=255; b2=0;   break;
+			case 2: r1=0;   g1=255; b1=0;   r2=0;   g2=255; b2=255; break;
+			case 3: r1=0;   g1=255; b1=255; r2=0;   g2=0;   b2=255; break;
+			case 4: r1=0;   g1=0;   b1=255; r2=255; g2=0;   b2=255; break;
+			default: r1=255; g1=0; b1=255; r2=255; g2=0;   b2=0;   break;
+		}
+		unsigned int r = (r1 * (RAINBOW_SEG - f) + r2 * f) / RAINBOW_SEG;
+		unsigned int g = (g1 * (RAINBOW_SEG - f) + g2 * f) / RAINBOW_SEG;
+		unsigned int b = (b1 * (RAINBOW_SEG - f) + b2 * f) / RAINBOW_SEG;
+		hue_lut[i] = b | (g << 8) | (r << 16);
 	}
-	*r = (r1 * (RAINBOW_SEG - f) + r2 * f) / RAINBOW_SEG;
-	*g = (g1 * (RAINBOW_SEG - f) + g2 * f) / RAINBOW_SEG;
-	*b = (b1 * (RAINBOW_SEG - f) + b2 * f) / RAINBOW_SEG;
 }
 
 static void draw_frame(unsigned char *fb, unsigned int w, unsigned int h,
 		unsigned int pitch, unsigned int bpp, unsigned int phase)
 {
-	/* One full rainbow across width and height (stretched) */
 	unsigned int scale_x = RAINBOW_FULL / (w ? w : 1);
 	unsigned int scale_y = RAINBOW_FULL / (h ? h : 1);
-	unsigned int y, x;
+	unsigned int y;
 
 	for (y = 0; y < h; y++) {
-		for (x = 0; x < w; x++) {
-			/* Leave FPS rect untouched so the overlay is never overwritten */
-			if (y < FPS_RECT_H && x < FPS_RECT_W)
-				continue;
-			unsigned int hue = (phase + x * scale_x + y * scale_y) % RAINBOW_FULL;
-			unsigned int r, g, b;
-			hue_to_rgb(hue, &r, &g, &b);
+		unsigned int row_hue = (phase + y * scale_y) % RAINBOW_FULL;
+		unsigned char *row = fb + (unsigned long)y * pitch;
 
-			if (bpp == 16) {
-				unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-				unsigned int off = (unsigned long)y * pitch + x * 2;
-				fb[off]     = (unsigned char)(rgb16 & 0xFF);
-				fb[off + 1] = (unsigned char)(rgb16 >> 8);
+		if (y < FPS_RECT_H) {
+			/* Skip FPS rect columns */
+			unsigned int x;
+			if (bpp == 32) {
+				unsigned int *p = (unsigned int *)row;
+				for (x = 0; x < w; x++) {
+					if (x >= FPS_RECT_W) {
+						unsigned int packed = hue_lut[row_hue];
+						*p = packed;
+					}
+					p++;
+					row_hue += scale_x;
+					if (row_hue >= RAINBOW_FULL)
+						row_hue -= RAINBOW_FULL;
+				}
 			} else if (bpp == 24) {
-				unsigned int off = (unsigned long)y * pitch + x * 3;
-				fb[off]     = (unsigned char)b;
-				fb[off + 1] = (unsigned char)g;
-				fb[off + 2] = (unsigned char)r;
-			} else if (bpp == 32) {
-				volatile unsigned int *row = (volatile unsigned int *)(fb + (unsigned long)y * pitch);
-				row[x] = (unsigned int)b | ((unsigned int)g << 8) | ((unsigned int)r << 16);
+				for (x = 0; x < w; x++) {
+					if (x >= FPS_RECT_W) {
+						unsigned int packed = hue_lut[row_hue];
+						row[x * 3]     = (unsigned char)(packed & 0xFF);
+						row[x * 3 + 1] = (unsigned char)((packed >> 8) & 0xFF);
+						row[x * 3 + 2] = (unsigned char)((packed >> 16) & 0xFF);
+					}
+					row_hue += scale_x;
+					if (row_hue >= RAINBOW_FULL)
+						row_hue -= RAINBOW_FULL;
+				}
+			} else if (bpp == 16) {
+				for (x = 0; x < w; x++) {
+					if (x >= FPS_RECT_W) {
+						unsigned int packed = hue_lut[row_hue];
+						unsigned int r = (packed >> 16) & 0xFF;
+						unsigned int g = (packed >> 8) & 0xFF;
+						unsigned int b = packed & 0xFF;
+						unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+						unsigned short *p = (unsigned short *)(row + x * 2);
+						*p = (unsigned short)rgb16;
+					}
+					row_hue += scale_x;
+					if (row_hue >= RAINBOW_FULL)
+						row_hue -= RAINBOW_FULL;
+				}
+			}
+		} else {
+			/* Full row, no FPS rect check — tight inner loop */
+			unsigned int x;
+			if (bpp == 32) {
+				unsigned int *p = (unsigned int *)row;
+				for (x = 0; x < w; x++) {
+					*p++ = hue_lut[row_hue];
+					row_hue += scale_x;
+					if (row_hue >= RAINBOW_FULL)
+						row_hue -= RAINBOW_FULL;
+				}
+			} else if (bpp == 24) {
+				for (x = 0; x < w; x++) {
+					unsigned int packed = hue_lut[row_hue];
+					row[x * 3]     = (unsigned char)(packed & 0xFF);
+					row[x * 3 + 1] = (unsigned char)((packed >> 8) & 0xFF);
+					row[x * 3 + 2] = (unsigned char)((packed >> 16) & 0xFF);
+					row_hue += scale_x;
+					if (row_hue >= RAINBOW_FULL)
+						row_hue -= RAINBOW_FULL;
+				}
+			} else if (bpp == 16) {
+				for (x = 0; x < w; x++) {
+					unsigned int packed = hue_lut[row_hue];
+					unsigned int r = (packed >> 16) & 0xFF;
+					unsigned int g = (packed >> 8) & 0xFF;
+					unsigned int b = packed & 0xFF;
+					unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+					unsigned short *p = (unsigned short *)(row + x * 2);
+					*p = (unsigned short)rgb16;
+					row_hue += scale_x;
+					if (row_hue >= RAINBOW_FULL)
+						row_hue -= RAINBOW_FULL;
+				}
 			}
 		}
 	}
@@ -98,6 +163,7 @@ void program_colors_main(void)
 
 	if (!vga_has_vesa())
 		return;
+	build_hue_lut();
 	fb = (unsigned char *)vga_fb_ptr();
 	if (!fb)
 		return;
@@ -118,6 +184,12 @@ void program_colors_main(void)
 		draw_frame(fb, w, h, pitch, bpp, phase);
 		phase = (phase + PHASE_STEP) % RAINBOW_FULL;
 
+		/* Mark all rows dirty since we drew the full screen */
+		vga_fb_mark_dirty_rect(0, h);
+
+		/* Trigger flush so the 30Hz timer sees dirty rows */
+		vga_fb_flush_pending_check();
+
 		frame_count++;
 		if (get_ticks_ms() - last_fps_ticks >= 1000) {
 			displayed_fps = frame_count;
@@ -127,6 +199,7 @@ void program_colors_main(void)
 		format_fps(displayed_fps, fps_buf);
 		fbtext_draw_string_xy(0, 0, fps_buf, 255, 255, 255, 0);
 
+		/* Sleep with hlt to give the system breathing room */
 		while (get_ticks_ms() - frame_start < FRAME_MS)
 			__asm__ volatile ("hlt");
 	}
