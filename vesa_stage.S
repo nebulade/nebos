@@ -72,6 +72,10 @@ walk_modes:
 	cmpb  $16, 0x2219
 	jb    walk_modes
 
+	/* TODO: Remove this width cap when display scaling is improved. */
+	cmpw  $1280, 0x2212
+	ja    walk_modes
+
 	/* Check: fits in VRAM. */
 	movw  0x2210, %ax
 	mulw  0x2214
