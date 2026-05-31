@@ -65,6 +65,9 @@ rtc.o: rtc.c rtc.h
 serial.o: serial.c serial.h pci.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+serial_loop.o: serial_loop.c serial.h io.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 vga.o: vga.c vga.h pci.h gpu.h ati.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -116,7 +119,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_loop.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -205,4 +208,4 @@ scp-root: root.img
 	ssh root@192.168.0.136 dd if=root.img of=/dev/fd0 bs=512
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_loop.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin

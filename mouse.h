@@ -8,5 +8,6 @@ int mouse_is_present(void);
 int mouse_streaming_enabled(void);
 unsigned int mouse_device_id(void);
 int mouse_cursor_visible(void);
+unsigned int mouse_packet_size(void);
 
 #endif

@@ -23,6 +23,7 @@ extern void program_display_main(void);
 extern void program_cpuinfo_main(void);
 extern void program_mouseinfo_main(void);
 extern void program_power_main(const char *args);
+extern void program_serial_loop_main(const char *arg);
 extern void disk_set_drive(unsigned int drive);
 extern unsigned int disk_get_drive(void);
 
@@ -384,6 +385,34 @@ static int is_cmd_kill(const char *line, unsigned int line_len, unsigned int *pi
 	return 1;
 }
 
+static int is_cmd_serial(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 6 > line_len)
+		return 0;
+	if (line[i] != 's' || line[i+1] != 'e' || line[i+2] != 'r' ||
+	    line[i+3] != 'i' || line[i+4] != 'a' || line[i+5] != 'l')
+		return 0;
+	i += 6;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	while (j > 0 && arg_buf[j - 1] == ' ')
+		j--;
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 #define POWER_ARGS_MAX 32
 static int is_cmd_power(const char *line, unsigned int line_len, char *args_buf, unsigned int buf_size)
 {
@@ -625,15 +654,20 @@ void terminal_run(void)
 						io_putstr("mouseinfo\n");
 						io_putstr("power [info|set <low|balanced|max>]\n");
 						io_putstr("drive <0|1>\n");
-						io_putstr("ps        kill <pid>\n");
-						io_putstr("help      clear\n");
-					} else if (is_cmd_clear(line, line_len)) {
-						io_clear_screen();
-						draw_header_row();
-						io_set_cursor(IO_CONTENT_OFFSET);
-						io_putstr(prompt_first);
-						line_start = io_get_cursor();
-						skip_prompt = 1;
+					io_putstr("ps        kill <pid>\n");
+					io_putstr("serial [1|2] help      clear\n");
+				} else if (is_cmd_clear(line, line_len)) {
+					io_clear_screen();
+					draw_header_row();
+					io_set_cursor(IO_CONTENT_OFFSET);
+					io_putstr(prompt_first);
+					line_start = io_get_cursor();
+					skip_prompt = 1;
+				} else {
+					static char serial_arg[4];
+					if (is_cmd_serial(line, line_len, serial_arg, sizeof(serial_arg))) {
+						if (process_create_arg("serial_loop", program_serial_loop_main, serial_arg) < 0)
+							io_putstr("error: too many processes\n");
 					} else {
 						unsigned int i = 0;
 						while (i < line_len && line[i] == ' ')
@@ -641,19 +675,20 @@ void terminal_run(void)
 						if (i < line_len)
 							io_putstr("command not found\n");
 					}
-					line_len  = 0;
-					line_pos  = 0;
-					line[0]   = '\0';
-					if (!skip_prompt) {
-						io_putstr(prompt);
-						line_start = io_get_cursor();
-					}
-					if (io_did_scroll())
-						redraw_datetime();
-				} else {
-					{
-						unsigned char u = (unsigned char)k;
-						if (u >= 0x20 && u < 0x7F && line_len < LINE_MAX - 1) {
+				}
+				line_len  = 0;
+				line_pos  = 0;
+				line[0]   = '\0';
+				if (!skip_prompt) {
+					io_putstr(prompt);
+					line_start = io_get_cursor();
+				}
+				if (io_did_scroll())
+					redraw_datetime();
+			} else {
+				{
+					unsigned char u = (unsigned char)k;
+					if (u >= 0x20 && u < 0x7F && line_len < LINE_MAX - 1) {
 							unsigned int i;
 							history_browse = 0;
 							for (i = line_len; i > line_pos; i--)

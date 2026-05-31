@@ -46,7 +46,7 @@ void program_mouseinfo_main(void)
 	else
 		io_putstr("standard ps/2\n");
 	io_putstr("mouse packet bytes ");
-	put_uint((id == 0x03 || id == 0x04) ? 4u : 3u);
+	put_uint(mouse_packet_size());
 	io_putchar('\n');
 	io_putstr("mouse streaming ");
 	io_putstr(mouse_streaming_enabled() ? "on\n" : "off\n");

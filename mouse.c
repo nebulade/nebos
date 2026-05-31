@@ -42,6 +42,7 @@ static int mouse_present_flag;
 static int mouse_streaming_flag;
 static unsigned int mouse_id;
 static int mouse_cursor_flag;
+static unsigned int mouse_pkt_size;
 
 static unsigned int fbw, fbh;
 static unsigned int cur_x, cur_y;
@@ -184,6 +185,19 @@ static void mouse_cursor_setup(void)
 	mouse_cursor_flag = 1;
 }
 
+static int mouse_intellimouse_init(void)
+{
+	static const unsigned char rates[] = { 0xC8, 0x64, 0x50, 0x32 };
+	unsigned int i;
+	for (i = 0; i < sizeof(rates); i++) {
+		if (mouse_send_cmd_ack(0xF3) != 0)
+			return -1;
+		if (mouse_send_cmd_ack(rates[i]) != 0)
+			return -1;
+	}
+	return 0;
+}
+
 void mouse_init(void)
 {
 	unsigned char id = 0;
@@ -192,12 +206,15 @@ void mouse_init(void)
 	mouse_streaming_flag = 0;
 	mouse_id = 0;
 	mouse_cursor_flag = 0;
+	mouse_pkt_size = 3;
 	pkt_idx = 0;
 
 	enable_aux_port();
 
 	if (mouse_send_cmd_ack(0xF5) != 0)
 		return;
+
+	mouse_intellimouse_init();
 
 	mouse_cmd_write(0xF2);
 	if (mouse_expect_ack() != 0)
@@ -207,6 +224,7 @@ void mouse_init(void)
 
 	mouse_present_flag = 1;
 	mouse_id = id;
+	mouse_pkt_size = (id == 0x03 || id == 0x04) ? 4u : 3u;
 	mouse_cursor_setup();
 
 	if (mouse_send_cmd_ack(0xF4) != 0)
@@ -216,7 +234,6 @@ void mouse_init(void)
 
 void mouse_poll_update(void)
 {
-	/* If video mode info wasn't ready at mouse_init time, try again. */
 	if (mouse_present_flag && !mouse_cursor_flag)
 		mouse_cursor_setup();
 	if (!mouse_streaming_flag)
@@ -232,7 +249,7 @@ void mouse_poll_update(void)
 			return;
 
 		pkt[pkt_idx++] = inb(PS2_DATA);
-		if (pkt_idx < 3)
+		if (pkt_idx < mouse_pkt_size)
 			continue;
 		pkt_idx = 0;
 
@@ -281,4 +298,9 @@ unsigned int mouse_device_id(void)
 int mouse_cursor_visible(void)
 {
 	return mouse_cursor_flag;
+}
+
+unsigned int mouse_packet_size(void)
+{
+	return mouse_pkt_size;
 }
