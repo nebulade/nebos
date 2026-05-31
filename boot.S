@@ -7,7 +7,27 @@
 .globl _start
 _start:
 	.byte 0xEB, 0x3E, 0x90
-	.space 0x3E - 3, 0
+	/* ---- BPB (BIOS Parameter Block) ---- */
+	.ascii "NEBOS   "        /* OEM name */
+	.word 512                /* bytes per sector */
+	.byte 4                  /* sectors per cluster */
+	.word 1                  /* reserved sectors */
+	.byte 2                  /* number of FATs */
+	.word 512                /* root entries */
+	.word 0                  /* total sectors 16-bit (use 32-bit) */
+	.byte 0xF8               /* media descriptor (hard disk) */
+	.word 128                /* sectors per FAT */
+	.word 63                 /* sectors per track */
+	.word 128                /* number of heads */
+	.long 0                  /* hidden sectors */
+	.long 131072             /* total sectors 32-bit */
+	/* ---- Extended BPB ---- */
+	.byte 0x80               /* drive number */
+	.byte 0x00               /* reserved */
+	.byte 0x29               /* boot signature */
+	.long 0x12345678         /* volume ID */
+	.ascii "NEBOS      "     /* volume label */
+	.ascii "FAT16   "        /* filesystem type */
 
 	.org 0x3E
 kernel_sectors:
@@ -94,5 +114,15 @@ halt:
 1:	hlt
 	jmp   1b
 
-.section .bootsig
-.byte 0x55, 0xaa
+	.org 0x1BE
+/* MBR partition table: one active partition at LBA 0 (USB/HDD). */
+	.byte 0x80              /* bootable */
+	.byte 0x00, 0x01, 0x00  /* CHS start: C=0, H=0, S=1 */
+	.byte 0x06              /* type: FAT16 LBA (matches BPB) */
+	.byte 0xFF, 0xFF, 0xFF  /* CHS end: max values */
+	.long 0                 /* LBA start */
+	.long 131072            /* sector count (64MB) */
+	.space 48, 0            /* 3 empty partition entries */
+
+	.org 0x1FE
+	.word 0xAA55

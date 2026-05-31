@@ -128,6 +128,17 @@ process.o: process.c process.h io.h
 kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
+MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
+
+mbr.o: mbr.S
+	$(AS) $(ASFLAGS) -o $@ $<
+
+mbr.elf: mbr.o
+	$(LD) $(MBR_LDFLAGS) -o $@ $<
+
+mbr.bin: mbr.elf
+	$(OBJCOPY) -O binary $< $@
+
 boot.bin: boot.elf
 	$(OBJCOPY) -O binary --only-section=.boot $< $@.tmp
 	dd if=$@.tmp of=$@ bs=1 count=510 2>/dev/null
@@ -138,6 +149,8 @@ kernel.bin: kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
 KERNEL_SECTORS_OFFSET = 62
+BOOT_SECTOR_START_OFFSET = 0x57
+
 floppy.img: boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
 	cp boot.bin boot.bin.patched; \
@@ -146,11 +159,12 @@ floppy.img: boot.bin kernel.bin
 	truncate -s 1474560 $@; \
 	rm -f boot.bin.patched
 
-usb.img: boot.bin kernel.bin
+usb.img: mbr.bin boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
 	cp boot.bin boot.bin.patched; \
 	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
-	cat boot.bin.patched kernel.bin > $@; \
+	printf '\x02' | dd of=boot.bin.patched bs=1 seek=$(BOOT_SECTOR_START_OFFSET) conv=notrunc 2>/dev/null; \
+	cat mbr.bin boot.bin.patched kernel.bin > $@; \
 	truncate -s 64M $@; \
 	rm -f boot.bin.patched
 
@@ -235,4 +249,4 @@ send_serial: send_serial.c
 	gcc -O2 -o $@ $<
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin send_serial
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin send_serial
