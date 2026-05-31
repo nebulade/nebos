@@ -13,7 +13,7 @@ ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb floppy usb
+.PHONY: all clean run run-floppy run-usb run-serial floppy usb
 
 all: floppy.img usb.img final.bin root.img
 
@@ -206,6 +206,15 @@ scp-final: final.bin
 scp-root: root.img
 	scp root.img root@192.168.0.136:
 	ssh root@192.168.0.136 dd if=root.img of=/dev/fd0 bs=512
+
+SERIAL_DEV ?= /dev/ttyUSB1
+SERIAL_BAUD ?= 9600
+
+run-serial:
+	@echo "Starting serial monitor on $(SERIAL_DEV) at $(SERIAL_BAUD) baud..."
+	@echo "Type 'serial' in the nebos terminal to start the serial loop."
+	@echo "Press Ctrl-A Ctrl-X to exit picocom."
+	picocom $(SERIAL_DEV) --baud $(SERIAL_BAUD)
 
 clean:
 	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_loop.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
