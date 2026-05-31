@@ -8,6 +8,9 @@
  *
  * Shadow buffer flush: every ~33 ticks (30Hz), set pending flag.
  * Main loop checks dirty rows and copies only what changed.
+ *
+ * Serial poll: every tick, check UART for received data and push
+ * to ring buffer so no bytes are lost during preemption.
  */
 .code32
 .text
@@ -17,6 +20,7 @@
 .extern procs
 .extern schedule
 .extern vga_shadow_flush_pending
+.extern serial_poll
 
 /* struct process offsets (must match process.h / process.c) */
 .equ PCB_ESP,   0
@@ -33,6 +37,9 @@ pit_irq_stub:
 	incl  ticks
 	movb  $0x20, %al
 	outb  %al, $0x20
+
+	/* Poll UART for received serial data (prevents FIFO overflow). */
+	call  serial_poll
 
 	/* Shadow buffer flush at 30Hz: set pending flag, main loop does the copy. */
 	decl  flush_counter

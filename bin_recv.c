@@ -6,19 +6,14 @@
 #include "serial.h"
 #include "io.h"
 #include "timer.h"
+#include "idle.h"
 
 #define TIMEOUT_MS 5000
 
 static int wait_byte(unsigned int port, unsigned char *out, unsigned int timeout_ms)
 {
-	unsigned int start = get_ticks_ms();
-	while (get_ticks_ms() - start < timeout_ms) {
-		if (serial_has_data(port)) {
-			*out = (unsigned char)serial_getc_nb(port);
-			return 1;
-		}
-	}
-	return 0;
+	(void)port;
+	return serial_ring_wait(timeout_ms, out);
 }
 
 int bin_recv(unsigned int port, void *buf, unsigned int max_size)

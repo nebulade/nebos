@@ -129,6 +129,7 @@ void kernel_main(void)
 		*p++ = 0;
 
 	serial_init(SERIAL_COM1);
+	serial_ring_init();
 	io_init();
 	idle_init();
 	timer_init();

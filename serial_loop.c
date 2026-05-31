@@ -22,10 +22,10 @@ void program_serial_loop_main(const char *arg)
 			serial_puts(port, msg);
 		}
 
-		while (serial_has_data(port)) {
-			char c = serial_getc_nb(port);
+		{
+			int c = serial_ring_getc();
 			if (c)
-				io_putchar(c);
+				io_putchar((char)c);
 		}
 
 		cpu_idle();

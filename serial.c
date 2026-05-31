@@ -1,5 +1,7 @@
 #include "serial.h"
+#include "serial_ring_buf.h"
 #include "pci.h"
+#include "timer.h"
 
 void serial_init(unsigned int port)
 {
@@ -30,7 +32,7 @@ void serial_puts(unsigned int port, const char *s)
 
 void serial_puthex(unsigned int port, unsigned int n)
 {
-	static const char hex[] = "0123456789ABCDEF";
+	static const char hex[] = "01234589ABCDEF";
 	int i;
 	serial_puts(port, "0x");
 	for (i = 28; i >= 0; i -= 4)
@@ -55,12 +57,34 @@ void serial_putdec(unsigned int port, unsigned int n)
 
 int serial_has_data(unsigned int port)
 {
-	return (port_inb(port + 5) & 0x01) != 0;
+	(void)port;
+	return serial_ring_count() > 0;
 }
 
-char serial_getc_nb(unsigned int port)
+void serial_poll(void)
 {
-	if (!serial_has_data(port))
-		return 0;
-	return (char)port_inb(port);
+	unsigned char c;
+	while ((port_inb(SERIAL_COM1 + 5) & 0x01) != 0) {
+		c = (unsigned char)port_inb(SERIAL_COM1);
+		serial_ring_push(c);
+	}
+}
+
+int serial_ring_getc(void)
+{
+	unsigned char c;
+	if (serial_ring_pop(&c))
+		return (int)c;
+	return 0;
+}
+
+int serial_ring_wait(unsigned int timeout_ms, unsigned char *out)
+{
+	unsigned int start = get_ticks_ms();
+	while (get_ticks_ms() - start < timeout_ms) {
+		if (serial_ring_pop(out))
+			return 1;
+		__asm__ volatile ("hlt");
+	}
+	return 0;
 }
