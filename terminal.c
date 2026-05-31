@@ -24,6 +24,8 @@ extern void program_cpuinfo_main(void);
 extern void program_mouseinfo_main(void);
 extern void program_power_main(const char *args);
 extern void program_serial_loop_main(const char *arg);
+extern void program_serial_recv_main(const char *arg);
+extern void program_run_serial_main(const char *arg);
 extern void disk_set_drive(unsigned int drive);
 extern unsigned int disk_get_drive(void);
 
@@ -616,8 +618,16 @@ void terminal_run(void)
 						if (process_create_arg("cat", program_cat_main, cat_fname) < 0)
 							io_putstr("error: too many processes\n");
 					} else if (is_cmd_run(line, line_len, cat_fname, CAT_FNAME_MAX)) {
-						if (process_create_arg("run", program_run_main, cat_fname) < 0)
-							io_putstr("error: too many processes\n");
+						if (cat_fname[0] == 's' && cat_fname[1] == 'e' &&
+						    cat_fname[2] == 'r' && cat_fname[3] == 'i' &&
+						    cat_fname[4] == 'a' && cat_fname[5] == 'l' &&
+						    cat_fname[6] == '\0') {
+							if (process_create_arg("run_serial", program_run_serial_main, cat_fname) < 0)
+								io_putstr("error: too many processes\n");
+						} else {
+							if (process_create_arg("run", program_run_main, cat_fname) < 0)
+								io_putstr("error: too many processes\n");
+						}
 					} else if (is_cmd_space(line, line_len)) {
 						if (process_create_arg("space", program_run_main, "space.bin") < 0)
 							io_putstr("error: too many processes\n");
@@ -655,7 +665,7 @@ void terminal_run(void)
 						io_putstr("power [info|set <low|balanced|max>]\n");
 						io_putstr("drive <0|1>\n");
 					io_putstr("ps        kill <pid>\n");
-					io_putstr("serial [1|2] help      clear\n");
+					io_putstr("serial test|recv  clear\n");
 				} else if (is_cmd_clear(line, line_len)) {
 					io_clear_screen();
 					draw_header_row();
@@ -664,10 +674,20 @@ void terminal_run(void)
 					line_start = io_get_cursor();
 					skip_prompt = 1;
 				} else {
-					static char serial_arg[4];
+					static char serial_arg[8];
 					if (is_cmd_serial(line, line_len, serial_arg, sizeof(serial_arg))) {
-						if (process_create_arg("serial_loop", program_serial_loop_main, serial_arg) < 0)
-							io_putstr("error: too many processes\n");
+						if (serial_arg[0] == 't' && serial_arg[1] == 'e' &&
+						    serial_arg[2] == 's' && serial_arg[3] == 't' &&
+						    serial_arg[4] == '\0') {
+							if (process_create_arg("serial_loop", program_serial_loop_main, serial_arg) < 0)
+								io_putstr("error: too many processes\n");
+						} else if (serial_arg[0] == 'r' && serial_arg[1] == 'e' &&
+						           serial_arg[2] == 'c' && serial_arg[3] == 'v' &&
+						           serial_arg[4] == '\0') {
+							program_serial_recv_main(serial_arg);
+						} else {
+							io_putstr("serial: usage serial test|recv\n");
+						}
 					} else {
 						unsigned int i = 0;
 						while (i < line_len && line[i] == ' ')

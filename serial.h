@@ -13,4 +13,6 @@ void serial_putdec(unsigned int port, unsigned int n);
 int serial_has_data(unsigned int port);
 char serial_getc_nb(unsigned int port);
 
+extern unsigned int serial_recv_size;
+
 #endif

@@ -4,6 +4,7 @@
 #include "fbtext.h"
 #include "io.h"
 #include "run_api.h"
+#include "serial.h"
 #include "timer.h"
 #include "vga.h"
 
@@ -65,6 +66,36 @@ void program_run_main(const char *filename)
 		io_putstr("run: file not found\n");
 		return;
 	}
+	io_drain_keyboard();
+	{
+		struct prog_api api = {
+			.draw_string_xy = fbtext_draw_string_xy,
+			.get_cols       = fbtext_get_cols,
+			.get_rows       = fbtext_get_rows,
+			.poll_key       = io_poll_key,
+			.poll_key_with_hw = io_poll_key_with_hw,
+			.get_fb_width   = vga_fb_width,
+			.get_fb_height  = vga_fb_height,
+			.clear_rgb      = vga_clear_rgb,
+			.put_pixel_rgb  = vga_put_pixel_rgb,
+			.get_ticks_ms   = get_ticks_ms,
+		};
+		*(struct prog_api *)PROGRAM_API_ADDR = api;
+	}
+	((void (*)(void))PROGRAM_LOAD_ADDR)();
+}
+
+/* run serial: execute the binary already loaded at 0x21000 via serial_recv. */
+
+void program_run_serial_main(const char *arg)
+{
+	(void)arg;
+
+	if (serial_recv_size == 0) {
+		io_putstr("run serial: no binary received (use 'serial recv' first)\n");
+		return;
+	}
+
 	io_drain_keyboard();
 	{
 		struct prog_api api = {

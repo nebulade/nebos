@@ -13,7 +13,7 @@ ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb run-serial floppy usb
+.PHONY: all clean run run-floppy run-usb run-serial floppy usb space prog
 
 all: floppy.img usb.img final.bin root.img
 
@@ -68,6 +68,12 @@ serial.o: serial.c serial.h pci.h
 serial_loop.o: serial_loop.c serial.h io.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+bin_recv.o: bin_recv.c bin_recv.h serial.h io.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+serial_recv.o: serial_recv.c serial.h bin_recv.h io.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 vga.o: vga.c vga.h pci.h gpu.h ati.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -119,7 +125,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_loop.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 boot.bin: boot.elf
@@ -167,6 +173,10 @@ prog.elf: prog.o
 prog.bin: prog.elf
 	$(OBJCOPY) -O binary $< $@
 
+space: space.bin
+
+prog: prog.bin
+
 space.o: space.c run_api.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -209,12 +219,20 @@ scp-root: root.img
 
 SERIAL_DEV ?= /dev/ttyUSB1
 SERIAL_BAUD ?= 9600
+SZ ?= /usr/bin/lrzsz-sz
 
 run-serial:
 	@echo "Starting serial monitor on $(SERIAL_DEV) at $(SERIAL_BAUD) baud..."
-	@echo "Type 'serial' in the nebos terminal to start the serial loop."
+	@echo "Type 'serial test' or 'serial recv' in the nebos terminal."
 	@echo "Press Ctrl-A Ctrl-X to exit picocom."
 	picocom $(SERIAL_DEV) --baud $(SERIAL_BAUD)
 
+send: $(PROGRAM).bin send_serial
+	@echo "Sending $(PROGRAM).bin via serial..."
+	./send_serial $(SERIAL_DEV) $(SERIAL_BAUD) $(PROGRAM).bin
+
+send_serial: send_serial.c
+	gcc -O2 -o $@ $<
+
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_loop.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o boot.elf kernel.elf boot.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin send_serial
