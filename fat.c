@@ -1,4 +1,4 @@
-/* FAT12 read-only: BPB parse, root list, read file by following FAT chain. */
+/* FAT12: BPB parse, root list, read/write files by following FAT chain. */
 
 #include "disk.h"
 #include "fat.h"
@@ -15,6 +15,8 @@
 #define BPB_NUM_FATS        0x10
 #define BPB_ROOT_ENTRIES    0x11
 #define BPB_SEC_PER_FAT     0x16
+#define BPB_TOTAL_SEC16     0x13   /* total sectors (16-bit) */
+#define BPB_TOTAL_SEC32     0x20   /* total sectors (32-bit) */
 #define BPB_SIGNATURE       0x1FE   /* 0x55 0xAA at end of boot sector */
 
 static unsigned int fat_reserved;
@@ -22,6 +24,10 @@ static unsigned int fat_root_start;
 static unsigned int fat_root_sectors;
 static unsigned int fat_data_start;
 static unsigned int fat_sec_per_cluster;
+static unsigned int fat_num_fats;
+static unsigned int fat_sec_per_fat;
+static unsigned int fat_total_sectors;
+static unsigned int fat_max_cluster;  /* 2 + number of data clusters */
 static int fat_ready;
 
 static unsigned char sector_buf[SECTOR_SIZE];
@@ -48,7 +54,7 @@ static unsigned int fat_get_entry(unsigned int cluster_idx)
 
 int fat_init(void)
 {
-	unsigned int num_fats, root_entries, sec_per_fat;
+	unsigned int root_entries;
 
 	if (fat_read_sector(0) != 0) {
 		io_putstr("run: disk read error (boot sector LBA=0)\n");
@@ -57,14 +63,27 @@ int fat_init(void)
 	if (sector_buf[BPB_SIGNATURE] != 0x55 || sector_buf[BPB_SIGNATURE + 1] != 0xAA)
 		return -1;  /* no valid FAT filesystem */
 	fat_reserved = (unsigned int)sector_buf[BPB_RESERVED] | ((unsigned int)sector_buf[BPB_RESERVED + 1] << 8);
-	num_fats = sector_buf[BPB_NUM_FATS];
+	fat_num_fats = sector_buf[BPB_NUM_FATS];
 	root_entries = (unsigned int)sector_buf[BPB_ROOT_ENTRIES] | ((unsigned int)sector_buf[BPB_ROOT_ENTRIES + 1] << 8);
-	sec_per_fat = (unsigned int)sector_buf[BPB_SEC_PER_FAT] | ((unsigned int)sector_buf[BPB_SEC_PER_FAT + 1] << 8);
+	fat_sec_per_fat = (unsigned int)sector_buf[BPB_SEC_PER_FAT] | ((unsigned int)sector_buf[BPB_SEC_PER_FAT + 1] << 8);
 	fat_sec_per_cluster = sector_buf[BPB_SEC_PER_CLUSTER];
 
-	fat_root_start = fat_reserved + num_fats * sec_per_fat;
+	fat_total_sectors = (unsigned int)sector_buf[BPB_TOTAL_SEC16] | ((unsigned int)sector_buf[BPB_TOTAL_SEC16 + 1] << 8);
+	if (fat_total_sectors == 0)
+		fat_total_sectors = (unsigned int)sector_buf[BPB_TOTAL_SEC32]
+			| ((unsigned int)sector_buf[BPB_TOTAL_SEC32 + 1] << 8)
+			| ((unsigned int)sector_buf[BPB_TOTAL_SEC32 + 2] << 16)
+			| ((unsigned int)sector_buf[BPB_TOTAL_SEC32 + 3] << 24);
+
+	fat_root_start = fat_reserved + fat_num_fats * fat_sec_per_fat;
 	fat_root_sectors = (root_entries * ROOT_ENTRY_SIZE + SECTOR_SIZE - 1) / SECTOR_SIZE;
 	fat_data_start = fat_root_start + fat_root_sectors;
+
+	if (fat_total_sectors > fat_data_start && fat_sec_per_cluster > 0)
+		fat_max_cluster = 2 + (fat_total_sectors - fat_data_start) / fat_sec_per_cluster;
+	else
+		fat_max_cluster = 2;
+
 	fat_ready = 1;
 	return 0;
 }
@@ -228,4 +247,321 @@ int fat_read_file(const char *name_8_3, void *buf, unsigned int max_len)
 		cluster = fat_get_entry(cluster);
 	}
 	return (int)copied;
+}
+
+/* ---- write support ---- */
+
+/* Read a 12-bit FAT entry for `cluster`, handling the case where the two
+ * bytes straddle a FAT sector boundary. Returns 0, or -2 on disk error. */
+static int fat_entry_read(unsigned int cluster, unsigned int *value)
+{
+	unsigned int byte_off = (cluster * 3) / 2;
+	unsigned int sec = fat_reserved + byte_off / SECTOR_SIZE;
+	unsigned int within = byte_off % SECTOR_SIZE;
+	unsigned char b0, b1;
+
+	if (within == SECTOR_SIZE - 1) {
+		if (fat_read_sector(sec) != 0)
+			return -2;
+		b0 = sector_buf[within];
+		if (fat_read_sector(sec + 1) != 0)
+			return -2;
+		b1 = sector_buf[0];
+	} else {
+		if (fat_read_sector(sec) != 0)
+			return -2;
+		b0 = sector_buf[within];
+		b1 = sector_buf[within + 1];
+	}
+
+	if (cluster & 1)
+		*value = ((unsigned int)b0 >> 4) | ((unsigned int)b1 << 4);
+	else
+		*value = (unsigned int)b0 | (((unsigned int)b1 & 0x0F) << 8);
+	return 0;
+}
+
+/* Write a 12-bit FAT entry for `cluster` (read-modify-write), handling the
+ * sector-boundary case. Returns 0, or -2 on disk error. */
+static int fat_entry_write(unsigned int cluster, unsigned int value)
+{
+	unsigned int byte_off = (cluster * 3) / 2;
+	unsigned int sec = fat_reserved + byte_off / SECTOR_SIZE;
+	unsigned int within = byte_off % SECTOR_SIZE;
+
+	value &= 0xFFF;
+
+	if (within == SECTOR_SIZE - 1) {
+		/* Entry straddles into the next FAT sector. */
+		if (cluster & 1) {
+			if (fat_read_sector(sec) != 0) return -2;
+			sector_buf[within] = (sector_buf[within] & 0x0F) | (unsigned char)((value << 4) & 0xF0);
+			if (disk_write_sectors(sec, sector_buf, 1) != 0) return -2;
+			if (fat_read_sector(sec + 1) != 0) return -2;
+			sector_buf[0] = (unsigned char)((value >> 4) & 0xFF);
+			if (disk_write_sectors(sec + 1, sector_buf, 1) != 0) return -2;
+		} else {
+			if (fat_read_sector(sec) != 0) return -2;
+			sector_buf[within] = (unsigned char)(value & 0xFF);
+			if (disk_write_sectors(sec, sector_buf, 1) != 0) return -2;
+			if (fat_read_sector(sec + 1) != 0) return -2;
+			sector_buf[0] = (sector_buf[0] & 0xF0) | (unsigned char)((value >> 8) & 0x0F);
+			if (disk_write_sectors(sec + 1, sector_buf, 1) != 0) return -2;
+		}
+	} else {
+		if (fat_read_sector(sec) != 0) return -2;
+		if (cluster & 1) {
+			sector_buf[within] = (sector_buf[within] & 0x0F) | (unsigned char)((value << 4) & 0xF0);
+			sector_buf[within + 1] = (unsigned char)((value >> 4) & 0xFF);
+		} else {
+			sector_buf[within] = (unsigned char)(value & 0xFF);
+			sector_buf[within + 1] = (sector_buf[within + 1] & 0xF0) | (unsigned char)((value >> 8) & 0x0F);
+		}
+		if (disk_write_sectors(sec, sector_buf, 1) != 0) return -2;
+	}
+	return 0;
+}
+
+/* Find a free data cluster (FAT entry == 0x000). Returns cluster >= 2, -1 if
+ * the disk is full, -2 on disk error. */
+static int fat_find_free_cluster(void)
+{
+	unsigned int cluster;
+
+	for (cluster = 2; cluster < fat_max_cluster; cluster++) {
+		unsigned int val;
+		if (fat_entry_read(cluster, &val) != 0)
+			return -2;
+		if (val == 0x000)
+			return (int)cluster;
+	}
+	return -1;
+}
+
+/* Mark every cluster in a chain as free (0x000). */
+static int fat_free_chain(unsigned int cluster)
+{
+	while (cluster >= 2 && cluster < fat_max_cluster) {
+		unsigned int next;
+		if (fat_entry_read(cluster, &next) != 0)
+			return -2;
+		if (fat_entry_write(cluster, 0x000) != 0)
+			return -2;
+		if (next < 2 || next >= FAT12_EOC_MIN)
+			break;
+		cluster = next;
+	}
+	return 0;
+}
+
+/* Read cluster/size from a 32-byte directory entry at absolute byte offset. */
+static int fat_dir_entry_read(unsigned int byte_off, unsigned int *cluster, unsigned int *size)
+{
+	unsigned int lba = byte_off / SECTOR_SIZE;
+	unsigned int within = byte_off % SECTOR_SIZE;
+
+	if (fat_read_sector(lba) != 0)
+		return -2;
+	if (cluster)
+		*cluster = (unsigned int)sector_buf[within + 26] | ((unsigned int)sector_buf[within + 27] << 8);
+	if (size)
+		*size = (unsigned int)sector_buf[within + 28] | ((unsigned int)sector_buf[within + 29] << 8)
+			| ((unsigned int)sector_buf[within + 30] << 16) | ((unsigned int)sector_buf[within + 31] << 24);
+	return 0;
+}
+
+/* Write a 32-byte directory entry at absolute byte offset. */
+static int fat_dir_entry_write(unsigned int byte_off, const unsigned char name[11],
+			       unsigned char attr, unsigned int cluster, unsigned int size)
+{
+	unsigned int lba = byte_off / SECTOR_SIZE;
+	unsigned int within = byte_off % SECTOR_SIZE;
+	unsigned int i;
+
+	if (fat_read_sector(lba) != 0)
+		return -2;
+
+	for (i = 0; i < 11; i++)
+		sector_buf[within + i] = name[i];
+	sector_buf[within + 11] = attr;
+	for (i = 12; i < 26; i++)
+		sector_buf[within + i] = 0;
+	sector_buf[within + 26] = (unsigned char)(cluster & 0xFF);
+	sector_buf[within + 27] = (unsigned char)((cluster >> 8) & 0xFF);
+	sector_buf[within + 28] = (unsigned char)(size & 0xFF);
+	sector_buf[within + 29] = (unsigned char)((size >> 8) & 0xFF);
+	sector_buf[within + 30] = (unsigned char)((size >> 16) & 0xFF);
+	sector_buf[within + 31] = (unsigned char)((size >> 24) & 0xFF);
+
+	return (disk_write_sectors(lba, sector_buf, 1) != 0) ? -2 : 0;
+}
+
+/* Find the byte offset of a root entry matching `name`, or -1 / -2. */
+static int fat_find_root_entry_off(const unsigned char name[11])
+{
+	unsigned int sec, off;
+
+	for (sec = 0; sec < fat_root_sectors; sec++) {
+		if (fat_read_sector(fat_root_start + sec) != 0)
+			return -2;
+		for (off = 0; off < SECTOR_SIZE; off += ROOT_ENTRY_SIZE) {
+			unsigned char *e = sector_buf + off;
+			unsigned int i;
+			if (e[0] == 0x00)
+				return -1;
+			if (e[0] == 0xE5 || (e[11] & 0x10))
+				continue;
+			for (i = 0; i < 11; i++)
+				if ((e[i] >= 'a' ? e[i] - 32 : e[i]) != name[i])
+					break;
+			if (i == 11)
+				return (int)((fat_root_start + sec) * SECTOR_SIZE + off);
+		}
+	}
+	return -1;
+}
+
+/* Find a free (0x00 or 0xE5) root entry; return its byte offset, -1, or -2. */
+static int fat_find_free_root_entry(void)
+{
+	unsigned int sec, off;
+
+	for (sec = 0; sec < fat_root_sectors; sec++) {
+		if (fat_read_sector(fat_root_start + sec) != 0)
+			return -2;
+		for (off = 0; off < SECTOR_SIZE; off += ROOT_ENTRY_SIZE) {
+			if (sector_buf[off] == 0x00 || sector_buf[off] == 0xE5)
+				return (int)((fat_root_start + sec) * SECTOR_SIZE + off);
+		}
+	}
+	return -1;
+}
+
+int fat_write_file(const char *name_8_3, const void *buf, unsigned int size)
+{
+	unsigned char name[11];
+	unsigned int i;
+	int byte_off;
+	unsigned int first_cluster = 0, prev = 0, cluster;
+	unsigned int remaining = size;
+	const unsigned char *src = (const unsigned char *)buf;
+
+	if (!fat_ready || !name_8_3)
+		return -1;
+
+	for (i = 0; i < 11; i++)
+		name[i] = (unsigned char)(name_8_3[i] >= 'a' && name_8_3[i] <= 'z'
+			? name_8_3[i] - 32 : name_8_3[i]);
+
+	byte_off = fat_find_root_entry_off(name);
+	if (byte_off == -2)
+		return -2;
+	if (byte_off >= 0) {
+		/* Overwrite: free the existing chain first. */
+		unsigned int old_cluster = 0;
+		if (fat_dir_entry_read((unsigned int)byte_off, &old_cluster, 0) != 0)
+			return -2;
+		if (old_cluster >= 2)
+			fat_free_chain(old_cluster);
+	} else {
+		byte_off = fat_find_free_root_entry();
+		if (byte_off == -2)
+			return -2;
+		if (byte_off < 0) {
+			io_putstr("write: root directory full\n");
+			return -1;
+		}
+	}
+
+	/* Allocate clusters, link the chain, and write the data. */
+	if (remaining > 0) {
+		unsigned int cluster_size = fat_sec_per_cluster * SECTOR_SIZE;
+
+		while (remaining > 0) {
+			int c = fat_find_free_cluster();
+			if (c == -2)
+				return -2;
+			if (c < 0) {
+				if (first_cluster)
+					fat_free_chain(first_cluster);
+				io_putstr("write: disk full\n");
+				return -1;
+			}
+			cluster = (unsigned int)c;
+			if (first_cluster == 0)
+				first_cluster = cluster;
+			else if (fat_entry_write(prev, cluster) != 0)
+				return -2;
+
+			{
+				unsigned int chunk = (remaining < cluster_size) ? remaining : cluster_size;
+				unsigned int lba = fat_data_start + (cluster - 2) * fat_sec_per_cluster;
+				unsigned int full_secs = chunk / SECTOR_SIZE;
+				unsigned int rem_bytes = chunk % SECTOR_SIZE;
+
+				if (full_secs > 0) {
+					if (disk_write_sectors(lba, src, full_secs) != 0)
+						return -2;
+					src += full_secs * SECTOR_SIZE;
+					lba += full_secs;
+				}
+				if (rem_bytes > 0) {
+					unsigned int j;
+					for (j = 0; j < rem_bytes; j++)
+						sector_buf[j] = src[j];
+					for (j = rem_bytes; j < SECTOR_SIZE; j++)
+						sector_buf[j] = 0;
+					if (disk_write_sectors(lba, sector_buf, 1) != 0)
+						return -2;
+					src += rem_bytes;
+				}
+				remaining -= chunk;
+			}
+			prev = cluster;
+		}
+		if (fat_entry_write(prev, 0xFFF) != 0)
+			return -2;
+	}
+
+	if (fat_dir_entry_write((unsigned int)byte_off, name, 0x20, first_cluster, size) != 0)
+		return -2;
+
+	return 0;
+}
+
+int fat_delete_file(const char *name_8_3)
+{
+	unsigned char name[11];
+	unsigned int i, cluster = 0;
+	int byte_off;
+
+	if (!fat_ready || !name_8_3)
+		return -1;
+
+	for (i = 0; i < 11; i++)
+		name[i] = (unsigned char)(name_8_3[i] >= 'a' && name_8_3[i] <= 'z'
+			? name_8_3[i] - 32 : name_8_3[i]);
+
+	byte_off = fat_find_root_entry_off(name);
+	if (byte_off == -2)
+		return -2;
+	if (byte_off < 0)
+		return -1;
+
+	if (fat_dir_entry_read((unsigned int)byte_off, &cluster, 0) != 0)
+		return -2;
+	if (cluster >= 2)
+		fat_free_chain(cluster);
+
+	{
+		unsigned int lba = (unsigned int)byte_off / SECTOR_SIZE;
+		unsigned int within = (unsigned int)byte_off % SECTOR_SIZE;
+		if (fat_read_sector(lba) != 0)
+			return -2;
+		sector_buf[within] = 0xE5;
+		if (disk_write_sectors(lba, sector_buf, 1) != 0)
+			return -2;
+	}
+
+	return 0;
 }

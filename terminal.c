@@ -20,6 +20,8 @@ extern void program_poweroff_main(void);
 extern void program_ls_main(void);
 extern void program_cat_main(const char *filename);
 extern void program_run_main(const char *filename);
+extern void program_save_main(const char *arg);
+extern void program_rm_main(const char *arg);
 extern void program_clock_main(void);
 extern void program_colors_main(void);
 extern void program_display_main(void);
@@ -289,6 +291,53 @@ static int is_cmd_run(const char *line, unsigned int line_len, char *filename_bu
 	if (i >= line_len)
 		return 0;
 	j = 0;
+	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
+		filename_buf[j++] = line[i++];
+	filename_buf[j] = '\0';
+	return (j > 0);
+}
+
+#define SAVE_ARGS_MAX 128
+#define RM_FNAME_MAX 64
+
+static int is_cmd_save(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 's' || line[i+1] != 'a' || line[i+2] != 'v' || line[i+3] != 'e')
+		return 0;
+	i += 4;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len)
+		return 0;
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	while (j > 0 && arg_buf[j - 1] == ' ')
+		j--;
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len && j > 0);
+}
+
+static int is_cmd_rm(const char *line, unsigned int line_len, char *filename_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 2 > line_len)
+		return 0;
+	if (line[i] != 'r' || line[i+1] != 'm')
+		return 0;
+	i += 2;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len)
+		return 0;
 	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
 		filename_buf[j++] = line[i++];
 	filename_buf[j] = '\0';
@@ -626,6 +675,8 @@ void terminal_run(void)
 				} else if (k == '\n') {
 					static char cat_fname[CAT_FNAME_MAX];
 					static char power_args[POWER_ARGS_MAX];
+					static char save_args[SAVE_ARGS_MAX];
+					static char rm_fname[RM_FNAME_MAX];
 					unsigned int drive_sel, kill_pid;
 					int skip_prompt = 0;
 					io_putchar('\n');
@@ -661,6 +712,12 @@ void terminal_run(void)
 							if (process_create_arg("run", program_run_main, cat_fname) < 0)
 								io_putstr("error: too many processes\n");
 						}
+					} else if (is_cmd_save(line, line_len, save_args, SAVE_ARGS_MAX)) {
+						if (process_create_arg("save", program_save_main, save_args) < 0)
+							io_putstr("error: too many processes\n");
+					} else if (is_cmd_rm(line, line_len, rm_fname, RM_FNAME_MAX)) {
+						if (process_create_arg("rm", program_rm_main, rm_fname) < 0)
+							io_putstr("error: too many processes\n");
 					} else if (is_cmd_space(line, line_len)) {
 						if (process_create_arg("space", program_run_main, "space.bin") < 0)
 							io_putstr("error: too many processes\n");
@@ -703,6 +760,7 @@ void terminal_run(void)
 					} else if (is_cmd_help(line, line_len)) {
 						io_putstr("hello     reboot    poweroff\n");
 						io_putstr("ls        cat <file>\n");
+						io_putstr("save <f> <text>  rm <file>\n");
 						io_putstr("run <file>  space\n");
 						io_putstr("clock     colors\n");
 						io_putstr("display   cpuinfo\n");
