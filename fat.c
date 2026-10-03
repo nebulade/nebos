@@ -354,97 +354,277 @@ static int fat_free_chain(unsigned int cluster)
 	return 0;
 }
 
-/* Read cluster/size from a 32-byte directory entry at absolute byte offset. */
-static int fat_dir_entry_read(unsigned int byte_off, unsigned int *cluster, unsigned int *size)
+/* Convert a name (length `len`) into an 11-byte 8.3 name (uppercase, padded). */
+static void fat_name_to_8_3(const char *in, unsigned int len, unsigned char out[11])
 {
-	unsigned int lba = byte_off / SECTOR_SIZE;
-	unsigned int within = byte_off % SECTOR_SIZE;
+	unsigned int i, j, dot;
 
-	if (fat_read_sector(lba) != 0)
-		return -2;
-	if (cluster)
-		*cluster = (unsigned int)sector_buf[within + 26] | ((unsigned int)sector_buf[within + 27] << 8);
-	if (size)
-		*size = (unsigned int)sector_buf[within + 28] | ((unsigned int)sector_buf[within + 29] << 8)
-			| ((unsigned int)sector_buf[within + 30] << 16) | ((unsigned int)sector_buf[within + 31] << 24);
+	for (i = 0; i < len && in[i] == ' '; i++)
+		;
+	dot = i;
+	while (dot < len && in[dot] != '.' && in[dot] != ' ')
+		dot++;
+	j = 0;
+	while (i < dot && j < 8) {
+		out[j++] = (unsigned char)(in[i] >= 'a' && in[i] <= 'z' ? in[i] - 32 : in[i]);
+		i++;
+	}
+	while (j < 8)
+		out[j++] = ' ';
+	if (i < len && in[i] == '.')
+		i++;
+	while (i < len && in[i] != ' ' && j < 11) {
+		out[j++] = (unsigned char)(in[i] >= 'a' && in[i] <= 'z' ? in[i] - 32 : in[i]);
+		i++;
+	}
+	while (j < 11)
+		out[j++] = ' ';
+}
+
+/* Iterate the entries of a directory (0 = root, else first cluster). For each
+ * entry load the sector and call cb(lba, offset, ctx); cb returns non-zero to
+ * stop. Returns 0, or -2 on disk error. */
+static int dir_each_entry(unsigned int dir_cluster,
+			  int (*cb)(unsigned int lba, unsigned int offset, void *ctx),
+			  void *ctx)
+{
+	if (dir_cluster == 0) {
+		unsigned int sec;
+		for (sec = 0; sec < fat_root_sectors; sec++) {
+			unsigned int off;
+			if (fat_read_sector(fat_root_start + sec) != 0)
+				return -2;
+			for (off = 0; off < SECTOR_SIZE; off += ROOT_ENTRY_SIZE)
+				if (cb(fat_root_start + sec, off, ctx))
+					return 0;
+		}
+	} else {
+		unsigned int cluster = dir_cluster;
+		while (cluster >= 2 && cluster < FAT12_EOC_MIN) {
+			unsigned int base = fat_data_start + (cluster - 2) * fat_sec_per_cluster;
+			unsigned int i;
+			for (i = 0; i < fat_sec_per_cluster; i++) {
+				unsigned int off;
+				if (fat_read_sector(base + i) != 0)
+					return -2;
+				for (off = 0; off < SECTOR_SIZE; off += ROOT_ENTRY_SIZE)
+					if (cb(base + i, off, ctx))
+						return 0;
+			}
+			if (fat_entry_read(cluster, &cluster) != 0)
+				return -2;
+		}
+	}
 	return 0;
 }
 
-/* Write a 32-byte directory entry at absolute byte offset. */
-static int fat_dir_entry_write(unsigned int byte_off, const unsigned char name[11],
-			       unsigned char attr, unsigned int cluster, unsigned int size)
+struct lookup_ctx {
+	const unsigned char *name;
+	unsigned int cluster, size;
+	unsigned char attr;
+	unsigned int lba, offset;
+	int found;
+};
+
+static int lookup_cb(unsigned int lba, unsigned int offset, void *vctx)
 {
-	unsigned int lba = byte_off / SECTOR_SIZE;
-	unsigned int within = byte_off % SECTOR_SIZE;
+	struct lookup_ctx *c = vctx;
+	unsigned char *e = sector_buf + offset;
+	unsigned int i;
+
+	if (e[0] == 0x00)
+		return 1;  /* end of directory */
+	if (e[0] == 0xE5)
+		return 0;  /* deleted */
+	for (i = 0; i < 11; i++)
+		if ((e[i] >= 'a' ? e[i] - 32 : e[i]) != c->name[i])
+			break;
+	if (i == 11) {
+		c->cluster = (unsigned int)e[26] | ((unsigned int)e[27] << 8);
+		c->size = (unsigned int)e[28] | ((unsigned int)e[29] << 8)
+			| ((unsigned int)e[30] << 16) | ((unsigned int)e[31] << 24);
+		c->attr = e[11];
+		c->lba = lba;
+		c->offset = offset;
+		c->found = 1;
+		return 1;
+	}
+	return 0;
+}
+
+/* Look up `name` (11-byte, uppercase) in directory `dir_cluster`. */
+static int fat_lookup(unsigned int dir_cluster, const unsigned char name[11],
+		      unsigned int *entry_cluster, unsigned int *size, unsigned char *attr,
+		      unsigned int *entry_lba, unsigned int *entry_offset)
+{
+	struct lookup_ctx c;
+
+	c.name = name;
+	c.found = 0;
+	c.cluster = c.size = 0;
+	c.attr = 0;
+	if (dir_each_entry(dir_cluster, lookup_cb, &c) != 0)
+		return -2;
+	if (!c.found)
+		return -1;
+	if (entry_cluster) *entry_cluster = c.cluster;
+	if (size) *size = c.size;
+	if (attr) *attr = c.attr;
+	if (entry_lba) *entry_lba = c.lba;
+	if (entry_offset) *entry_offset = c.offset;
+	return 0;
+}
+
+struct free_ctx {
+	unsigned int lba, offset;
+	int found;
+};
+
+static int find_free_cb(unsigned int lba, unsigned int offset, void *vctx)
+{
+	struct free_ctx *c = vctx;
+	if (sector_buf[offset] == 0x00 || sector_buf[offset] == 0xE5) {
+		c->lba = lba;
+		c->offset = offset;
+		c->found = 1;
+		return 1;
+	}
+	return 0;
+}
+
+/* Find a free (0x00 or 0xE5) entry in `dir_cluster`. Returns 0 and fills
+ * lba/offset, or -1 if the directory is full, -2 on disk error. */
+static int dir_find_free(unsigned int dir_cluster, unsigned int *lba, unsigned int *offset)
+{
+	struct free_ctx c;
+	c.found = 0;
+	if (dir_each_entry(dir_cluster, find_free_cb, &c) != 0)
+		return -2;
+	if (!c.found)
+		return -1;
+	*lba = c.lba;
+	*offset = c.offset;
+	return 0;
+}
+
+/* Write a 32-byte directory entry at (lba, offset). */
+static int fat_dir_entry_write(unsigned int lba, unsigned int offset,
+			       const unsigned char name[11], unsigned char attr,
+			       unsigned int cluster, unsigned int size)
+{
 	unsigned int i;
 
 	if (fat_read_sector(lba) != 0)
 		return -2;
 
 	for (i = 0; i < 11; i++)
-		sector_buf[within + i] = name[i];
-	sector_buf[within + 11] = attr;
+		sector_buf[offset + i] = name[i];
+	sector_buf[offset + 11] = attr;
 	for (i = 12; i < 26; i++)
-		sector_buf[within + i] = 0;
-	sector_buf[within + 26] = (unsigned char)(cluster & 0xFF);
-	sector_buf[within + 27] = (unsigned char)((cluster >> 8) & 0xFF);
-	sector_buf[within + 28] = (unsigned char)(size & 0xFF);
-	sector_buf[within + 29] = (unsigned char)((size >> 8) & 0xFF);
-	sector_buf[within + 30] = (unsigned char)((size >> 16) & 0xFF);
-	sector_buf[within + 31] = (unsigned char)((size >> 24) & 0xFF);
+		sector_buf[offset + i] = 0;
+	sector_buf[offset + 26] = (unsigned char)(cluster & 0xFF);
+	sector_buf[offset + 27] = (unsigned char)((cluster >> 8) & 0xFF);
+	sector_buf[offset + 28] = (unsigned char)(size & 0xFF);
+	sector_buf[offset + 29] = (unsigned char)((size >> 8) & 0xFF);
+	sector_buf[offset + 30] = (unsigned char)((size >> 16) & 0xFF);
+	sector_buf[offset + 31] = (unsigned char)((size >> 24) & 0xFF);
 
 	return (disk_write_sectors(lba, sector_buf, 1) != 0) ? -2 : 0;
 }
 
-/* Find the byte offset of a root entry matching `name`, or -1 / -2. */
-static int fat_find_root_entry_off(const unsigned char name[11])
+/* Mark the entry at (lba, offset) deleted (0xE5). */
+static int fat_mark_deleted(unsigned int lba, unsigned int offset)
 {
-	unsigned int sec, off;
-
-	for (sec = 0; sec < fat_root_sectors; sec++) {
-		if (fat_read_sector(fat_root_start + sec) != 0)
-			return -2;
-		for (off = 0; off < SECTOR_SIZE; off += ROOT_ENTRY_SIZE) {
-			unsigned char *e = sector_buf + off;
-			unsigned int i;
-			if (e[0] == 0x00)
-				return -1;
-			if (e[0] == 0xE5 || (e[11] & 0x10))
-				continue;
-			for (i = 0; i < 11; i++)
-				if ((e[i] >= 'a' ? e[i] - 32 : e[i]) != name[i])
-					break;
-			if (i == 11)
-				return (int)((fat_root_start + sec) * SECTOR_SIZE + off);
-		}
-	}
-	return -1;
+	if (fat_read_sector(lba) != 0)
+		return -2;
+	sector_buf[offset] = 0xE5;
+	return (disk_write_sectors(lba, sector_buf, 1) != 0) ? -2 : 0;
 }
 
-/* Find a free (0x00 or 0xE5) root entry; return its byte offset, -1, or -2. */
-static int fat_find_free_root_entry(void)
-{
-	unsigned int sec, off;
+/* ---- public directory API ---- */
 
-	for (sec = 0; sec < fat_root_sectors; sec++) {
-		if (fat_read_sector(fat_root_start + sec) != 0)
-			return -2;
-		for (off = 0; off < SECTOR_SIZE; off += ROOT_ENTRY_SIZE) {
-			if (sector_buf[off] == 0x00 || sector_buf[off] == 0xE5)
-				return (int)((fat_root_start + sec) * SECTOR_SIZE + off);
-		}
-	}
-	return -1;
+struct list_ctx {
+	fat_root_callback_t callback;
+};
+
+static int list_cb(unsigned int lba, unsigned int offset, void *vctx)
+{
+	struct list_ctx *c = vctx;
+	unsigned char *e = sector_buf + offset;
+	char name_buf[12];
+	unsigned int size;
+
+	(void)lba;
+	if (e[0] == 0x00)
+		return 1;  /* end of directory */
+	if (e[0] == 0xE5)
+		return 0;
+	if ((e[11] & 0x18) == 0x08)
+		return 0;  /* volume label */
+	trim_name_8_3((const char *)e, name_buf);
+	size = (unsigned int)e[28] | ((unsigned int)e[29] << 8)
+		| ((unsigned int)e[30] << 16) | ((unsigned int)e[31] << 24);
+	c->callback(name_buf, (e[11] & 0x10) ? 1 : 0, size);
+	return 0;
 }
 
-int fat_write_file(const char *name_8_3, const void *buf, unsigned int size)
+int fat_list_dir(unsigned int dir_cluster, fat_root_callback_t callback)
+{
+	struct list_ctx c;
+	c.callback = callback;
+	if (!fat_ready || !callback)
+		return -1;
+	return (dir_each_entry(dir_cluster, list_cb, &c) != 0) ? -2 : 0;
+}
+
+int fat_read_file_in(unsigned int dir_cluster, const char *name_8_3, void *buf, unsigned int max_len)
+{
+	unsigned int cluster, size;
+	unsigned char attr;
+	unsigned int copied = 0;
+	unsigned char *dst = buf;
+	int r;
+
+	if (!fat_ready || !buf || !name_8_3)
+		return -1;
+
+	r = fat_lookup(dir_cluster, (const unsigned char *)name_8_3, &cluster, &size, &attr, 0, 0);
+	if (r == -2)
+		return -2;
+	if (r != 0 || (attr & 0x10))
+		return -1;
+
+	if (size > max_len)
+		size = max_len;
+
+	while (cluster >= 2 && cluster < FAT12_EOC_MIN && copied < size) {
+		unsigned int sector = fat_data_start + (cluster - 2) * fat_sec_per_cluster;
+		unsigned int chunk = fat_sec_per_cluster * SECTOR_SIZE;
+		unsigned int n_sec;
+		if (chunk > size - copied)
+			chunk = size - copied;
+		n_sec = (chunk + SECTOR_SIZE - 1) / SECTOR_SIZE;
+		if (disk_read_sectors(sector, dst + copied, n_sec) != 0)
+			return -2;
+		copied += chunk;
+		if (copied >= size)
+			break;
+		if (fat_entry_read(cluster, &cluster) != 0)
+			return -2;
+	}
+	return (int)copied;
+}
+
+int fat_write_file_in(unsigned int dir_cluster, const char *name_8_3, const void *buf, unsigned int size)
 {
 	unsigned char name[11];
 	unsigned int i;
-	int byte_off;
 	unsigned int first_cluster = 0, prev = 0, cluster;
 	unsigned int remaining = size;
-	const unsigned char *src = (const unsigned char *)buf;
+	const unsigned char *src = buf;
+	unsigned int lba = 0, offset = 0, old_cluster = 0;
+	unsigned char old_attr = 0;
+	int r;
 
 	if (!fat_ready || !name_8_3)
 		return -1;
@@ -453,27 +633,27 @@ int fat_write_file(const char *name_8_3, const void *buf, unsigned int size)
 		name[i] = (unsigned char)(name_8_3[i] >= 'a' && name_8_3[i] <= 'z'
 			? name_8_3[i] - 32 : name_8_3[i]);
 
-	byte_off = fat_find_root_entry_off(name);
-	if (byte_off == -2)
+	r = fat_lookup(dir_cluster, name, &old_cluster, 0, &old_attr, &lba, &offset);
+	if (r == -2)
 		return -2;
-	if (byte_off >= 0) {
-		/* Overwrite: free the existing chain first. */
-		unsigned int old_cluster = 0;
-		if (fat_dir_entry_read((unsigned int)byte_off, &old_cluster, 0) != 0)
+	if (r == 0 && (old_attr & 0x10)) {
+		io_putstr("write: is a directory\n");
+		return -1;
+	}
+	if (r != 0) {
+		/* not found: find a free entry */
+		r = dir_find_free(dir_cluster, &lba, &offset);
+		if (r == -2)
 			return -2;
-		if (old_cluster >= 2)
-			fat_free_chain(old_cluster);
-	} else {
-		byte_off = fat_find_free_root_entry();
-		if (byte_off == -2)
-			return -2;
-		if (byte_off < 0) {
-			io_putstr("write: root directory full\n");
+		if (r != 0) {
+			io_putstr("write: directory full\n");
 			return -1;
 		}
+	} else if (old_cluster >= 2) {
+		/* overwrite: free the old chain */
+		fat_free_chain(old_cluster);
 	}
 
-	/* Allocate clusters, link the chain, and write the data. */
 	if (remaining > 0) {
 		unsigned int cluster_size = fat_sec_per_cluster * SECTOR_SIZE;
 
@@ -495,15 +675,15 @@ int fat_write_file(const char *name_8_3, const void *buf, unsigned int size)
 
 			{
 				unsigned int chunk = (remaining < cluster_size) ? remaining : cluster_size;
-				unsigned int lba = fat_data_start + (cluster - 2) * fat_sec_per_cluster;
+				unsigned int lba2 = fat_data_start + (cluster - 2) * fat_sec_per_cluster;
 				unsigned int full_secs = chunk / SECTOR_SIZE;
 				unsigned int rem_bytes = chunk % SECTOR_SIZE;
 
 				if (full_secs > 0) {
-					if (disk_write_sectors(lba, src, full_secs) != 0)
+					if (disk_write_sectors(lba2, src, full_secs) != 0)
 						return -2;
 					src += full_secs * SECTOR_SIZE;
-					lba += full_secs;
+					lba2 += full_secs;
 				}
 				if (rem_bytes > 0) {
 					unsigned int j;
@@ -511,7 +691,7 @@ int fat_write_file(const char *name_8_3, const void *buf, unsigned int size)
 						sector_buf[j] = src[j];
 					for (j = rem_bytes; j < SECTOR_SIZE; j++)
 						sector_buf[j] = 0;
-					if (disk_write_sectors(lba, sector_buf, 1) != 0)
+					if (disk_write_sectors(lba2, sector_buf, 1) != 0)
 						return -2;
 					src += rem_bytes;
 				}
@@ -523,17 +703,19 @@ int fat_write_file(const char *name_8_3, const void *buf, unsigned int size)
 			return -2;
 	}
 
-	if (fat_dir_entry_write((unsigned int)byte_off, name, 0x20, first_cluster, size) != 0)
+	if (fat_dir_entry_write(lba, offset, name, 0x20, first_cluster, size) != 0)
 		return -2;
 
 	return 0;
 }
 
-int fat_delete_file(const char *name_8_3)
+int fat_delete_file_in(unsigned int dir_cluster, const char *name_8_3)
 {
 	unsigned char name[11];
 	unsigned int i, cluster = 0;
-	int byte_off;
+	unsigned char attr = 0;
+	unsigned int lba, offset;
+	int r;
 
 	if (!fat_ready || !name_8_3)
 		return -1;
@@ -542,26 +724,241 @@ int fat_delete_file(const char *name_8_3)
 		name[i] = (unsigned char)(name_8_3[i] >= 'a' && name_8_3[i] <= 'z'
 			? name_8_3[i] - 32 : name_8_3[i]);
 
-	byte_off = fat_find_root_entry_off(name);
-	if (byte_off == -2)
+	r = fat_lookup(dir_cluster, name, &cluster, 0, &attr, &lba, &offset);
+	if (r == -2)
 		return -2;
-	if (byte_off < 0)
+	if (r != 0)
 		return -1;
+	if (attr & 0x10)
+		return -1;  /* it's a directory; use rmdir */
 
-	if (fat_dir_entry_read((unsigned int)byte_off, &cluster, 0) != 0)
-		return -2;
 	if (cluster >= 2)
 		fat_free_chain(cluster);
+	return fat_mark_deleted(lba, offset);
+}
 
+static int dir_empty_cb(unsigned int lba, unsigned int offset, void *vctx)
+{
+	int *nonempty = vctx;
+	unsigned char *e = sector_buf + offset;
+	(void)lba;
+	if (e[0] == 0x00 || e[0] == 0xE5)
+		return 0;
+	if (e[0] == '.')
+		return 0;  /* "." or ".." */
+	*nonempty = 1;
+	return 1;
+}
+
+int fat_mkdir(unsigned int parent_cluster, const char *name_8_3)
+{
+	unsigned char name[11];
+	unsigned int i, cluster;
+	unsigned int lba, offset;
+	int r;
+
+	if (!fat_ready || !name_8_3)
+		return -1;
+
+	for (i = 0; i < 11; i++)
+		name[i] = (unsigned char)(name_8_3[i] >= 'a' && name_8_3[i] <= 'z'
+			? name_8_3[i] - 32 : name_8_3[i]);
+
+	r = fat_lookup(parent_cluster, name, 0, 0, 0, 0, 0);
+	if (r == -2)
+		return -2;
+	if (r == 0) {
+		io_putstr("mkdir: already exists\n");
+		return -1;
+	}
+
+	r = fat_find_free_cluster();
+	if (r == -2)
+		return -2;
+	if (r < 0) {
+		io_putstr("mkdir: disk full\n");
+		return -1;
+	}
+	cluster = (unsigned int)r;
+
+	/* Mark the cluster allocated (end of chain) so it's not reused. */
+	if (fat_entry_write(cluster, 0xFFF) != 0)
+		return -2;
+
+	/* Write "." and ".." entries into the cluster's first sector. */
 	{
-		unsigned int lba = (unsigned int)byte_off / SECTOR_SIZE;
-		unsigned int within = (unsigned int)byte_off % SECTOR_SIZE;
-		if (fat_read_sector(lba) != 0)
-			return -2;
-		sector_buf[within] = 0xE5;
-		if (disk_write_sectors(lba, sector_buf, 1) != 0)
+		unsigned int base = fat_data_start + (cluster - 2) * fat_sec_per_cluster;
+		for (i = 0; i < SECTOR_SIZE; i++)
+			sector_buf[i] = 0;
+		sector_buf[0] = '.';
+		for (i = 1; i < 11; i++)
+			sector_buf[i] = ' ';
+		sector_buf[11] = 0x10;
+		sector_buf[26] = (unsigned char)(cluster & 0xFF);
+		sector_buf[27] = (unsigned char)((cluster >> 8) & 0xFF);
+		sector_buf[32] = '.';
+		sector_buf[33] = '.';
+		for (i = 34; i < 43; i++)
+			sector_buf[i] = ' ';
+		sector_buf[43] = 0x10;
+		sector_buf[58] = (unsigned char)(parent_cluster & 0xFF);
+		sector_buf[59] = (unsigned char)((parent_cluster >> 8) & 0xFF);
+		if (disk_write_sectors(base, sector_buf, 1) != 0)
 			return -2;
 	}
 
+	r = dir_find_free(parent_cluster, &lba, &offset);
+	if (r == -2)
+		return -2;
+	if (r != 0) {
+		fat_free_chain(cluster);
+		io_putstr("mkdir: directory full\n");
+		return -1;
+	}
+	return fat_dir_entry_write(lba, offset, name, 0x10, cluster, 0);
+}
+
+int fat_rmdir(unsigned int parent_cluster, const char *name_8_3)
+{
+	unsigned char name[11];
+	unsigned int i, cluster = 0;
+	unsigned char attr = 0;
+	unsigned int lba, offset;
+	int r, nonempty = 0;
+
+	if (!fat_ready || !name_8_3)
+		return -1;
+
+	for (i = 0; i < 11; i++)
+		name[i] = (unsigned char)(name_8_3[i] >= 'a' && name_8_3[i] <= 'z'
+			? name_8_3[i] - 32 : name_8_3[i]);
+
+	r = fat_lookup(parent_cluster, name, &cluster, 0, &attr, &lba, &offset);
+	if (r == -2)
+		return -2;
+	if (r != 0)
+		return -1;
+	if (!(attr & 0x10)) {
+		io_putstr("rmdir: not a directory\n");
+		return -1;
+	}
+
+	if (dir_each_entry(cluster, dir_empty_cb, &nonempty) != 0)
+		return -2;
+	if (nonempty) {
+		io_putstr("rmdir: directory not empty\n");
+		return -1;
+	}
+
+	if (cluster >= 2)
+		fat_free_chain(cluster);
+	return fat_mark_deleted(lba, offset);
+}
+
+/* Resolve a path "a/b/c" into (parent dir cluster, final 8.3 name). */
+int fat_resolve_path(const char *path, unsigned int *dir_cluster, char name_8_3[12])
+{
+	unsigned int dir = 0;
+	const char *p = path;
+
+	if (!fat_ready || !path || !dir_cluster || !name_8_3)
+		return -1;
+
+	for (;;) {
+		const char *start;
+		unsigned int len;
+
+		while (*p == '/')
+			p++;
+		if (!*p)
+			return -1;  /* empty path */
+
+		start = p;
+		len = 0;
+		while (p[len] && p[len] != '/')
+			len++;
+
+		if (p[len] == '/') {
+			/* intermediate component: must be an existing directory */
+			unsigned char name[11];
+			unsigned int cluster, size;
+			unsigned char attr;
+			int r;
+			fat_name_to_8_3(start, len, name);
+			r = fat_lookup(dir, name, &cluster, &size, &attr, 0, 0);
+			if (r == -2)
+				return -2;
+			if (r != 0 || !(attr & 0x10))
+				return -1;
+			dir = cluster;
+			p += len + 1;
+		} else {
+			fat_name_to_8_3(start, len, (unsigned char *)name_8_3);
+			name_8_3[11] = '\0';
+			*dir_cluster = dir;
+			return 0;
+		}
+	}
+}
+
+/* Resolve a full path (all components must be directories) to a directory
+ * cluster. An empty path resolves to the root (cluster 0). */
+int fat_resolve_dir(const char *path, unsigned int *dir_cluster)
+{
+	unsigned int dir = 0;
+	const char *p = path;
+
+	if (!fat_ready || !path || !dir_cluster)
+		return -1;
+
+	if (!*p) {
+		*dir_cluster = 0;
+		return 0;
+	}
+
+	for (;;) {
+		const char *start;
+		unsigned int len;
+
+		while (*p == '/')
+			p++;
+		if (!*p)
+			break;  /* trailing slash */
+
+		start = p;
+		len = 0;
+		while (p[len] && p[len] != '/')
+			len++;
+
+		{
+			unsigned char name[11];
+			unsigned int cluster, size;
+			unsigned char attr;
+			int r;
+			fat_name_to_8_3(start, len, name);
+			r = fat_lookup(dir, name, &cluster, &size, &attr, 0, 0);
+			if (r == -2)
+				return -2;
+			if (r != 0 || !(attr & 0x10))
+				return -1;
+			dir = cluster;
+		}
+		if (!p[len])
+			break;
+		p += len + 1;
+	}
+
+	*dir_cluster = dir;
 	return 0;
+}
+
+/* Root-directory wrappers (dir_cluster = 0). */
+int fat_write_file(const char *name_8_3, const void *buf, unsigned int size)
+{
+	return fat_write_file_in(0, name_8_3, buf, size);
+}
+
+int fat_delete_file(const char *name_8_3)
+{
+	return fat_delete_file_in(0, name_8_3);
 }

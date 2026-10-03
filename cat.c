@@ -1,49 +1,23 @@
-/* cat command: print file contents to screen. */
+/* cat command: print file contents to screen (supports paths). */
 
 #include "fat.h"
 #include "io.h"
 
 #define DUMP_BUF_SIZE 4096
-#define NAME_BUF_SIZE 12
-
-static void to_8_3(const char *in, unsigned int in_len, char *out)
-{
-	unsigned int i, j, dot;
-	for (i = 0; i < in_len && in[i] == ' '; i++)
-		;
-	dot = i;
-	while (dot < in_len && in[dot] != '\0' && in[dot] != '.' && in[dot] != ' ')
-		dot++;
-	j = 0;
-	while (i < dot && j < 8) {
-		out[j++] = (char)(in[i] >= 'a' && in[i] <= 'z' ? in[i] - 32 : in[i]);
-		i++;
-	}
-	while (j < 8)
-		out[j++] = ' ';
-	if (i < in_len && in[i] == '.')
-		i++;
-	while (i < in_len && in[i] != '\0' && in[i] != ' ' && j < 11) {
-		out[j++] = (char)(in[i] >= 'a' && in[i] <= 'z' ? in[i] - 32 : in[i]);
-		i++;
-	}
-	while (j < 11)
-		out[j++] = ' ';
-	out[11] = '\0';
-}
 
 void program_cat_main(const char *filename)
 {
 	static unsigned char buf[DUMP_BUF_SIZE];
-	char name_8_3[NAME_BUF_SIZE];
+	unsigned int dir_cluster;
+	char name_8_3[12];
 	int n;
 	unsigned int i;
 
 	if (!filename || !filename[0]) {
-		io_putstr("cat: usage cat <filename>\n");
+		io_putstr("cat: usage cat <file>\n");
 		return;
 	}
-	to_8_3(filename, 64, name_8_3);
+
 	n = fat_init();
 	if (n == -2) {
 		io_putstr("cat: disk read error\n");
@@ -53,7 +27,18 @@ void program_cat_main(const char *filename)
 		io_putstr("cat: no FAT filesystem found\n");
 		return;
 	}
-	n = fat_read_file(name_8_3, buf, DUMP_BUF_SIZE);
+
+	n = fat_resolve_path(filename, &dir_cluster, name_8_3);
+	if (n == -2) {
+		io_putstr("cat: disk error\n");
+		return;
+	}
+	if (n != 0) {
+		io_putstr("cat: not found\n");
+		return;
+	}
+
+	n = fat_read_file_in(dir_cluster, name_8_3, buf, DUMP_BUF_SIZE);
 	if (n == -2) {
 		io_putstr("cat: disk read error\n");
 		return;
@@ -62,6 +47,7 @@ void program_cat_main(const char *filename)
 		io_putstr("cat: file not found\n");
 		return;
 	}
+
 	for (i = 0; i < (unsigned int)n; i++) {
 		unsigned char c = buf[i];
 		if (c >= 0x20 && c < 0x7F)
