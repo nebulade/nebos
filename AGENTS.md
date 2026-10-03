@@ -79,7 +79,7 @@ make clean
 
 `hello`, `reboot`, `poweroff`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `run <file>`, `space`, `clock`,
-`colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`,
+`colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `storage`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 ## Serial hot-reload (kexec) workflow

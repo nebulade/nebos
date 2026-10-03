@@ -33,6 +33,8 @@ extern void program_serial_loop_main(const char *arg);
 extern void program_serial_recv_main(const char *arg);
 extern void program_run_serial_main(const char *arg);
 extern void program_lsusb_main(void);
+extern void program_storage_main(void);
+extern void program_format_main(const char *arg);
 
 #define DATETIME_MS 1000
 #define LINE_MAX 64
@@ -328,6 +330,7 @@ static int is_cmd_run(const char *line, unsigned int line_len, char *filename_bu
 #define SAVE_ARGS_MAX 128
 #define RM_FNAME_MAX 64
 #define LS_PATH_MAX 64
+#define FORMAT_DEV_MAX 16
 
 static int is_cmd_save(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
 {
@@ -411,6 +414,48 @@ static int is_cmd_rmdir(const char *line, unsigned int line_len, char *path_buf,
 		path_buf[j++] = line[i++];
 	path_buf[j] = '\0';
 	return (j > 0);
+}
+
+static int is_cmd_storage(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 's' || line[i+1] != 't' || line[i+2] != 'o' ||
+	    line[i+3] != 'r' || line[i+4] != 'a' || line[i+5] != 'g' || line[i+6] != 'e')
+		return 0;
+	i += 7;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_format(const char *line, unsigned int line_len, char *dev_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 6 > line_len)
+		return 0;
+	if (line[i] != 'f' || line[i+1] != 'o' || line[i+2] != 'r' ||
+	    line[i+3] != 'm' || line[i+4] != 'a' || line[i+5] != 't')
+		return 0;
+	i += 6;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "format" must be a whole word */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len)
+		return 0;
+	j = 0;
+	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
+		dev_buf[j++] = line[i++];
+	dev_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len && j > 0);
 }
 
 static int is_cmd_help(const char *line, unsigned int line_len)
@@ -699,6 +744,7 @@ void terminal_run(void)
 					static char save_args[SAVE_ARGS_MAX];
 					static char rm_fname[RM_FNAME_MAX];
 					static char ls_path[LS_PATH_MAX];
+					static char format_dev[FORMAT_DEV_MAX];
 					unsigned int kill_pid;
 					int skip_prompt = 0;
 					io_putchar('\n');
@@ -716,6 +762,9 @@ void terminal_run(void)
 							io_putstr("error: too many processes\n");
 					} else if (is_cmd_lsusb(line, line_len)) {
 						if (process_create("lsusb", program_lsusb_main) < 0)
+							io_putstr("error: too many processes\n");
+					} else if (is_cmd_storage(line, line_len)) {
+						if (process_create("storage", program_storage_main) < 0)
 							io_putstr("error: too many processes\n");
 					} else if (is_cmd_clock(line, line_len)) {
 						if (process_create("clock", program_clock_main) < 0)
@@ -761,6 +810,8 @@ void terminal_run(void)
 					} else if (is_cmd_mouseinfo(line, line_len)) {
 						if (process_create("mouseinfo", program_mouseinfo_main) < 0)
 							io_putstr("error: too many processes\n");
+					} else if (is_cmd_format(line, line_len, format_dev, FORMAT_DEV_MAX)) {
+						program_format_main(format_dev);
 					} else if (is_cmd_ps(line, line_len)) {
 						process_ps();
 					} else if (is_cmd_kill(line, line_len, &kill_pid)) {
@@ -798,6 +849,8 @@ void terminal_run(void)
 						io_putstr("cpuinfo\n");
 						io_putstr("lsusb\n");
 						io_putstr("mouseinfo\n");
+						io_putstr("storage\n");
+						io_putstr("format <device>\n");
 						io_putstr("ps\n");
 						io_putstr("kill <pid>\n");
 						io_putstr("kexec\n");
