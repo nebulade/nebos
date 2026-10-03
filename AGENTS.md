@@ -98,7 +98,13 @@ Wire protocol (host → target, sent immediately; no handshake):
 make dev            # builds kernel.bin, computes kernel_main via nm, sends
 ```
 The reload is automatic. On boot the kernel prints `Nebs OS v<version> booted`
-to COM1, so a serial monitor can confirm the new build headlessly.
+to COM1, so a serial monitor can confirm the new build headlessly:
+
+```sh
+make monitor       # tail the serial line (picocom; Ctrl-A Ctrl-X to exit)
+```
+Run it in a second terminal, then `make dev` in the first — each reload prints
+the `... booted` line.
 
 **One-time install onto a 9600-baud machine (no floppy):**
 ```sh

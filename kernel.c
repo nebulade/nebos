@@ -131,7 +131,7 @@ void kernel_main(void)
 
 	serial_init(SERIAL_COM1);
 	serial_ring_init();
-	serial_puts(SERIAL_COM1, "\r\n" OS_NAME " v" OS_VERSION " booted\r\n");
+	serial_puts(SERIAL_COM1, "\n" OS_NAME " v" OS_VERSION " booted\n");
 	io_init();
 	idle_init();
 	timer_init();

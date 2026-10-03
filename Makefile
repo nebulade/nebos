@@ -13,7 +13,7 @@ ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb run-serial floppy usb space prog bootstrap dev
+.PHONY: all clean run run-floppy run-usb run-serial floppy usb space prog bootstrap dev monitor
 
 all: floppy.img usb.img final.bin root.img
 
@@ -257,6 +257,11 @@ run-serial:
 	@echo "Starting serial monitor on $(SERIAL_DEV) at $(SERIAL_BAUD) baud..."
 	@echo "Type 'serial test' or 'serial recv' in the nebos terminal."
 	@echo "Press Ctrl-A Ctrl-X to exit picocom."
+	picocom $(SERIAL_DEV) --baud $(SERIAL_BAUD)
+
+monitor:
+	@echo "Watching $(SERIAL_DEV) @ $(SERIAL_BAUD) baud (Ctrl-A Ctrl-X to exit)."
+	@echo "Each 'make dev' reload prints: Nebs OS v<version> booted"
 	picocom $(SERIAL_DEV) --baud $(SERIAL_BAUD)
 
 send: $(PROGRAM).bin send_serial
