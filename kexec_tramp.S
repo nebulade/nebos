@@ -51,7 +51,7 @@ kexec_trampoline:
 	cld
 	rep   movsb
 
-	movl  $0x20800, %esp
+	movl  $0x30800, %esp
 	jmp   *%edx
 
 .globl kexec_trampoline_end

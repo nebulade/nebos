@@ -3,8 +3,8 @@
  * full hardware access: it switches COM1 to 115200, receives a new kernel image,
  * copies it over 0x7E00, and jumps to its kernel_main.
  *
- * Self-contained: no kernel symbols, no run_api dependency. We live at 0x21000
- * (outside the 0x7E00..0x20000 kernel region), so we can overwrite the kernel
+ * Self-contained: no kernel symbols, no run_api dependency. We live at 0x31000
+ * (outside the 0x7E00..0x30000 kernel region), so we can overwrite the kernel
  * directly from our own code without a relocated trampoline.
  *
  * Wire protocol (host -> us), after we emit 'R':
@@ -18,9 +18,9 @@
 #define UART_BASE        0x3F8
 #define STAGE_ADDR       0x50000
 #define KERNEL_LOAD_ADDR 0x7E00
-#define BOOT_STACK       0x20800
+#define BOOT_STACK       0x30800
 #define MAGIC            0x4345584B /* "KXEC" little-endian */
-#define MAX_SIZE         0x18200
+#define MAX_SIZE         0x28200
 
 static inline void outb(unsigned short port, unsigned char v)
 {
@@ -148,7 +148,7 @@ void _start(void)
 	}
 
 	/* Copy staged kernel over 0x7E00, then jump to its kernel_main.
-	 * We live at 0x21000, outside the overwritten region, so this is safe. */
+	 * We live at 0x31000, outside the overwritten region, so this is safe. */
 	setup_flat_gdt();
 	for (i = 0; i < size; i++)
 		((volatile unsigned char *)KERNEL_LOAD_ADDR)[i] =

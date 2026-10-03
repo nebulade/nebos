@@ -42,13 +42,13 @@ make clean
 | `0x800`   | kexec trampoline (relocated at runtime; below the kernel) |
 | `0x900`   | kexec flat GDT + GDTR (built at runtime; below the kernel) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
-| `0x20000` | ISA DMA buffer (`disk.c`) + kernel upper bound (`kernel.ld` ASSERT) |
-| `0x20800` | Protected-mode stack top (`vesa_stage.S`) |
-| `0x20F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
-| `0x21000` | User program load address (`run.c`, `user.ld`) |
-| `0x30000` | (free) |
-| `0x40000` | Process stack base (`PROC_STACK_BASE`, 4 KB × 8, `process.h`) |
-| `0x50000` | kexec staging buffer (received kernel image, up to 0x18200 B) |
+| `0x20000` | (free — kernel upper bound used to be here, now `0x30000`) |
+| `0x30000` | ISA DMA buffer (`disk.c`) + kernel upper bound (`kernel.ld` ASSERT) |
+| `0x30800` | Protected-mode stack top (`vesa_stage.S`) |
+| `0x30F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
+| `0x31000` | User program load address (`run.c`, `user.ld`) |
+| `0x42000` | Process stack base (`PROC_STACK_BASE`, 4 KB × 8, `process.h`) |
+| `0x50000` | kexec staging buffer (received kernel image, up to 0x28200 B) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
 ## Key files
@@ -73,7 +73,7 @@ make clean
   `lsusb` command.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
-  `0x21000`, API function-pointer struct at `0x20F00`. `space` = Space Invaders.
+  `0x31000`, API function-pointer struct at `0x30F00`. `space` = Space Invaders.
 
 ## Shell commands
 

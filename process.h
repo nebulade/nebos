@@ -4,7 +4,7 @@
 
 #define MAX_PROCS       8
 #define PROC_STACK_SIZE 0x1000  /* 4 KB per process */
-#define PROC_STACK_BASE 0x40000 /* process 1 stack bottom; process 0 uses bootstrap stack */
+#define PROC_STACK_BASE 0x42000 /* process 1 stack bottom; process 0 uses bootstrap stack */
 
 #define PROC_UNUSED  0
 #define PROC_READY   1

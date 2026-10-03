@@ -1,4 +1,4 @@
-/* run command: load raw binary from FAT floppy to 0x21000 and execute. */
+/* run command: load raw binary from FAT floppy to 0x31000 and execute. */
 
 #include "fat.h"
 #include "fbtext.h"
@@ -8,7 +8,7 @@
 #include "timer.h"
 #include "vga.h"
 
-#define PROGRAM_LOAD_ADDR 0x21000
+#define PROGRAM_LOAD_ADDR 0x31000
 #define PROGRAM_LOAD_MAX  0x10000
 #define NAME_BUF_SIZE     12
 
@@ -85,7 +85,7 @@ void program_run_main(const char *filename)
 	((void (*)(void))PROGRAM_LOAD_ADDR)();
 }
 
-/* run serial: execute the binary already loaded at 0x21000 via serial_recv. */
+/* run serial: execute the binary already loaded at 0x31000 via serial_recv. */
 
 void program_run_serial_main(const char *arg)
 {

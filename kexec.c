@@ -5,7 +5,7 @@
  * LFB are still valid) and jump straight to the new kernel's kernel_main,
  * which re-inits IDT/PIC/PIT/mouse/process/VGA-shadow/terminal from scratch.
  *
- * Because this code lives at 0x7E00..0x20000 (inside the region we overwrite),
+ * Because this code lives at 0x7E00..0x30000 (inside the region we overwrite),
  * the final "copy image to 0x7E00 and jump" is done by a small
  * position-independent trampoline relocated to 0x800 (below the kernel).
  *
@@ -29,7 +29,7 @@
 #define KEXEC_STAGE 0x50000    /* staging buffer for the received image */
 #define KEXEC_LOAD  0x7E00     /* where the kernel must be placed */
 #define KEXEC_TRAMP 0x800      /* relocated trampoline (below the kernel) */
-#define KEXEC_MAX   0x18200    /* max = kernel region 0x7E00..0x20000 */
+#define KEXEC_MAX   0x28200    /* max = kernel region 0x7E00..0x30000 */
 
 volatile int kexec_busy;
 
