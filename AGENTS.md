@@ -41,12 +41,14 @@ make clean
 | `0x7E00`  | Kernel load / VESA-stage entry (`kernel.ld`) |
 | `0x800`   | kexec trampoline (relocated at runtime; below the kernel) |
 | `0x900`   | kexec flat GDT + GDTR (built at runtime; below the kernel) |
+| `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
 | `0x20000` | ISA DMA buffer (`disk.c`) + kernel upper bound (`kernel.ld` ASSERT) |
 | `0x20800` | Protected-mode stack top (`vesa_stage.S`) |
 | `0x20F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
 | `0x21000` | User program load address (`run.c`, `user.ld`) |
-| `0x30000` | kexec staging buffer (received kernel image) |
+| `0x30000` | (free) |
 | `0x40000` | Process stack base (`PROC_STACK_BASE`, 4 KB × 8, `process.h`) |
+| `0x50000` | kexec staging buffer (received kernel image, up to 0x18200 B) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
 ## Key files
@@ -66,6 +68,9 @@ make clean
   host-side `kexec_send.c` — reload the kernel over serial without rebooting
   (C-light: reuses the current framebuffer, re-runs `kernel_main`).
 - **Mouse**: `mouse.c` — PS/2 + IntelliMouse, hardware cursor.
+- **USB**: `uhci.c/h`, `usb.c/h`, `lsusb.c` — UHCI host controller (PCI scan,
+  polling transfers, no IRQ), USB core enumeration with hub recursion, and the
+  `lsusb` command.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
   `0x21000`, API function-pointer struct at `0x20F00`. `space` = Space Invaders.
@@ -74,7 +79,7 @@ make clean
 
 `hello`, `reboot`, `poweroff`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `run <file>`, `space`, `clock`,
-`colors`, `display`, `cpuinfo`, `mouseinfo`, `power [info|set …]`, `drive <0|1>`,
+`colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 ## Serial hot-reload (kexec) workflow
@@ -142,6 +147,47 @@ The monitor runs inline (blocks the terminal), so it owns the serial ring buffer
 and doesn't conflict with the kexec auto-detect. Reading arbitrary physical
 memory is safe (no paging); writing can corrupt the kernel, so the usual loop is
 inspect → `q` → `make dev` a fresh build.
+
+## Headless debugging via serial (no display, no keyboard)
+
+The terminal is framebuffer-only, so a headless QEMU gives you no easy way to
+*type* commands or *see* output. The reliable workflow (used for `lsusb`) is to
+temporarily mirror `io_putchar` to COM1, and to invoke the code under test
+directly at boot — no keystroke injection needed:
+
+1. **Echo the framebuffer to serial** — in `io.c` add `#include "serial.h"` and a
+   `serial_putc(SERIAL_COM1, c);` at the top of `io_putchar`. Every `io_putstr`/
+   `io_putchar` call (terminal prompt, echo, command output) now also lands on
+   COM1. `serial_puthex`/`serial_putdec` (`serial.h`) are available for structured
+   dumps inside drivers.
+2. **Call the code at boot** — temporarily call the function under test from
+   `kernel_main` (e.g. `usb_enumerate_and_print();` before `terminal_run()`), or
+   `process_create(...)` from `terminal_run()` to exercise the process context.
+   QMP `send-key`/`input-send-event` and HMP `sendkey` do **not** reliably reach
+   the PS/2 keyboard in headless/VNC-without-a-client mode, so don't script
+   keystrokes — script the call site instead.
+3. **Run QEMU headless and read the log**:
+   ```sh
+   qemu-system-i386 -M pc \
+     -drive file=floppy.img,format=raw,if=floppy \
+     -drive file=root.img,format=raw,if=floppy \
+     -serial file:/tmp/opencode/serial.log \
+     -display none -vga std
+   # ...then: cat -A /tmp/opencode/serial.log
+   ```
+   The `Nebs OS v<version> booted` line is already written to COM1 at boot, so
+   serial is live before the framebuffer is up — a crash in early init still shows.
+4. **Revert before committing** — remove the `io.c` echo and any boot-time call;
+   `git status` should show `io.c` and `kernel.c` unchanged.
+
+QEMU gotchas that bit once:
+
+- The default `-M pc` (QEMU ≥ 11) has **no USB controller**. Add
+  `-device piix3-usb-uhci` (plus `-device usb-mouse`/`usb-hub`/…) explicitly.
+  Cross-check the guest's view of the tree with the monitor `info usb`.
+- `pkill -f qemu-system-i386` matches *your own shell command line* (it contains
+  the string) and kills your script; use `pkill qemu` (process-name match) or
+  kill by PID.
 
 ## Conventions & gotchas
 

@@ -101,10 +101,19 @@ colors.o: colors.c fbtext.h io.h timer.h vga.h
 display.o: display.c io.h vga.h gpu.h ati.h fbtext.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-cpuinfo.o: cpuinfo.c io.h timer.h idle.h
+cpuinfo.o: cpuinfo.c io.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 mousecmd.o: mousecmd.c io.h mouse.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+uhci.o: uhci.c uhci.h pci.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+usb.o: usb.c usb.h io.h timer.h uhci.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+lsusb.o: lsusb.c io.h usb.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 mouse.o: mouse.c mouse.h timer.h vga.h
@@ -149,7 +158,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -298,4 +307,4 @@ dev: kernel.bin kexec_send
 	./kexec_send $(SERIAL_DEV) $(SERIAL_BAUD) $$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send

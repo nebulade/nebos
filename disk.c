@@ -477,22 +477,6 @@ static int fdc_init_once(void)
 	return 0;
 }
 
-void disk_set_drive(unsigned int drive)
-{
-	if (drive > 1)
-		return;
-	if (drive == current_drive && fdc_initialized)
-		return;
-	current_drive = drive;
-	motor_on = 0;
-	fdc_initialized = 0;
-}
-
-unsigned int disk_get_drive(void)
-{
-	return current_drive;
-}
-
 int disk_read_sectors(unsigned int lba, void *buf, unsigned int count)
 {
 	unsigned int i;

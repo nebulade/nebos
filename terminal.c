@@ -29,12 +29,10 @@ extern void program_colors_main(void);
 extern void program_display_main(void);
 extern void program_cpuinfo_main(void);
 extern void program_mouseinfo_main(void);
-extern void program_power_main(const char *args);
 extern void program_serial_loop_main(const char *arg);
 extern void program_serial_recv_main(const char *arg);
 extern void program_run_serial_main(const char *arg);
-extern void disk_set_drive(unsigned int drive);
-extern unsigned int disk_get_drive(void);
+extern void program_lsusb_main(void);
 
 #define DATETIME_MS 1000
 #define LINE_MAX 64
@@ -154,6 +152,8 @@ static int is_cmd_ls(const char *line, unsigned int line_len, char *path_buf, un
 	if (line[i] != 'l' || line[i+1] != 's')
 		return 0;
 	i += 2;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "ls" must be a whole word, so reject "lsusb" etc. */
 	while (i < line_len && line[i] == ' ')
 		i++;
 	if (i >= line_len) {
@@ -245,6 +245,22 @@ static int is_cmd_mouseinfo(const char *line, unsigned int line_len)
 	    line[i+6] != 'n' || line[i+7] != 'f' || line[i+8] != 'o')
 		return 0;
 	i += 9;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_lsusb(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 'l' || line[i+1] != 's' || line[i+2] != 'u' ||
+	    line[i+3] != 's' || line[i+4] != 'b')
+		return 0;
+	i += 5;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -397,27 +413,6 @@ static int is_cmd_rmdir(const char *line, unsigned int line_len, char *path_buf,
 	return (j > 0);
 }
 
-static int is_cmd_drive(const char *line, unsigned int line_len, unsigned int *drive_num)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'd' || line[i+1] != 'r' || line[i+2] != 'i' || line[i+3] != 'v' || line[i+4] != 'e')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len || line[i] < '0' || line[i] > '1')
-		return 0;
-	*drive_num = (unsigned int)(line[i] - '0');
-	i++;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
 static int is_cmd_help(const char *line, unsigned int line_len)
 {
 	unsigned int i = 0;
@@ -550,34 +545,6 @@ static int is_cmd_serial(const char *line, unsigned int line_len, char *arg_buf,
 	return (i == line_len);
 }
 
-#define POWER_ARGS_MAX 32
-static int is_cmd_power(const char *line, unsigned int line_len, char *args_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'p' || line[i+1] != 'o' || line[i+2] != 'w' || line[i+3] != 'e' || line[i+4] != 'r')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i == line_len) {
-		if (buf_size > 0)
-			args_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		args_buf[j++] = line[i++];
-	while (j > 0 && args_buf[j - 1] == ' ')
-		j--;
-	args_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
 /* Redraw line from index `from` to end, clear one cell after, set cursor to line_pos. */
 static void redraw_line_from(const char *line, unsigned int line_len,
 	unsigned int line_pos, unsigned int line_start, unsigned int from)
@@ -672,7 +639,9 @@ void terminal_run(void)
 	history_browse     = 0;
 
 	io_drain_keyboard();
+	io_clear_screen();
 	draw_header_row();
+	io_set_cursor(IO_CONTENT_OFFSET);
 	io_putstr(prompt_first);
 	line_start = io_get_cursor();
 
@@ -727,11 +696,10 @@ void terminal_run(void)
 					}
 				} else if (k == '\n') {
 					static char cat_fname[CAT_FNAME_MAX];
-					static char power_args[POWER_ARGS_MAX];
 					static char save_args[SAVE_ARGS_MAX];
 					static char rm_fname[RM_FNAME_MAX];
 					static char ls_path[LS_PATH_MAX];
-					unsigned int drive_sel, kill_pid;
+					unsigned int kill_pid;
 					int skip_prompt = 0;
 					io_putchar('\n');
 					history_push(line, line_len);
@@ -745,6 +713,9 @@ void terminal_run(void)
 						program_poweroff_main();
 					} else if (is_cmd_ls(line, line_len, ls_path, LS_PATH_MAX)) {
 						if (process_create_arg("ls", program_ls_main, ls_path) < 0)
+							io_putstr("error: too many processes\n");
+					} else if (is_cmd_lsusb(line, line_len)) {
+						if (process_create("lsusb", program_lsusb_main) < 0)
 							io_putstr("error: too many processes\n");
 					} else if (is_cmd_clock(line, line_len)) {
 						if (process_create("clock", program_clock_main) < 0)
@@ -790,14 +761,6 @@ void terminal_run(void)
 					} else if (is_cmd_mouseinfo(line, line_len)) {
 						if (process_create("mouseinfo", program_mouseinfo_main) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_power(line, line_len, power_args, POWER_ARGS_MAX)) {
-						if (process_create_arg("power", program_power_main, power_args) < 0)
-							io_putstr("error: too many processes\n");
-					} else if (is_cmd_drive(line, line_len, &drive_sel)) {
-						disk_set_drive(drive_sel);
-						io_putstr("drive ");
-						io_putchar((char)('0' + disk_get_drive()));
-						io_putstr(" selected\n");
 					} else if (is_cmd_ps(line, line_len)) {
 						process_ps();
 					} else if (is_cmd_kill(line, line_len, &kill_pid)) {
@@ -818,18 +781,29 @@ void terminal_run(void)
 					} else if (is_cmd_dbg(line, line_len)) {
 						program_dbg_main();
 					} else if (is_cmd_help(line, line_len)) {
-						io_putstr("hello     reboot    poweroff\n");
-						io_putstr("ls [dir]  cat <file>\n");
-						io_putstr("save <f> <text>  rm <file>\n");
-						io_putstr("mkdir <dir>  rmdir <dir>\n");
-						io_putstr("run <file>  space\n");
-						io_putstr("clock     colors\n");
-						io_putstr("display   cpuinfo\n");
+						io_putstr("hello\n");
+						io_putstr("reboot\n");
+						io_putstr("poweroff\n");
+						io_putstr("ls [dir]\n");
+						io_putstr("cat <file>\n");
+						io_putstr("save <f> <text>\n");
+						io_putstr("rm <file>\n");
+						io_putstr("mkdir <dir>\n");
+						io_putstr("rmdir <dir>\n");
+						io_putstr("run <file>\n");
+						io_putstr("space\n");
+						io_putstr("clock\n");
+						io_putstr("colors\n");
+						io_putstr("display\n");
+						io_putstr("cpuinfo\n");
+						io_putstr("lsusb\n");
 						io_putstr("mouseinfo\n");
-						io_putstr("power [info|set <low|balanced|max>]\n");
-						io_putstr("drive <0|1>\n");
-					io_putstr("ps        kill <pid>\n");
-					io_putstr("kexec     dbg       serial test|recv  clear\n");
+						io_putstr("ps\n");
+						io_putstr("kill <pid>\n");
+						io_putstr("kexec\n");
+						io_putstr("dbg\n");
+						io_putstr("serial test|recv\n");
+						io_putstr("clear\n");
 				} else if (is_cmd_clear(line, line_len)) {
 					io_clear_screen();
 					draw_header_row();

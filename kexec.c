@@ -26,10 +26,10 @@
 #include "serial.h"
 
 #define KEXEC_MAGIC 0x4345584B /* "KXEC" little-endian */
-#define KEXEC_STAGE 0x30000    /* staging buffer for the received image */
+#define KEXEC_STAGE 0x50000    /* staging buffer for the received image */
 #define KEXEC_LOAD  0x7E00     /* where the kernel must be placed */
 #define KEXEC_TRAMP 0x800      /* relocated trampoline (below the kernel) */
-#define KEXEC_MAX   0x10000    /* 64 KB cap (fits the staging region) */
+#define KEXEC_MAX   0x18200    /* max = kernel region 0x7E00..0x20000 */
 
 volatile int kexec_busy;
 

@@ -34,37 +34,6 @@ void idle_init(void)
 	mwait_cstate_hint = 0x10;
 }
 
-void idle_set_cstate(unsigned int level)
-{
-	switch (level) {
-	case 0:
-		mwait_cstate_hint = 0x00;
-		break;
-	case 1:
-		mwait_cstate_hint = 0x10;
-		break;
-	case 2:
-		mwait_cstate_hint = 0x20;
-		break;
-	case 3:
-		mwait_cstate_hint = 0x30;
-		break;
-	default:
-		mwait_cstate_hint = 0x10;
-		break;
-	}
-}
-
-unsigned int idle_get_cstate(void)
-{
-	return (mwait_cstate_hint >> 4) & 0xF;
-}
-
-int idle_has_mwait(void)
-{
-	return has_mwait;
-}
-
 void cpu_idle(void)
 {
 	if (has_mwait && has_mwait_ext) {

@@ -16,11 +16,11 @@
  */
 
 #define UART_BASE        0x3F8
-#define STAGE_ADDR       0x30000
+#define STAGE_ADDR       0x50000
 #define KERNEL_LOAD_ADDR 0x7E00
 #define BOOT_STACK       0x20800
 #define MAGIC            0x4345584B /* "KXEC" little-endian */
-#define MAX_SIZE         0x10000
+#define MAX_SIZE         0x18200
 
 static inline void outb(unsigned short port, unsigned char v)
 {
