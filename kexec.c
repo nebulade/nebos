@@ -38,12 +38,28 @@ extern unsigned char kexec_trampoline_end[];
 
 int kexec_pending(void)
 {
-	unsigned char b0 = 0, b1 = 0, b2 = 0, b3 = 0;
+	unsigned char b, x, e, c;
 
-	if (serial_ring_peek(0, &b0) && serial_ring_peek(1, &b1) &&
-	    serial_ring_peek(2, &b2) && serial_ring_peek(3, &b3))
-		return (b0 == 'K' && b1 == 'X' && b2 == 'E' && b3 == 'C');
-	return 0;
+	/* Scan for the "KXEC" magic, draining any leading bytes that can't begin
+	 * it. This self-heals after a stray/partial/overflowed transfer, so stale
+	 * bytes in the ring buffer can never permanently block detection. */
+	for (;;) {
+		if (!serial_ring_peek(0, &b))
+			return 0;                 /* buffer empty */
+		if (b != 'K') {
+			(void)serial_ring_getc(); /* stale byte, drop it */
+			continue;
+		}
+		/* First byte is 'K'. Report pending only once all 4 bytes are here. */
+		if (serial_ring_peek(1, &x) && serial_ring_peek(2, &e) &&
+		    serial_ring_peek(3, &c)) {
+			if (x == 'X' && e == 'E' && c == 'C')
+				return 1;         /* "KXEC" found */
+			(void)serial_ring_getc(); /* false 'K' start, drop it */
+			continue;
+		}
+		return 0;                     /* 'K' seen but magic incomplete; wait */
+	}
 }
 
 /* Drain whatever partial data remains in the ring buffer after a failure so a
