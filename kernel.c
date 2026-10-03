@@ -7,6 +7,7 @@
 #include "terminal.h"
 #include "timer.h"
 #include "serial.h"
+#include "version.h"
 #include "vga.h"
 
 static inline void outb(unsigned short port, unsigned char v)
@@ -130,6 +131,7 @@ void kernel_main(void)
 
 	serial_init(SERIAL_COM1);
 	serial_ring_init();
+	serial_puts(SERIAL_COM1, "\r\n" OS_NAME " v" OS_VERSION " booted\r\n");
 	io_init();
 	idle_init();
 	timer_init();

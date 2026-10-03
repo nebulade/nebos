@@ -39,3 +39,17 @@ unsigned int serial_ring_count(void)
 		return h - t;
 	return SERIAL_RING_SIZE - t + h;
 }
+
+/* Peek at byte `offset` from the front of the queue without consuming it.
+ * Returns 1 and stores the byte, or 0 if `offset` is past the queued data. */
+int serial_ring_peek(unsigned int offset, unsigned char *byte)
+{
+	unsigned int h = ring_head;
+	unsigned int t = ring_tail;
+	unsigned int count = (h >= t) ? (h - t) : (SERIAL_RING_SIZE - t + h);
+
+	if (offset >= count)
+		return 0;
+	*byte = ring_buf[(t + offset) % SERIAL_RING_SIZE];
+	return 1;
+}

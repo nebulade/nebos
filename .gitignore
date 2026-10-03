@@ -1,3 +1,6 @@
 *.o
 *.bin
 *.elf
+*.img
+send_serial
+kexec_send

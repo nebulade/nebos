@@ -7,8 +7,8 @@ void serial_init(unsigned int port)
 {
 	port_outb(port + 1, 0x00);
 	port_outb(port + 3, 0x80);
-	port_outb(port + 0, 0x0C);
-	port_outb(port + 1, 0x00);
+	port_outb(port + 0, 0x01); /* divisor low = 1  -> 115200 baud */
+	port_outb(port + 1, 0x00); /* divisor high = 0 */
 	port_outb(port + 3, 0x03);
 	port_outb(port + 2, 0xC7);
 	port_outb(port + 4, 0x03);

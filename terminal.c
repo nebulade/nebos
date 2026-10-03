@@ -4,11 +4,13 @@
 #include "io.h"
 #include "fbtext.h"
 #include "idle.h"
+#include "kexec.h"
 #include "mouse.h"
 #include "process.h"
 #include "rtc.h"
 #include "terminal.h"
 #include "timer.h"
+#include "version.h"
 #include "vga.h"
 
 extern void program_hello_main(void);
@@ -74,8 +76,8 @@ static void update_cursor_blink(void)
 		io_cursor_hide_block();
 }
 
-static const char banner[] __attribute__((section(".text"))) = "Nebs OS |o|";
-#define BANNER_LEN 12
+static const char banner[] __attribute__((section(".text"))) = OS_NAME " v" OS_VERSION;
+#define BANNER_LEN 14
 static const char prompt[] __attribute__((section(".text"))) = "\n> ";
 static const char prompt_first[] __attribute__((section(".text"))) = "> ";
 
@@ -387,6 +389,21 @@ static int is_cmd_kill(const char *line, unsigned int line_len, unsigned int *pi
 	return 1;
 }
 
+static int is_cmd_kexec(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 'k' || line[i+1] != 'e' || line[i+2] != 'x' || line[i+3] != 'e' || line[i+4] != 'c')
+		return 0;
+	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 static int is_cmd_serial(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
 {
 	unsigned int i = 0, j = 0;
@@ -655,6 +672,16 @@ void terminal_run(void)
 							io_putstr("kill: no such process\n");
 						else
 							io_putstr("killed\n");
+					} else if (is_cmd_kexec(line, line_len)) {
+						if (kexec_busy) {
+							io_putstr("kexec: already receiving\n");
+						} else {
+							kexec_busy = 1;
+							if (process_create("kexec", program_kexec_main) < 0) {
+								kexec_busy = 0;
+								io_putstr("error: too many processes\n");
+							}
+						}
 					} else if (is_cmd_help(line, line_len)) {
 						io_putstr("hello     reboot    poweroff\n");
 						io_putstr("ls        cat <file>\n");
@@ -665,7 +692,7 @@ void terminal_run(void)
 						io_putstr("power [info|set <low|balanced|max>]\n");
 						io_putstr("drive <0|1>\n");
 					io_putstr("ps        kill <pid>\n");
-					io_putstr("serial test|recv  clear\n");
+					io_putstr("kexec     serial test|recv  clear\n");
 				} else if (is_cmd_clear(line, line_len)) {
 					io_clear_screen();
 					draw_header_row();
@@ -722,6 +749,11 @@ void terminal_run(void)
 					}
 				}
 			} else {
+				if (!kexec_busy && kexec_pending()) {
+					kexec_busy = 1;
+					if (process_create("kexec", program_kexec_main) < 0)
+						kexec_busy = 0;
+				}
 				cpu_idle();
 			}
 		}

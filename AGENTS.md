@@ -1,0 +1,143 @@
+# AGENTS.md — Nebs OS (`nebos`)
+
+A from-scratch, freestanding **32-bit x86 hobby operating system** written in C and
+x86 assembly. Single-author project (~7,000 SLOC, no external runtime, no libc).
+Targets i586 (first-gen Pentium); runs under QEMU or on real hardware.
+
+## Build & run
+
+Toolchain: `gcc` (32-bit multilib), `as`/`ld`/`objcopy`, `mtools` (`mcopy`/`mkfs.fat`), `qemu`.
+
+```sh
+make all        # floppy.img usb.img final.bin root.img
+make run        # boot floppy.img + root.img in QEMU (fallback: qemu-system-x86_64)
+make run-usb    # boot usb.img as an IDE disk
+make clean
+```
+
+- Build flags (in `Makefile`): `-m32 -march=i586 -ffreestanding -fno-pie -nostdlib
+  -fno-stack-protector -mno-sse -mno-sse2 -mno-mmx -O2`.
+- `root.img` is a second FAT12 floppy holding user binaries (`PROG.BIN`, `SPACE.BIN`)
+  and test files; it requires `mtools` to build.
+- `make send PROGRAM=prog` transfers a binary to a real machine over serial.
+
+## Boot chain
+
+1. `boot.S` — 512-byte boot sector (FAT16 BPB). Loads contiguous kernel sectors
+   to `0x7E00` (CHS for floppy, INT 13h AH=42h LBA for hard disk), jumps there.
+2. `vesa_stage.S` — real-mode VESA stage. Picks best VBE mode (≥16 bpp, LFB, fits
+   VRAM, ≤1280px), writes mode info to `0x600`, enables A20, enters protected mode,
+   jumps to `kernel_main`.
+3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → I/O → idle → timer
+   (PIT 1 kHz + IDT) → mouse → processes → VGA shadow buffer → terminal.
+4. `mbr.S` — MBR (USB/HDD boot); loads partition boot sector at LBA 1.
+
+## Hardcoded memory map (fragile — keep in sync when editing)
+
+| Address    | Purpose |
+|-----------|---------|
+| `0x600`   | Boot framebuffer info (`struct vga_boot_fb_info`, see `vga.h`) |
+| `0x7C00`  | Boot sector load address |
+| `0x7E00`  | Kernel load / VESA-stage entry (`kernel.ld`) |
+| `0x800`   | kexec trampoline (relocated at runtime; below the kernel) |
+| `0x900`   | kexec flat GDT + GDTR (built at runtime; below the kernel) |
+| `0x20000` | ISA DMA buffer (`disk.c`) + kernel upper bound (`kernel.ld` ASSERT) |
+| `0x20800` | Protected-mode stack top (`vesa_stage.S`) |
+| `0x20F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
+| `0x21000` | User program load address (`run.c`, `user.ld`) |
+| `0x30000` | kexec staging buffer (received kernel image) |
+| `0x40000` | Process stack base (`PROC_STACK_BASE`, 4 KB × 8, `process.h`) |
+| `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
+
+## Key files
+
+- **Multitasking**: `process.c/h`, `switch.S` — ring-0 preemptive round-robin,
+  8 slots, 20 ms timeslice, `ps`/`kill`. Context switch happens in the PIT stub.
+- **Graphics**: `vga.c/h`, `vga_copy.S`, `gpu.c`, `ati.c`, `nvidia.c`, `pci.h` —
+  VESA LFB + shadow buffer, 30 Hz dirty-row flush. ATI Mach64 CRTC fixup; NVIDIA no-op.
+- **Text console**: `fbtext.c`, `font_8x8.c/h`, `io.c/h` — framebuffer text,
+  8×8 font, rainbow separator, live datetime header, blinking cursor.
+- **Shell**: `terminal.c` — history, line editing, command dispatch (hand-rolled
+  `is_cmd_*` parsers).
+- **Filesystem**: `fat.c` (read-only FAT12), `disk.c` (FDC + ISA DMA ch2, retries).
+- **Serial**: `serial.c`, `serial_ring_buf.c/h`, `bin_recv.c/h`, `serial_recv.c`,
+  `serial_loop.c`, `send_serial.c` — 16550 UART, IRQ-driven ring buffer, XMODEM.
+- **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `bootstrap.c`, and the
+  host-side `kexec_send.c` — reload the kernel over serial without rebooting
+  (C-light: reuses the current framebuffer, re-runs `kernel_main`).
+- **Mouse**: `mouse.c` — PS/2 + IntelliMouse, hardware cursor.
+- **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
+- **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
+  `0x21000`, API function-pointer struct at `0x20F00`. `space` = Space Invaders.
+
+## Shell commands
+
+`hello`, `reboot`, `poweroff`, `ls`, `cat <file>`, `run <file>`, `space`, `clock`,
+`colors`, `display`, `cpuinfo`, `mouseinfo`, `power [info|set …]`, `drive <0|1>`,
+`ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`.
+
+## Serial hot-reload (kexec) workflow
+
+Develop without reflashing the floppy. The serial link (COM1 ↔ `/dev/ttyUSB0`)
+runs at **115200 baud**. Two paths exist:
+
+- **Auto-detect** (the normal loop) — the terminal's idle loop watches the serial
+  ring buffer for the `"KXEC"` magic and auto-spawns the reload, so `make dev`
+  alone boots a fresh kernel. The manual `kexec` command is kept as a fallback
+  that waits for the same image.
+- **`bootstrap`** (one-time, zero-reflash) — a ring-0 program loaded through the
+  existing `serial recv` + `run serial` path that switches the UART to 115200,
+  receives a new kernel, and jumps into it. Used only to install the first new
+  kernel onto a machine still running an old (9600 baud) build.
+
+Wire protocol (host → target, sent immediately; no handshake):
+`[magic "KXEC"][entry u32 LE][size u32 LE][data][checksum u8]`.
+
+**Every iteration:**
+```sh
+make dev            # builds kernel.bin, computes kernel_main via nm, sends
+```
+The reload is automatic. On boot the kernel prints `Nebs OS v<version> booted`
+to COM1, so a serial monitor can confirm the new build headlessly.
+
+**One-time install onto a 9600-baud machine (no floppy):**
+```sh
+make bootstrap                                   # builds bootstrap.bin
+# 1) start the host sender first (it waits for 'R'):
+./send_serial /dev/ttyUSB0 9600 bootstrap.bin
+# 2) on the PC: `serial recv` (sends 'R'), then `run serial`
+# 3) the bootstrap switches the link to 115200 and waits; send the kernel:
+make dev                                         # 115200
+```
+After the first kexec the machine is at 115200, and `make dev` is all you need
+from then on.
+
+Notes: the kexec path rebuilds a flat GDT at `0x900` before jumping (the old GDT
+lives inside the overwritten kernel region), so it's safe to edit any file,
+including `vesa_stage.S`/`boot.S` layout — but the video *mode* itself is only
+re-applied on a full floppy/USB boot (C-light reuses the current LFB).
+
+## Conventions & gotchas
+
+- **Freestanding C** — no libc, no `malloc`, no `printf`. Use `io_putstr` /
+  `io_putchar` / `io_puthex` (`io.h`). Printing is VGA-framebuffer based.
+- **No paging / no MMU / no process isolation.** Everything runs ring-0; user
+  programs share the kernel's address space and privileges.
+- **All drawing goes into the shadow buffer** (`vga_put_pixel_rgb` etc.); a 30 Hz
+  flush copies dirty rows to VRAM. Full-screen programs call `vga_clear_rgb`.
+- **FAT is read-only** — parse/read only; no write/create/delete.
+- **Keep the memory map in sync** — hardcoded addresses appear in `.S`, `.c`, and
+  linker scripts; changing one without the others breaks boot/loading.
+
+## Known issues (candidates for future tasks)
+
+1. `serial_puthex` (`serial.c`) uses `"01234589ABCDEF"` — digits **6 and 7 are
+   missing** (bug).
+2. `vga.c` `draw_flush_debug_square()` — leftover debug artifact, still draws a
+   color-cycling 32×32 square in the corner on every flush.
+3. No paging/virtual memory or process isolation.
+4. Read-only FAT filesystem.
+5. Implicit, hardcoded memory map (see table above).
+6. `disk.c` `fdc_reset()` and `fdc_init_once()` overlap/duplicate logic.
+7. `terminal.c` command dispatch is ~30 near-identical `is_cmd_*` functions;
+   a table-driven parser would reduce this.

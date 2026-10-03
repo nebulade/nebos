@@ -8,5 +8,6 @@ void serial_ring_init(void);
 void serial_ring_push(unsigned char byte);
 int  serial_ring_pop(unsigned char *byte);
 unsigned int serial_ring_count(void);
+int  serial_ring_peek(unsigned int offset, unsigned char *byte);
 
 #endif

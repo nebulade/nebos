@@ -13,14 +13,14 @@ ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb run-serial floppy usb space prog
+.PHONY: all clean run run-floppy run-usb run-serial floppy usb space prog bootstrap dev
 
 all: floppy.img usb.img final.bin root.img
 
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.o: kernel.c idle.h io.h mouse.h process.h terminal.h timer.h serial.h vga.h
+kernel.o: kernel.c idle.h io.h mouse.h process.h terminal.h timer.h serial.h version.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 io.o: io.c io.h fbtext.h
@@ -32,7 +32,7 @@ font_8x8.o: font_8x8.c font_8x8.h
 fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-terminal.o: terminal.c terminal.h io.h fbtext.h idle.h mouse.h process.h rtc.h timer.h disk.h
+terminal.o: terminal.c terminal.h io.h fbtext.h idle.h kexec.h mouse.h process.h rtc.h timer.h disk.h version.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 hello.o: hello.c io.h
@@ -113,6 +113,12 @@ mouse.o: mouse.c mouse.h timer.h vga.h
 idle.o: idle.c idle.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+kexec.o: kexec.c kexec.h io.h serial.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+kexec_tramp.o: kexec_tramp.S
+	$(AS) $(ASFLAGS) -o $@ $<
+
 boot.elf: boot.o
 	$(LD) $(BOOT_LDFLAGS) -o $@ $<
 
@@ -128,7 +134,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o kexec.o kexec_tramp.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -203,6 +209,15 @@ space.elf: space.o
 space.bin: space.elf
 	$(OBJCOPY) -O binary $< $@
 
+bootstrap.o: bootstrap.c
+	$(CC) $(CFLAGS) -o $@ $<
+
+bootstrap.elf: bootstrap.o
+	$(LD) -T user.ld -nostdlib -m elf_i386 -o $@ $<
+
+bootstrap.bin: bootstrap.elf
+	$(OBJCOPY) -O binary $< $@
+
 root.img: prog.bin space.bin
 	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
 	mkfs.fat -F 12 -n "ROOTDISK" $@
@@ -234,8 +249,8 @@ scp-root: root.img
 	scp root.img root@192.168.0.136:
 	ssh root@192.168.0.136 dd if=root.img of=/dev/fd0 bs=512
 
-SERIAL_DEV ?= /dev/ttyUSB1
-SERIAL_BAUD ?= 9600
+SERIAL_DEV ?= /dev/ttyUSB0
+SERIAL_BAUD ?= 115200
 SZ ?= /usr/bin/lrzsz-sz
 
 run-serial:
@@ -251,5 +266,16 @@ send: $(PROGRAM).bin send_serial
 send_serial: send_serial.c
 	gcc -O2 -o $@ $<
 
+kexec_send: kexec_send.c
+	gcc -O2 -o $@ $<
+
+bootstrap: bootstrap.bin
+
+dev: kernel.bin kexec_send
+	@entry=$$(nm kernel.elf | awk '/ T kernel_main$$/{print $$1}'); \
+	if [ -z "$$entry" ]; then echo "error: kernel_main symbol not found"; exit 1; fi; \
+	echo "Sending kernel.bin (entry 0x$$entry) via $(SERIAL_DEV) @ $(SERIAL_BAUD)..."; \
+	./kexec_send $(SERIAL_DEV) $(SERIAL_BAUD) $$entry kernel.bin
+
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin send_serial
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o idle.o kexec.o kexec_tramp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send
