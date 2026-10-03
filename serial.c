@@ -32,7 +32,7 @@ void serial_puts(unsigned int port, const char *s)
 
 void serial_puthex(unsigned int port, unsigned int n)
 {
-	static const char hex[] = "01234589ABCDEF";
+	static const char hex[] = "0123456789ABCDEF";
 	int i;
 	serial_puts(port, "0x");
 	for (i = 28; i >= 0; i -= 4)

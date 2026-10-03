@@ -74,7 +74,7 @@ make clean
 
 `hello`, `reboot`, `poweroff`, `ls`, `cat <file>`, `run <file>`, `space`, `clock`,
 `colors`, `display`, `cpuinfo`, `mouseinfo`, `power [info|set …]`, `drive <0|1>`,
-`ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`.
+`ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 ## Serial hot-reload (kexec) workflow
 
@@ -122,6 +122,25 @@ Notes: the kexec path rebuilds a flat GDT at `0x900` before jumping (the old GDT
 lives inside the overwritten kernel region), so it's safe to edit any file,
 including `vesa_stage.S`/`boot.S` layout — but the video *mode* itself is only
 re-applied on a full floppy/USB boot (C-light reuses the current LFB).
+
+## Serial debug monitor (`dbg`)
+
+A ring-0 debugger driven over the serial link. On the PC type `dbg`, then drive
+commands from the host with `make monitor` (picocom):
+
+```
+r <addr> <len>          read len bytes at addr -> hex dump
+w <addr> <b0> [b1 ...]  write bytes at addr
+i <port>                inb (read I/O port)
+o <port> <val>          outb (write I/O port)
+h                       help
+q                       quit
+```
+
+The monitor runs inline (blocks the terminal), so it owns the serial ring buffer
+and doesn't conflict with the kexec auto-detect. Reading arbitrary physical
+memory is safe (no paging); writing can corrupt the kernel, so the usual loop is
+inspect → `q` → `make dev` a fresh build.
 
 ## Conventions & gotchas
 

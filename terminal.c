@@ -2,6 +2,7 @@
    Commands are spawned as separate processes for preemptive multitasking. */
 
 #include "io.h"
+#include "dbg.h"
 #include "fbtext.h"
 #include "idle.h"
 #include "kexec.h"
@@ -404,6 +405,21 @@ static int is_cmd_kexec(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
+static int is_cmd_dbg(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 3 > line_len)
+		return 0;
+	if (line[i] != 'd' || line[i+1] != 'b' || line[i+2] != 'g')
+		return 0;
+	i += 3;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 static int is_cmd_serial(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
 {
 	unsigned int i = 0, j = 0;
@@ -682,6 +698,8 @@ void terminal_run(void)
 								io_putstr("error: too many processes\n");
 							}
 						}
+					} else if (is_cmd_dbg(line, line_len)) {
+						program_dbg_main();
 					} else if (is_cmd_help(line, line_len)) {
 						io_putstr("hello     reboot    poweroff\n");
 						io_putstr("ls        cat <file>\n");
@@ -692,7 +710,7 @@ void terminal_run(void)
 						io_putstr("power [info|set <low|balanced|max>]\n");
 						io_putstr("drive <0|1>\n");
 					io_putstr("ps        kill <pid>\n");
-					io_putstr("kexec     serial test|recv  clear\n");
+					io_putstr("kexec     dbg       serial test|recv  clear\n");
 				} else if (is_cmd_clear(line, line_len)) {
 					io_clear_screen();
 					draw_header_row();
