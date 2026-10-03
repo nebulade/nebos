@@ -14,4 +14,8 @@ unsigned int disk_get_drive(void);
  * Returns 0 on success, -1 on error. */
 int disk_read_sectors(unsigned int lba, void *buf, unsigned int count);
 
+/* Write count sectors from buf starting at lba.
+ * Returns 0 on success, -1 on error. */
+int disk_write_sectors(unsigned int lba, const void *buf, unsigned int count);
+
 #endif

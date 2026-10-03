@@ -1,4 +1,4 @@
-/* Disk layer: read sectors via direct FDC + ISA DMA in protected mode. */
+/* Disk layer: read/write sectors via direct FDC + ISA DMA in protected mode. */
 
 #include "disk.h"
 #include "io.h"
@@ -33,6 +33,7 @@
 #define CMD_RECALIBRATE  0x07
 #define CMD_SENSE_INT    0x08
 #define CMD_READ_DATA    0x66   /* READ | MFM | SK  (no Multi-Track) */
+#define CMD_WRITE_DATA   0xC5   /* WRITE | MFM */
 #define CMD_SEEK         0x0F
 
 #define MOTOR_DELAY_MS   300
@@ -248,6 +249,22 @@ static void dma_setup_read(unsigned int phys, unsigned int len)
 	outb(DMA_SINGLEMASK, 0x02);        /* unmask channel 2 */
 }
 
+static void dma_setup_write(unsigned int phys, unsigned int len)
+{
+	unsigned int count = len - 1;
+
+	outb(DMA_SINGLEMASK, 0x06);        /* mask channel 2 */
+	outb(DMA_FLIPFLOP, 0xFF);         /* reset flip-flop */
+	outb(DMA_CH2_ADDR, (unsigned char)(phys & 0xFF));
+	outb(DMA_CH2_ADDR, (unsigned char)((phys >> 8) & 0xFF));
+	outb(DMA_CH2_PAGE, (unsigned char)((phys >> 16) & 0xFF));
+	outb(DMA_FLIPFLOP, 0xFF);         /* reset flip-flop */
+	outb(DMA_CH2_COUNT, (unsigned char)(count & 0xFF));
+	outb(DMA_CH2_COUNT, (unsigned char)((count >> 8) & 0xFF));
+	outb(DMA_MODE, 0x4A);             /* single, increment, read (mem->dev), ch2 */
+	outb(DMA_SINGLEMASK, 0x02);        /* unmask channel 2 */
+}
+
 /* ---- read one sector ---- */
 
 static void lba_to_chs(unsigned int lba,
@@ -306,6 +323,53 @@ static int fdc_do_read(unsigned int cyl, unsigned int head, unsigned int sec)
 	return 0;
 }
 
+static int fdc_do_write(unsigned int cyl, unsigned int head, unsigned int sec)
+{
+	unsigned char results[7];
+	int i;
+
+	dma_setup_write(DMA_BUF_ADDR, SECTOR_SIZE);
+
+	fdc_irq_fired = 0;
+
+	if (fdc_send(CMD_WRITE_DATA) != 0)   return -1;
+	if (fdc_send((unsigned char)((head << 2) | current_drive)) != 0) return -1;
+	if (fdc_send((unsigned char)cyl) != 0)  return -1;
+	if (fdc_send((unsigned char)head) != 0) return -1;
+	if (fdc_send((unsigned char)sec) != 0)  return -1;
+	if (fdc_send(0x02) != 0)            return -1; /* 512 bytes/sector */
+	if (fdc_send((unsigned char)SECTORS_PER_TRACK) != 0) return -1;
+	if (fdc_send(0x1B) != 0)            return -1; /* gap3 */
+	if (fdc_send(0xFF) != 0)            return -1; /* data length */
+
+	if (fdc_wait_irq() != 0)
+		return -2;
+
+	for (i = 0; i < 7; i++) {
+		if (fdc_recv(&results[i]) != 0)
+			return -3;
+	}
+
+	if (results[0] & 0xC0) {
+		io_putstr("fdc write: CHS=");
+		io_puthex(cyl);
+		io_putchar('/');
+		io_puthex(head);
+		io_putchar('/');
+		io_puthex(sec);
+		io_putstr(" ST0=");
+		io_puthex(results[0]);
+		io_putstr(" ST1=");
+		io_puthex(results[1]);
+		io_putstr(" ST2=");
+		io_puthex(results[2]);
+		io_putchar('\n');
+		return -1;
+	}
+
+	return 0;
+}
+
 static int fdc_read_one(unsigned int lba)
 {
 	unsigned int cyl, head, sec;
@@ -318,6 +382,20 @@ static int fdc_read_one(unsigned int lba)
 	}
 
 	return fdc_do_read(cyl, head, sec);
+}
+
+static int fdc_write_one(unsigned int lba)
+{
+	unsigned int cyl, head, sec;
+
+	lba_to_chs(lba, &cyl, &head, &sec);
+
+	if (cyl != cur_cylinder) {
+		if (fdc_seek(cyl, head) != 0)
+			return -1;
+	}
+
+	return fdc_do_write(cyl, head, sec);
 }
 
 /* Aggressive retry: seek far away then back to improve head alignment. */
@@ -334,6 +412,19 @@ static int fdc_read_one_retry(unsigned int lba)
 		return -1;
 
 	return fdc_do_read(cyl, head, sec);
+}
+
+static int fdc_write_one_retry(unsigned int lba)
+{
+	unsigned int cyl, head, sec;
+
+	lba_to_chs(lba, &cyl, &head, &sec);
+
+	fdc_seek(cyl > 40 ? 0 : 40, 0);
+	if (fdc_seek(cyl, head) != 0)
+		return -1;
+
+	return fdc_do_write(cyl, head, sec);
 }
 
 /* ---- public API ---- */
@@ -446,6 +537,56 @@ int disk_read_sectors(unsigned int lba, void *buf, unsigned int count)
 			const unsigned char *src = (const unsigned char *)DMA_BUF_ADDR;
 			for (j = 0; j < SECTOR_SIZE; j++)
 				dst[j] = src[j];
+		}
+	}
+	return 0;
+}
+
+int disk_write_sectors(unsigned int lba, const void *buf, unsigned int count)
+{
+	unsigned int i;
+
+	if (!fdc_initialized) {
+		if (fdc_init_once() != 0)
+			return -1;
+	}
+
+	for (i = 0; i < count; i++) {
+		int attempt, ok = 0;
+
+		/* Copy the sector to write into the ISA DMA buffer first. */
+		{
+			unsigned int j;
+			const unsigned char *src = (const unsigned char *)buf + (i * SECTOR_SIZE);
+			volatile unsigned char *dst = (volatile unsigned char *)DMA_BUF_ADDR;
+			for (j = 0; j < SECTOR_SIZE; j++)
+				dst[j] = src[j];
+		}
+
+		for (attempt = 0; attempt < MAX_RETRIES; attempt++) {
+			int rc;
+			if (attempt < 3) {
+				rc = fdc_write_one(lba + i);
+			} else {
+				rc = fdc_write_one_retry(lba + i);
+			}
+			if (rc == 0) {
+				ok = 1;
+				break;
+			}
+			fdc_reset();
+			fdc_motor_on();
+			fdc_recalibrate();
+		}
+		if (!ok) {
+			io_putstr("disk: write failed LBA=");
+			io_puthex(lba + i);
+			io_putstr(" (sector ");
+			io_puthex(i);
+			io_putstr(" of ");
+			io_puthex(count);
+			io_putstr(")\n");
+			return -1;
 		}
 	}
 	return 0;
