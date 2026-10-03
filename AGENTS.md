@@ -59,7 +59,7 @@ make clean
   8×8 font, rainbow separator, live datetime header, blinking cursor.
 - **Shell**: `terminal.c` — history, line editing, command dispatch (hand-rolled
   `is_cmd_*` parsers).
-- **Filesystem**: `fat.c` (read-only FAT12), `disk.c` (FDC + ISA DMA ch2, retries).
+- **Filesystem**: `fat.c` (FAT12 read/write), `disk.c` (FDC + ISA DMA ch2, retries).
 - **Serial**: `serial.c`, `serial_ring_buf.c/h`, `bin_recv.c/h`, `serial_recv.c`,
   `serial_loop.c`, `send_serial.c` — 16550 UART, IRQ-driven ring buffer, XMODEM.
 - **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `bootstrap.c`, and the
@@ -72,7 +72,8 @@ make clean
 
 ## Shell commands
 
-`hello`, `reboot`, `poweroff`, `ls`, `cat <file>`, `run <file>`, `space`, `clock`,
+`hello`, `reboot`, `poweroff`, `ls`, `cat <file>`, `save <file> <text>`, `rm <file>`,
+`run <file>`, `space`, `clock`,
 `colors`, `display`, `cpuinfo`, `mouseinfo`, `power [info|set …]`, `drive <0|1>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
