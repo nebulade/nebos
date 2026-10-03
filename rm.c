@@ -11,7 +11,7 @@ static void to_8_3(const char *in, unsigned int in_len, char *out)
 	for (i = 0; i < in_len && in[i] == ' '; i++)
 		;
 	dot = i;
-	while (dot < in_len && in[dot] != '.' && in[dot] != ' ')
+	while (dot < in_len && in[dot] != '\0' && in[dot] != '.' && in[dot] != ' ')
 		dot++;
 	j = 0;
 	while (i < dot && j < 8) {
@@ -22,7 +22,7 @@ static void to_8_3(const char *in, unsigned int in_len, char *out)
 		out[j++] = ' ';
 	if (i < in_len && in[i] == '.')
 		i++;
-	while (i < in_len && in[i] != ' ' && j < 11) {
+	while (i < in_len && in[i] != '\0' && in[i] != ' ' && j < 11) {
 		out[j++] = (char)(in[i] >= 'a' && in[i] <= 'z' ? in[i] - 32 : in[i]);
 		i++;
 	}
