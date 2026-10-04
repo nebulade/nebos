@@ -30,8 +30,10 @@ void blk_scan(void)
 
 	blk_dev_count = 0;
 
-	/* Floppy drive 0 (the FDC layer is single-drive). */
+	/* Floppy drives 0 and 1. */
 	d = add("floppy0", BLK_FLOPPY, 0, 0);
+	if (d) { d->present = 1; d->total_sectors = 2880; }
+	d = add("floppy1", BLK_FLOPPY, 1, 0);
 	if (d) { d->present = 1; d->total_sectors = 2880; }
 
 	/* IDE: primary + secondary, master + slave. */
@@ -80,8 +82,10 @@ int blk_read(blk_dev_t *d, unsigned int lba, void *buf, unsigned int count)
 {
 	if (!d || count == 0)
 		return -1;
-	if (d->kind == BLK_FLOPPY)
+	if (d->kind == BLK_FLOPPY) {
+		disk_set_drive(d->bus);
 		return disk_read_sectors(lba, buf, count);
+	}
 	return ata_read_sectors(d->bus, d->unit, lba, buf, count);
 }
 
@@ -89,7 +93,9 @@ int blk_write(blk_dev_t *d, unsigned int lba, const void *buf, unsigned int coun
 {
 	if (!d || count == 0)
 		return -1;
-	if (d->kind == BLK_FLOPPY)
+	if (d->kind == BLK_FLOPPY) {
+		disk_set_drive(d->bus);
 		return disk_write_sectors(lba, buf, count);
+	}
 	return ata_write_sectors(d->bus, d->unit, lba, buf, count);
 }

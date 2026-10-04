@@ -47,16 +47,16 @@ poweroff.o: poweroff.c
 disk.o: disk.c disk.h io.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-fat.o: fat.c fat.h disk.h io.h
+fat.o: fat.c fat.h blkdev.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ls.o: ls.c fat.h io.h
+ls.o: ls.c fat.h io.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-cat.o: cat.c fat.h io.h
+cat.o: cat.c fat.h io.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-run.o: run.c fat.h io.h fbtext.h run_api.h timer.h vga.h
+run.o: run.c fat.h io.h fbtext.h run_api.h timer.h vga.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 rtc.o: rtc.c rtc.h
@@ -122,7 +122,7 @@ blkdev.o: blkdev.c blkdev.h ata.h disk.h
 ata.o: ata.c ata.h pci.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-fatdetect.o: fatdetect.c fatdetect.h
+fatdetect.o: fatdetect.c fatdetect.h fat.h blkdev.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 storage.o: storage.c blkdev.h fatdetect.h disk.h io.h
@@ -149,16 +149,19 @@ kexec_tramp.o: kexec_tramp.S
 dbg.o: dbg.c dbg.h serial.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-save.o: save.c fat.h io.h
+save.o: save.c fat.h io.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-rm.o: rm.c fat.h io.h
+rm.o: rm.c fat.h io.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-mkdir.o: mkdir.c fat.h io.h
+mkdir.o: mkdir.c fat.h io.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-rmdir.o: rmdir.c fat.h io.h
+rmdir.o: rmdir.c fat.h io.h vfs.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+vfs.o: vfs.c vfs.h fat.h fatdetect.h blkdev.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 boot.elf: boot.o
@@ -176,7 +179,7 @@ switch.o: switch.S
 process.o: process.c process.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -325,4 +328,4 @@ dev: kernel.bin kexec_send
 	./kexec_send $(SERIAL_DEV) $(SERIAL_BAUD) $$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o io.o rtc.o terminal.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send

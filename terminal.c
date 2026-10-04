@@ -799,7 +799,7 @@ void terminal_run(void)
 						if (process_create_arg("rm", program_rm_main, rm_fname) < 0)
 							io_putstr("error: too many processes\n");
 					} else if (is_cmd_space(line, line_len)) {
-						if (process_create_arg("space", program_run_main, "space.bin") < 0)
+						if (process_create_arg("space", program_run_main, "/floppy1/SPACE.BIN") < 0)
 							io_putstr("error: too many processes\n");
 					} else if (is_cmd_display(line, line_len)) {
 						if (process_create("display", program_display_main) < 0)
@@ -835,13 +835,13 @@ void terminal_run(void)
 						io_putstr("hello\n");
 						io_putstr("reboot\n");
 						io_putstr("poweroff\n");
-						io_putstr("ls [dir]\n");
-						io_putstr("cat <file>\n");
-						io_putstr("save <f> <text>\n");
-						io_putstr("rm <file>\n");
-						io_putstr("mkdir <dir>\n");
-						io_putstr("rmdir <dir>\n");
-						io_putstr("run <file>\n");
+						io_putstr("ls [/dev[/dir]]\n");
+						io_putstr("cat /dev/file\n");
+						io_putstr("save /dev/file <text>\n");
+						io_putstr("rm /dev/file\n");
+						io_putstr("mkdir /dev/dir\n");
+						io_putstr("rmdir /dev/dir\n");
+						io_putstr("run /dev/file\n");
 						io_putstr("space\n");
 						io_putstr("clock\n");
 						io_putstr("colors\n");

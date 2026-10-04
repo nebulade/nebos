@@ -1,4 +1,5 @@
-/* run command: load raw binary from FAT floppy to 0x31000 and execute. */
+/* run command: load raw binary from a FAT filesystem to 0x31000 and execute.
+ * Usage: run /<device>/<file>. */
 
 #include "fat.h"
 #include "fbtext.h"
@@ -7,57 +8,41 @@
 #include "serial.h"
 #include "timer.h"
 #include "vga.h"
+#include "vfs.h"
 
 #define PROGRAM_LOAD_ADDR 0x31000
 #define PROGRAM_LOAD_MAX  0x10000
-#define NAME_BUF_SIZE     12
-
-static void to_8_3(const char *in, unsigned int in_len, char *out)
-{
-	unsigned int i, j, dot;
-	for (i = 0; i < in_len && in[i] == ' '; i++)
-		;
-	dot = i;
-	while (dot < in_len && in[dot] != '\0' && in[dot] != '.' && in[dot] != ' ')
-		dot++;
-	j = 0;
-	while (i < dot && j < 8) {
-		out[j++] = (char)(in[i] >= 'a' && in[i] <= 'z' ? in[i] - 32 : in[i]);
-		i++;
-	}
-	while (j < 8)
-		out[j++] = ' ';
-	if (i < in_len && in[i] == '.')
-		i++;
-	while (i < in_len && in[i] != '\0' && in[i] != ' ' && j < 11) {
-		out[j++] = (char)(in[i] >= 'a' && in[i] <= 'z' ? in[i] - 32 : in[i]);
-		i++;
-	}
-	while (j < 11)
-		out[j++] = ' ';
-	out[11] = '\0';
-}
 
 void program_run_main(const char *filename)
 {
-	char name_8_3[NAME_BUF_SIZE];
+	fat_fs_t *fs;
+	const char *fs_path;
+	unsigned int dir_cluster;
+	char name_8_3[12];
 	int n;
 
 	if (!filename || !filename[0]) {
-		io_putstr("run: usage run <filename>\n");
+		io_putstr("run: usage run /<device>/<file>\n");
 		return;
 	}
-	to_8_3(filename, 64, name_8_3);
-	n = fat_init();
+
+	vfs_mount_all();
+	if (vfs_resolve(filename, &fs, &fs_path) != 0) {
+		io_putstr("run: unknown device or invalid path\n");
+		return;
+	}
+
+	n = fat_resolve_path(fs, fs_path, &dir_cluster, name_8_3);
 	if (n == -2) {
 		io_putstr("run: disk read error (see above)\n");
 		return;
 	}
 	if (n != 0) {
-		io_putstr("run: no FAT filesystem found\n");
+		io_putstr("run: file not found\n");
 		return;
 	}
-	n = fat_read_file(name_8_3, (void *)PROGRAM_LOAD_ADDR, PROGRAM_LOAD_MAX);
+
+	n = fat_read_file_in(fs, dir_cluster, name_8_3, (void *)PROGRAM_LOAD_ADDR, PROGRAM_LOAD_MAX);
 	if (n == -2) {
 		io_putstr("run: disk read error (see above)\n");
 		return;
@@ -66,6 +51,7 @@ void program_run_main(const char *filename)
 		io_putstr("run: file not found\n");
 		return;
 	}
+
 	io_drain_keyboard();
 	{
 		struct prog_api api = {

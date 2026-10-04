@@ -1,7 +1,9 @@
-/* ls command: list a directory (root by default, or a path). */
+/* ls command: list a directory. `ls` / `ls /` lists mounted filesystems;
+ * `ls /<device>[/dir]` lists a directory on that filesystem. */
 
 #include "fat.h"
 #include "io.h"
+#include "vfs.h"
 
 #define BUF_SIZE 12
 
@@ -38,34 +40,34 @@ static void list_cb(const char *name, int is_dir, unsigned int size)
 
 void program_ls_main(const char *path)
 {
-	unsigned int dir_cluster = 0;
+	fat_fs_t *fs;
+	const char *fs_path;
+	unsigned int dir_cluster;
 	int r;
 
-	r = fat_init();
+	vfs_mount_all();
+
+	if (!path || !path[0] || (path[0] == '/' && path[1] == '\0')) {
+		vfs_list_root();
+		return;
+	}
+
+	if (vfs_resolve(path, &fs, &fs_path) != 0) {
+		io_putstr("ls: unknown device or invalid path\n");
+		return;
+	}
+
+	r = fat_resolve_dir(fs, fs_path, &dir_cluster);
 	if (r == -2) {
-		io_putstr("ls: disk read error\n");
+		io_putstr("ls: disk error\n");
 		return;
 	}
 	if (r != 0) {
-		io_putstr("ls: no FAT filesystem found\n");
+		io_putstr("ls: not a directory\n");
 		return;
 	}
 
-	if (path && path[0]) {
-		r = fat_resolve_dir(path, &dir_cluster);
-		if (r == -2) {
-			io_putstr("ls: disk error\n");
-			return;
-		}
-		if (r != 0) {
-			io_putstr("ls: not a directory\n");
-			return;
-		}
-	}
-
-	r = fat_list_dir(dir_cluster, list_cb);
-	if (r == -2) {
+	r = fat_list_dir(fs, dir_cluster, list_cb);
+	if (r == -2)
 		io_putstr("ls: disk read error\n");
-		return;
-	}
 }

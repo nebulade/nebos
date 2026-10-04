@@ -61,7 +61,9 @@ make clean
   8×8 font, rainbow separator, live datetime header, blinking cursor.
 - **Shell**: `terminal.c` — history, line editing, command dispatch (hand-rolled
   `is_cmd_*` parsers).
-- **Filesystem**: `fat.c` (FAT12 read/write + subdirectories), `disk.c` (FDC + ISA DMA ch2, retries).
+- **Filesystem**: `fat.c` (FAT12/16/32 read + FAT12/16 write, device-parameterized),
+  `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
+  `blkdev.c` (floppy + IDE registry), `ata.c` (ATA PIO), `disk.c` (FDC + ISA DMA ch2, retries).
 - **Serial**: `serial.c`, `serial_ring_buf.c/h`, `bin_recv.c/h`, `serial_recv.c`,
   `serial_loop.c`, `send_serial.c` — 16550 UART, IRQ-driven ring buffer, XMODEM.
 - **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `bootstrap.c`, and the
@@ -77,8 +79,8 @@ make clean
 
 ## Shell commands
 
-`hello`, `reboot`, `poweroff`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
-`mkdir <path>`, `rmdir <path>`, `run <file>`, `space`, `clock`,
+`hello`, `reboot`, `poweroff`, `ls [/dev[/dir]]`, `cat /dev/file`, `save /dev/file <text>`, `rm /dev/file`,
+`mkdir /dev/dir`, `rmdir /dev/dir`, `run /dev/file`, `space`, `clock`,
 `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `storage`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 

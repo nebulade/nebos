@@ -3,7 +3,7 @@
 #ifndef FATDETECT_H
 #define FATDETECT_H
 
-typedef enum { FAT_NONE, FAT12, FAT16, FAT32 } fat_type_t;
+#include "fat.h"
 
 typedef struct {
 	fat_type_t type;
