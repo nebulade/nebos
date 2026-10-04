@@ -188,6 +188,12 @@ void *vga_fb_ptr(void)
 	return (void *)vga_fb_lfb;
 }
 
+unsigned long vga_fb_lfb_addr(void)
+{
+	vga_cache_boot_fb();
+	return (unsigned long)vga_fb_lfb;
+}
+
 int vga_has_vesa(void)
 {
 	vga_cache_boot_fb();

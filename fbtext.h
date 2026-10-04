@@ -15,6 +15,12 @@ void fbtext_put_char_at(unsigned int col, unsigned int row, unsigned char c, uns
    origin (x0, y0). 8 px per column, 10 px per row. */
 void fbtext_draw_cells(const unsigned short *cells, unsigned int cols, unsigned int rows,
 		unsigned int x0, unsigned int y0);
+
+/* Same, but only cells whose (cell-aligned) bounds intersect the clip rect
+   (cx, cy, cw, ch). */
+void fbtext_draw_cells_clip(const unsigned short *cells, unsigned int cols, unsigned int rows,
+		unsigned int x0, unsigned int y0,
+		unsigned int cx, unsigned int cy, unsigned int cw, unsigned int ch);
 void fbtext_scroll_up_one_line(void);
 void fbtext_set_cursor(unsigned int col, unsigned int row);
 void fbtext_show_cursor(void);

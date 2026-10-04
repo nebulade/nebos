@@ -173,6 +173,39 @@ void fbtext_draw_cells(const unsigned short *cells, unsigned int cols, unsigned 
 	vga_fb_mark_dirty_rect(y0, rows * ROW_HEIGHT);
 }
 
+void fbtext_draw_cells_clip(const unsigned short *cells, unsigned int cols, unsigned int rows,
+		unsigned int x0, unsigned int y0,
+		unsigned int cx, unsigned int cy, unsigned int cw, unsigned int ch)
+{
+	int col0 = ((int)cx - (int)x0) / 8;
+	int col1 = ((int)(cx + cw) - (int)x0 + 7) / 8;
+	int row0 = ((int)cy - (int)y0) / ROW_HEIGHT;
+	int row1 = ((int)(cy + ch) - (int)y0 + (ROW_HEIGHT - 1)) / ROW_HEIGHT;
+	unsigned int row, col;
+
+	if (col0 < 0) col0 = 0;
+	if (row0 < 0) row0 = 0;
+	if (col1 > (int)cols) col1 = (int)cols;
+	if (row1 > (int)rows) row1 = (int)rows;
+	if (col1 <= col0 || row1 <= row0)
+		return;
+
+	for (row = (unsigned int)row0; row < (unsigned int)row1; row++) {
+		for (col = (unsigned int)col0; col < (unsigned int)col1; col++) {
+			unsigned short cell = cells[row * cols + col];
+			unsigned char c = (unsigned char)(cell & 0xFF);
+			unsigned char attr = (unsigned char)(cell >> 8);
+			unsigned int rf, gf, bf, rb, gb, bb;
+			attr_to_rgb(attr, 1, &rf, &gf, &bf);
+			attr_to_rgb(attr, 0, &rb, &gb, &bb);
+			draw_glyph_at(x0 + col * 8, y0 + row * ROW_HEIGHT, c,
+				rf, gf, bf, rb, gb, bb, ROW_HEIGHT, 0);
+		}
+	}
+	vga_fb_mark_dirty_rect(y0 + (unsigned int)row0 * ROW_HEIGHT,
+		(unsigned int)(row1 - row0) * ROW_HEIGHT);
+}
+
 void fbtext_scroll_up_one_line(void)
 {
 	unsigned int y, i;

@@ -3,6 +3,7 @@
 #include "gpu.h"
 #include "pci.h"
 #include "ati.h"
+#include "cirrus.h"
 #include "nvidia.h"
 
 static int gpu_vendor_id;
@@ -33,6 +34,9 @@ void gpu_init(void)
 				nvidia_init();
 			} else if (vendor == PCI_VENDOR_INTEL) {
 				gpu_vendor_id = GPU_VENDOR_INTEL;
+			} else if (vendor == PCI_VENDOR_CIRRUS) {
+				gpu_vendor_id = GPU_VENDOR_CIRRUS;
+				cirrus_init();
 			} else {
 				gpu_vendor_id = GPU_VENDOR_OTHER;
 			}
@@ -58,6 +62,7 @@ const char *gpu_vendor_name(void)
 	case GPU_VENDOR_ATI:     return "ATI/AMD";
 	case GPU_VENDOR_NVIDIA:  return "NVIDIA";
 	case GPU_VENDOR_INTEL:   return "Intel";
+	case GPU_VENDOR_CIRRUS:  return "Cirrus Logic";
 	case GPU_VENDOR_OTHER:   return "Other";
 	default:                 return "Unknown";
 	}

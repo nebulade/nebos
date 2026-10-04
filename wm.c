@@ -2,6 +2,7 @@
    Slot 0 runs wm_run(); each terminal window is a separate process. */
 
 #include "wm.h"
+#include "cirrus.h"
 #include "fbtext.h"
 #include "idle.h"
 #include "io.h"
@@ -219,6 +220,113 @@ static void wm_drag_accumulate(unsigned int oy, unsigned int ny, unsigned int ph
 	}
 }
 
+/* Byte copy that handles overlapping source/destination. */
+static void wm_memmove(unsigned char *dst, const unsigned char *src, unsigned int n)
+{
+	if (dst == src || n == 0)
+		return;
+	if (dst < src) {
+		unsigned int i;
+		for (i = 0; i < n; i++)
+			dst[i] = src[i];
+	} else {
+		while (n--)
+			dst[n] = src[n];
+	}
+}
+
+/* Copy a rectangle within the shadow buffer (to mirror a BitBLT'd drag). */
+static void wm_shadow_copy(unsigned int ox, unsigned int oy,
+			   unsigned int nx, unsigned int ny,
+			   unsigned int w, unsigned int h)
+{
+	unsigned char *fb = (unsigned char *)vga_fb_ptr();
+	unsigned int pitch = vga_fb_pitch();
+	unsigned int bpp = vga_fb_bpp();
+	unsigned int pb = (bpp == 16) ? 2 : (bpp == 24) ? 3 : 4;
+	unsigned int row_bytes = w * pb;
+	unsigned int r;
+
+	if (ny > oy || (ny == oy && nx > ox)) {
+		for (r = h; r-- > 0; )
+			wm_memmove(fb + (ny + r) * pitch + nx * pb,
+				   fb + (oy + r) * pitch + ox * pb, row_bytes);
+	} else {
+		for (r = 0; r < h; r++)
+			wm_memmove(fb + (ny + r) * pitch + nx * pb,
+				   fb + (oy + r) * pitch + ox * pb, row_bytes);
+	}
+}
+
+/* Fill the intersection of rect (rx,ry,rw,rh) with clip rect (cx,cy,cw,ch). */
+static void wm_fill_rect_clip(unsigned int rx, unsigned int ry, unsigned int rw, unsigned int rh,
+			      unsigned int cx, unsigned int cy, unsigned int cw, unsigned int ch,
+			      unsigned int r, unsigned int g, unsigned int b)
+{
+	unsigned int x0 = (rx > cx) ? rx : cx;
+	unsigned int y0 = (ry > cy) ? ry : cy;
+	unsigned int x1 = (rx + rw < cx + cw) ? rx + rw : cx + cw;
+	unsigned int y1 = (ry + rh < cy + ch) ? ry + rh : cy + ch;
+	if (x1 > x0 && y1 > y0)
+		vga_fill_rect(x0, y0, x1 - x0, y1 - y0, r, g, b);
+}
+
+/* Redraw a rectangular region of the desktop (background + underlying windows,
+   excluding the window being dragged). Restores the exposed sliver. */
+static void wm_redraw_sliver(unsigned int x, unsigned int y, unsigned int w, unsigned int h)
+{
+	unsigned int i;
+	vga_fill_rect(x, y, w, h, 32, 32, 48);
+	for (i = 0; i < MAX_WINDOWS; i++) {
+		struct window *w2 = &windows[i];
+		if (!w2->used || (int)i == drag_window)
+			continue;
+		if (!(x < w2->x + w2->pw && x + w > w2->x &&
+		      y < w2->y + w2->ph && y + h > w2->y))
+			continue;
+
+		/* Border. */
+		wm_fill_rect_clip(w2->x, w2->y, w2->pw, w2->ph,
+			x, y, w, h, 200, 200, 200);
+		/* Title bar. */
+		if (w2->focused)
+			wm_fill_rect_clip(w2->x + 1, w2->y + 1, w2->pw - 2, WM_TITLE_H,
+				x, y, w, h, 70, 90, 150);
+		else
+			wm_fill_rect_clip(w2->x + 1, w2->y + 1, w2->pw - 2, WM_TITLE_H,
+				x, y, w, h, 100, 100, 100);
+		/* Content background + cells. */
+		wm_fill_rect_clip(w2->x + 1, w2->y + 1 + WM_TITLE_H,
+			w2->pw - 2, SCREEN_ROWS * 10, x, y, w, h, 0, 0, 0);
+		fbtext_draw_cells_clip(w2->term->screen.cells,
+			w2->term->screen.cols, w2->term->screen.rows,
+			w2->x + 1, w2->y + 1 + WM_TITLE_H, x, y, w, h);
+	}
+}
+
+/* Cirrus fast drag: move the window with the BitBLT, restore the exposed
+   sliver, and mirror both in the RAM shadow buffer. No full recomposite. */
+static void wm_drag_fast(struct window *w, unsigned int ox, unsigned int oy,
+			 unsigned int nx, unsigned int ny)
+{
+	int dx = (int)nx - (int)ox;
+	int dy = (int)ny - (int)oy;
+
+	cirrus_blit(ox, oy, nx, ny, w->pw, w->ph);
+	wm_shadow_copy(ox, oy, nx, ny, w->pw, w->ph);
+
+	if (dy > 0)
+		wm_redraw_sliver(ox, oy, w->pw, (unsigned int)dy);
+	else if (dy < 0)
+		wm_redraw_sliver(ox, ny + w->ph, w->pw, (unsigned int)(-dy));
+	if (dx > 0)
+		wm_redraw_sliver(ox, oy, (unsigned int)dx, w->ph);
+	else if (dx < 0)
+		wm_redraw_sliver(nx + w->pw, oy, (unsigned int)(-dx), w->ph);
+
+	vga_fb_flush();
+}
+
 static void wm_handle_mouse(void)
 {
 	unsigned int buttons = mouse_buttons_state();
@@ -258,8 +366,12 @@ static void wm_handle_mouse(void)
 			unsigned int ox = w->x, oy = w->y;
 			wm_clamp_window(w, (int)mx - drag_dx, (int)my - drag_dy);
 			if (ox != w->x || oy != w->y) {
-				wm_drag_accumulate(oy, w->y, w->ph);
-				drag_render_needed = 1;
+				if (cirrus_available())
+					wm_drag_fast(w, ox, oy, w->x, w->y);
+				else {
+					wm_drag_accumulate(oy, w->y, w->ph);
+					drag_render_needed = 1;
+				}
 			}
 		} else {
 			drag_active = 0;

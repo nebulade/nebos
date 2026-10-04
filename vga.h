@@ -27,6 +27,8 @@ unsigned int vga_fb_bpp(void);
 unsigned int vga_fb_vram_kb(void);
 unsigned int vga_fb_pci_id(void);
 void *vga_fb_ptr(void);
+/* Physical address of the linear framebuffer (for off-screen VRAM access). */
+unsigned long vga_fb_lfb_addr(void);
 int vga_has_vesa(void);
 
 void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b);

@@ -1,4 +1,5 @@
 #include "mouse.h"
+#include "cirrus.h"
 #include "timer.h"
 #include "vga.h"
 
@@ -44,6 +45,7 @@ static unsigned int mouse_id;
 static int mouse_cursor_flag;
 static unsigned int mouse_pkt_size;
 static unsigned int mouse_buttons;  /* bit0=left bit1=right bit2=middle */
+static int mouse_hw_cursor;         /* 1 = Cirrus hardware cursor in use */
 
 static unsigned int fbw, fbh;
 static unsigned int cur_x, cur_y;
@@ -170,8 +172,19 @@ static void mouse_cursor_setup(void)
 	fbh = vga_fb_height();
 	if (fbw < MOUSE_CUR_W || fbh < MOUSE_CUR_H)
 		return;
-	/* Start cursor at a fixed visible spot (clamped to the framebuffer).
-	   Using a constant offset avoids any overlap with the terminal header/prompt. */
+
+	/* Cirrus hardware cursor: the card overlays it; no save/restore. */
+	if (cirrus_available()) {
+		mouse_hw_cursor = 1;
+		cur_x = 100;
+		cur_y = 100;
+		cirrus_cursor_setup();
+		cirrus_cursor_move(cur_x, cur_y);
+		mouse_cursor_flag = 1;
+		return;
+	}
+
+	mouse_hw_cursor = 0;
 	cur_x = 100;
 	cur_y = 100;
 	{
@@ -270,13 +283,19 @@ void mouse_poll_update(void)
 			long ny = (long)cur_y - dy;
 			mouse_clamp_ptr(&nx, &ny);
 			if ((unsigned int)nx != cur_x || (unsigned int)ny != cur_y) {
-				vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
-					cur_saved);
-				cur_x = (unsigned int)nx;
-				cur_y = (unsigned int)ny;
-				vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
-					cur_saved);
-				mouse_draw_cursor(cur_x, cur_y);
+				if (mouse_hw_cursor) {
+					cur_x = (unsigned int)nx;
+					cur_y = (unsigned int)ny;
+					cirrus_cursor_move(cur_x, cur_y);
+				} else {
+					vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
+						cur_saved);
+					cur_x = (unsigned int)nx;
+					cur_y = (unsigned int)ny;
+					vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
+						cur_saved);
+					mouse_draw_cursor(cur_x, cur_y);
+				}
 			}
 		}
 	}
@@ -324,7 +343,7 @@ unsigned int mouse_buttons_state(void)
 
 void mouse_redraw_cursor(void)
 {
-	if (!mouse_cursor_flag)
+	if (!mouse_cursor_flag || mouse_hw_cursor)
 		return;
 	vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H, cur_saved);
 	mouse_draw_cursor(cur_x, cur_y);
@@ -332,7 +351,7 @@ void mouse_redraw_cursor(void)
 
 void mouse_cursor_erase(void)
 {
-	if (!mouse_cursor_flag)
+	if (!mouse_cursor_flag || mouse_hw_cursor)
 		return;
 	vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H, cur_saved);
 }
