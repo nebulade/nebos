@@ -50,7 +50,7 @@ void program_save_main(const char *arg)
 
 	vfs_mount_all();
 	if (vfs_resolve(fn, &fs, &fs_path) != 0) {
-		io_putstr("save: unknown device or invalid path\n");
+		io_putstr("save: read-only filesystem\n");
 		return;
 	}
 

@@ -192,3 +192,93 @@ int vfs_resolve(const char *path, fat_fs_t **fs, const char **fs_path)
 	*fs_path = path + i;
 	return 0;
 }
+
+int vfs_join_path(const char *cwd, const char *arg, char *out, unsigned int out_size)
+{
+	char buf[VFS_PATH_MAX * 2 + 2];
+	unsigned int bi = 0;
+	unsigned int len;
+	const char *p;
+
+	/* Build the combined (un-normalized) path. */
+	if (arg[0] == '/') {
+		p = arg;
+	} else {
+		p = cwd;
+		while (*p && bi < sizeof(buf) - 1)
+			buf[bi++] = *p++;
+		if (bi > 0 && buf[bi - 1] != '/') {
+			if (bi < sizeof(buf) - 1)
+				buf[bi++] = '/';
+		}
+		p = arg;
+	}
+	while (*p && bi < sizeof(buf) - 1)
+		buf[bi++] = *p++;
+	buf[bi] = '\0';
+
+	if (out_size < 2)
+		return -1;
+
+	/* Normalize into out (always begins with "/"). */
+	out[0] = '/';
+	out[1] = '\0';
+	len = 1;
+
+	p = buf;
+	while (*p) {
+		unsigned int clen = 0;
+		const char *comp;
+
+		while (*p == '/')
+			p++;
+		if (!*p)
+			break;
+		comp = p;
+		while (*p && *p != '/') {
+			p++;
+			clen++;
+		}
+
+		if (clen == 1 && comp[0] == '.')
+			continue;
+		if (clen == 2 && comp[0] == '.' && comp[1] == '.') {
+			/* Pop the previous component (may leave "/"). */
+			while (len > 1 && out[len - 1] != '/')
+				len--;
+			if (len > 1)
+				len--;
+			out[len] = '\0';
+			continue;
+		}
+		/* Append "/component". */
+		if (len + 1 + clen + 1 > out_size)
+			return -1;
+		if (len > 1)
+			out[len++] = '/';
+		{
+			unsigned int k;
+			for (k = 0; k < clen; k++)
+				out[len++] = comp[k];
+		}
+		out[len] = '\0';
+	}
+
+	return 0;
+}
+
+int vfs_device_known(const char *path)
+{
+	unsigned int i = 0, j = 0;
+	char name[16];
+
+	if (!path || path[0] != '/')
+		return 0;
+	i = 1;
+	while (path[i] && path[i] != '/' && j < sizeof(name) - 1)
+		name[j++] = path[i++];
+	name[j] = '\0';
+	if (j == 0)
+		return 0;
+	return blk_find(name) != 0;
+}

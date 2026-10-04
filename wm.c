@@ -86,6 +86,8 @@ int wm_spawn_terminal(void)
 	t->key_head = t->key_tail = 0;
 	t->history_count = 0;
 	t->history_next = 0;
+	t->cwd[0] = '/';
+	t->cwd[1] = '\0';
 
 	w->used = 1;
 	w->term = t;

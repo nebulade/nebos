@@ -23,7 +23,10 @@ void program_cat_main(const char *filename)
 
 	vfs_mount_all();
 	if (vfs_resolve(filename, &fs, &fs_path) != 0) {
-		io_putstr("cat: unknown device or invalid path\n");
+		if (vfs_device_known(filename))
+			io_putstr("cat: no filesystem on device\n");
+		else
+			io_putstr("cat: no such device\n");
 		return;
 	}
 

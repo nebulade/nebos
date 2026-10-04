@@ -31,8 +31,16 @@ extern void program_lsusb_main(void);
 extern void program_storage_main(void);
 extern void program_format_main(const char *arg);
 
-static const char prompt[] __attribute__((section(".text"))) = "\n> ";
-static const char prompt_first[] __attribute__((section(".text"))) = "> ";
+/* Print the prompt (with the current directory) and set line_start. */
+static void term_print_prompt(struct term *t, int first)
+{
+	if (!first)
+		io_putchar('\n');
+	io_putchar('[');
+	io_putstr(t->cwd);
+	io_putstr("] > ");
+	t->line_start = io_get_cursor();
+}
 
 static int is_cmd_hello(const char *line, unsigned int line_len)
 {
@@ -92,6 +100,33 @@ static int is_cmd_ls(const char *line, unsigned int line_len, char *path_buf, un
 	i += 2;
 	if (i < line_len && line[i] != ' ')
 		return 0;  /* "ls" must be a whole word, so reject "lsusb" etc. */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			path_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		path_buf[j++] = line[i++];
+	path_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_cd(const char *line, unsigned int line_len, char *path_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 2 > line_len)
+		return 0;
+	if (line[i] != 'c' || line[i+1] != 'd')
+		return 0;
+	i += 2;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "cd" must be a whole word */
 	while (i < line_len && line[i] == ' ')
 		i++;
 	if (i >= line_len) {
@@ -602,6 +637,91 @@ static void history_push(struct term *t, const char *line, unsigned int line_len
 		t->history_count++;
 }
 
+/* Change directory: resolve `arg` (relative to t->cwd, or absolute) and
+ * validate it is an existing directory. Updates t->cwd on success. */
+static void term_cd(struct term *t, const char *arg)
+{
+	char abs[VFS_PATH_MAX];
+	fat_fs_t *fs;
+	const char *fs_path;
+	unsigned int dir;
+	int r;
+	unsigned int i;
+
+	if (arg[0] == '\0') {
+		t->cwd[0] = '/';
+		t->cwd[1] = '\0';
+		return;
+	}
+
+	if (vfs_join_path(t->cwd, arg, abs, sizeof(abs)) != 0) {
+		io_putstr("cd: path too long\n");
+		return;
+	}
+
+	if (abs[0] == '/' && abs[1] == '\0') {
+		t->cwd[0] = '/';
+		t->cwd[1] = '\0';
+		return;
+	}
+
+	vfs_mount_all();
+	if (vfs_resolve(abs, &fs, &fs_path) != 0) {
+		io_putstr("cd: no such directory\n");
+		return;
+	}
+	r = fat_resolve_dir(fs, fs_path, &dir);
+	if (r == -2) {
+		io_putstr("cd: disk error\n");
+		return;
+	}
+	if (r != 0) {
+		io_putstr("cd: no such directory\n");
+		return;
+	}
+
+	for (i = 0; abs[i] && i < sizeof(t->cwd) - 1; i++)
+		t->cwd[i] = abs[i];
+	t->cwd[i] = '\0';
+}
+
+/* Resolve the first token (path) of `args` against t->cwd, rebuilding
+ * "abs-path rest-of-args" into out. Used by `save`. */
+static void term_resolve_first(struct term *t, const char *args,
+			       char *out, unsigned int out_size)
+{
+	char path[VFS_PATH_MAX];
+	char abs[VFS_PATH_MAX];
+	unsigned int i = 0, j = 0;
+
+	while (args[i] == ' ')
+		i++;
+	while (args[i] && args[i] != ' ' && j < sizeof(path) - 1)
+		path[j++] = args[i++];
+	path[j] = '\0';
+
+	if (vfs_join_path(t->cwd, path, abs, sizeof(abs)) != 0) {
+		abs[0] = '/';
+		abs[1] = '\0';
+	}
+	while (args[i] == ' ')
+		i++;
+
+	j = 0;
+	{
+		unsigned int k = 0;
+		while (abs[k] && j + 1 < out_size)
+			out[j++] = abs[k++];
+	}
+	if (args[i]) {
+		if (j + 1 < out_size)
+			out[j++] = ' ';
+		while (args[i] && j + 1 < out_size)
+			out[j++] = args[i++];
+	}
+	out[j] = '\0';
+}
+
 void term_run(struct term *t)
 {
 	t->line_len         = 0;
@@ -610,8 +730,7 @@ void term_run(struct term *t)
 	t->history_browse   = 0;
 
 	io_clear_screen();
-	io_putstr(prompt_first);
-	t->line_start = io_get_cursor();
+	term_print_prompt(t, 1);
 
 	for (;;) {
 		{
@@ -662,6 +781,8 @@ void term_run(struct term *t)
 					char rm_fname[RM_FNAME_MAX];
 					char ls_path[LS_PATH_MAX];
 					char format_dev[FORMAT_DEV_MAX];
+					char resolved[VFS_PATH_MAX];
+					char save_resolved[SAVE_ARGS_MAX + VFS_PATH_MAX];
 					unsigned int kill_pid;
 					int skip_prompt = 0;
 					io_putchar('\n');
@@ -674,9 +795,15 @@ void term_run(struct term *t)
 						program_reboot_main();
 					} else if (is_cmd_poweroff(t->line, t->line_len)) {
 						program_poweroff_main();
+					} else if (is_cmd_cd(t->line, t->line_len, ls_path, LS_PATH_MAX)) {
+						term_cd(t, ls_path);
 					} else if (is_cmd_ls(t->line, t->line_len, ls_path, LS_PATH_MAX)) {
-						if (process_create_arg("ls", program_ls_main, ls_path) < 0)
-							io_putstr("error: too many processes\n");
+						if (vfs_join_path(t->cwd, ls_path, resolved, sizeof(resolved)) == 0) {
+							if (process_create_arg("ls", program_ls_main, resolved) < 0)
+								io_putstr("error: too many processes\n");
+						} else {
+							io_putstr("ls: path too long\n");
+						}
 					} else if (is_cmd_lsusb(t->line, t->line_len)) {
 						if (process_create("lsusb", program_lsusb_main) < 0)
 							io_putstr("error: too many processes\n");
@@ -688,8 +815,12 @@ void term_run(struct term *t)
 					} else if (is_cmd_colors(t->line, t->line_len)) {
 						io_putstr("colors: not available in windowed mode yet\n");
 					} else if (is_cmd_cat(t->line, t->line_len, cat_fname, CAT_FNAME_MAX)) {
-						if (process_create_arg("cat", program_cat_main, cat_fname) < 0)
-							io_putstr("error: too many processes\n");
+						if (vfs_join_path(t->cwd, cat_fname, resolved, sizeof(resolved)) == 0) {
+							if (process_create_arg("cat", program_cat_main, resolved) < 0)
+								io_putstr("error: too many processes\n");
+						} else {
+							io_putstr("cat: path too long\n");
+						}
 					} else if (is_cmd_run(t->line, t->line_len, cat_fname, CAT_FNAME_MAX)) {
 						if (cat_fname[0] == 's' && cat_fname[1] == 'e' &&
 						    cat_fname[2] == 'r' && cat_fname[3] == 'i' &&
@@ -701,17 +832,30 @@ void term_run(struct term *t)
 							io_putstr("run: not available in windowed mode yet\n");
 						}
 					} else if (is_cmd_save(t->line, t->line_len, save_args, SAVE_ARGS_MAX)) {
-						if (process_create_arg("save", program_save_main, save_args) < 0)
+						term_resolve_first(t, save_args, save_resolved, sizeof(save_resolved));
+						if (process_create_arg("save", program_save_main, save_resolved) < 0)
 							io_putstr("error: too many processes\n");
 					} else if (is_cmd_mkdir(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
-						if (process_create_arg("mkdir", program_mkdir_main, rm_fname) < 0)
-							io_putstr("error: too many processes\n");
+						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
+							if (process_create_arg("mkdir", program_mkdir_main, resolved) < 0)
+								io_putstr("error: too many processes\n");
+						} else {
+							io_putstr("mkdir: path too long\n");
+						}
 					} else if (is_cmd_rmdir(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
-						if (process_create_arg("rmdir", program_rmdir_main, rm_fname) < 0)
-							io_putstr("error: too many processes\n");
+						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
+							if (process_create_arg("rmdir", program_rmdir_main, resolved) < 0)
+								io_putstr("error: too many processes\n");
+						} else {
+							io_putstr("rmdir: path too long\n");
+						}
 					} else if (is_cmd_rm(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
-						if (process_create_arg("rm", program_rm_main, rm_fname) < 0)
-							io_putstr("error: too many processes\n");
+						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
+							if (process_create_arg("rm", program_rm_main, resolved) < 0)
+								io_putstr("error: too many processes\n");
+						} else {
+							io_putstr("rm: path too long\n");
+						}
 					} else if (is_cmd_space(t->line, t->line_len)) {
 						io_putstr("space: not available in windowed mode yet\n");
 					} else if (is_cmd_display(t->line, t->line_len)) {
@@ -745,16 +889,17 @@ void term_run(struct term *t)
 					} else if (is_cmd_dbg(t->line, t->line_len)) {
 						program_dbg_main();
 					} else if (is_cmd_help(t->line, t->line_len)) {
+						io_putstr("cd [path]\n");
+						io_putstr("ls [path]\n");
+						io_putstr("cat <path>\n");
+						io_putstr("save <path> <text>\n");
+						io_putstr("rm <path>\n");
+						io_putstr("mkdir <path>\n");
+						io_putstr("rmdir <path>\n");
 						io_putstr("hello\n");
 						io_putstr("reboot\n");
 						io_putstr("poweroff\n");
-						io_putstr("ls [/dev[/dir]]\n");
-						io_putstr("cat /dev/file\n");
-						io_putstr("save /dev/file <text>\n");
-						io_putstr("rm /dev/file\n");
-						io_putstr("mkdir /dev/dir\n");
-						io_putstr("rmdir /dev/dir\n");
-						io_putstr("run /dev/file\n");
+						io_putstr("run <file>\n");
 						io_putstr("space\n");
 						io_putstr("clock\n");
 						io_putstr("colors\n");
@@ -772,8 +917,7 @@ void term_run(struct term *t)
 						io_putstr("clear\n");
 				} else if (is_cmd_clear(t->line, t->line_len)) {
 					io_clear_screen();
-					io_putstr(prompt_first);
-					t->line_start = io_get_cursor();
+					term_print_prompt(t, 1);
 					skip_prompt = 1;
 				} else {
 					char serial_arg[8];
@@ -802,8 +946,7 @@ void term_run(struct term *t)
 				t->line_pos = 0;
 				t->line[0]  = '\0';
 				if (!skip_prompt) {
-					io_putstr(prompt);
-					t->line_start = io_get_cursor();
+					term_print_prompt(t, 0);
 				}
 			} else {
 				unsigned char u = (unsigned char)k;

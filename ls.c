@@ -53,7 +53,10 @@ void program_ls_main(const char *path)
 	}
 
 	if (vfs_resolve(path, &fs, &fs_path) != 0) {
-		io_putstr("ls: unknown device or invalid path\n");
+		if (vfs_device_known(path))
+			io_putstr("ls: no filesystem on device\n");
+		else
+			io_putstr("ls: no such device\n");
 		return;
 	}
 

@@ -35,7 +35,7 @@ font_8x8.o: font_8x8.c font_8x8.h
 fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-terminal.o: terminal.c terminal.h screen.h io.h dbg.h idle.h kexec.h process.h timer.h
+terminal.o: terminal.c terminal.h screen.h vfs.h fat.h blkdev.h io.h dbg.h idle.h kexec.h process.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 wm.o: wm.c wm.h terminal.h screen.h fbtext.h idle.h io.h mouse.h process.h rtc.h timer.h version.h vga.h

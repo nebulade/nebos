@@ -3,6 +3,7 @@
 #define TERMINAL_H
 
 #include "screen.h"
+#include "vfs.h"
 
 #define CURSOR_MS    500
 #define LINE_MAX     64
@@ -19,6 +20,7 @@ struct term {
 	unsigned int line_pos;
 	unsigned int line_start;
 	unsigned int history_browse;
+	char cwd[VFS_PATH_MAX];     /* absolute current working directory */
 	/* Per-terminal key queue: WM (slot 0) pushes, terminal process pops. */
 	int keys[KEY_BUF_SIZE];
 	unsigned int key_head;

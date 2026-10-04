@@ -87,10 +87,15 @@ make clean
 
 ## Shell commands
 
-`hello`, `reboot`, `poweroff`, `ls [/dev[/dir]]`, `cat /dev/file`, `save /dev/file <text>`, `rm /dev/file`,
-`mkdir /dev/dir`, `rmdir /dev/dir`, `run /dev/file`, `space`, `clock`,
-`colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `storage`, `format <device>`,
+`cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
+`mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <file>`, `space`,
+`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `storage`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
+
+Each terminal has a current working directory (shown in the prompt as `[dir] > `),
+changed with `cd`; paths may be absolute (`/floppy1/…`) or relative (`.`, `..`,
+nested). `/` is the read-only VFS root listing the mounted filesystems (the
+filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 ## Serial hot-reload (kexec) workflow
 
