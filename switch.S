@@ -24,7 +24,7 @@
 
 /* struct process offsets (must match process.h / process.c) */
 .equ PCB_ESP,   0
-.equ PCB_SIZE,  28      /* sizeof(struct process): 4+4+4+12+4 = 28 */
+.equ PCB_SIZE,  32      /* sizeof(struct process): 4+4+4+12+4+4 = 32 */
 
 .equ TIMESLICE, 20
 .equ FLUSH_INTERVAL, 33 /* 1000Hz PIT / 30Hz flush ≈ 33 ticks */
@@ -55,11 +55,11 @@ pit_irq_stub:
 	/* Reset counter for next timeslice. */
 	movl  $TIMESLICE, slice_counter
 
-	/* Save current ESP into procs[current_pid].esp */
+	/* Save current ESP into procs[current_pid].esp (procs is a pointer). */
 	movl  current_pid, %eax
 	imull $PCB_SIZE, %eax
-	leal  procs(%eax), %ebx
-	movl  %esp, PCB_ESP(%ebx)
+	addl  procs, %eax
+	movl  %esp, PCB_ESP(%eax)
 
 	/* Let the C scheduler pick the next process. */
 	call  schedule
@@ -67,8 +67,8 @@ pit_irq_stub:
 	/* Load new ESP from procs[current_pid].esp */
 	movl  current_pid, %eax
 	imull $PCB_SIZE, %eax
-	leal  procs(%eax), %ebx
-	movl  PCB_ESP(%ebx), %esp
+	addl  procs, %eax
+	movl  PCB_ESP(%eax), %esp
 
 .no_switch:
 	popa

@@ -13,10 +13,45 @@
 .code16
 .section .text.stage2, "ax", @progbits
 .globl _vesa_stage
+
+/* E820 map constants (must match mm.h). */
+.equ E820_MAGIC,    0xE820E820
+.equ E820_BUF_END,  0x1008 + 32*24   /* 32 entries * 24 bytes */
+
 _vesa_stage:
 	xorw  %ax, %ax
 	movw  %ax, %ds
 	movw  %ax, %es
+
+	/* ---- Probe INT 15h E820 memory map into 0:0x1000 ----
+	 * Layout (see mm.h): [magic u32][count u32][24-byte entries...].
+	 * Stored below the kernel (0x7E00) so it survives kexec reloads,
+	 * which re-run kernel_main but not this real-mode stage. */
+	movl  $E820_MAGIC, 0x1000     /* magic */
+	movl  $0, 0x1004              /* count = 0 */
+	xorl  %ebx, %ebx              /* continuation value */
+	movl  $0x1008, %edi           /* ES:DI -> first entry */
+e820_loop:
+	xorw  %ax, %ax
+	movw  %ax, %es                /* (re)set ES for the BIOS buffer */
+	movl  $0xE820, %eax
+	movl  $0x534D4150, %edx       /* "SMAP" */
+	movl  $24, %ecx
+	int   $0x15
+	jc    e820_done               /* CF set -> unsupported / done */
+	cmpl  $0x534D4150, %eax
+	jne   e820_done               /* not "SMAP" -> done */
+	cmpb  $20, %cl
+	jb    e820_done               /* too short -> stop */
+	movl  $0, 20(%edi)            /* zero ACPI attrs (BIOS may write 20 B) */
+	incl  0x1004                  /* count++ */
+	addl  $24, %edi
+	testl %ebx, %ebx
+	jz    e820_done               /* continuation == 0 -> done */
+	cmpl  $E820_BUF_END, %edi
+	jae   e820_done               /* buffer full -> stop */
+	jmp   e820_loop
+e820_done:
 
 	/* ---- VBE Controller Info into 0:0x2000 ---- */
 	movw  $0x2000, %di

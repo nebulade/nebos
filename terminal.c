@@ -29,6 +29,7 @@ extern void program_serial_recv_main(const char *arg);
 extern void program_run_serial_main(const char *arg);
 extern void program_lsusb_main(void);
 extern void program_storage_main(void);
+extern void program_mem_main(void);
 extern void program_format_main(const char *arg);
 extern void program_lspci_main(void);
 extern void program_netinfo_main(void);
@@ -519,6 +520,21 @@ static int is_cmd_storage(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
+static int is_cmd_mem(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 3 > line_len)
+		return 0;
+	if (line[i] != 'm' || line[i+1] != 'e' || line[i+2] != 'm')
+		return 0;
+	i += 3;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 static int is_cmd_format(const char *line, unsigned int line_len, char *dev_buf, unsigned int buf_size)
 {
 	unsigned int i = 0, j;
@@ -981,6 +997,8 @@ void term_run(struct term *t)
 						term_spawn(t, "ping", program_ping_main);
 					} else if (is_cmd_storage(t->line, t->line_len)) {
 						term_spawn(t, "storage", program_storage_main);
+					} else if (is_cmd_mem(t->line, t->line_len)) {
+						term_spawn(t, "mem", program_mem_main);
 					} else if (is_cmd_clock(t->line, t->line_len)) {
 						io_putstr("clock: not available in windowed mode yet\n");
 					} else if (is_cmd_colors(t->line, t->line_len)) {
@@ -1071,6 +1089,7 @@ void term_run(struct term *t)
 						io_putstr("lsusb\n");
 						io_putstr("mouseinfo\n");
 						io_putstr("storage\n");
+						io_putstr("mem\n");
 						io_putstr("format <device>\n");
 						io_putstr("lspci\n");
 						io_putstr("netinfo\n");

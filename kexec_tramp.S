@@ -23,6 +23,16 @@ kexec_trampoline:
 	pushl %ecx
 	pushl %edx
 
+	/* Disable paging so the copy below can overwrite the old kernel's page
+	 * tables (which live inside the kernel region we overwrite) without
+	 * faulting.  We are identity-mapped, so the fetch after clearing PG is
+	 * safe; the jump flushes the prefetch queue. */
+	movl  %cr0, %eax
+	andl  $0x7FFFFFFF, %eax   /* clear CR0.PG */
+	movl  %eax, %cr0
+	jmp   1f
+1:
+
 	/* Mask all IRQs. */
 	movb  $0xFF, %al
 	outb  %al, $0x21

@@ -2,7 +2,10 @@
 
 #include "idle.h"
 #include "io.h"
+#include "kmalloc.h"
+#include "mm.h"
 #include "mouse.h"
+#include "paging.h"
 #include "process.h"
 #include "timer.h"
 #include "wm.h"
@@ -133,6 +136,10 @@ void kernel_main(void)
 	serial_init(SERIAL_COM1);
 	serial_ring_init();
 	serial_puts(SERIAL_COM1, "\n" OS_NAME " v" OS_VERSION " booted\n");
+	mm_init();
+	mm_dump();
+	kmalloc_init();
+	paging_init();
 	io_init();
 	idle_init();
 	timer_init();

@@ -2,9 +2,13 @@
 #ifndef PROCESS_H
 #define PROCESS_H
 
-#define MAX_PROCS       8
-#define PROC_STACK_SIZE 0x1000  /* 4 KB per process */
-#define PROC_STACK_BASE 0x42000 /* process 1 stack bottom; process 0 uses bootstrap stack */
+#define PROC_STACK_SIZE 0x1000  /* 4 KB per process (= 1 page) */
+
+/* Process stacks are allocated from the frame allocator (mm.c), i.e. above the
+ * VGA shadow buffer.  If that is unavailable (no E820 map) we fall back to a
+ * small fixed pool below 1 MB so the system still boots with fewer processes. */
+#define PROC_FALLBACK_STACK_BASE 0x42000
+#define PROC_FALLBACK_STACK_MAX  8
 
 #define PROC_UNUSED  0
 #define PROC_READY   1
@@ -23,9 +27,11 @@ struct process {
 	unsigned int pid;
 	char         name[PROC_NAME_LEN];
 	struct text_screen *screen;  /* output target for io_putchar & co. */
+	unsigned int stack_base;     /* page to free on exit, or 0 (bootstrap/fallback) */
 };
 
-extern struct process procs[MAX_PROCS];
+/* Dynamically-sized process table (grown on demand; see process.c). */
+extern struct process *procs;
 extern volatile unsigned int current_pid;
 
 void process_init(void);

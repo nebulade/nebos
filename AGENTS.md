@@ -25,9 +25,9 @@ make clean
 
 1. `boot.S` — 512-byte boot sector (FAT16 BPB). Loads contiguous kernel sectors
    to `0x7E00` (CHS for floppy, INT 13h AH=42h LBA for hard disk), jumps there.
-2. `vesa_stage.S` — real-mode VESA stage. Picks best VBE mode (≥16 bpp, LFB, fits
-   VRAM, ≤1280px), writes mode info to `0x600`, enables A20, enters protected mode,
-   jumps to `kernel_main`.
+2. `vesa_stage.S` — real-mode VESA stage. Probes INT 15h E820 into `0x1000`,
+   picks best VBE mode (≥16 bpp, LFB, fits VRAM, ≤1280px), writes mode info to
+   `0x600`, enables A20, enters protected mode, jumps to `kernel_main`.
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → I/O → idle → timer
    (PIT 1 kHz + IDT) → mouse → processes → VGA shadow buffer → terminal.
 4. `mbr.S` — MBR (USB/HDD boot); loads partition boot sector at LBA 1.
@@ -41,22 +41,36 @@ make clean
 | `0x7E00`  | Kernel load / VESA-stage entry (`kernel.ld`) |
 | `0x800`   | kexec trampoline (relocated at runtime; below the kernel) |
 | `0x900`   | kexec flat GDT + GDTR (built at runtime; below the kernel) |
+| `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
 | `0x20000` | (free — kernel upper bound used to be here, now `0x30000`) |
 | `0x30000` | ISA DMA buffer (`disk.c`) + kernel upper bound (`kernel.ld` ASSERT) |
 | `0x30800` | Protected-mode stack top (`vesa_stage.S`) |
 | `0x30F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
 | `0x31000` | User program load address (`run.c`, `user.ld`) |
-| `0x42000` | Process stack base (`PROC_STACK_BASE`, 4 KB × 8, `process.h`) |
+| `0x42000` | Fallback process stack pool (8 × 4 KB; primary stacks come from the frame allocator, ≥ `0x900000`, see `process.c`/`mm.c`) |
 | `0x50000` | kexec staging buffer (received kernel image, up to 0x28200 B) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
 ## Key files
 
 - **Multitasking**: `process.c/h`, `switch.S` — ring-0 preemptive round-robin,
-  8 slots, 20 ms timeslice, `ps`/`kill`. Context switch happens in the PIT stub.
-  Each process carries a `struct text_screen *screen` output target (child
-  processes inherit it, so command output lands in the owning terminal).
+  dynamically-sized process table (kmalloc'd, grows on demand), 20 ms timeslice,
+  `ps`/`kill`. Context switch happens in the PIT stub. Each process carries a
+  `struct text_screen *screen` output target (child processes inherit it, so
+  command output lands in the owning terminal). Exited processes are reaped and
+  their stacks freed by the scheduler.
+- **Memory**: `mm.c/h` — INT 15h E820 detection (real-mode in `vesa_stage.S`,
+  map at `0x1000`) + a bitmap page-frame allocator (4 KB pages). Reserves low
+  1 MB and an 8 MB VGA-shadow region. `kmalloc.c/h` — a power-of-two heap
+  allocator on top of the frame allocator (used for the process table). Process
+  stacks (≥ `0x900000`) come from the frame allocator, with an 8-stack fallback
+  pool at `0x42000`.
+- **Paging**: `paging.c/h` — identity-maps RAM (4 MB pages via CR4.PSE) + the
+  LFB (uncacheable) and enables CR0.PG/WP. A single shared page directory for
+  now (no per-process address spaces yet). The kexec trampoline
+  (`kexec_tramp.S`) clears CR0.PG before the copy so it can overwrite the old
+  kernel's page tables safely.
 - **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
   terminal windows (64×20) with a system bar (banner + purple "+ New" button +
   clock + rainbow). Click-to-focus, drag-by-title-bar, close (×). The "+ New"
@@ -89,7 +103,7 @@ make clean
 
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <file>`, `space`,
-`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `storage`, `format <device>`,
+`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `storage`, `mem`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 Each terminal has a current working directory (shown in the prompt as `[dir] > `),
@@ -208,8 +222,9 @@ QEMU gotchas that bit once:
 
 - **Freestanding C** — no libc, no `malloc`, no `printf`. Use `io_putstr` /
   `io_putchar` / `io_puthex` (`io.h`). Printing is VGA-framebuffer based.
-- **No paging / no MMU / no process isolation.** Everything runs ring-0; user
-  programs share the kernel's address space and privileges.
+- **Paging is on but flat** — identity-mapped 4 MB pages (`paging.c`), so
+  physical == virtual everywhere. Still no per-process address spaces or process
+  isolation: everything runs ring-0 and shares the address space.
 - **All drawing goes into the shadow buffer** (`vga_put_pixel_rgb` etc.); a 30 Hz
   flush copies dirty rows to VRAM. Full-screen programs call `vga_clear_rgb`.
 - **FAT is read-only** — parse/read only; no write/create/delete.
@@ -222,7 +237,7 @@ QEMU gotchas that bit once:
    missing** (bug).
 2. `vga.c` `draw_flush_debug_square()` — leftover debug artifact, still draws a
    color-cycling 32×32 square in the corner on every flush.
-3. No paging/virtual memory or process isolation.
+3. No per-process address spaces or process isolation (paging is identity-mapped).
 4. Read-only FAT filesystem.
 5. Implicit, hardcoded memory map (see table above).
 6. `disk.c` `fdc_reset()` and `fdc_init_once()` overlap/duplicate logic.
