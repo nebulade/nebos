@@ -1,7 +1,6 @@
 /* Syscall dispatcher: services int 0x80 requests from ring-3. */
 
 #include "syscall.h"
-#include "idle.h"
 #include "io.h"
 #include "process.h"
 #include "serial.h"
@@ -18,14 +17,9 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		return 0;
 	case SYS_GET_TICKS_MS:
 		return (int)get_ticks_ms();
-	case SYS_SLEEP_MS: {
-		unsigned int start = get_ticks_ms();
-		unsigned int ms = (unsigned int)a1;
-		__asm__ volatile ("sti");  /* re-enable IRQs so hlt wakes on the PIT */
-		while (get_ticks_ms() - start < ms)
-			cpu_idle();
+	case SYS_SLEEP_MS:
+		process_sleep_ms((unsigned int)a1);
 		return 0;
-	}
 	case SYS_EXIT:
 		process_exit();   /* never returns */
 		return 0;

@@ -213,7 +213,9 @@ static void mouse_cursor_setup(void)
 
 static int mouse_intellimouse_init(void)
 {
-	static const unsigned char rates[] = { 0xC8, 0x64, 0x50, 0x32 };
+	/* First three rates are the Intellimouse enable magic (200/100/80);
+	   the last is the final report rate.  0xC8 = 200 Hz for a smooth cursor. */
+	static const unsigned char rates[] = { 0xC8, 0x64, 0x50, 0xC8 };
 	unsigned int i;
 	for (i = 0; i < sizeof(rates); i++) {
 		if (mouse_send_cmd_ack(0xF3) != 0)

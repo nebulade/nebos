@@ -303,8 +303,14 @@ static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 	else if (dx < 0)
 		wm_redraw_sliver(nx + w->pw, oy, (unsigned int)(-dx), w->ph);
 
-	/* Mark the swept band so the flush copies the moved window + sliver. */
-	vga_fb_mark_dirty_rect(y0, y1 - y0);
+	/* Mark the swept band so the flush copies the moved window + sliver.
+	   Limit the horizontal span to the window's swept x-range so the flush
+	   copies only ~pw columns instead of the full framebuffer width. */
+	{
+		unsigned int x0 = (ox < nx) ? ox : nx;
+		unsigned int x1 = ((ox > nx) ? ox : nx) + w->pw;
+		vga_fb_mark_dirty_rect_xy(y0, y1 - y0, x0, x1);
+	}
 	mouse_redraw_cursor();
 }
 

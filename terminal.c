@@ -3,7 +3,6 @@
 
 #include "io.h"
 #include "dbg.h"
-#include "idle.h"
 #include "kexec.h"
 #include "process.h"
 #include "terminal.h"
@@ -901,7 +900,7 @@ void term_run(struct term *t)
 				t->fg_pid = -1;
 				term_print_prompt(t, 0);
 			} else {
-				cpu_idle();
+				process_sleep_ms(10);
 			}
 			continue;
 		}
@@ -1159,7 +1158,7 @@ void term_run(struct term *t)
 				}
 			}
 		} else {
-			cpu_idle();
+			process_sleep_ms(10);
 		}
 	}
 }

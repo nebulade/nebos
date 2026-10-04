@@ -170,7 +170,7 @@ void fbtext_draw_cells(const unsigned short *cells, unsigned int cols, unsigned 
 				rf, gf, bf, rb, gb, bb, ROW_HEIGHT, 0);
 		}
 	}
-	vga_fb_mark_dirty_rect(y0, rows * ROW_HEIGHT);
+	vga_fb_mark_dirty_rect_xy(y0, rows * ROW_HEIGHT, x0, x0 + cols * 8);
 }
 
 void fbtext_draw_cells_clip(const unsigned short *cells, unsigned int cols, unsigned int rows,
@@ -202,8 +202,9 @@ void fbtext_draw_cells_clip(const unsigned short *cells, unsigned int cols, unsi
 				rf, gf, bf, rb, gb, bb, ROW_HEIGHT, 0);
 		}
 	}
-	vga_fb_mark_dirty_rect(y0 + (unsigned int)row0 * ROW_HEIGHT,
-		(unsigned int)(row1 - row0) * ROW_HEIGHT);
+	vga_fb_mark_dirty_rect_xy(y0 + (unsigned int)row0 * ROW_HEIGHT,
+		(unsigned int)(row1 - row0) * ROW_HEIGHT,
+		x0 + (unsigned int)col0 * 8, x0 + (unsigned int)col1 * 8);
 }
 
 void fbtext_scroll_up_one_line(void)

@@ -14,6 +14,7 @@
 #define PROC_READY   1
 #define PROC_RUNNING 2
 #define PROC_DEAD    3
+#define PROC_SLEEPING 4
 
 #define TIMESLICE_TICKS 20 /* context switch every 20 ms (PIT @ 1 kHz) */
 
@@ -30,6 +31,7 @@ struct process {
 	unsigned int stack_base;     /* page to free on exit, or 0 (bootstrap/fallback) */
 	unsigned int cr3;            /* physical address of this process's page dir */
 	unsigned int kstack_top;     /* ring-0 stack top (for TSS esp0) */
+	unsigned int wake_ms;        /* tick deadline when PROC_SLEEPING */
 };
 
 /* User-mode virtual address layout (ring-3 processes). */
@@ -56,5 +58,8 @@ void process_ps(void);
 int  process_kill(unsigned int pid);
 int  process_is_alive(unsigned int pid);
 void process_wait(unsigned int pid);
+
+/* Block the current process for `ms` milliseconds (yields the CPU). */
+void process_sleep_ms(unsigned int ms);
 
 #endif

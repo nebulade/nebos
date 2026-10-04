@@ -499,6 +499,13 @@ void vga_fb_mark_dirty_rect(unsigned int y, unsigned int h)
 	mark_dirty_rect(y, h);
 }
 
+/* Mark rows dirty, limited to the horizontal span [x0, x1). */
+void vga_fb_mark_dirty_rect_xy(unsigned int y, unsigned int h,
+			       unsigned int x0, unsigned int x1)
+{
+	mark_dirty_rect_xy(y, h, x0, x1);
+}
+
 void vga_fb_clear_dirty(void)
 {
 	clear_dirty_rows();

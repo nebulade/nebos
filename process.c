@@ -8,6 +8,7 @@
 #include "mm.h"
 #include "paging.h"
 #include "serial.h"
+#include "timer.h"
 
 struct process *procs;               /* dynamically-sized process table */
 volatile unsigned int current_pid;
@@ -387,6 +388,13 @@ void schedule(void)
 		}
 	}
 
+	/* Wake sleeping processes whose deadline has passed. */
+	for (i = 0; i < proc_cap; i++) {
+		if (procs[i].state == PROC_SLEEPING &&
+		    (int)(procs[i].wake_ms - get_ticks_ms()) <= 0)
+			procs[i].state = PROC_READY;
+	}
+
 	/* Mark current as READY (it was RUNNING). */
 	if (procs[current_pid].state == PROC_RUNNING)
 		procs[current_pid].state = PROC_READY;
@@ -472,23 +480,33 @@ int process_kill(unsigned int pid)
 	return -1;
 }
 
-/* Return 1 if a process with `pid` is still runnable (READY/RUNNING). */
+/* Return 1 if a process with `pid` is still alive (READY/RUNNING/SLEEPING). */
 int process_is_alive(unsigned int pid)
 {
 	unsigned int i;
 	for (i = 0; i < proc_cap; i++)
 		if (procs[i].pid == pid &&
 		    (procs[i].state == PROC_READY ||
-		     procs[i].state == PROC_RUNNING))
+		     procs[i].state == PROC_RUNNING ||
+		     procs[i].state == PROC_SLEEPING))
 			return 1;
 	return 0;
 }
 
-/* Wait (yield) until the process with `pid` has exited.  The scheduler
- * preempts us every timeslice so the child runs and process_exit() reaps
- * it to PROC_UNUSED. */
+/* Block the current process for `ms` milliseconds.  Marks it sleeping and
+ * yields to the scheduler; it is woken when its deadline passes. */
+void process_sleep_ms(unsigned int ms)
+{
+	procs[current_pid].wake_ms = get_ticks_ms() + ms;
+	procs[current_pid].state = PROC_SLEEPING;
+	__asm__ volatile ("sti");  /* re-enable IRQs so the PIT can switch us out */
+	while (procs[current_pid].state == PROC_SLEEPING)
+		cpu_idle();
+}
+
+/* Wait (yield) until the process with `pid` has exited. */
 void process_wait(unsigned int pid)
 {
 	while (process_is_alive(pid))
-		cpu_idle();
+		process_sleep_ms(10);
 }

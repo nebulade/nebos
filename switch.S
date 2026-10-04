@@ -27,7 +27,7 @@
 .equ PCB_ESP,   0
 .equ PCB_CR3,   32
 .equ PCB_KSTACK_TOP, 36
-.equ PCB_SIZE,  40      /* sizeof(struct process): 4+4+4+12+4+4+4+4 = 40 */
+.equ PCB_SIZE,  44      /* sizeof(struct process): 4+4+4+12+4+4+4+4+4 = 44 */
 
 .equ TIMESLICE, 20
 .equ FLUSH_INTERVAL, 33 /* 1000Hz PIT / 30Hz flush ≈ 33 ticks */
