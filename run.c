@@ -26,7 +26,6 @@ void program_run_main(const char *filename)
 		return;
 	}
 
-	vfs_mount_all();
 	if (vfs_resolve(filename, &fs, &fs_path) != 0) {
 		io_putstr("run: unknown device or invalid path\n");
 		return;

@@ -665,7 +665,6 @@ static void term_cd(struct term *t, const char *arg)
 		return;
 	}
 
-	vfs_mount_all();
 	if (vfs_resolve(abs, &fs, &fs_path) != 0) {
 		io_putstr("cd: no such directory\n");
 		return;

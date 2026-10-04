@@ -21,7 +21,6 @@ void program_cat_main(const char *filename)
 		return;
 	}
 
-	vfs_mount_all();
 	if (vfs_resolve(filename, &fs, &fs_path) != 0) {
 		if (vfs_device_known(filename))
 			io_putstr("cat: no filesystem on device\n");

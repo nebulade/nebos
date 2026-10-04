@@ -131,7 +131,7 @@ ata.o: ata.c ata.h pci.h timer.h
 fatdetect.o: fatdetect.c fatdetect.h fat.h blkdev.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-storage.o: storage.c blkdev.h fatdetect.h disk.h io.h
+storage.o: storage.c blkdev.h vfs.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 fatformat.o: fatformat.c fatformat.h blkdev.h

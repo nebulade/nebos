@@ -9,6 +9,7 @@
 #include "serial.h"
 #include "version.h"
 #include "vga.h"
+#include "vfs.h"
 
 static inline void outb(unsigned short port, unsigned char v)
 {
@@ -139,5 +140,6 @@ void kernel_main(void)
 	process_init();
 	vga_shadow_init();
 	vga_fb_flush();
+	vfs_mount_all();
 	wm_run();
 }

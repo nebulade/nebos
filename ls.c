@@ -45,8 +45,6 @@ void program_ls_main(const char *path)
 	unsigned int dir_cluster;
 	int r;
 
-	vfs_mount_all();
-
 	if (!path || !path[0] || (path[0] == '/' && path[1] == '\0')) {
 		vfs_list_root();
 		return;

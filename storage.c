@@ -1,8 +1,8 @@
-/* storage command: probe floppy + IDE devices and report FAT filesystems. */
+/* storage command: refresh the filesystem cache and report devices + mounts. */
 
 #include "blkdev.h"
-#include "fatdetect.h"
 #include "io.h"
+#include "vfs.h"
 
 static void put_dec(unsigned int n)
 {
@@ -71,28 +71,30 @@ static void report_fs(const char *name, const fat_fs_t *fs)
 	io_putchar('\n');
 }
 
-static void part_name(char *out, const char *base, unsigned int idx)
+/* Does mount `mount_name` belong to block device `dev_name`?
+ * True for an exact match ("floppy0") or a partition ("ide0p1" for "ide0"). */
+static int mount_belongs_to(const char *mount_name, const char *dev_name)
 {
 	unsigned int i = 0;
-	while (base[i] && i < 14) {
-		out[i] = base[i];
+	while (dev_name[i] && mount_name[i] == dev_name[i])
 		i++;
-	}
-	out[i++] = 'p';
-	out[i++] = (char)('0' + idx + 1);
-	out[i] = '\0';
+	if (dev_name[i] == '\0' && mount_name[i] == '\0')
+		return 1;
+	if (dev_name[i] == '\0' && mount_name[i] == 'p')
+		return 1;
+	return 0;
 }
 
 void program_storage_main(void)
 {
-	static unsigned char buf[512];
-	unsigned int i;
+	unsigned int i, j;
 
-	blk_scan();
+	/* Refresh the filesystem cache (re-probes all devices). */
+	vfs_mount_all();
 
 	for (i = 0; i < blk_dev_count; i++) {
 		blk_dev_t *d = &blk_devs[i];
-		fat_fs_t fs;
+		int found = 0;
 
 		if (d->kind == BLK_IDE && !d->present) {
 			io_putstr(d->name);
@@ -100,45 +102,16 @@ void program_storage_main(void)
 			continue;
 		}
 
-		if (blk_read(d, 0, buf, 1) != 0) {
-			io_putstr(d->name);
-			io_putstr(": not present / unreadable\n");
-			continue;
+		for (j = 0; j < vfs_mount_count; j++) {
+			if (mount_belongs_to(vfs_mounts[j].name, d->name)) {
+				report_fs(vfs_mounts[j].name, &vfs_mounts[j].fs);
+				found = 1;
+			}
 		}
 
-		if (d->kind == BLK_FLOPPY) {
-			if (fat_mount(d, 0, &fs) == 0)
-				report_fs(d->name, &fs);
-			else {
-				io_putstr(d->name);
-				io_putstr(": no valid FAT filesystem\n");
-			}
-		} else {
-			mbr_part_t parts[4];
-			int n = mbr_parse(buf, parts);
-			int found = 0;
-			int j;
-
-			for (j = 0; j < n; j++) {
-				char pname[16];
-				if (!parts[j].is_fat || parts[j].start_lba == 0 ||
-				    parts[j].sectors == 0)
-					continue;
-				if (fat_mount(d, parts[j].start_lba, &fs) == 0) {
-					part_name(pname, d->name, parts[j].index);
-					report_fs(pname, &fs);
-					found = 1;
-				}
-			}
-
-			if (!found) {
-				if (fat_mount(d, 0, &fs) == 0)
-					report_fs(d->name, &fs);
-				else {
-					io_putstr(d->name);
-					io_putstr(": no valid FAT filesystem\n");
-				}
-			}
+		if (!found) {
+			io_putstr(d->name);
+			io_putstr(": no valid FAT filesystem\n");
 		}
 	}
 }

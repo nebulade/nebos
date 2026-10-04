@@ -17,7 +17,6 @@ void program_mkdir_main(const char *arg)
 		return;
 	}
 
-	vfs_mount_all();
 	if (vfs_resolve(arg, &fs, &fs_path) != 0) {
 		io_putstr("mkdir: read-only filesystem\n");
 		return;
