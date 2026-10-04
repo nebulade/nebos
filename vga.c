@@ -393,7 +393,7 @@ void vga_shadow_init(void)
 	clear_dirty_rows();
 }
 
-/* Copy only dirty rows from shadow to VRAM. */
+/* Copy only dirty rows from shadow to VRAM, batching contiguous runs. */
 static void shadow_copy_dirty_rows(void)
 {
 	unsigned int row;
@@ -408,57 +408,18 @@ static void shadow_copy_dirty_rows(void)
 
 	for (row = 0; row < max_row; row++) {
 		if (vga_shadow_dirty_rows[row / 8] & (1 << (row % 8))) {
+			unsigned int run = row + 1;
+			while (run < max_row &&
+			       (vga_shadow_dirty_rows[run / 8] & (1 << (run % 8))))
+				run++;
 			vga_fb_copy_row(
 				(void *)(dst + (unsigned long)row * vga_fb_pitch_val),
 				(void *)(src + (unsigned long)row * vga_shadow_pitch),
-				dwords
+				dwords * (run - row)
 			);
+			row = run - 1;
 		}
 	}
-}
-
-/* Debug square: 32x32 at bottom-right, cycles color each flush. Drawn into shadow buffer
-   so it gets copied to VRAM along with everything else. Uses bright colors to be obvious. */
-static void draw_flush_debug_square(void)
-{
-	static unsigned int flush_color_counter;
-	unsigned int r, g, b;
-	unsigned int x, y;
-	unsigned int sx = vga_fb_w - 32;
-	unsigned int sy = vga_fb_h - 32;
-	unsigned int pitch = vga_shadow_pitch;
-	unsigned int bpp = vga_fb_bpp_val;
-	unsigned char *fb = vga_shadow_buf;
-
-	flush_color_counter++;
-	/* Cycle through bright primary/secondary colors */
-	switch (flush_color_counter % 6) {
-		case 0: r = 255; g = 0;   b = 0;   break; /* red */
-		case 1: r = 0;   g = 255; b = 0;   break; /* green */
-		case 2: r = 0;   g = 0;   b = 255; break; /* blue */
-		case 3: r = 255; g = 255; b = 0;   break; /* yellow */
-		case 4: r = 255; g = 0;   b = 255; break; /* magenta */
-		default: r = 0; g = 255; b = 255; break; /* cyan */
-	}
-
-	for (y = 0; y < 32; y++) {
-		unsigned char *row = fb + (sy + y) * pitch;
-		for (x = 0; x < 32; x++) {
-			if (bpp == 16) {
-				unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-				unsigned short *p = (unsigned short *)(row + (sx + x) * 2);
-				*p = (unsigned short)rgb16;
-			} else if (bpp == 24) {
-				row[(sx + x) * 3]     = (unsigned char)b;
-				row[(sx + x) * 3 + 1] = (unsigned char)g;
-				row[(sx + x) * 3 + 2] = (unsigned char)r;
-			} else if (bpp == 32) {
-				unsigned int *p = (unsigned int *)(row + (sx + x) * 4);
-				*p = (unsigned int)b | ((unsigned int)g << 8) | ((unsigned int)r << 16);
-			}
-		}
-	}
-	mark_dirty_rect(sy, 32);
 }
 
 void vga_fb_flush_pending_check(void)
@@ -468,7 +429,6 @@ void vga_fb_flush_pending_check(void)
 	vga_shadow_flush_pending = 0;
 	if (!any_dirty_rows())
 		return;
-	draw_flush_debug_square();
 	shadow_copy_dirty_rows();
 	clear_dirty_rows();
 }
@@ -480,7 +440,6 @@ void vga_fb_flush(void)
 		return;
 	if (!any_dirty_rows())
 		return;
-	draw_flush_debug_square();
 	shadow_copy_dirty_rows();
 	clear_dirty_rows();
 }
@@ -493,4 +452,9 @@ int vga_shadow_is_active(void)
 void vga_fb_mark_dirty_rect(unsigned int y, unsigned int h)
 {
 	mark_dirty_rect(y, h);
+}
+
+void vga_fb_clear_dirty(void)
+{
+	clear_dirty_rows();
 }

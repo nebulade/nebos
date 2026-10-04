@@ -58,4 +58,7 @@ int vga_shadow_is_active(void);
 /* Mark rows dirty for direct buffer manipulators (e.g. fbtext_scroll). */
 void vga_fb_mark_dirty_rect(unsigned int y, unsigned int h);
 
+/* Clear the dirty-row bitmap (so only explicitly re-marked rows get flushed). */
+void vga_fb_clear_dirty(void);
+
 #endif

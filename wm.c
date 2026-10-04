@@ -24,6 +24,12 @@ static int drag_window;      /* index into windows[] */
 static int drag_dx, drag_dy; /* mouse offset from window origin */
 static unsigned int prev_buttons;
 
+/* Drag damage: accumulated y-band of the moving window, flushed as a region. */
+static int drag_render_needed;
+static int drag_band_valid;
+static unsigned int drag_band_y0, drag_band_y1;
+static unsigned int last_drag_render;
+
 void wm_request_redraw(void)
 {
 	wm_full_redraw = 1;
@@ -195,6 +201,24 @@ static void wm_clamp_window(struct window *w, int nx, int ny)
 	w->y = (unsigned int)ny;
 }
 
+/* Grow the drag's accumulated dirty band to cover the window's old+new rects.
+   Only the y-range matters: the flush copies whole rows. */
+static void wm_drag_accumulate(unsigned int oy, unsigned int ny, unsigned int ph)
+{
+	unsigned int y0 = (oy < ny) ? oy : ny;
+	unsigned int y1 = ((oy > ny) ? oy : ny) + ph;
+	if (!drag_band_valid) {
+		drag_band_y0 = y0;
+		drag_band_y1 = y1;
+		drag_band_valid = 1;
+	} else {
+		if (y0 < drag_band_y0)
+			drag_band_y0 = y0;
+		if (y1 > drag_band_y1)
+			drag_band_y1 = y1;
+	}
+}
+
 static void wm_handle_mouse(void)
 {
 	unsigned int buttons = mouse_buttons_state();
@@ -223,14 +247,20 @@ static void wm_handle_mouse(void)
 					drag_window = idx;
 					drag_dx = (int)mx - (int)w->x;
 					drag_dy = (int)my - (int)w->y;
+					drag_band_valid = 0;
+					drag_render_needed = 0;
 				}
 			}
 		}
 	} else if (left_down && left_was_down && drag_active) {
 		struct window *w = &windows[drag_window];
 		if (w->used) {
+			unsigned int ox = w->x, oy = w->y;
 			wm_clamp_window(w, (int)mx - drag_dx, (int)my - drag_dy);
-			wm_request_redraw();
+			if (ox != w->x || oy != w->y) {
+				wm_drag_accumulate(oy, w->y, w->ph);
+				drag_render_needed = 1;
+			}
 		} else {
 			drag_active = 0;
 		}
@@ -388,6 +418,27 @@ static void wm_redraw_if_needed(void)
 			if (windows[i].used)
 				windows[i].term->screen.dirty = 0;
 		wm_full_redraw = 0;
+		drag_render_needed = 0;
+		drag_band_valid = 0;
+		last_sec = now_sec;
+		return;
+	}
+
+	/* Drag: redraw the full scene into the shadow buffer, but flush only the
+	   accumulated y-band (the window's swept region) to VRAM. Throttled to the
+	   flush rate so rapid mouse moves coalesce. */
+	if (drag_render_needed && (now_ms - last_drag_render >= 33)) {
+		last_drag_render = now_ms;
+		wm_render_full();
+		vga_fb_clear_dirty();
+		if (drag_band_valid)
+			vga_fb_mark_dirty_rect(drag_band_y0, drag_band_y1 - drag_band_y0);
+		if (clock_changed)
+			vga_fb_mark_dirty_rect(0, WM_BAR_H);
+		for (i = 0; i < MAX_WINDOWS; i++)
+			if (windows[i].used)
+				windows[i].term->screen.dirty = 0;
+		drag_render_needed = 0;
 		last_sec = now_sec;
 		return;
 	}
