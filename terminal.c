@@ -722,6 +722,27 @@ static void term_resolve_first(struct term *t, const char *args,
 	out[j] = '\0';
 }
 
+/* Spawn a foreground command process and wait for it to finish before
+ * printing the next prompt (so its output doesn't overwrite the prompt). */
+static void term_spawn(const char *name, void (*entry)(void))
+{
+	int pid = process_create(name, entry);
+	if (pid < 0)
+		io_putstr("error: too many processes\n");
+	else
+		process_wait((unsigned int)pid);
+}
+
+static void term_spawn_arg(const char *name, void (*entry)(const char *),
+			   const char *arg)
+{
+	int pid = process_create_arg(name, entry, arg);
+	if (pid < 0)
+		io_putstr("error: too many processes\n");
+	else
+		process_wait((unsigned int)pid);
+}
+
 void term_run(struct term *t)
 {
 	t->line_len         = 0;
@@ -789,8 +810,7 @@ void term_run(struct term *t)
 					history_push(t, t->line, t->line_len);
 					t->history_browse = 0;
 					if (is_cmd_hello(t->line, t->line_len)) {
-						if (process_create("hello", program_hello_main) < 0)
-							io_putstr("error: too many processes\n");
+						term_spawn("hello", program_hello_main);
 					} else if (is_cmd_reboot(t->line, t->line_len)) {
 						program_reboot_main();
 					} else if (is_cmd_poweroff(t->line, t->line_len)) {
@@ -799,25 +819,21 @@ void term_run(struct term *t)
 						term_cd(t, ls_path);
 					} else if (is_cmd_ls(t->line, t->line_len, ls_path, LS_PATH_MAX)) {
 						if (vfs_join_path(t->cwd, ls_path, resolved, sizeof(resolved)) == 0) {
-							if (process_create_arg("ls", program_ls_main, resolved) < 0)
-								io_putstr("error: too many processes\n");
+							term_spawn_arg("ls", program_ls_main, resolved);
 						} else {
 							io_putstr("ls: path too long\n");
 						}
 					} else if (is_cmd_lsusb(t->line, t->line_len)) {
-						if (process_create("lsusb", program_lsusb_main) < 0)
-							io_putstr("error: too many processes\n");
+						term_spawn("lsusb", program_lsusb_main);
 					} else if (is_cmd_storage(t->line, t->line_len)) {
-						if (process_create("storage", program_storage_main) < 0)
-							io_putstr("error: too many processes\n");
+						term_spawn("storage", program_storage_main);
 					} else if (is_cmd_clock(t->line, t->line_len)) {
 						io_putstr("clock: not available in windowed mode yet\n");
 					} else if (is_cmd_colors(t->line, t->line_len)) {
 						io_putstr("colors: not available in windowed mode yet\n");
 					} else if (is_cmd_cat(t->line, t->line_len, cat_fname, CAT_FNAME_MAX)) {
 						if (vfs_join_path(t->cwd, cat_fname, resolved, sizeof(resolved)) == 0) {
-							if (process_create_arg("cat", program_cat_main, resolved) < 0)
-								io_putstr("error: too many processes\n");
+							term_spawn_arg("cat", program_cat_main, resolved);
 						} else {
 							io_putstr("cat: path too long\n");
 						}
@@ -833,40 +849,33 @@ void term_run(struct term *t)
 						}
 					} else if (is_cmd_save(t->line, t->line_len, save_args, SAVE_ARGS_MAX)) {
 						term_resolve_first(t, save_args, save_resolved, sizeof(save_resolved));
-						if (process_create_arg("save", program_save_main, save_resolved) < 0)
-							io_putstr("error: too many processes\n");
+						term_spawn_arg("save", program_save_main, save_resolved);
 					} else if (is_cmd_mkdir(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
 						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
-							if (process_create_arg("mkdir", program_mkdir_main, resolved) < 0)
-								io_putstr("error: too many processes\n");
+							term_spawn_arg("mkdir", program_mkdir_main, resolved);
 						} else {
 							io_putstr("mkdir: path too long\n");
 						}
 					} else if (is_cmd_rmdir(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
 						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
-							if (process_create_arg("rmdir", program_rmdir_main, resolved) < 0)
-								io_putstr("error: too many processes\n");
+							term_spawn_arg("rmdir", program_rmdir_main, resolved);
 						} else {
 							io_putstr("rmdir: path too long\n");
 						}
 					} else if (is_cmd_rm(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
 						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
-							if (process_create_arg("rm", program_rm_main, resolved) < 0)
-								io_putstr("error: too many processes\n");
+							term_spawn_arg("rm", program_rm_main, resolved);
 						} else {
 							io_putstr("rm: path too long\n");
 						}
 					} else if (is_cmd_space(t->line, t->line_len)) {
 						io_putstr("space: not available in windowed mode yet\n");
 					} else if (is_cmd_display(t->line, t->line_len)) {
-						if (process_create("display", program_display_main) < 0)
-							io_putstr("error: too many processes\n");
+						term_spawn("display", program_display_main);
 					} else if (is_cmd_cpuinfo(t->line, t->line_len)) {
-						if (process_create("cpuinfo", program_cpuinfo_main) < 0)
-							io_putstr("error: too many processes\n");
+						term_spawn("cpuinfo", program_cpuinfo_main);
 					} else if (is_cmd_mouseinfo(t->line, t->line_len)) {
-						if (process_create("mouseinfo", program_mouseinfo_main) < 0)
-							io_putstr("error: too many processes\n");
+						term_spawn("mouseinfo", program_mouseinfo_main);
 					} else if (is_cmd_format(t->line, t->line_len, format_dev, FORMAT_DEV_MAX)) {
 						program_format_main(format_dev);
 					} else if (is_cmd_ps(t->line, t->line_len)) {

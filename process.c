@@ -1,6 +1,7 @@
 /* Process management: create, exit, round-robin schedule, ps, kill. */
 
 #include "process.h"
+#include "idle.h"
 #include "io.h"
 
 struct process procs[MAX_PROCS];
@@ -250,4 +251,23 @@ int process_kill(unsigned int pid)
 		}
 	}
 	return -1;
+}
+
+/* Wait (yield) until the process with `pid` has exited.  The scheduler
+ * preempts us every timeslice so the child runs and process_exit() reaps
+ * it to PROC_UNUSED. */
+void process_wait(unsigned int pid)
+{
+	unsigned int i;
+	for (;;) {
+		int alive = 0;
+		for (i = 0; i < MAX_PROCS; i++)
+			if (procs[i].pid == pid &&
+			    (procs[i].state == PROC_READY ||
+			     procs[i].state == PROC_RUNNING))
+				alive = 1;
+		if (!alive)
+			return;
+		cpu_idle();
+	}
 }
