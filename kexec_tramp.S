@@ -61,6 +61,11 @@ kexec_trampoline:
 	cld
 	rep   movsb
 
+	/* Flush the caches so the freshly-copied kernel is coherent.  The Pentium
+	 * (P5) split I/D caches are not coherent for self-modifying code; without
+	 * this the jump below can execute stale instructions. */
+	wbinvd
+
 	movl  $0x30800, %esp
 	jmp   *%edx
 

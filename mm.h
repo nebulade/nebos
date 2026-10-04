@@ -17,9 +17,9 @@
 #define E820_MAX_ENTRIES 32
 
 /* Frame allocator covers physical RAM [0, MM_MAX_PHYS).  Bitmap: 1 bit/page.
- * 256 MB covers every first-gen Pentium chipset (430FX = 128 MB, 430VX = 256 MB)
- * and QEMU's default 128 MB; raise this only if larger machines are targeted. */
-#define MM_MAX_PHYS      (256u * 1024 * 1024)  /* 256 MB ceiling */
+ * 128 MB matches this machine and QEMU's default; raise it (and move the
+ * kernel upper bound, see kernel.ld) if larger machines are targeted. */
+#define MM_MAX_PHYS      (128u * 1024 * 1024)  /* 128 MB ceiling */
 
 /* Regions the kernel already owns (marked used at init): */
 #define MM_RESERVE_LOW     0x100000   /* 0 .. 1 MB: kernel/DMA/UHCI/UMA/boot */

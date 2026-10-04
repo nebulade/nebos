@@ -21,10 +21,13 @@
 .extern schedule
 .extern vga_shadow_flush_pending
 .extern serial_poll
+.extern tss
 
 /* struct process offsets (must match process.h / process.c) */
 .equ PCB_ESP,   0
-.equ PCB_SIZE,  32      /* sizeof(struct process): 4+4+4+12+4+4 = 32 */
+.equ PCB_CR3,   32
+.equ PCB_KSTACK_TOP, 36
+.equ PCB_SIZE,  40      /* sizeof(struct process): 4+4+4+12+4+4+4+4 = 40 */
 
 .equ TIMESLICE, 20
 .equ FLUSH_INTERVAL, 33 /* 1000Hz PIT / 30Hz flush ≈ 33 ticks */
@@ -64,11 +67,15 @@ pit_irq_stub:
 	/* Let the C scheduler pick the next process. */
 	call  schedule
 
-	/* Load new ESP from procs[current_pid].esp */
+	/* Load new ESP, CR3, and TSS esp0 from procs[current_pid]. */
 	movl  current_pid, %eax
 	imull $PCB_SIZE, %eax
 	addl  procs, %eax
 	movl  PCB_ESP(%eax), %esp
+	movl  PCB_CR3(%eax), %ebx
+	movl  %ebx, %cr3
+	movl  PCB_KSTACK_TOP(%eax), %ebx
+	movl  %ebx, tss+4           /* TSS.esp0 = this process's ring-0 stack top */
 
 .no_switch:
 	popa

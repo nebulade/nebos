@@ -4,4 +4,21 @@
 
 void paging_init(void);
 
+/* Physical address of the bootstrap (current) page directory. */
+unsigned int paging_current_cr3(void);
+
+/* Allocate a fresh page directory that clones the kernel identity map and
+ * return its physical address (0 on out-of-memory). */
+unsigned int paging_new_directory(void);
+
+/* Page-table entry flags (4 KB pages). */
+#define PTE_PRESENT  0x001
+#define PTE_WRITABLE 0x002
+#define PTE_USER     0x004
+
+/* Map one 4 KB page (va -> phys) in page directory `cr3`, allocating a page
+ * table if needed.  Returns 1 on success, 0 on out-of-memory. */
+int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
+		    unsigned int flags);
+
 #endif

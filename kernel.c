@@ -8,6 +8,7 @@
 #include "paging.h"
 #include "process.h"
 #include "timer.h"
+#include "tss.h"
 #include "wm.h"
 #include "serial.h"
 #include "version.h"
@@ -41,6 +42,7 @@ extern void pit_irq_stub(void);
 extern void kbd_irq_stub(void);
 extern void fdc_irq_stub(void);
 extern void default_irq_stub(void);
+extern void syscall_stub(void);
 extern unsigned int exc_stub_table[];
 
 unsigned int get_ticks_ms(void)
@@ -83,6 +85,17 @@ static void set_idt_gate(int vec, unsigned int handler)
 	idt[vec].offset_hi = (unsigned short)((handler >> 16) & 0xFFFF);
 }
 
+/* Trap gate (DPL=3) so ring-3 can `int` into it; a trap gate does NOT clear
+ * IF, so a blocking syscall (e.g. sleep) can still be preempted by the timer. */
+static void set_idt_gate_user(int vec, unsigned int handler)
+{
+	idt[vec].offset_lo = (unsigned short)(handler & 0xFFFF);
+	idt[vec].selector  = 0x08;
+	idt[vec].zero      = 0;
+	idt[vec].type      = 0xEF;
+	idt[vec].offset_hi = (unsigned short)((handler >> 16) & 0xFFFF);
+}
+
 static void timer_init(void)
 {
 	int i;
@@ -113,6 +126,9 @@ static void timer_init(void)
 	set_idt_gate(0x21, (unsigned int)kbd_irq_stub);
 	set_idt_gate(0x26, (unsigned int)fdc_irq_stub);
 
+	/* Syscall gate (ring-3 can int 0x80). */
+	set_idt_gate_user(0x80, (unsigned int)syscall_stub);
+
 	idtr.limit = (unsigned short)(sizeof(idt) - 1);
 	idtr.base  = (unsigned int)idt;
 	__asm__ volatile ("lidt %0" : : "m"(idtr));
@@ -140,13 +156,24 @@ void kernel_main(void)
 	mm_dump();
 	kmalloc_init();
 	paging_init();
+	serial_puts(SERIAL_COM1, "dbg: paging done\n");
 	io_init();
+	serial_puts(SERIAL_COM1, "dbg: io done\n");
 	idle_init();
+	serial_puts(SERIAL_COM1, "dbg: idle done\n");
 	timer_init();
+	serial_puts(SERIAL_COM1, "dbg: timer done\n");
 	mouse_init();
+	serial_puts(SERIAL_COM1, "dbg: mouse done\n");
 	process_init();
+	serial_puts(SERIAL_COM1, "dbg: process done\n");
+	gdt_tss_init();
+	serial_puts(SERIAL_COM1, "dbg: gdt_tss done\n");
 	vga_shadow_init();
+	serial_puts(SERIAL_COM1, "dbg: vga_shadow done\n");
 	vga_fb_flush();
+	serial_puts(SERIAL_COM1, "dbg: fb_flush done\n");
 	vfs_mount_all();
+	serial_puts(SERIAL_COM1, "dbg: vfs done\n");
 	wm_run();
 }

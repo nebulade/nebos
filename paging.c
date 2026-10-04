@@ -16,6 +16,7 @@
 /* Page-directory entry flags (4 MB page). */
 #define PDE_PRESENT  0x001
 #define PDE_WRITABLE 0x002
+#define PDE_USER     0x004
 #define PDE_PWT      0x008
 #define PDE_PCD      0x010
 #define PDE_PS       0x080   /* 4 MB page */
@@ -24,7 +25,7 @@
  * (~5 MB) with margin, and is independent of the BIOS's VRAM report. */
 #define LFB_MAP_SIZE 0x1000000
 
-static unsigned int page_dir[1024] __attribute__((aligned(4096)));
+static unsigned int *page_dir;
 
 void paging_init(void)
 {
@@ -32,6 +33,13 @@ void paging_init(void)
 	const volatile struct vga_boot_fb_info *fb = VGA_BOOT_FB;
 	/* Opaque asm hides the fixed 0x600 pointer from -Warray-bounds. */
 	__asm__ volatile ("" : "+r"(fb));
+
+	page_dir = (unsigned int *)mm_alloc_page();
+	if (!page_dir) {
+		serial_puts(SERIAL_COM1, "paging: out of memory\n");
+		for (;;)
+			__asm__ volatile ("cli; hlt");
+	}
 
 	/* Identity-map RAM [0, MM_MAX_PHYS) with 4 MB pages (write-back). */
 	for (i = 0; i < MM_MAX_PHYS / 0x400000; i++)
@@ -60,8 +68,50 @@ void paging_init(void)
 		"jmp  1f\n\t"
 		"1:\n\t"
 		:
-		: "r"((unsigned int)&page_dir[0])
+		: "r"((unsigned int)page_dir)
 		: "eax", "memory");
 
 	serial_puts(SERIAL_COM1, "paging: enabled (identity map)\n");
+}
+
+unsigned int paging_current_cr3(void)
+{
+	return (unsigned int)page_dir;
+}
+
+unsigned int paging_new_directory(void)
+{
+	unsigned int *pd = (unsigned int *)mm_alloc_page();
+	unsigned int i;
+
+	if (!pd)
+		return 0;
+	for (i = 0; i < 1024; i++)
+		pd[i] = page_dir[i];
+	return (unsigned int)pd;
+}
+
+int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
+		    unsigned int flags)
+{
+	unsigned int *pd = (unsigned int *)cr3;
+	unsigned int pde = va >> 22;
+	unsigned int pte = (va >> 12) & 0x3FF;
+	unsigned int *pt;
+
+	if (!(pd[pde] & PDE_PRESENT)) {
+		unsigned int pt_phys = mm_alloc_page();
+		unsigned int i;
+		if (!pt_phys)
+			return 0;
+		pt = (unsigned int *)pt_phys;
+		for (i = 0; i < 1024; i++)
+			pt[i] = 0;
+		pd[pde] = pt_phys | PDE_USER | PDE_WRITABLE | PDE_PRESENT;
+	} else {
+		pt = (unsigned int *)(pd[pde] & 0xFFFFF000);
+	}
+
+	pt[pte] = (phys & 0xFFFFF000) | flags;
+	return 1;
 }

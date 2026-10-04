@@ -28,7 +28,14 @@ struct process {
 	char         name[PROC_NAME_LEN];
 	struct text_screen *screen;  /* output target for io_putchar & co. */
 	unsigned int stack_base;     /* page to free on exit, or 0 (bootstrap/fallback) */
+	unsigned int cr3;            /* physical address of this process's page dir */
+	unsigned int kstack_top;     /* ring-0 stack top (for TSS esp0) */
 };
+
+/* User-mode virtual address layout (ring-3 processes). */
+#define USER_BASE        0x40000000   /* user program link/load address */
+#define USER_STACK_TOP   0x40200000   /* user stack top (grows down) */
+#define USER_STACK_PAGES 2            /* user stack size in 4 KB pages */
 
 /* Dynamically-sized process table (grown on demand; see process.c). */
 extern struct process *procs;
@@ -39,6 +46,9 @@ int  process_create(const char *name, void (*entry)(void));
 int  process_create_arg(const char *name, void (*entry)(const char *),
 			const char *arg);
 int  process_create_ptr(const char *name, void (*entry)(void *), void *arg);
+/* Load an ELF image into a fresh address space and run it as a ring-3
+ * process.  Returns the pid, or -1 on error. */
+int  process_create_user(const char *name, const void *image, unsigned int size);
 void process_set_screen(struct text_screen *screen);
 void process_exit(void);
 void schedule(void);

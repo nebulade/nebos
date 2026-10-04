@@ -1,10 +1,12 @@
 /* Process management: create, exit, round-robin schedule, ps, kill. */
 
 #include "process.h"
+#include "elf.h"
 #include "idle.h"
 #include "io.h"
 #include "kmalloc.h"
 #include "mm.h"
+#include "paging.h"
 #include "serial.h"
 
 struct process *procs;               /* dynamically-sized process table */
@@ -114,6 +116,8 @@ void process_init(void)
 	procs[0].esp        = 0;
 	procs[0].screen     = (void *)0;
 	procs[0].stack_base = 0;  /* bootstrap stack, never freed */
+	procs[0].cr3        = paging_current_cr3();
+	procs[0].kstack_top = 0x30800;  /* bootstrap stack top */
 	name_copy(procs[0].name, "wm");
 	current_pid = 0;
 }
@@ -139,7 +143,7 @@ static int setup_process(const char *name, unsigned int entry,
 			 int has_arg, const char *arg)
 {
 	int slot, owned;
-	unsigned int base, top, *sp, arg_ptr = 0;
+	unsigned int base, top, *sp, arg_ptr = 0, cr3;
 	unsigned int flags;
 
 	flags = irq_save_disable();
@@ -150,8 +154,15 @@ static int setup_process(const char *name, unsigned int entry,
 		return -1;
 	}
 
+	cr3 = paging_new_directory();
+	if (!cr3) {
+		irq_restore(flags);
+		return -1;
+	}
+
 	base = stack_alloc(&owned);
 	if (!base) {
+		mm_free_page(cr3);
 		irq_restore(flags);
 		return -1;
 	}
@@ -193,6 +204,8 @@ static int setup_process(const char *name, unsigned int entry,
 	procs[slot].state      = PROC_READY;
 	procs[slot].pid        = next_pid_counter++;
 	procs[slot].stack_base = owned ? base : 0;
+	procs[slot].cr3        = cr3;
+	procs[slot].kstack_top = top;
 	name_copy(procs[slot].name, name);
 	/* Child inherits the parent's output screen (command output lands in the
 	   terminal that spawned it). */
@@ -217,7 +230,7 @@ int process_create_arg(const char *name, void (*entry)(const char *),
 int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 {
 	int slot, owned;
-	unsigned int base, top, *sp;
+	unsigned int base, top, *sp, cr3;
 	unsigned int flags;
 
 	flags = irq_save_disable();
@@ -228,8 +241,15 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 		return -1;
 	}
 
+	cr3 = paging_new_directory();
+	if (!cr3) {
+		irq_restore(flags);
+		return -1;
+	}
+
 	base = stack_alloc(&owned);
 	if (!base) {
+		mm_free_page(cr3);
 		irq_restore(flags);
 		return -1;
 	}
@@ -248,6 +268,81 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 	procs[slot].state      = PROC_READY;
 	procs[slot].pid        = next_pid_counter++;
 	procs[slot].stack_base = owned ? base : 0;
+	procs[slot].cr3        = cr3;
+	procs[slot].kstack_top = top;
+	name_copy(procs[slot].name, name);
+	procs[slot].screen = procs[current_pid].screen;
+
+	irq_restore(flags);
+	return (int)procs[slot].pid;
+}
+
+/* Load an ELF image into a fresh address space and run it as a ring-3 process. */
+int process_create_user(const char *name, const void *image, unsigned int size)
+{
+	int slot, owned;
+	unsigned int base, top, *sp, cr3, entry;
+	unsigned int flags;
+	int i;
+
+	flags = irq_save_disable();
+
+	slot = alloc_slot();
+	if (slot < 0) {
+		irq_restore(flags);
+		return -1;
+	}
+
+	cr3 = paging_new_directory();
+	if (!cr3) {
+		irq_restore(flags);
+		return -1;
+	}
+
+	entry = elf_load(cr3, image, size);
+	if (!entry) {
+		mm_free_page(cr3);
+		irq_restore(flags);
+		return -1;
+	}
+
+	/* Map the user stack just below USER_STACK_TOP. */
+	for (i = 0; i < USER_STACK_PAGES; i++) {
+		unsigned int phys = mm_alloc_page();
+		unsigned int va = USER_STACK_TOP - (unsigned int)(i + 1) * 0x1000;
+		if (!phys ||
+		    !paging_map_page(cr3, va, phys,
+				     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
+			mm_free_page(cr3);
+			irq_restore(flags);
+			return -1;
+		}
+	}
+
+	base = stack_alloc(&owned);
+	if (!base) {
+		mm_free_page(cr3);
+		irq_restore(flags);
+		return -1;
+	}
+	top = base + PROC_STACK_SIZE;
+	sp = (unsigned int *)top;
+
+	/* Initial frame so that popa + iret drops us into ring-3 at `entry`. */
+	*--sp = 0x23;                 /* SS: user data */
+	*--sp = USER_STACK_TOP;       /* ESP: user stack */
+	*--sp = 0x202;                /* EFLAGS: IF=1 */
+	*--sp = 0x1B;                 /* CS: user code */
+	*--sp = entry;                /* EIP */
+	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* EAX ECX EDX EBX */
+	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* ESP EBP ESI EDI */
+
+	procs[slot].esp        = (unsigned int)sp;
+	procs[slot].state      = PROC_READY;
+	procs[slot].pid        = next_pid_counter++;
+	procs[slot].stack_base = owned ? base : 0;
+	procs[slot].cr3        = cr3;
+	procs[slot].kstack_top = top;
 	name_copy(procs[slot].name, name);
 	procs[slot].screen = procs[current_pid].screen;
 
@@ -285,7 +380,10 @@ void schedule(void)
 		if (procs[i].state == PROC_DEAD && i != current_pid) {
 			if (procs[i].stack_base)
 				mm_free_page(procs[i].stack_base);
+			if (procs[i].cr3 && procs[i].cr3 != paging_current_cr3())
+				mm_free_page(procs[i].cr3);
 			procs[i].stack_base = 0;
+			procs[i].cr3 = 0;
 			procs[i].state = PROC_UNUSED;
 		}
 	}

@@ -9,7 +9,8 @@
 #include "terminal.h"
 #include "timer.h"
 
-extern void program_hello_main(void);
+extern unsigned char _binary_hello_elf_start[];
+extern unsigned char _binary_hello_elf_end[];
 extern void program_reboot_main(void);
 extern void program_poweroff_main(void);
 extern void program_ls_main(const char *path);
@@ -968,7 +969,14 @@ void term_run(struct term *t)
 					history_push(t, t->line, t->line_len);
 					t->history_browse = 0;
 					if (is_cmd_hello(t->line, t->line_len)) {
-						term_spawn(t, "hello", program_hello_main);
+						int pid = process_create_user("hello",
+							_binary_hello_elf_start,
+							(unsigned int)(_binary_hello_elf_end -
+								_binary_hello_elf_start));
+						if (pid < 0)
+							io_putstr("error: too many processes\n");
+						else
+							t->fg_pid = pid;
 					} else if (is_cmd_reboot(t->line, t->line_len)) {
 						program_reboot_main();
 					} else if (is_cmd_poweroff(t->line, t->line_len)) {
