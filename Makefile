@@ -89,10 +89,10 @@ vga.o: vga.c vga.h pci.h gpu.h ati.h
 vga_copy.o: vga_copy.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-gpu.o: gpu.c gpu.h pci.h ati.h nvidia.h
+gpu.o: gpu.c gpu.h pci.h ati.h cirrus.h nvidia.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ati.o: ati.c ati.h pci.h
+ati.o: ati.c ati.h pci.h radeon.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 cirrus.o: cirrus.c cirrus.h pci.h vga.h
@@ -101,13 +101,19 @@ cirrus.o: cirrus.c cirrus.h pci.h vga.h
 nvidia.o: nvidia.c nvidia.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+radeon.o: radeon.c radeon.h pci.h paging.h serial.h vga.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+mtrr.o: mtrr.c mtrr.h serial.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 clock.o: clock.c io.h rtc.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 colors.o: colors.c fbtext.h io.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-display.o: display.c io.h vga.h gpu.h ati.h fbtext.h
+display.o: display.c io.h vga.h gpu.h ati.h radeon.h fbtext.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 cpuinfo.o: cpuinfo.c io.h timer.h
@@ -155,7 +161,7 @@ fatformat.o: fatformat.c fatformat.h blkdev.h
 format.o: format.c blkdev.h disk.h fatformat.h io.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-mouse.o: mouse.c mouse.h timer.h vga.h
+mouse.o: mouse.c mouse.h cirrus.h radeon.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 idle.o: idle.c idle.h
@@ -206,7 +212,7 @@ mm.o: mm.c mm.h
 kmalloc.o: kmalloc.c kmalloc.h mm.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-paging.o: paging.c paging.h mm.h vga.h serial.h
+paging.o: paging.c paging.h mm.h mtrr.h vga.h serial.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 elf.o: elf.c elf.h mm.h paging.h
@@ -224,7 +230,7 @@ syscall_stub.o: syscall_stub.S
 mem.o: mem.c mm.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o ne2000.o netcmd.o net.o hello_embed.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o ne2000.o netcmd.o net.o hello_embed.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -380,4 +386,4 @@ dev: kernel.bin kexec_send
 	./kexec_send $(SERIAL_DEV) $(SERIAL_BAUD) $$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o ne2000.o netcmd.o net.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o ne2000.o netcmd.o net.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send

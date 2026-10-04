@@ -25,12 +25,6 @@ static int drag_window;      /* index into windows[] */
 static int drag_dx, drag_dy; /* mouse offset from window origin */
 static unsigned int prev_buttons;
 
-/* Drag damage: accumulated y-band of the moving window, flushed as a region. */
-static int drag_render_needed;
-static int drag_band_valid;
-static unsigned int drag_band_y0, drag_band_y1;
-static unsigned int last_drag_render;
-
 void wm_request_redraw(void)
 {
 	wm_full_redraw = 1;
@@ -202,24 +196,6 @@ static void wm_clamp_window(struct window *w, int nx, int ny)
 	w->y = (unsigned int)ny;
 }
 
-/* Grow the drag's accumulated dirty band to cover the window's old+new rects.
-   Only the y-range matters: the flush copies whole rows. */
-static void wm_drag_accumulate(unsigned int oy, unsigned int ny, unsigned int ph)
-{
-	unsigned int y0 = (oy < ny) ? oy : ny;
-	unsigned int y1 = ((oy > ny) ? oy : ny) + ph;
-	if (!drag_band_valid) {
-		drag_band_y0 = y0;
-		drag_band_y1 = y1;
-		drag_band_valid = 1;
-	} else {
-		if (y0 < drag_band_y0)
-			drag_band_y0 = y0;
-		if (y1 > drag_band_y1)
-			drag_band_y1 = y1;
-	}
-}
-
 /* Byte copy that handles overlapping source/destination. */
 static void wm_memmove(unsigned char *dst, const unsigned char *src, unsigned int n)
 {
@@ -304,15 +280,18 @@ static void wm_redraw_sliver(unsigned int x, unsigned int y, unsigned int w, uns
 	}
 }
 
-/* Cirrus fast drag: move the window with the BitBLT, restore the exposed
-   sliver, and mirror both in the RAM shadow buffer. No full recomposite. */
-static void wm_drag_fast(struct window *w, unsigned int ox, unsigned int oy,
-			 unsigned int nx, unsigned int ny)
+/* Move a window in the shadow buffer: copy its rect, redraw the exposed
+   sliver, keep the cursor on top, and mark the swept rows dirty.  Does not
+   touch VRAM; the 30 Hz flush copies the affected rows. */
+static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
+			   unsigned int nx, unsigned int ny)
 {
 	int dx = (int)nx - (int)ox;
 	int dy = (int)ny - (int)oy;
+	unsigned int y0 = (oy < ny) ? oy : ny;
+	unsigned int y1 = ((oy > ny) ? oy : ny) + w->ph;
 
-	cirrus_blit(ox, oy, nx, ny, w->pw, w->ph);
+	mouse_cursor_erase();
 	wm_shadow_copy(ox, oy, nx, ny, w->pw, w->ph);
 
 	if (dy > 0)
@@ -324,6 +303,18 @@ static void wm_drag_fast(struct window *w, unsigned int ox, unsigned int oy,
 	else if (dx < 0)
 		wm_redraw_sliver(nx + w->pw, oy, (unsigned int)(-dx), w->ph);
 
+	/* Mark the swept band so the flush copies the moved window + sliver. */
+	vga_fb_mark_dirty_rect(y0, y1 - y0);
+	mouse_redraw_cursor();
+}
+
+/* Cirrus fast drag: also move the window in VRAM with the BitBLT engine, then
+   mirror in the shadow buffer and flush immediately. */
+static void wm_drag_fast(struct window *w, unsigned int ox, unsigned int oy,
+			 unsigned int nx, unsigned int ny)
+{
+	cirrus_blit(ox, oy, nx, ny, w->pw, w->ph);
+	wm_drag_shadow(w, ox, oy, nx, ny);
 	vga_fb_flush();
 }
 
@@ -355,8 +346,6 @@ static void wm_handle_mouse(void)
 					drag_window = idx;
 					drag_dx = (int)mx - (int)w->x;
 					drag_dy = (int)my - (int)w->y;
-					drag_band_valid = 0;
-					drag_render_needed = 0;
 				}
 			}
 		}
@@ -368,10 +357,8 @@ static void wm_handle_mouse(void)
 			if (ox != w->x || oy != w->y) {
 				if (cirrus_available())
 					wm_drag_fast(w, ox, oy, w->x, w->y);
-				else {
-					wm_drag_accumulate(oy, w->y, w->ph);
-					drag_render_needed = 1;
-				}
+				else
+					wm_drag_shadow(w, ox, oy, w->x, w->y);
 			}
 		} else {
 			drag_active = 0;
@@ -530,27 +517,6 @@ static void wm_redraw_if_needed(void)
 			if (windows[i].used)
 				windows[i].term->screen.dirty = 0;
 		wm_full_redraw = 0;
-		drag_render_needed = 0;
-		drag_band_valid = 0;
-		last_sec = now_sec;
-		return;
-	}
-
-	/* Drag: redraw the full scene into the shadow buffer, but flush only the
-	   accumulated y-band (the window's swept region) to VRAM. Throttled to the
-	   flush rate so rapid mouse moves coalesce. */
-	if (drag_render_needed && (now_ms - last_drag_render >= 33)) {
-		last_drag_render = now_ms;
-		wm_render_full();
-		vga_fb_clear_dirty();
-		if (drag_band_valid)
-			vga_fb_mark_dirty_rect(drag_band_y0, drag_band_y1 - drag_band_y0);
-		if (clock_changed)
-			vga_fb_mark_dirty_rect(0, WM_BAR_H);
-		for (i = 0; i < MAX_WINDOWS; i++)
-			if (windows[i].used)
-				windows[i].term->screen.dirty = 0;
-		drag_render_needed = 0;
 		last_sec = now_sec;
 		return;
 	}

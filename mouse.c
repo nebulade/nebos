@@ -1,5 +1,6 @@
 #include "mouse.h"
 #include "cirrus.h"
+#include "radeon.h"
 #include "timer.h"
 #include "vga.h"
 
@@ -45,7 +46,7 @@ static unsigned int mouse_id;
 static int mouse_cursor_flag;
 static unsigned int mouse_pkt_size;
 static unsigned int mouse_buttons;  /* bit0=left bit1=right bit2=middle */
-static int mouse_hw_cursor;         /* 1 = Cirrus hardware cursor in use */
+static int mouse_hw_cursor;         /* 1 = Cirrus, 2 = Radeon hardware cursor */
 
 static unsigned int fbw, fbh;
 static unsigned int cur_x, cur_y;
@@ -184,6 +185,17 @@ static void mouse_cursor_setup(void)
 		return;
 	}
 
+	/* Radeon (R200/RV280) hardware cursor. */
+	if (radeon_available()) {
+		mouse_hw_cursor = 2;
+		cur_x = 100;
+		cur_y = 100;
+		radeon_cursor_setup();
+		radeon_cursor_move(cur_x, cur_y);
+		mouse_cursor_flag = 1;
+		return;
+	}
+
 	mouse_hw_cursor = 0;
 	cur_x = 100;
 	cur_y = 100;
@@ -286,7 +298,10 @@ void mouse_poll_update(void)
 				if (mouse_hw_cursor) {
 					cur_x = (unsigned int)nx;
 					cur_y = (unsigned int)ny;
-					cirrus_cursor_move(cur_x, cur_y);
+					if (mouse_hw_cursor == 2)
+						radeon_cursor_move(cur_x, cur_y);
+					else
+						cirrus_cursor_move(cur_x, cur_y);
 				} else {
 					vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
 						cur_saved);

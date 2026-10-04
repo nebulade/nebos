@@ -21,4 +21,9 @@ unsigned int paging_new_directory(void);
 int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
 		    unsigned int flags);
 
+/* Identity-map an MMIO range (e.g. a GPU register aperture) uncacheable into
+ * the current page directory.  Uses 4 MB pages; the range is rounded up to a
+ * whole number of 4 MB pages. */
+void paging_map_mmio(unsigned int phys_base, unsigned int size);
+
 #endif

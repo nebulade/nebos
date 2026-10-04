@@ -14,7 +14,7 @@
 #define PCI_VENDOR_INTEL    0x8086
 #define PCI_VENDOR_CIRRUS   0x1013
 
-void gpu_init(void);
+void gpu_init(unsigned int lfb_base);
 int gpu_vendor(void);
 unsigned int gpu_pci_id(void);
 const char *gpu_vendor_name(void);

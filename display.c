@@ -4,6 +4,7 @@
 #include "vga.h"
 #include "gpu.h"
 #include "ati.h"
+#include "radeon.h"
 #include "fbtext.h"
 
 static void put_uint(unsigned int n)
@@ -94,6 +95,11 @@ void program_display_main(void)
 				io_putstr("LFB+4M");
 			else if (method == 4)
 				io_putstr("IO");
+			io_putchar('\n');
+		} else if (ati_is_radeon()) {
+			io_putstr("ATI Radeon (R200/RV280)");
+			if (radeon_available())
+				io_putstr(" hardware cursor");
 			io_putchar('\n');
 		}
 	}

@@ -10,6 +10,7 @@
 
 #include "paging.h"
 #include "mm.h"
+#include "mtrr.h"
 #include "serial.h"
 #include "vga.h"
 
@@ -60,6 +61,8 @@ void paging_init(void)
 		for (i = p0; i < p1 && i < 1024; i++)
 			page_dir[i] = (i << 22) | PDE_PS | PDE_PCD |
 				      PDE_WRITABLE | PDE_PRESENT;
+		/* Mark the framebuffer write-combining so VRAM writes batch. */
+		mtrr_set_wc(base, LFB_MAP_SIZE);
 	}
 
 	/* Load CR3, enable PSE, then PG + WP.  The jump flushes the prefetch
@@ -121,4 +124,15 @@ int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
 
 	pt[pte] = (phys & 0xFFFFF000) | flags;
 	return 1;
+}
+
+void paging_map_mmio(unsigned int phys_base, unsigned int size)
+{
+	unsigned int p0 = phys_base >> 22;
+	unsigned int p1 = (phys_base + size + 0x3FFFFFu) >> 22;
+	unsigned int i;
+
+	for (i = p0; i < p1 && i < 1024; i++)
+		page_dir[i] = (i << 22) | PDE_PS | PDE_PCD |
+			      PDE_WRITABLE | PDE_PRESENT;
 }
