@@ -44,6 +44,7 @@ static const unsigned char scancode_to_ascii[256] __attribute__((section(".rodat
 };
 
 static int shift_pressed;
+static int ctrl_pressed;
 static unsigned char last_scancode;
 static int kbd_extended;  /* 1 after 0xE0, next byte is extended scancode */
 
@@ -196,17 +197,29 @@ static int kbd_process_byte(unsigned char sc)
 	}
 	if (sc & 0x80) {
 		if (sc == 0xAA || sc == 0xB6) shift_pressed = 0;
+		if (sc == 0x9D) ctrl_pressed = 0;
 		return 0;
 	}
 	if (sc == 0x2A || sc == 0x36) {
 		shift_pressed = 1;
 		return 0;
 	}
+	if (sc == 0x1D) {
+		ctrl_pressed = 1;
+		return 0;
+	}
 	{
 		char c = (char)scancode_to_ascii[sc];
 		if (c) {
 			last_scancode = sc;
-			return (unsigned char)apply_shift(c);
+			c = apply_shift(c);
+			if (ctrl_pressed) {
+				/* Ctrl+letter -> control character (e.g. Ctrl+C -> 0x03). */
+				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
+					return (unsigned char)(c & 0x1F);
+				return 0;
+			}
+			return (unsigned char)c;
 		}
 	}
 	return 0;

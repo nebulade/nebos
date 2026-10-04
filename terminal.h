@@ -20,6 +20,7 @@ struct term {
 	unsigned int line_pos;
 	unsigned int line_start;
 	unsigned int history_browse;
+	int fg_pid;                 /* foreground child pid, or -1 when none */
 	char cwd[VFS_PATH_MAX];     /* absolute current working directory */
 	/* Per-terminal key queue: WM (slot 0) pushes, terminal process pops. */
 	int keys[KEY_BUF_SIZE];

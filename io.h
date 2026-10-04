@@ -29,10 +29,11 @@ void io_vga_write(unsigned int pos, unsigned short value);
 void io_drain_keyboard(void);
 
 /* Poll keyboard; returns 0 = no key, 1..255 = ASCII, or IO_KEY_LEFT/IO_KEY_RIGHT/IO_KEY_UP/IO_KEY_DOWN. */
-#define IO_KEY_LEFT  0x100
-#define IO_KEY_RIGHT 0x101
-#define IO_KEY_UP    0x102
-#define IO_KEY_DOWN  0x103
+#define IO_KEY_CTRL_C 0x03  /* Ctrl+C (ASCII ETX), kills the foreground job */
+#define IO_KEY_LEFT   0x100
+#define IO_KEY_RIGHT  0x101
+#define IO_KEY_UP     0x102
+#define IO_KEY_DOWN   0x103
 int io_poll_key(void);
 /* Same as io_poll_key but also reads port 0x60 when buffer empty (for full-screen programs). */
 int io_poll_key_with_hw(void);

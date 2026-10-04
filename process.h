@@ -38,6 +38,7 @@ void process_exit(void);
 void schedule(void);
 void process_ps(void);
 int  process_kill(unsigned int pid);
+int  process_is_alive(unsigned int pid);
 void process_wait(unsigned int pid);
 
 #endif

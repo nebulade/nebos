@@ -253,21 +253,23 @@ int process_kill(unsigned int pid)
 	return -1;
 }
 
+/* Return 1 if a process with `pid` is still runnable (READY/RUNNING). */
+int process_is_alive(unsigned int pid)
+{
+	unsigned int i;
+	for (i = 0; i < MAX_PROCS; i++)
+		if (procs[i].pid == pid &&
+		    (procs[i].state == PROC_READY ||
+		     procs[i].state == PROC_RUNNING))
+			return 1;
+	return 0;
+}
+
 /* Wait (yield) until the process with `pid` has exited.  The scheduler
  * preempts us every timeslice so the child runs and process_exit() reaps
  * it to PROC_UNUSED. */
 void process_wait(unsigned int pid)
 {
-	unsigned int i;
-	for (;;) {
-		int alive = 0;
-		for (i = 0; i < MAX_PROCS; i++)
-			if (procs[i].pid == pid &&
-			    (procs[i].state == PROC_READY ||
-			     procs[i].state == PROC_RUNNING))
-				alive = 1;
-		if (!alive)
-			return;
+	while (process_is_alive(pid))
 		cpu_idle();
-	}
 }
