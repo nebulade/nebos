@@ -30,6 +30,10 @@ extern void program_run_serial_main(const char *arg);
 extern void program_lsusb_main(void);
 extern void program_storage_main(void);
 extern void program_format_main(const char *arg);
+extern void program_lspci_main(void);
+extern void program_netinfo_main(void);
+extern void program_netrecv_main(void);
+extern void program_netsend_main(void);
 
 /* Print the prompt (with the current directory) and set line_start. */
 static void term_print_prompt(struct term *t, int first)
@@ -234,6 +238,73 @@ static int is_cmd_lsusb(const char *line, unsigned int line_len)
 	    line[i+3] != 's' || line[i+4] != 'b')
 		return 0;
 	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_lspci(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 'l' || line[i+1] != 's' || line[i+2] != 'p' ||
+	    line[i+3] != 'c' || line[i+4] != 'i')
+		return 0;
+	i += 5;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netinfo(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'i' || line[i+4] != 'n' || line[i+5] != 'f' ||
+	    line[i+6] != 'o')
+		return 0;
+	i += 7;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netrecv(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'r' || line[i+4] != 'e' || line[i+5] != 'c' ||
+	    line[i+6] != 'v')
+		return 0;
+	i += 7;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netsend(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 's' || line[i+4] != 'e' || line[i+5] != 'n' ||
+	    line[i+6] != 'd')
+		return 0;
+	i += 7;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -824,6 +895,14 @@ void term_run(struct term *t)
 						}
 					} else if (is_cmd_lsusb(t->line, t->line_len)) {
 						term_spawn("lsusb", program_lsusb_main);
+					} else if (is_cmd_lspci(t->line, t->line_len)) {
+						term_spawn("lspci", program_lspci_main);
+					} else if (is_cmd_netinfo(t->line, t->line_len)) {
+						term_spawn("netinfo", program_netinfo_main);
+					} else if (is_cmd_netrecv(t->line, t->line_len)) {
+						term_spawn("netrecv", program_netrecv_main);
+					} else if (is_cmd_netsend(t->line, t->line_len)) {
+						term_spawn("netsend", program_netsend_main);
 					} else if (is_cmd_storage(t->line, t->line_len)) {
 						term_spawn("storage", program_storage_main);
 					} else if (is_cmd_clock(t->line, t->line_len)) {
@@ -917,6 +996,10 @@ void term_run(struct term *t)
 						io_putstr("mouseinfo\n");
 						io_putstr("storage\n");
 						io_putstr("format <device>\n");
+						io_putstr("lspci\n");
+						io_putstr("netinfo\n");
+						io_putstr("netrecv\n");
+						io_putstr("netsend\n");
 						io_putstr("ps\n");
 						io_putstr("kill <pid>\n");
 						io_putstr("kexec\n");
