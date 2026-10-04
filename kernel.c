@@ -50,9 +50,10 @@ unsigned int get_ticks_ms(void)
 	return ticks;
 }
 
-void exc_handler(unsigned int vector);
-void exc_handler(unsigned int vector)
+void exc_handler(unsigned int eip, unsigned int vector);
+void exc_handler(unsigned int eip, unsigned int vector)
 {
+	unsigned int cr2 = 0;
 	static const char * const names[] = {
 		"#DE Divide Error", "#DB Debug", "NMI", "#BP Breakpoint",
 		"#OF Overflow", "#BR Bound Range", "#UD Invalid Opcode",
@@ -62,6 +63,21 @@ void exc_handler(unsigned int vector)
 		"#MF FPU Error", "#AC Alignment Check", "#MC Machine Check",
 		"#XM SIMD Error",
 	};
+	__asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+	/* Print the fault to serial FIRST, using only minimal/no-stack code, so it
+	 * survives even if the screen buffer or kernel stack is the problem. */
+	serial_puts(SERIAL_COM1, "\n*** EXC vec ");
+	serial_puthex(SERIAL_COM1, vector);
+	serial_puts(SERIAL_COM1, " eip=");
+	serial_puthex(SERIAL_COM1, eip);
+	serial_puts(SERIAL_COM1, " cr2=");
+	serial_puthex(SERIAL_COM1, cr2);
+	serial_puts(SERIAL_COM1, " ");
+	if (vector < 20)
+		serial_puts(SERIAL_COM1, names[vector]);
+	serial_puts(SERIAL_COM1, " ***\n");
+
+	/* Then attempt the screen output (may fault if the screen is broken). */
 	io_putstr("\n*** EXCEPTION: ");
 	if (vector < 20)
 		io_putstr(names[vector]);
@@ -156,24 +172,19 @@ void kernel_main(void)
 	mm_dump();
 	kmalloc_init();
 	paging_init();
-	serial_puts(SERIAL_COM1, "dbg: paging done\n");
 	io_init();
-	serial_puts(SERIAL_COM1, "dbg: io done\n");
 	idle_init();
-	serial_puts(SERIAL_COM1, "dbg: idle done\n");
-	timer_init();
-	serial_puts(SERIAL_COM1, "dbg: timer done\n");
-	mouse_init();
-	serial_puts(SERIAL_COM1, "dbg: mouse done\n");
+
+	/* process_init + gdt_tss_init must run BEFORE timer_init: once the PIT is
+	 * started (sti in timer_init) the context-switch stub runs on every tick
+	 * and reads procs[].cr3 / procs[].kstack_top / the TSS, so those have to be
+	 * valid first (otherwise the first switch loads a garbage CR3 and faults). */
 	process_init();
-	serial_puts(SERIAL_COM1, "dbg: process done\n");
 	gdt_tss_init();
-	serial_puts(SERIAL_COM1, "dbg: gdt_tss done\n");
+	timer_init();
+	mouse_init();
 	vga_shadow_init();
-	serial_puts(SERIAL_COM1, "dbg: vga_shadow done\n");
 	vga_fb_flush();
-	serial_puts(SERIAL_COM1, "dbg: fb_flush done\n");
 	vfs_mount_all();
-	serial_puts(SERIAL_COM1, "dbg: vfs done\n");
 	wm_run();
 }

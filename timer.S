@@ -6,6 +6,13 @@
 .globl kbd_irq_stub
 kbd_irq_stub:
 	pusha
+	/* Reload the kernel data segment: this IRQ can fire while a ring-3
+	 * process runs, in which case DS is null (IRET reset it). */
+	movw  $0x10, %ax
+	movw  %ax, %ds
+	movw  %ax, %es
+	movw  %ax, %fs
+	movw  %ax, %gs
 	call  kbd_irq
 	popa
 	iret
@@ -13,6 +20,11 @@ kbd_irq_stub:
 .globl fdc_irq_stub
 fdc_irq_stub:
 	pusha
+	movw  $0x10, %ax
+	movw  %ax, %ds
+	movw  %ax, %es
+	movw  %ax, %fs
+	movw  %ax, %gs
 	call  fdc_irq
 	popa
 	iret
@@ -77,7 +89,20 @@ exc_no_err 30
 exc_no_err 31
 
 exc_common:
-	call  exc_handler
+	/* Load the kernel data segment: exceptions only switch CS, and DS may be
+	 * null (IRET reset it to null when returning to ring-3), which would make
+	 * the C handler's string/data accesses fault. */
+	pushl %eax
+	movw  $0x10, %ax
+	movw  %ax, %ds
+	movw  %ax, %es
+	movw  %ax, %fs
+	movw  %ax, %gs
+	popl  %eax
+
+	pushl 4(%esp)      /* faulting EIP -> 1st arg */
+	call  exc_handler  /* exc_handler(eip, vector) */
+	addl  $4, %esp
 	cli
 1:	hlt
 	jmp   1b

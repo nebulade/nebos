@@ -12,10 +12,6 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 	(void)a2;
 	(void)a3;
 
-	serial_puts(SERIAL_COM1, "syscall ");
-	serial_putdec(SERIAL_COM1, (unsigned int)num);
-	serial_puts(SERIAL_COM1, "\n");
-
 	switch (num) {
 	case SYS_PUTSTR:
 		io_putstr((const char *)a1);
@@ -25,6 +21,7 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 	case SYS_SLEEP_MS: {
 		unsigned int start = get_ticks_ms();
 		unsigned int ms = (unsigned int)a1;
+		__asm__ volatile ("sti");  /* re-enable IRQs so hlt wakes on the PIT */
 		while (get_ticks_ms() - start < ms)
 			cpu_idle();
 		return 0;

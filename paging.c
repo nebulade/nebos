@@ -41,6 +41,13 @@ void paging_init(void)
 			__asm__ volatile ("cli; hlt");
 	}
 
+	/* Zero the whole page directory.  mm_alloc_page does NOT clear memory, so
+	 * on real hardware the high PDEs (indices 32..1023, incl. the user region
+	 * at 0x100) would otherwise be garbage.  QEMU zeroes guest RAM, which is
+	 * why this only bites on real silicon. */
+	for (i = 0; i < 1024; i++)
+		page_dir[i] = 0;
+
 	/* Identity-map RAM [0, MM_MAX_PHYS) with 4 MB pages (write-back). */
 	for (i = 0; i < MM_MAX_PHYS / 0x400000; i++)
 		page_dir[i] = (i << 22) | PDE_PS | PDE_WRITABLE | PDE_PRESENT;

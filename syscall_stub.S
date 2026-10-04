@@ -8,7 +8,25 @@
 
 .globl syscall_stub
 syscall_stub:
+	/* Disable interrupts for the duration of the syscall: the trap gate keeps
+	 * IF=1, so otherwise the PIT could fire and the context switch would switch
+	 * the stack out from under us mid-syscall.  Blocking syscalls (sleep/exit)
+	 * re-enable interrupts themselves. */
+	cli
+
+	/* Load the kernel data segment into DS/ES/FS/GS.  int 0x80 only switches
+	 * CS and SS; IRET reset DS (etc.) to null when it returned to ring-3, so
+	 * DS is null here and the C dispatcher's data accesses would #GP. */
+	pushl %eax
+	movw  $0x10, %ax
+	movw  %ax, %ds
+	movw  %ax, %es
+	movw  %ax, %fs
+	movw  %ax, %gs
+	popl  %eax
+
 	pusha
+
 	pushl %edx
 	pushl %ecx
 	pushl %ebx

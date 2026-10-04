@@ -36,6 +36,16 @@
 pit_irq_stub:
 	pusha
 
+	/* Load the kernel data segment.  The PIT can fire while a ring-3 process
+	 * is running, and in that case the CPU has switched CS/SS but left DS
+	 * null (IRET reset it when it returned to ring-3); the data accesses
+	 * below (ticks, counters, procs, tss) go through DS and would #GP. */
+	movw  $0x10, %ax
+	movw  %ax, %ds
+	movw  %ax, %es
+	movw  %ax, %fs
+	movw  %ax, %gs
+
 	/* ticks++ and send EOI -- always, even when we don't switch. */
 	incl  ticks
 	movb  $0x20, %al

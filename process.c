@@ -327,8 +327,6 @@ int process_create_user(const char *name, const void *image, unsigned int size)
 	}
 	top = base + PROC_STACK_SIZE;
 	sp = (unsigned int *)top;
-
-	/* Initial frame so that popa + iret drops us into ring-3 at `entry`. */
 	*--sp = 0x23;                 /* SS: user data */
 	*--sp = USER_STACK_TOP;       /* ESP: user stack */
 	*--sp = 0x202;                /* EFLAGS: IF=1 */
@@ -360,6 +358,7 @@ void process_set_screen(struct text_screen *screen)
 void process_exit(void)
 {
 	procs[current_pid].state = PROC_DEAD;
+	__asm__ volatile ("sti");  /* re-enable IRQs so the PIT can switch us out */
 	for (;;)
 		__asm__ volatile ("hlt");
 }
