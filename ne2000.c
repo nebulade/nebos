@@ -45,6 +45,7 @@
 /* ISR bits. */
 #define ISR_PTX    0x02
 #define ISR_TXE    0x08
+#define ISR_OVW    0x10
 #define ISR_RST    0x80
 
 /* RCR bits. */
@@ -214,9 +215,15 @@ int ne2000_init(void)
 	nwrite(NE_ISR, 0xFF);
 	nwrite(NE_IMR, 0x00);
 
-	/* Page 1: set CURR to the first free page. */
+	/* Page 1: write the MAC to PAR0-5 (so unicast frames to us are
+	   accepted even if promiscuous mode is unreliable), then set CURR. */
 	nwrite(NE_CR, CR_NODMA | CR_START | CR_PAGE1);
-	nwrite(0x07, RX_START + 1);
+	{
+		unsigned int i;
+		for (i = 0; i < 6; i++)
+			nwrite((unsigned char)(NE_PSTART + i), mac[i]);
+	}
+	nwrite(0x07, RX_START + 1);   /* CURR = first free page */
 
 	/* Page 0, start the NIC. */
 	nwrite(NE_CR, CR_NODMA | CR_START);
@@ -253,6 +260,22 @@ int ne2000_rx(unsigned char *buf, unsigned int maxlen)
 
 		/* BNRY (page 0) and CURR (page 1). */
 		nwrite(NE_CR, CR_NODMA | CR_START);
+
+		/* Ring overflow: the card wrapped and clobbered unread frames,
+		   so the "next" pointers are unreliable. Discard the whole ring
+		   and start fresh, or we'd re-read stale frames (duplicates). */
+		if (nread(NE_ISR) & ISR_OVW) {
+			nwrite(NE_CR, CR_NODMA | CR_START | CR_PAGE1);
+			cur = nread(0x07);
+			nwrite(NE_CR, CR_NODMA | CR_START);
+			if (cur == RX_START)
+				nwrite(NE_BNRY, RX_STOP - 1);
+			else
+				nwrite(NE_BNRY, cur - 1);
+			nwrite(NE_ISR, ISR_OVW);
+			return -1;
+		}
+
 		bnry = nread(NE_BNRY);
 		nwrite(NE_CR, CR_NODMA | CR_START | CR_PAGE1);
 		cur = nread(0x07);
@@ -297,6 +320,9 @@ int ne2000_rx(unsigned char *buf, unsigned int maxlen)
 
 int ne2000_tx(const unsigned char *buf, unsigned int len)
 {
+	static unsigned char pad[60];
+	const unsigned char *p = buf;
+	unsigned int txlen = len;
 	unsigned int t0;
 	unsigned char isr, tsr;
 
@@ -305,14 +331,26 @@ int ne2000_tx(const unsigned char *buf, unsigned int len)
 	if (len < 14 || len > 1514)
 		return -1;
 
+	/* Pad to the 60-byte Ethernet minimum (the NIC does not auto-pad;
+	   a runt frame would be dropped by the switch/peer). */
+	if (len < 60) {
+		unsigned int i;
+		for (i = 0; i < len; i++)
+			pad[i] = buf[i];
+		for (i = len; i < 60; i++)
+			pad[i] = 0;
+		p = pad;
+		txlen = 60;
+	}
+
 	/* Copy the frame into on-card SRAM. */
-	remote_write((unsigned short)(TX_PAGE << 8), buf, (unsigned short)len);
+	remote_write((unsigned short)(TX_PAGE << 8), p, (unsigned short)txlen);
 
 	/* Program transmit page + byte count. */
 	nwrite(NE_CR, CR_NODMA | CR_START);
 	nwrite(NE_TPSR, TX_PAGE);
-	nwrite(NE_TBCR0, len & 0xFF);
-	nwrite(NE_TBCR1, (len >> 8) & 0xFF);
+	nwrite(NE_TBCR0, txlen & 0xFF);
+	nwrite(NE_TBCR1, (txlen >> 8) & 0xFF);
 
 	/* Clear TX status bits, then fire. */
 	nwrite(NE_ISR, ISR_PTX | ISR_TXE);

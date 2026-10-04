@@ -34,6 +34,8 @@ extern void program_lspci_main(void);
 extern void program_netinfo_main(void);
 extern void program_netrecv_main(void);
 extern void program_netsend_main(void);
+extern void program_netip_main(const char *arg);
+extern void program_ping_main(void);
 
 /* Print the prompt (with the current directory) and set line_start. */
 static void term_print_prompt(struct term *t, int first)
@@ -305,6 +307,49 @@ static int is_cmd_netsend(const char *line, unsigned int line_len)
 	    line[i+6] != 'd')
 		return 0;
 	i += 7;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netip(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 5 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'i' || line[i+4] != 'p')
+		return 0;
+	i += 5;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "netip" must be a whole word */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_ping(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 'p' || line[i+1] != 'i' || line[i+2] != 'n' || line[i+3] != 'g')
+		return 0;
+	i += 4;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -898,6 +943,7 @@ void term_run(struct term *t)
 					char rm_fname[RM_FNAME_MAX];
 					char ls_path[LS_PATH_MAX];
 					char format_dev[FORMAT_DEV_MAX];
+					char netip_arg[16];
 					char resolved[VFS_PATH_MAX];
 					char save_resolved[SAVE_ARGS_MAX + VFS_PATH_MAX];
 					unsigned int kill_pid;
@@ -929,6 +975,10 @@ void term_run(struct term *t)
 						term_spawn(t, "netrecv", program_netrecv_main);
 					} else if (is_cmd_netsend(t->line, t->line_len)) {
 						term_spawn(t, "netsend", program_netsend_main);
+					} else if (is_cmd_netip(t->line, t->line_len, netip_arg, sizeof(netip_arg))) {
+						term_spawn_arg(t, "netip", program_netip_main, netip_arg);
+					} else if (is_cmd_ping(t->line, t->line_len)) {
+						term_spawn(t, "ping", program_ping_main);
 					} else if (is_cmd_storage(t->line, t->line_len)) {
 						term_spawn(t, "storage", program_storage_main);
 					} else if (is_cmd_clock(t->line, t->line_len)) {
@@ -1026,6 +1076,8 @@ void term_run(struct term *t)
 						io_putstr("netinfo\n");
 						io_putstr("netrecv\n");
 						io_putstr("netsend\n");
+						io_putstr("netip [a.b.c.d]\n");
+						io_putstr("ping\n");
 						io_putstr("ps\n");
 						io_putstr("kill <pid>\n");
 						io_putstr("kexec\n");
