@@ -4,7 +4,7 @@
 
 #include "terminal.h"
 
-#define MAX_WINDOWS 8
+#define MAX_WINDOWS 4
 
 /* System bar (banner + "+ New" button + clock + rainbow) at the top. */
 #define WM_BAR_H 25
