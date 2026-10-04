@@ -4,8 +4,8 @@
 #include "io.h"
 #include "mouse.h"
 #include "process.h"
-#include "terminal.h"
 #include "timer.h"
+#include "wm.h"
 #include "serial.h"
 #include "version.h"
 #include "vga.h"
@@ -139,5 +139,5 @@ void kernel_main(void)
 	process_init();
 	vga_shadow_init();
 	vga_fb_flush();
-	terminal_run();
+	wm_run();
 }

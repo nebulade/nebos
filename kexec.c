@@ -32,6 +32,8 @@
 #define KEXEC_MAX   0x28200    /* max = kernel region 0x7E00..0x30000 */
 
 volatile int kexec_busy;
+volatile unsigned int kexec_progress;
+volatile unsigned int kexec_total;
 
 extern unsigned char kexec_trampoline[];
 extern unsigned char kexec_trampoline_end[];
@@ -107,12 +109,15 @@ static int kexec_recv(unsigned int *entry, unsigned int *size)
 	}
 	if (*size == 0 || *size > KEXEC_MAX)
 		return kexec_fail("kexec: bad size\n");
+	kexec_total = *size;
+	kexec_progress = 0;
 
 	for (n = 0; n < *size; n++) {
 		if (!serial_ring_wait(5000, &c))
 			return kexec_fail("kexec: timeout (data)\n");
 		dst[n] = c;
 		sum += c;
+		kexec_progress = n + 1;
 		if ((n & 0xFFF) == 0xFFF)
 			io_putchar('.');
 	}

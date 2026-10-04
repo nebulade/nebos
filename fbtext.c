@@ -22,7 +22,9 @@ static inline unsigned int row_to_y0(unsigned int row)
 }
 
 /* Draw one 8x8 glyph at pixel (x0, y0). height 8 = glyph only; 10 = glyph + 2 rows bg (terminal row).
-   skip_bg: 1 = only draw foreground (transparent background for overlays). */
+   skip_bg: 1 = only draw foreground (transparent background for overlays).
+   Writes directly into the shadow buffer (no per-pixel function call); the
+   caller is responsible for marking the affected rows dirty. */
 static void draw_glyph_at(unsigned int x0, unsigned int y0, unsigned char c,
 		unsigned int r_fg, unsigned int g_fg, unsigned int b_fg,
 		unsigned int r_bg, unsigned int g_bg, unsigned int b_bg,
@@ -30,16 +32,46 @@ static void draw_glyph_at(unsigned int x0, unsigned int y0, unsigned char c,
 {
 	unsigned int x, y;
 	const unsigned char *glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
+	unsigned char *fb = (unsigned char *)vga_fb_ptr();
+	unsigned int pitch = vga_fb_pitch();
+	unsigned int bpp = vga_fb_bpp();
+	unsigned int fg32 = (r_fg << 16) | (g_fg << 8) | b_fg;
+	unsigned int bg32 = (r_bg << 16) | (g_bg << 8) | b_bg;
+	unsigned short fg16 = (unsigned short)(((r_fg >> 3) << 11) | ((g_fg >> 2) << 5) | (b_fg >> 3));
+	unsigned short bg16 = (unsigned short)(((r_bg >> 3) << 11) | ((g_bg >> 2) << 5) | (b_bg >> 3));
 
 	for (y = 0; y < height; y++) {
 		unsigned char row_bits = (y < FONT_8X8_ROWS) ? glyph[y] : 0;
-		for (x = 0; x < 8; x++) {
-			unsigned int px = x0 + x;
-			unsigned int py = y0 + y;
-			if (row_bits & (0x80u >> x))
-				vga_put_pixel_rgb(px, py, r_fg, g_fg, b_fg);
-			else if (!skip_bg)
-				vga_put_pixel_rgb(px, py, r_bg, g_bg, b_bg);
+		unsigned int py = y0 + y;
+
+		if (bpp == 16) {
+			unsigned short *p = (unsigned short *)(fb + (unsigned long)py * pitch + x0 * 2);
+			for (x = 0; x < 8; x++) {
+				if (row_bits & (0x80u >> x))
+					*p = fg16;
+				else if (!skip_bg)
+					*p = bg16;
+				p++;
+			}
+		} else if (bpp == 24) {
+			unsigned char *p = fb + (unsigned long)py * pitch + x0 * 3;
+			for (x = 0; x < 8; x++) {
+				if (row_bits & (0x80u >> x)) {
+					p[0] = (unsigned char)b_fg; p[1] = (unsigned char)g_fg; p[2] = (unsigned char)r_fg;
+				} else if (!skip_bg) {
+					p[0] = (unsigned char)b_bg; p[1] = (unsigned char)g_bg; p[2] = (unsigned char)r_bg;
+				}
+				p += 3;
+			}
+		} else {
+			unsigned int *p = (unsigned int *)(fb + (unsigned long)py * pitch + x0 * 4);
+			for (x = 0; x < 8; x++) {
+				if (row_bits & (0x80u >> x))
+					*p = fg32;
+				else if (!skip_bg)
+					*p = bg32;
+				p++;
+			}
 		}
 	}
 }
@@ -120,6 +152,25 @@ void fbtext_put_char_at(unsigned int col, unsigned int row, unsigned char c, uns
 	if (col >= fbtext_cols || row >= fbtext_rows)
 		return;
 	draw_glyph(col, row, c, attr);
+}
+
+void fbtext_draw_cells(const unsigned short *cells, unsigned int cols, unsigned int rows,
+		unsigned int x0, unsigned int y0)
+{
+	unsigned int row, col;
+	for (row = 0; row < rows; row++) {
+		for (col = 0; col < cols; col++) {
+			unsigned short cell = cells[row * cols + col];
+			unsigned char c = (unsigned char)(cell & 0xFF);
+			unsigned char attr = (unsigned char)(cell >> 8);
+			unsigned int rf, gf, bf, rb, gb, bb;
+			attr_to_rgb(attr, 1, &rf, &gf, &bf);
+			attr_to_rgb(attr, 0, &rb, &gb, &bb);
+			draw_glyph_at(x0 + col * 8, y0 + row * ROW_HEIGHT, c,
+				rf, gf, bf, rb, gb, bb, ROW_HEIGHT, 0);
+		}
+	}
+	vga_fb_mark_dirty_rect(y0, rows * ROW_HEIGHT);
 }
 
 void fbtext_scroll_up_one_line(void)
@@ -240,6 +291,7 @@ void fbtext_draw_string_xy(unsigned int x0, unsigned int y0, const char *str,
 		draw_glyph_at(x0 + i * 8, y0, (unsigned char)str[i], r_fg, g_fg, b_fg, 0, 0, 0, FONT_8X8_ROWS, transparent_bg);
 		i++;
 	}
+	vga_fb_mark_dirty_rect(y0, FONT_8X8_ROWS);
 }
 
 #define RAINBOW_LINE_HEIGHT  2   /* 2-pixel tall line for visibility */

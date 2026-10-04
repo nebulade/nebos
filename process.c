@@ -28,9 +28,10 @@ void process_init(void)
 	for (i = 0; i < MAX_PROCS; i++)
 		procs[i].state = PROC_UNUSED;
 
-	procs[0].state = PROC_RUNNING;
-	procs[0].pid   = 0;
-	name_copy(procs[0].name, "terminal");
+	procs[0].state  = PROC_RUNNING;
+	procs[0].pid    = 0;
+	procs[0].screen = (void *)0;
+	name_copy(procs[0].name, "wm");
 	current_pid = 0;
 }
 
@@ -97,10 +98,13 @@ static int setup_process(const char *name, unsigned int entry,
 	*--sp = 0;              /* ESI */
 	*--sp = 0;              /* EDI */
 
-	procs[slot].esp   = (unsigned int)sp;
-	procs[slot].state = PROC_READY;
-	procs[slot].pid   = next_pid_counter++;
+	procs[slot].esp    = (unsigned int)sp;
+	procs[slot].state  = PROC_READY;
+	procs[slot].pid    = next_pid_counter++;
 	name_copy(procs[slot].name, name);
+	/* Child inherits the parent's output screen (command output lands in the
+	   terminal that spawned it). */
+	procs[slot].screen = procs[current_pid].screen;
 
 	return (int)procs[slot].pid;
 }
@@ -114,6 +118,44 @@ int process_create_arg(const char *name, void (*entry)(const char *),
 		       const char *arg)
 {
 	return setup_process(name, (unsigned int)entry, 1, arg);
+}
+
+/* Create a process whose entry takes a raw pointer argument (no string copy). */
+int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
+{
+	unsigned int slot, top, *sp;
+
+	for (slot = 1; slot < MAX_PROCS; slot++)
+		if (procs[slot].state == PROC_UNUSED)
+			break;
+	if (slot == MAX_PROCS)
+		return -1;
+
+	top = stack_top_for(slot);
+	sp = (unsigned int *)top;
+
+	*--sp = (unsigned int)arg;        /* first C parameter */
+	*--sp = (unsigned int)process_exit;/* return address */
+	*--sp = 0x202;                    /* EFLAGS: IF=1 */
+	*--sp = 0x08;                     /* CS */
+	*--sp = (unsigned int)entry;      /* EIP */
+	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* EAX ECX EDX EBX */
+	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* ESP EBP ESI EDI */
+
+	procs[slot].esp    = (unsigned int)sp;
+	procs[slot].state  = PROC_READY;
+	procs[slot].pid    = next_pid_counter++;
+	name_copy(procs[slot].name, name);
+	procs[slot].screen = procs[current_pid].screen;
+
+	return (int)procs[slot].pid;
+}
+
+/* Set the output screen of the currently-running process (used by a terminal
+   at startup to bind itself to its own screen). */
+void process_set_screen(struct text_screen *screen)
+{
+	procs[current_pid].screen = screen;
 }
 
 void process_exit(void)

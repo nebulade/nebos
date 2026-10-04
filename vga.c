@@ -232,6 +232,59 @@ void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned 
 	shadow_put_pixel(x, y, r, g, b);
 }
 
+void vga_fill_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
+		unsigned int r, unsigned int g, unsigned int b)
+{
+	unsigned int row, x1, y1;
+	unsigned int pitch;
+	unsigned int bpp;
+	unsigned char *fb;
+
+	vga_cache_boot_fb();
+	pitch = vga_shadow_pitch;
+	bpp = vga_fb_bpp_val;
+	fb = vga_shadow_buf;
+
+	if (!fb || w == 0 || h == 0)
+		return;
+	if (x >= vga_fb_w || y >= vga_fb_h)
+		return;
+	x1 = x + w;
+	y1 = y + h;
+	if (x1 > vga_fb_w) x1 = vga_fb_w;
+	if (y1 > vga_fb_h) y1 = vga_fb_h;
+
+	if (bpp == 16) {
+		unsigned short val = (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+		for (row = y; row < y1; row++) {
+			unsigned short *p = (unsigned short *)(fb + (unsigned long)row * pitch + x * 2);
+			unsigned int xx;
+			for (xx = x; xx < x1; xx++)
+				*p++ = val;
+		}
+	} else if (bpp == 24) {
+		for (row = y; row < y1; row++) {
+			unsigned char *p = fb + (unsigned long)row * pitch + x * 3;
+			unsigned int xx;
+			for (xx = x; xx < x1; xx++) {
+				p[0] = (unsigned char)b;
+				p[1] = (unsigned char)g;
+				p[2] = (unsigned char)r;
+				p += 3;
+			}
+		}
+	} else {
+		unsigned int val = ((unsigned int)r << 16) | ((unsigned int)g << 8) | b;
+		for (row = y; row < y1; row++) {
+			unsigned int *p = (unsigned int *)(fb + (unsigned long)row * pitch + x * 4);
+			unsigned int xx;
+			for (xx = x; xx < x1; xx++)
+				*p++ = val;
+		}
+	}
+	mark_dirty_rect(y, y1 - y);
+}
+
 static unsigned int vga_pixel_bytes(void)
 {
 	if (vga_fb_bpp_val == 16)

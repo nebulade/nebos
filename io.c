@@ -1,7 +1,11 @@
-/* I/O library: framebuffer text output and PS/2 keyboard. */
+/* I/O library: PS/2 keyboard and text output.
+   Text output is routed to the current process's screen (see process.c);
+   slot 0 / boot fall back to a static screen the WM does not render. */
 
 #include "io.h"
 #include "fbtext.h"
+#include "process.h"
+#include "screen.h"
 
 #define VGA_ATTR 0x0A
 
@@ -40,15 +44,21 @@ static const unsigned char scancode_to_ascii[256] __attribute__((section(".rodat
 };
 
 static int shift_pressed;
-static unsigned int cursor;
-static unsigned short cursor_cell;
 static unsigned char last_scancode;
-static int scroll_occurred;
 static int kbd_extended;  /* 1 after 0xE0, next byte is extended scancode */
 
 #define KBD_BUF_SIZE 16
 static volatile unsigned char kbd_buf[KBD_BUF_SIZE];
 static volatile unsigned int kbd_head, kbd_tail;
+
+/* Fallback screen for slot 0 / boot / exception output (not rendered by WM). */
+static struct text_screen io_fallback;
+
+static struct text_screen *io_current_screen(void)
+{
+	struct text_screen *s = procs[current_pid].screen;
+	return s ? s : &io_fallback;
+}
 
 void kbd_irq(void)
 {
@@ -86,14 +96,6 @@ static char apply_shift(char c)
 	}
 }
 
-static void hide_cursor_at(unsigned int pos)
-{
-	unsigned int col = pos % io_cols;
-	unsigned int row = pos / io_cols;
-	fbtext_set_cursor(col, row);
-	fbtext_hide_cursor((unsigned char)(cursor_cell & 0xFF), (unsigned char)(cursor_cell >> 8));
-}
-
 unsigned int io_get_cols(void)
 {
 	return io_cols;
@@ -109,115 +111,62 @@ void io_init(void)
 	fbtext_init();
 	io_cols = fbtext_get_cols();
 	io_rows = fbtext_get_rows();
-	io_clear_screen();
-	cursor = IO_CONTENT_OFFSET;
-	cursor_cell = (unsigned short)(VGA_ATTR << 8);
+	screen_init(&io_fallback);
 	io_drain_keyboard();
 }
 
 void io_clear_screen(void)
 {
-	fbtext_clear();
+	screen_clear(io_current_screen());
 }
 
 int io_did_scroll(void)
 {
-	if (!scroll_occurred)
-		return 0;
-	scroll_occurred = 0;
-	return 1;
+	return screen_did_scroll(io_current_screen());
 }
 
 void io_putchar(char c)
 {
-	unsigned int ncols = io_cols;
-	unsigned int content_off = ncols;
-	unsigned int content_size = (io_rows - 1) * ncols;
-
-	if (c == '\n') {
-		hide_cursor_at(cursor);
-		cursor = (cursor / ncols + 1) * ncols;
-		if (cursor >= content_off + content_size) {
-			fbtext_scroll_up_one_line();
-			cursor = content_off + (io_rows - 2) * ncols;
-			scroll_occurred = 1;
-		}
-		cursor_cell = (unsigned short)(VGA_ATTR << 8);
-		return;
-	}
-	if (c == '\b') {
-		if (cursor > content_off) {
-			hide_cursor_at(cursor);
-			cursor--;
-			{
-				unsigned int col = cursor % ncols;
-				unsigned int row = cursor / ncols;
-				fbtext_put_char_at(col, row, ' ', VGA_ATTR);
-			}
-			cursor_cell = (unsigned short)((VGA_ATTR << 8) | ' ');
-		}
-		return;
-	}
-	if (cursor < content_off + content_size) {
-		{
-			unsigned int col = cursor % ncols;
-			unsigned int row = cursor / ncols;
-			fbtext_put_char_at(col, row, (unsigned char)c, VGA_ATTR);
-		}
-		cursor++;
-		cursor_cell = (unsigned short)(VGA_ATTR << 8);
-	}
+	screen_putchar(io_current_screen(), c);
 }
 
 void io_putstr(const char *s)
 {
-	while (*s) io_putchar(*s++);
+	screen_putstr(io_current_screen(), s);
 }
 
 void io_puthex(unsigned int n)
 {
-	static const char hex[] = "0123456789ABCDEF";
-	char buf[9];
-	unsigned int i = 8;
-	buf[8] = '\0';
-	do {
-		buf[--i] = hex[n & 0xF];
-		n >>= 4;
-	} while (i > 0);
-	io_putstr(buf);
+	screen_puthex(io_current_screen(), n);
 }
 
 unsigned int io_get_cursor(void)
 {
-	return cursor;
+	return screen_get_cursor(io_current_screen());
 }
 
 void io_set_cursor(unsigned int pos)
 {
-	if (pos >= io_rows * io_cols)
-		return;
-	hide_cursor_at(cursor);
-	cursor = pos;
-	cursor_cell = (unsigned short)(VGA_ATTR << 8);
-	fbtext_set_cursor(cursor % io_cols, cursor / io_cols);
+	screen_set_cursor(io_current_screen(), pos);
 }
 
 void io_cursor_show_block(void)
 {
-	fbtext_set_cursor(cursor % io_cols, cursor / io_cols);
-	fbtext_show_cursor();
+	struct text_screen *s = io_current_screen();
+	s->cursor_visible = 1;
+	s->dirty = 1;
 }
 
 void io_cursor_hide_block(void)
 {
-	fbtext_hide_cursor((unsigned char)(cursor_cell & 0xFF), (unsigned char)(cursor_cell >> 8));
+	struct text_screen *s = io_current_screen();
+	s->cursor_visible = 0;
+	s->dirty = 1;
 }
 
 void io_vga_write(unsigned int pos, unsigned short value)
 {
-	unsigned int col = pos % io_cols;
-	unsigned int row = pos / io_cols;
-	fbtext_put_char_at(col, row, (unsigned char)(value & 0xFF), (unsigned char)(value >> 8));
+	screen_put_at(io_current_screen(), pos, value);
 }
 
 void io_drain_keyboard(void)

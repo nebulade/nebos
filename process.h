@@ -15,11 +15,14 @@
 
 #define PROC_NAME_LEN 12
 
+struct text_screen;  /* forward decl (see screen.h) */
+
 struct process {
 	unsigned int esp;
 	unsigned int state;
 	unsigned int pid;
 	char         name[PROC_NAME_LEN];
+	struct text_screen *screen;  /* output target for io_putchar & co. */
 };
 
 extern struct process procs[MAX_PROCS];
@@ -29,6 +32,8 @@ void process_init(void);
 int  process_create(const char *name, void (*entry)(void));
 int  process_create_arg(const char *name, void (*entry)(const char *),
 			const char *arg);
+int  process_create_ptr(const char *name, void (*entry)(void *), void *arg);
+void process_set_screen(struct text_screen *screen);
 void process_exit(void);
 void schedule(void);
 void process_ps(void);

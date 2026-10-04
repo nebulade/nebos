@@ -43,6 +43,7 @@ static int mouse_streaming_flag;
 static unsigned int mouse_id;
 static int mouse_cursor_flag;
 static unsigned int mouse_pkt_size;
+static unsigned int mouse_buttons;  /* bit0=left bit1=right bit2=middle */
 
 static unsigned int fbw, fbh;
 static unsigned int cur_x, cur_y;
@@ -254,6 +255,7 @@ void mouse_poll_update(void)
 		pkt_idx = 0;
 
 		b0 = pkt[0];
+		mouse_buttons = b0 & 0x07;
 		dx = (int)(signed char)pkt[1];
 		dy = (int)(signed char)pkt[2];
 		if (b0 & 0x10)
@@ -303,4 +305,34 @@ int mouse_cursor_visible(void)
 unsigned int mouse_packet_size(void)
 {
 	return mouse_pkt_size;
+}
+
+unsigned int mouse_get_x(void)
+{
+	return cur_x;
+}
+
+unsigned int mouse_get_y(void)
+{
+	return cur_y;
+}
+
+unsigned int mouse_buttons_state(void)
+{
+	return mouse_buttons;
+}
+
+void mouse_redraw_cursor(void)
+{
+	if (!mouse_cursor_flag)
+		return;
+	vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H, cur_saved);
+	mouse_draw_cursor(cur_x, cur_y);
+}
+
+void mouse_cursor_erase(void)
+{
+	if (!mouse_cursor_flag)
+		return;
+	vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H, cur_saved);
 }

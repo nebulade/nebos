@@ -55,12 +55,20 @@ make clean
 
 - **Multitasking**: `process.c/h`, `switch.S` — ring-0 preemptive round-robin,
   8 slots, 20 ms timeslice, `ps`/`kill`. Context switch happens in the PIT stub.
+  Each process carries a `struct text_screen *screen` output target (child
+  processes inherit it, so command output lands in the owning terminal).
+- **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
+  terminal windows (64×20) with a system bar (banner + purple "+ New" button +
+  clock + rainbow). Click-to-focus, drag-by-title-bar, close (×). The "+ New"
+  button and first boot spawn terminals; there is no `term` command.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `gpu.c`, `ati.c`, `nvidia.c`, `pci.h` —
   VESA LFB + shadow buffer, 30 Hz dirty-row flush. ATI Mach64 CRTC fixup; NVIDIA no-op.
-- **Text console**: `fbtext.c`, `font_8x8.c/h`, `io.c/h` — framebuffer text,
-  8×8 font, rainbow separator, live datetime header, blinking cursor.
+- **Text console**: `fbtext.c`, `font_8x8.c/h`, `io.c/h`, `screen.c/h` — 8×8 font,
+  framebuffer glyph blitting (`fbtext_draw_cells`) and per-terminal cell buffers
+  (`struct text_screen`).
 - **Shell**: `terminal.c` — history, line editing, command dispatch (hand-rolled
-  `is_cmd_*` parsers).
+  `is_cmd_*` parsers). Runs in a window (`term_run(struct term *)`); reads keys
+  from its per-terminal queue (filled by the WM).
 - **Filesystem**: `fat.c` (FAT12/16/32 read + FAT12/16 write, device-parameterized),
   `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
   `blkdev.c` (floppy + IDE registry), `ata.c` (ATA PIO), `disk.c` (FDC + ISA DMA ch2, retries).

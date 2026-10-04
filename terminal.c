@@ -3,16 +3,11 @@
 
 #include "io.h"
 #include "dbg.h"
-#include "fbtext.h"
 #include "idle.h"
 #include "kexec.h"
-#include "mouse.h"
 #include "process.h"
-#include "rtc.h"
 #include "terminal.h"
 #include "timer.h"
-#include "version.h"
-#include "vga.h"
 
 extern void program_hello_main(void);
 extern void program_reboot_main(void);
@@ -36,67 +31,8 @@ extern void program_lsusb_main(void);
 extern void program_storage_main(void);
 extern void program_format_main(const char *arg);
 
-#define DATETIME_MS 1000
-#define LINE_MAX 64
-#define HISTORY_SIZE 32
-static unsigned int last_datetime_tick;
-static char datetime_buf[IO_DATETIME_LEN + 1];
-static char history[HISTORY_SIZE][LINE_MAX];
-static unsigned int history_count;
-static unsigned int history_next;
-
-static int cursor_visible;
-static unsigned int last_cursor_tick;
-
-static void redraw_datetime(void)
-{
-	rtc_read_datetime(datetime_buf);
-	{
-		unsigned int i;
-		for (i = 0; i < IO_DATETIME_LEN && datetime_buf[i]; i++)
-			io_vga_write(IO_DATETIME_POS + i,
-				(unsigned short)((0x0A << 8) | (unsigned char)datetime_buf[i]));
-	}
-}
-
-static void update_datetime(void)
-{
-	unsigned int t = get_ticks_ms();
-	if (t - last_datetime_tick >= DATETIME_MS) {
-		last_datetime_tick = t;
-		redraw_datetime();
-	}
-}
-
-static void update_cursor_blink(void)
-{
-	unsigned int t = get_ticks_ms();
-	if (t - last_cursor_tick >= CURSOR_MS) {
-		last_cursor_tick = t;
-		cursor_visible = !cursor_visible;
-	}
-	if (cursor_visible)
-		io_cursor_show_block();
-	else
-		io_cursor_hide_block();
-}
-
-static const char banner[] __attribute__((section(".text"))) = OS_NAME " v" OS_VERSION;
-#define BANNER_LEN 14
 static const char prompt[] __attribute__((section(".text"))) = "\n> ";
 static const char prompt_first[] __attribute__((section(".text"))) = "> ";
-
-/* Draw row 0: banner left, datetime right. Call when terminal is active. */
-static void draw_header_row(void)
-{
-	unsigned int i;
-	for (i = 0; i < BANNER_LEN && banner[i]; i++)
-		io_vga_write(i, (unsigned short)((0x0A << 8) | (unsigned char)banner[i]));
-	for (; i < IO_DATETIME_POS; i++)
-		io_vga_write(i, (unsigned short)(0x0A << 8));
-	redraw_datetime();
-	fbtext_draw_rainbow_separator();
-}
 
 static int is_cmd_hello(const char *line, unsigned int line_len)
 {
@@ -615,27 +551,26 @@ static void redraw_line_clear(const char *line, unsigned int line_len,
 	io_set_cursor(line_start + line_pos);
 }
 
-/* Copy history entry (1 = newest) into line, set line_len/line_pos, redraw from start. */
-static void history_load_into_line(char *line, unsigned int *line_len, unsigned int *line_pos,
-	unsigned int line_start, unsigned int browse)
+/* Copy history entry (1 = newest) into t->line, redraw from start. */
+static void history_load_into_line(struct term *t, unsigned int browse)
 {
 	unsigned int slot, len, old_len;
 	const char *src;
-	if (browse < 1 || browse > history_count)
+	if (browse < 1 || browse > t->history_count)
 		return;
-	old_len = *line_len;
-	slot = (history_next + HISTORY_SIZE - browse) % HISTORY_SIZE;
-	src = history[slot];
+	old_len = t->line_len;
+	slot = (t->history_next + HISTORY_SIZE - browse) % HISTORY_SIZE;
+	src = t->history[slot];
 	for (len = 0; len < LINE_MAX - 1 && src[len]; len++)
-		line[len] = src[len];
-	line[len] = '\0';
-	*line_len = len;
-	*line_pos = len;
-	redraw_line_clear(line, len, len, line_start, old_len > len ? old_len : len);
+		t->line[len] = src[len];
+	t->line[len] = '\0';
+	t->line_len = len;
+	t->line_pos = len;
+	redraw_line_clear(t->line, len, len, t->line_start, old_len > len ? old_len : len);
 }
 
 /* Push current line to history if non-empty (and not duplicate of newest). */
-static void history_push(const char *line, unsigned int line_len)
+static void history_push(struct term *t, const char *line, unsigned int line_len)
 {
 	unsigned int i, slot;
 	int all_spaces = 1;
@@ -649,133 +584,113 @@ static void history_push(const char *line, unsigned int line_len)
 	}
 	if (all_spaces)
 		return;
-	if (history_count > 0) {
-		slot = (history_next + HISTORY_SIZE - 1) % HISTORY_SIZE;
-		for (i = 0; i < line_len && i < LINE_MAX - 1 && history[slot][i]; i++) {
-			if (history[slot][i] != line[i])
+	if (t->history_count > 0) {
+		slot = (t->history_next + HISTORY_SIZE - 1) % HISTORY_SIZE;
+		for (i = 0; i < line_len && i < LINE_MAX - 1 && t->history[slot][i]; i++) {
+			if (t->history[slot][i] != line[i])
 				break;
 		}
-		if (i == line_len && history[slot][i] == '\0')
+		if (i == line_len && t->history[slot][i] == '\0')
 			return;  /* duplicate of newest */
 	}
-	slot = history_next;
+	slot = t->history_next;
 	for (i = 0; i < line_len && i < LINE_MAX - 1; i++)
-		history[slot][i] = line[i];
-	history[slot][i] = '\0';
-	history_next = (history_next + 1) % HISTORY_SIZE;
-	if (history_count < HISTORY_SIZE)
-		history_count++;
+		t->history[slot][i] = line[i];
+	t->history[slot][i] = '\0';
+	t->history_next = (t->history_next + 1) % HISTORY_SIZE;
+	if (t->history_count < HISTORY_SIZE)
+		t->history_count++;
 }
 
-void terminal_run(void)
+void term_run(struct term *t)
 {
-	static char line[LINE_MAX];
-	static unsigned int line_len;
-	static unsigned int line_pos;   /* cursor index in line, 0..line_len */
-	static unsigned int line_start; /* VGA position of first char of line */
-	static unsigned int history_browse; /* 0 = not browsing, 1 = newest, 2 = older, ... */
+	t->line_len         = 0;
+	t->line_pos         = 0;
+	t->line[0]          = '\0';
+	t->history_browse   = 0;
 
-	last_cursor_tick   = get_ticks_ms();
-	last_datetime_tick = get_ticks_ms();
-	cursor_visible     = 1;
-	line_len           = 0;
-	line_pos           = 0;
-	line[0]            = '\0';
-	history_browse     = 0;
-
-	io_drain_keyboard();
 	io_clear_screen();
-	draw_header_row();
-	io_set_cursor(IO_CONTENT_OFFSET);
 	io_putstr(prompt_first);
-	line_start = io_get_cursor();
+	t->line_start = io_get_cursor();
 
 	for (;;) {
-		vga_fb_flush_pending_check();
-		mouse_poll_update();
-		update_datetime();
-		update_cursor_blink();
 		{
-			int k = io_poll_key();
+			int k = term_key_pop(t);
 			if (k) {
 				if (k == IO_KEY_LEFT) {
-					if (line_pos > 0) {
-						line_pos--;
-						io_set_cursor(line_start + line_pos);
+					if (t->line_pos > 0) {
+						t->line_pos--;
+						io_set_cursor(t->line_start + t->line_pos);
 					}
 				} else if (k == IO_KEY_RIGHT) {
-					if (line_pos < line_len) {
-						line_pos++;
-						io_set_cursor(line_start + line_pos);
+					if (t->line_pos < t->line_len) {
+						t->line_pos++;
+						io_set_cursor(t->line_start + t->line_pos);
 					}
 				} else if (k == IO_KEY_UP) {
-					if (history_count > 0) {
-						if (history_browse < history_count)
-							history_browse++;
-						history_load_into_line(line, &line_len, &line_pos, line_start, history_browse);
+					if (t->history_count > 0) {
+						if (t->history_browse < t->history_count)
+							t->history_browse++;
+						history_load_into_line(t, t->history_browse);
 					}
 				} else if (k == IO_KEY_DOWN) {
-					if (history_browse > 0) {
-						history_browse--;
-						if (history_browse == 0) {
-							{
-								unsigned int clear_len = line_len;
-								line_len = 0;
-								line_pos = 0;
-								line[0]  = '\0';
-								redraw_line_clear(line, 0, 0, line_start, clear_len);
-							}
+					if (t->history_browse > 0) {
+						t->history_browse--;
+						if (t->history_browse == 0) {
+							unsigned int clear_len = t->line_len;
+							t->line_len = 0;
+							t->line_pos = 0;
+							t->line[0]  = '\0';
+							redraw_line_clear(t->line, 0, 0, t->line_start, clear_len);
 						} else {
-							history_load_into_line(line, &line_len, &line_pos, line_start, history_browse);
+							history_load_into_line(t, t->history_browse);
 						}
 					}
 				} else if (k == '\b') {
-					if (line_pos > 0) {
+					if (t->line_pos > 0) {
 						unsigned int i;
-						line_pos--;
-						for (i = line_pos; i < line_len; i++)
-							line[i] = line[i + 1];
-						line_len--;
-						line[line_len] = '\0';
-						redraw_line_from(line, line_len, line_pos, line_start, line_pos);
+						t->line_pos--;
+						for (i = t->line_pos; i < t->line_len; i++)
+							t->line[i] = t->line[i + 1];
+						t->line_len--;
+						t->line[t->line_len] = '\0';
+						redraw_line_from(t->line, t->line_len, t->line_pos, t->line_start, t->line_pos);
 					}
 				} else if (k == '\n') {
-					static char cat_fname[CAT_FNAME_MAX];
-					static char save_args[SAVE_ARGS_MAX];
-					static char rm_fname[RM_FNAME_MAX];
-					static char ls_path[LS_PATH_MAX];
-					static char format_dev[FORMAT_DEV_MAX];
+					char cat_fname[CAT_FNAME_MAX];
+					char save_args[SAVE_ARGS_MAX];
+					char rm_fname[RM_FNAME_MAX];
+					char ls_path[LS_PATH_MAX];
+					char format_dev[FORMAT_DEV_MAX];
 					unsigned int kill_pid;
 					int skip_prompt = 0;
 					io_putchar('\n');
-					history_push(line, line_len);
-					history_browse = 0;
-					if (is_cmd_hello(line, line_len)) {
+					history_push(t, t->line, t->line_len);
+					t->history_browse = 0;
+					if (is_cmd_hello(t->line, t->line_len)) {
 						if (process_create("hello", program_hello_main) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_reboot(line, line_len)) {
+					} else if (is_cmd_reboot(t->line, t->line_len)) {
 						program_reboot_main();
-					} else if (is_cmd_poweroff(line, line_len)) {
+					} else if (is_cmd_poweroff(t->line, t->line_len)) {
 						program_poweroff_main();
-					} else if (is_cmd_ls(line, line_len, ls_path, LS_PATH_MAX)) {
+					} else if (is_cmd_ls(t->line, t->line_len, ls_path, LS_PATH_MAX)) {
 						if (process_create_arg("ls", program_ls_main, ls_path) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_lsusb(line, line_len)) {
+					} else if (is_cmd_lsusb(t->line, t->line_len)) {
 						if (process_create("lsusb", program_lsusb_main) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_storage(line, line_len)) {
+					} else if (is_cmd_storage(t->line, t->line_len)) {
 						if (process_create("storage", program_storage_main) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_clock(line, line_len)) {
-						if (process_create("clock", program_clock_main) < 0)
-							io_putstr("error: too many processes\n");
-					} else if (is_cmd_colors(line, line_len)) {
-						if (process_create("colors", program_colors_main) < 0)
-							io_putstr("error: too many processes\n");
-					} else if (is_cmd_cat(line, line_len, cat_fname, CAT_FNAME_MAX)) {
+					} else if (is_cmd_clock(t->line, t->line_len)) {
+						io_putstr("clock: not available in windowed mode yet\n");
+					} else if (is_cmd_colors(t->line, t->line_len)) {
+						io_putstr("colors: not available in windowed mode yet\n");
+					} else if (is_cmd_cat(t->line, t->line_len, cat_fname, CAT_FNAME_MAX)) {
 						if (process_create_arg("cat", program_cat_main, cat_fname) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_run(line, line_len, cat_fname, CAT_FNAME_MAX)) {
+					} else if (is_cmd_run(t->line, t->line_len, cat_fname, CAT_FNAME_MAX)) {
 						if (cat_fname[0] == 's' && cat_fname[1] == 'e' &&
 						    cat_fname[2] == 'r' && cat_fname[3] == 'i' &&
 						    cat_fname[4] == 'a' && cat_fname[5] == 'l' &&
@@ -783,43 +698,41 @@ void terminal_run(void)
 							if (process_create_arg("run_serial", program_run_serial_main, cat_fname) < 0)
 								io_putstr("error: too many processes\n");
 						} else {
-							if (process_create_arg("run", program_run_main, cat_fname) < 0)
-								io_putstr("error: too many processes\n");
+							io_putstr("run: not available in windowed mode yet\n");
 						}
-					} else if (is_cmd_save(line, line_len, save_args, SAVE_ARGS_MAX)) {
+					} else if (is_cmd_save(t->line, t->line_len, save_args, SAVE_ARGS_MAX)) {
 						if (process_create_arg("save", program_save_main, save_args) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_mkdir(line, line_len, rm_fname, RM_FNAME_MAX)) {
+					} else if (is_cmd_mkdir(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
 						if (process_create_arg("mkdir", program_mkdir_main, rm_fname) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_rmdir(line, line_len, rm_fname, RM_FNAME_MAX)) {
+					} else if (is_cmd_rmdir(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
 						if (process_create_arg("rmdir", program_rmdir_main, rm_fname) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_rm(line, line_len, rm_fname, RM_FNAME_MAX)) {
+					} else if (is_cmd_rm(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
 						if (process_create_arg("rm", program_rm_main, rm_fname) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_space(line, line_len)) {
-						if (process_create_arg("space", program_run_main, "/floppy1/SPACE.BIN") < 0)
-							io_putstr("error: too many processes\n");
-					} else if (is_cmd_display(line, line_len)) {
+					} else if (is_cmd_space(t->line, t->line_len)) {
+						io_putstr("space: not available in windowed mode yet\n");
+					} else if (is_cmd_display(t->line, t->line_len)) {
 						if (process_create("display", program_display_main) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_cpuinfo(line, line_len)) {
+					} else if (is_cmd_cpuinfo(t->line, t->line_len)) {
 						if (process_create("cpuinfo", program_cpuinfo_main) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_mouseinfo(line, line_len)) {
+					} else if (is_cmd_mouseinfo(t->line, t->line_len)) {
 						if (process_create("mouseinfo", program_mouseinfo_main) < 0)
 							io_putstr("error: too many processes\n");
-					} else if (is_cmd_format(line, line_len, format_dev, FORMAT_DEV_MAX)) {
+					} else if (is_cmd_format(t->line, t->line_len, format_dev, FORMAT_DEV_MAX)) {
 						program_format_main(format_dev);
-					} else if (is_cmd_ps(line, line_len)) {
+					} else if (is_cmd_ps(t->line, t->line_len)) {
 						process_ps();
-					} else if (is_cmd_kill(line, line_len, &kill_pid)) {
+					} else if (is_cmd_kill(t->line, t->line_len, &kill_pid)) {
 						if (process_kill(kill_pid) < 0)
 							io_putstr("kill: no such process\n");
 						else
 							io_putstr("killed\n");
-					} else if (is_cmd_kexec(line, line_len)) {
+					} else if (is_cmd_kexec(t->line, t->line_len)) {
 						if (kexec_busy) {
 							io_putstr("kexec: already receiving\n");
 						} else {
@@ -829,9 +742,9 @@ void terminal_run(void)
 								io_putstr("error: too many processes\n");
 							}
 						}
-					} else if (is_cmd_dbg(line, line_len)) {
+					} else if (is_cmd_dbg(t->line, t->line_len)) {
 						program_dbg_main();
-					} else if (is_cmd_help(line, line_len)) {
+					} else if (is_cmd_help(t->line, t->line_len)) {
 						io_putstr("hello\n");
 						io_putstr("reboot\n");
 						io_putstr("poweroff\n");
@@ -857,16 +770,14 @@ void terminal_run(void)
 						io_putstr("dbg\n");
 						io_putstr("serial test|recv\n");
 						io_putstr("clear\n");
-				} else if (is_cmd_clear(line, line_len)) {
+				} else if (is_cmd_clear(t->line, t->line_len)) {
 					io_clear_screen();
-					draw_header_row();
-					io_set_cursor(IO_CONTENT_OFFSET);
 					io_putstr(prompt_first);
-					line_start = io_get_cursor();
+					t->line_start = io_get_cursor();
 					skip_prompt = 1;
 				} else {
-					static char serial_arg[8];
-					if (is_cmd_serial(line, line_len, serial_arg, sizeof(serial_arg))) {
+					char serial_arg[8];
+					if (is_cmd_serial(t->line, t->line_len, serial_arg, sizeof(serial_arg))) {
 						if (serial_arg[0] == 't' && serial_arg[1] == 'e' &&
 						    serial_arg[2] == 's' && serial_arg[3] == 't' &&
 						    serial_arg[4] == '\0') {
@@ -881,45 +792,43 @@ void terminal_run(void)
 						}
 					} else {
 						unsigned int i = 0;
-						while (i < line_len && line[i] == ' ')
+						while (i < t->line_len && t->line[i] == ' ')
 							i++;
-						if (i < line_len)
+						if (i < t->line_len)
 							io_putstr("command not found\n");
 					}
 				}
-				line_len  = 0;
-				line_pos  = 0;
-				line[0]   = '\0';
+				t->line_len = 0;
+				t->line_pos = 0;
+				t->line[0]  = '\0';
 				if (!skip_prompt) {
 					io_putstr(prompt);
-					line_start = io_get_cursor();
-				}
-				if (io_did_scroll())
-					redraw_datetime();
-			} else {
-				{
-					unsigned char u = (unsigned char)k;
-					if (u >= 0x20 && u < 0x7F && line_len < LINE_MAX - 1) {
-							unsigned int i;
-							history_browse = 0;
-							for (i = line_len; i > line_pos; i--)
-								line[i] = line[i - 1];
-							line[line_pos] = (char)k;
-							line_len++;
-							line[line_len] = '\0';
-							line_pos++;
-							redraw_line_from(line, line_len, line_pos, line_start, line_pos - 1);
-						}
-					}
+					t->line_start = io_get_cursor();
 				}
 			} else {
-				if (!kexec_busy && kexec_pending()) {
-					kexec_busy = 1;
-					if (process_create("kexec", program_kexec_main) < 0)
-						kexec_busy = 0;
+				unsigned char u = (unsigned char)k;
+				if (u >= 0x20 && u < 0x7F && t->line_len < LINE_MAX - 1) {
+					unsigned int i;
+					t->history_browse = 0;
+					for (i = t->line_len; i > t->line_pos; i--)
+						t->line[i] = t->line[i - 1];
+					t->line[t->line_pos] = (char)k;
+					t->line_len++;
+					t->line[t->line_len] = '\0';
+					t->line_pos++;
+					redraw_line_from(t->line, t->line_len, t->line_pos, t->line_start, t->line_pos - 1);
 				}
-				cpu_idle();
 			}
+		} else {
+			cpu_idle();
 		}
 	}
+}
+}
+
+void term_entry(void *arg)
+{
+	struct term *t = (struct term *)arg;
+	process_set_screen(&t->screen);
+	term_run(t);
 }

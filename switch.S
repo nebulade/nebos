@@ -24,7 +24,7 @@
 
 /* struct process offsets (must match process.h / process.c) */
 .equ PCB_ESP,   0
-.equ PCB_SIZE,  24      /* sizeof(struct process): 4+4+4+12 = 24 */
+.equ PCB_SIZE,  28      /* sizeof(struct process): 4+4+4+12+4 = 28 */
 
 .equ TIMESLICE, 20
 .equ FLUSH_INTERVAL, 33 /* 1000Hz PIT / 30Hz flush ≈ 33 ticks */

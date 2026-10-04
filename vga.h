@@ -30,6 +30,8 @@ void *vga_fb_ptr(void);
 int vga_has_vesa(void);
 
 void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b);
+void vga_fill_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
+		unsigned int r, unsigned int g, unsigned int b);
 void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b);
 
 /* Tightly packed row-major: each row is w * pixel_bytes contiguous (pixel_bytes from bpp). */
