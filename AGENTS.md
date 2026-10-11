@@ -31,7 +31,8 @@ make clean
    to `0x7E00` (CHS for floppy, INT 13h AH=42h LBA for hard disk), jumps there.
 2. `vesa_stage.S` — real-mode VESA stage. Probes INT 15h E820 into `0x1000`,
    picks best VBE mode (≥16 bpp, LFB, fits VRAM, ≤1280px), writes mode info to
-   `0x600`, enables A20, enters protected mode, jumps to `kernel_main`.
+   `0x600`, enables A20, enters protected mode, jumps to `kernel_entry`
+   (`entry.S`, re-points ESP to the current stack top, then `kernel_main`).
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → I/O → idle → timer
    (PIT 1 kHz + IDT) → mouse → processes → VGA shadow buffer → terminal.
 4. `mbr.S` — MBR (USB/HDD boot); loads partition boot sector at LBA 1.
@@ -131,9 +132,13 @@ make clean
   HTTP/1.0 request and a dumped status/headers/body (no TLS, no redirects,
   chunked decoded).  Static IP default `192.168.178.240`, mask/gateway learned
   from DHCP (off-subnet traffic goes via the router).
-- **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `bootstrap.c`, and the
+- **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `entry.S`, `bootstrap.c`, and the
   host-side `kexec_send.c` — reload the kernel over serial without rebooting
   (C-light: reuses the current framebuffer, re-runs `kernel_main`).
+  The transfer entry is `kernel_entry` (`entry.S`), which re-points ESP before
+  any stack use: the jumping kernel's trampoline stack address comes from the
+  *old* build's memory map, so a reload between different maps (e.g. after the
+  kernel region grew) would otherwise land the stack inside the new image.
   `netkexec.c/h` + host-side `netkexec_send.c` do the same over UDP
   (`make net-dev BOARD_IP=…`): the WM loop auto-detects the header, the board
   acks every datagram with the next expected offset, verifies the checksum and
@@ -217,7 +222,7 @@ Wire protocol (host → target, sent immediately; no handshake):
 
 **Every iteration:**
 ```sh
-make dev            # builds kernel.bin, computes kernel_main via nm, sends
+make dev            # builds kernel.bin, computes kernel_entry via nm, sends
 ```
 The reload is automatic. On boot the kernel prints `Nebs OS v<version> booted`
 to COM1, so a serial monitor can confirm the new build headlessly:

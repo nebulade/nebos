@@ -224,7 +224,7 @@ stage2_pm:
 	movw  %ax, %gs
 	movw  %ax, %ss
 	movl  $0x49800, %esp
-	jmp   kernel_main
+	jmp   kernel_entry
 
 .align 4
 stage2_gdt:

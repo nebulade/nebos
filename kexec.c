@@ -2,7 +2,7 @@
  *
  * C-light reload: we do NOT return to real mode or re-run the VESA stage.
  * Instead we reuse the current framebuffer (the boot FB info at 0x600 and the
- * LFB are still valid) and jump straight to the new kernel's kernel_main,
+ * LFB are still valid) and jump straight to the new kernel's kernel_entry,
  * which re-inits IDT/PIC/PIT/mouse/process/VGA-shadow/terminal from scratch.
  *
  * Because this code lives at 0x7E00..0x49000 (inside the region we overwrite),
@@ -15,7 +15,7 @@
  *
  * Wire protocol (host -> us):
  *   4 bytes: magic "KXEC" (LE)
- *   4 bytes: entry address (LE)   -- new kernel_main VMA
+ *   4 bytes: entry address (LE)   -- new kernel_entry VMA
  *   4 bytes: size (LE)            -- kernel.bin byte count
  *   N bytes: kernel.bin data
  *   1 byte:  checksum (sum of data bytes mod 256)

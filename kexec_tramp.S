@@ -5,7 +5,7 @@
  *   eax = source (staging buffer)
  *   ebx = dest   (0x7E00)
  *   ecx = byte count
- *   edx = entry  (new kernel_main)
+ *   edx = entry  (new kernel_entry, see entry.S)
  *
  * Also rebuilds a flat GDT at 0x900 and loads it, so the new kernel's segment
  * reloads (iret on the first context switch) don't read the old GDT that lives
