@@ -4,8 +4,10 @@
 
 #include "io.h"
 #include "fbtext.h"
+#include "kdbg.h"
 #include "process.h"
 #include "screen.h"
+#include "timer.h"
 
 #define VGA_ATTR 0x0A
 
@@ -61,13 +63,57 @@ static struct text_screen *io_current_screen(void)
 	return s ? s : &io_fallback;
 }
 
+/* IRQ1: read the controller status first and only read data when the output
+ * buffer is full.  Some USB-legacy SMM implementations keep raising IRQ1:
+ * reading 0x60 with no byte present does not acknowledge anything, and a
+ * level-triggered line then storms.  The loop is bounded, and if the rate
+ * gets absurd we mask IRQ1 and let the WM fall back to polling. */
+static unsigned int kbd_win_start;
+static unsigned int kbd_win_count;
+
 void kbd_irq(void)
 {
-	unsigned char sc = inb(KB_DATA);
-	unsigned int next = (kbd_head + 1) % KBD_BUF_SIZE;
-	if (next != kbd_tail) {
-		kbd_buf[kbd_head] = sc;
-		kbd_head = next;
+	unsigned int guard = 0;
+	unsigned int now = get_ticks_ms();
+	unsigned char st;
+
+	kdbg_irq_count++;
+	if (kdbg_irq_count <= 8)
+		kdbg_status();
+	if (now - kbd_win_start >= 1000) {
+		kbd_win_start = now;
+		kbd_win_count = 0;
+	}
+	kbd_win_count++;
+	if (!kdbg_irq_masked && kbd_win_count > 200) {
+		/* IRQ1 storm; mask it (master PIC) and poll instead. */
+		outb(0x21, (unsigned char)(inb(0x21) | 0x02));
+		kdbg_irq_masked = 1;
+	}
+
+	while (guard++ < 32) {
+		st = inb(KB_STATUS);
+		if (!(st & 0x01))
+			break;
+		{
+			unsigned char sc = inb(KB_DATA);
+			if (st & 0x20) {
+				/* AUX (mouse) byte: not ours, drop it. */
+				kdbg_irq_other++;
+				continue;
+			}
+			kdbg_irq_bytes++;
+			kdbg_last_sc = sc;
+			if (kdbg_irq_count <= 8)
+				kdbg_status();
+			{
+				unsigned int next = (kbd_head + 1) % KBD_BUF_SIZE;
+				if (next != kbd_tail) {
+					kbd_buf[kbd_head] = sc;
+					kbd_head = next;
+				}
+			}
+		}
 	}
 	outb(0x20, 0x20);
 }
@@ -234,18 +280,35 @@ int io_poll_key(void)
 }
 
 /* Like io_poll_key but also reads from port 0x60 when buffer is empty.
-   For use by full-screen programs (e.g. space.bin) where IRQ may be missed on real HW. */
+   For use by full-screen programs (e.g. space.bin) where IRQ may be missed on
+   real HW.  Only reads when a keyboard byte is actually pending (OBF set, AUX
+   clear); the status+data pair is read atomically wrt IRQ1. */
 int io_poll_key_with_hw(void)
 {
-	unsigned char sc;
-	if (kbd_tail == kbd_head) {
-		if (!(inb(KB_STATUS) & 1))
-			return 0;
-		sc = inb(KB_DATA);
-	} else {
+	unsigned char sc = 0;
+	unsigned int flags;
+	int got = 0;
+
+	if (kbd_tail != kbd_head) {
 		if (!kbd_buf_get(&sc))
 			return 0;
+		return kbd_process_byte(sc);
 	}
+
+	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
+	{
+		unsigned char st = inb(KB_STATUS);
+		if ((st & 0x01) && !(st & 0x20)) {
+			sc = inb(KB_DATA);
+			got = 1;
+		}
+	}
+	__asm__ volatile ("pushl %0; popfl" : : "r"(flags));
+
+	if (!got)
+		return 0;
+	kdbg_irq_bytes++;
+	kdbg_last_sc = sc;
 	return kbd_process_byte(sc);
 }
 

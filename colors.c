@@ -13,15 +13,22 @@
 #define FPS_RECT_W    (7 * 8)
 #define FPS_RECT_H    8
 
-/* Precomputed hue-to-RGB lookup table. Packed as 0x00BBGGRR for fast 32-bit load. */
-static unsigned int hue_lut[RAINBOW_FULL];
+/* Precomputed hue-to-RGB lookup table. Packed as 0x00BBGGRR for fast 32-bit load.
+ * The hue cycle is RAINBOW_FULL entries, but the table is decimated by
+ * LUT_STEP: a 4-hue step is ~1.5% of a color segment and invisible, and the
+ * smaller table keeps the kernel image under the 0x30000 memory-bound. */
+#define LUT_STEP      4
+#define LUT_SIZE      (RAINBOW_FULL / LUT_STEP)
+
+static unsigned int hue_lut[LUT_SIZE];
 
 static void build_hue_lut(void)
 {
 	unsigned int i;
-	for (i = 0; i < RAINBOW_FULL; i++) {
-		unsigned int seg = i / RAINBOW_SEG;
-		unsigned int f   = i % RAINBOW_SEG;
+	for (i = 0; i < LUT_SIZE; i++) {
+		unsigned int hue = i * LUT_STEP;
+		unsigned int seg = hue / RAINBOW_SEG;
+		unsigned int f   = hue % RAINBOW_SEG;
 		unsigned int r1, g1, b1, r2, g2, b2;
 		if (seg >= 6)
 			seg = 0;
@@ -58,7 +65,7 @@ static void draw_frame(unsigned char *fb, unsigned int w, unsigned int h,
 				unsigned int *p = (unsigned int *)row;
 				for (x = 0; x < w; x++) {
 					if (x >= FPS_RECT_W) {
-						unsigned int packed = hue_lut[row_hue];
+						unsigned int packed = hue_lut[row_hue / LUT_STEP];
 						*p = packed;
 					}
 					p++;
@@ -69,7 +76,7 @@ static void draw_frame(unsigned char *fb, unsigned int w, unsigned int h,
 			} else if (bpp == 24) {
 				for (x = 0; x < w; x++) {
 					if (x >= FPS_RECT_W) {
-						unsigned int packed = hue_lut[row_hue];
+						unsigned int packed = hue_lut[row_hue / LUT_STEP];
 						row[x * 3]     = (unsigned char)(packed & 0xFF);
 						row[x * 3 + 1] = (unsigned char)((packed >> 8) & 0xFF);
 						row[x * 3 + 2] = (unsigned char)((packed >> 16) & 0xFF);
@@ -81,7 +88,7 @@ static void draw_frame(unsigned char *fb, unsigned int w, unsigned int h,
 			} else if (bpp == 16) {
 				for (x = 0; x < w; x++) {
 					if (x >= FPS_RECT_W) {
-						unsigned int packed = hue_lut[row_hue];
+						unsigned int packed = hue_lut[row_hue / LUT_STEP];
 						unsigned int r = (packed >> 16) & 0xFF;
 						unsigned int g = (packed >> 8) & 0xFF;
 						unsigned int b = packed & 0xFF;
@@ -100,14 +107,14 @@ static void draw_frame(unsigned char *fb, unsigned int w, unsigned int h,
 			if (bpp == 32) {
 				unsigned int *p = (unsigned int *)row;
 				for (x = 0; x < w; x++) {
-					*p++ = hue_lut[row_hue];
+					*p++ = hue_lut[row_hue / LUT_STEP];
 					row_hue += scale_x;
 					if (row_hue >= RAINBOW_FULL)
 						row_hue -= RAINBOW_FULL;
 				}
 			} else if (bpp == 24) {
 				for (x = 0; x < w; x++) {
-					unsigned int packed = hue_lut[row_hue];
+					unsigned int packed = hue_lut[row_hue / LUT_STEP];
 					row[x * 3]     = (unsigned char)(packed & 0xFF);
 					row[x * 3 + 1] = (unsigned char)((packed >> 8) & 0xFF);
 					row[x * 3 + 2] = (unsigned char)((packed >> 16) & 0xFF);
@@ -117,7 +124,7 @@ static void draw_frame(unsigned char *fb, unsigned int w, unsigned int h,
 				}
 			} else if (bpp == 16) {
 				for (x = 0; x < w; x++) {
-					unsigned int packed = hue_lut[row_hue];
+					unsigned int packed = hue_lut[row_hue / LUT_STEP];
 					unsigned int r = (packed >> 16) & 0xFF;
 					unsigned int g = (packed >> 8) & 0xFF;
 					unsigned int b = packed & 0xFF;

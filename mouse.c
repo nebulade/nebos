@@ -262,16 +262,24 @@ void mouse_init(void)
 
 void mouse_poll_update(void)
 {
+	unsigned int guard = 0;
+
 	if (mouse_present_flag && !mouse_cursor_flag)
 		mouse_cursor_setup();
 	if (!mouse_streaming_flag)
 		return;
 
 	for (;;) {
-		unsigned char st = inb(PS2_STATUS);
+		unsigned char st;
 		unsigned char b0;
 		int dx, dy;
 
+		/* Bound the drain: a stuck/emulated controller must not
+		 * wedge the WM loop; leftovers are read next iteration. */
+		if (guard++ >= 64)
+			return;
+
+		st = inb(PS2_STATUS);
 		if ((st & (STATUS_OUT_FULL | STATUS_AUX_DATA)) !=
 		    (STATUS_OUT_FULL | STATUS_AUX_DATA))
 			return;

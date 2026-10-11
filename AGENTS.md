@@ -80,6 +80,9 @@ make clean
 - **Text console**: `fbtext.c`, `font_8x8.c/h`, `io.c/h`, `screen.c/h` — 8×8 font,
   framebuffer glyph blitting (`fbtext_draw_cells`) and per-terminal cell buffers
   (`struct text_screen`).
+- **On-screen debug**: `kdbg.c/h` — framebuffer debug overlay (live status rows,
+  heartbeat, boot info rows, exception banner) for machines without serial; see
+  the kdbg section below.
 - **Shell**: `terminal.c` — history, line editing, command dispatch (hand-rolled
   `is_cmd_*` parsers). Runs in a window (`term_run(struct term *)`); reads keys
   from its per-terminal queue (filled by the WM).
@@ -217,6 +220,70 @@ QEMU gotchas that bit once:
 - `pkill -f qemu-system-i386` matches *your own shell command line* (it contains
   the string) and kills your script; use `pkill qemu` (process-name match) or
   kill by PID.
+
+## On-screen debug overlay (`kdbg`)
+
+For machines **without a serial console** (e.g. the ASUS AT3IONT-I), `kdbg.c/h`
+draws a debug overlay straight into the VESA LFB, bypassing the shadow buffer
+and the WM. It stays on screen even when the WM or the scheduler is wedged, so
+a freeze can be diagnosed by reading/photographing the screen. This is how the
+"freeze on first key press" was tracked down: the counters showed that no key
+event ever reached the OS (all zeros) and the heartbeat stopped, i.e. the CPU
+was wedged in firmware/SMM before IRQ1 was delivered.
+
+Layout (bottom-left, and a heartbeat square bottom-right):
+
+```
+MTRRdef 00000E06 vcnt 8            <- boot info rows (yellow), up to 10
+M0 b=00000000 m=FF000800 WB
+...
+WC=e7 b=FD000000 s=00800000
+IRQ 12  SC 9C  BY 12  OT 0  MK 0   <- live status row 1 (green)
+WM 6  K 000A  TRM 6  K 000A        <- live status row 2 (blue)
+```
+
+**Live status rows** (bottom two, refreshed on key events and 1×/s):
+
+- `IRQ` — IRQ1 entries; `SC` — last scancode read from port 0x60; `BY` —
+  scancode bytes read (IRQ + polling); `OT` — dropped other/AUX bytes; `MK` —
+  1 if the IRQ1 storm guard tripped (IRQ1 masked; WM falls back to polling).
+- `WM n K xxxx` — keys handed by the WM to the focused terminal; `TRM n K xxxx`
+  — keys consumed by `term_run`; `K` = last key value.
+- **Heartbeat square** (bottom-right) toggles every 500 ticks (~1 Hz) from the
+  PIT IRQ. If it stops, the *CPU* is wedged, not just the UI.
+
+**Info rows** (yellow, above the status rows) are boot-time diagnostics, e.g.
+the MTRR dump from `mtrr.c`: `MTRRdef` = default-type MSR + number of variable
+slots; `M0..M7` = the BIOS's own MTRR entries as found at boot (`-` = free
+slot; `b`/`m` = base/address mask; type `UC`/`WB`/`WC`/`WT`/`WP`); `WC=eN ...`
+= the write-combining entry the kernel added in free slot N for the
+framebuffer (or `WC skipped: no free MTRR entry`). Never overwrite
+BIOS-populated MTRR entries — chipset/MMIO uncacheability (and the USB-legacy
+SMM) breaks otherwise.
+
+**Exception banner**: `exc_handler()` (`kernel.c`) calls `kdbg_panic()`, which
+draws a red banner with vector name, EIP and CR2 at the top of the screen
+(visible without serial) before the CPU halts.
+
+API / wiring:
+
+- `kdbg_init()` — cache LFB geometry; call after `vga_shadow_init()`.
+- `kdbg_status()` — redraw the live rows; called from key paths and the PIT.
+- `kdbg_info(row, s)` — set one of 10 info rows (row 0 = lowest, at
+  `fb_h-31`). Text is **copied**, so stack buffers are fine, and it is safe to
+  call before `kdbg_init()` (stored, drawn once the framebuffer is up).
+- `kdbg_pit_tick()` — called from the PIT stub (`switch.S`); blinks the
+  heartbeat and refreshes the overlay every second.
+- Counters live in `kdbg.c`, bumped from `io.c` (`kbd_irq`,
+  `io_poll_key_with_hw`), `wm.c` (`wm_handle_keyboard`) and `terminal.c`
+  (`term_run`).
+
+Caveats:
+
+- Pixels are written directly to the LFB; WM full redraws overwrite them but
+  the 1 Hz refresh brings them back.
+- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x30000`
+  boundary (`kernel.ld` ASSERT).
 
 ## Conventions & gotchas
 

@@ -21,6 +21,7 @@
 .extern schedule
 .extern vga_shadow_flush_pending
 .extern serial_poll
+.extern kdbg_pit_tick
 .extern tss
 
 /* struct process offsets (must match process.h / process.c) */
@@ -53,6 +54,10 @@ pit_irq_stub:
 
 	/* Poll UART for received serial data (prevents FIFO overflow). */
 	call  serial_poll
+
+	/* On-screen debug heartbeat / status refresh (no serial console on
+	 * some targets; this keeps a live indicator on the framebuffer). */
+	call  kdbg_pit_tick
 
 	/* Shadow buffer flush at 30Hz: set pending flag, main loop does the copy. */
 	decl  flush_counter

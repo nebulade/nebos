@@ -6,6 +6,7 @@
 #include "fbtext.h"
 #include "idle.h"
 #include "io.h"
+#include "kdbg.h"
 #include "kexec.h"
 #include "mouse.h"
 #include "process.h"
@@ -379,15 +380,32 @@ static void wm_handle_mouse(void)
 static void wm_handle_keyboard(void)
 {
 	struct window *fw = wm_focused_window();
+	static unsigned int last_hw_poll;
+	unsigned int now = get_ticks_ms();
+	int handled = 0;
 	int n;
+
 	if (!fw || !fw->term)
 		return;
+
 	for (n = 0; n < 8; n++) {
 		int k = io_poll_key();
+		if (!k && (now - last_hw_poll) >= (kdbg_irq_masked ? 5 : 50)) {
+			/* Fallback paths: IRQ1 was storm-masked, or no IRQ is
+			 * delivering; sample the controller directly (faster
+			 * when masked, so fast typing isn't dropped). */
+			k = io_poll_key_with_hw();
+			last_hw_poll = now;
+		}
 		if (!k)
 			break;
+		kdbg_wm_count++;
+		kdbg_wm_last = (unsigned int)k;
+		handled = 1;
 		term_key_push(fw->term, k);
 	}
+	if (handled)
+		kdbg_status();
 }
 
 static void wm_draw_bar(void)

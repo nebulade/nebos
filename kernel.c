@@ -2,6 +2,7 @@
 
 #include "idle.h"
 #include "io.h"
+#include "kdbg.h"
 #include "kmalloc.h"
 #include "mm.h"
 #include "mouse.h"
@@ -64,7 +65,12 @@ void exc_handler(unsigned int eip, unsigned int vector)
 		"#XM SIMD Error",
 	};
 	__asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-	/* Print the fault to serial FIRST, using only minimal/no-stack code, so it
+	/* Draw the fault info directly into the framebuffer FIRST: with no
+	 * serial console attached, a fault was previously invisible (the text
+	 * went to the current process's screen buffer, which the WM never got
+	 * to render because the CPU halts here). */
+	kdbg_panic(vector < 20 ? names[vector] : "unknown vector", eip, cr2);
+	/* Print the fault to serial, using only minimal/no-stack code, so it
 	 * survives even if the screen buffer or kernel stack is the problem. */
 	serial_puts(SERIAL_COM1, "\n*** EXC vec ");
 	serial_puthex(SERIAL_COM1, vector);
@@ -185,6 +191,8 @@ void kernel_main(void)
 	mouse_init();
 	vga_shadow_init();
 	vga_fb_flush();
+	kdbg_init();
+	kdbg_status();
 	vfs_mount_all();
 	wm_run();
 }
