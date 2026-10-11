@@ -13,7 +13,7 @@ ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb run-serial floppy usb flash space prog bootstrap dev monitor
+.PHONY: all clean run run-floppy run-usb run-serial floppy usb flash space prog bootstrap dev net-dev netmon monitor
 
 all: floppy.img usb.img final.bin root.img
 
@@ -149,6 +149,12 @@ r8168.o: r8168.c r8168.h netdev.h io.h kdbg.h mm.h paging.h pci.h process.h seri
 netcmd.o: netcmd.c io.h timer.h netdev.h net.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+netkexec.o: netkexec.c netkexec.h io.h kexec.h net.h netdev.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+netlog.o: netlog.c netlog.h net.h netdev.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 netdev.o: netdev.c netdev.h ne2000.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -242,7 +248,7 @@ syscall_stub.o: syscall_stub.S
 mem.o: mem.c mm.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o kdbg.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o hello_embed.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o kdbg.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o hello_embed.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -409,6 +415,12 @@ send_serial: send_serial.c
 kexec_send: kexec_send.c
 	gcc -O2 -o $@ $<
 
+netkexec_send: netkexec_send.c
+	gcc -O2 -o $@ $<
+
+netmonitor: netmonitor.c
+	gcc -O2 -o $@ $<
+
 bootstrap: bootstrap.bin
 
 dev: kernel.bin kexec_send
@@ -417,5 +429,23 @@ dev: kernel.bin kexec_send
 	echo "Sending kernel.bin (entry 0x$$entry) via $(SERIAL_DEV) @ $(SERIAL_BAUD)..."; \
 	./kexec_send $(SERIAL_DEV) $(SERIAL_BAUD) $$entry kernel.bin
 
+# Show the board's netlog stream (kernel debug + terminal text) like `make
+# monitor` does over serial.
+netmon: netmonitor
+	@echo "Listening for netlog on UDP $(NETLOG_PORT) (Ctrl-C to exit)."
+	./netmonitor $(NETLOG_PORT)
+
+# Push a fresh kernel over Ethernet (the board auto-detects it from its idle
+# loop; no serial and no USB stick involved).
+BOARD_IP ?= 192.168.178.240
+NETLOG_PORT ?= 19290
+NETKEXEC_PORT ?= 19288
+
+net-dev: kernel.bin netkexec_send
+	@entry=$$(nm kernel.elf | awk '/ T kernel_main$$/{print $$1}'); \
+	if [ -z "$$entry" ]; then echo "error: kernel_main symbol not found"; exit 1; fi; \
+	echo "Sending kernel.bin (entry 0x$$entry) to $(BOARD_IP):$(NETKEXEC_PORT)..."; \
+	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
+
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o kdbg.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o kdbg.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

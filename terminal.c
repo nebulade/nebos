@@ -39,6 +39,8 @@ extern void program_netrecv_main(void);
 extern void program_netsend_main(void);
 extern void program_netip_main(const char *arg);
 extern void program_netping_main(const char *arg);
+extern void program_netlog_main(const char *arg);
+extern void program_netconsole_main(const char *arg);
 extern void program_netregs_main(void);
 extern void program_netloop_main(void);
 extern void program_netreset_main(void);
@@ -327,6 +329,34 @@ static int is_cmd_netinfo(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
+static int is_cmd_netlog(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 6 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'l' || line[i+4] != 'o' || line[i+5] != 'g')
+		return 0;
+	i += 6;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "netlog" must be a whole word */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 static int is_cmd_netconsole(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
 {
 	unsigned int i = 0, j = 0;
@@ -530,6 +560,7 @@ static int is_cmd_space(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
+#define NET_UDP_ARG_MAX 128
 #define CAT_FNAME_MAX 64
 static int is_cmd_cat(const char *line, unsigned int line_len, char *filename_buf, unsigned int buf_size)
 {
@@ -1122,6 +1153,8 @@ void term_run(struct term *t)
 					char format_dev[FORMAT_DEV_MAX];
 					char netip_arg[16];
 					char netping_arg[16];
+					char netlog_arg[NET_UDP_ARG_MAX];
+					char netconsole_arg[NET_UDP_ARG_MAX];
 					char lspci_arg[16];
 					char peek_arg[32];
 					char resolved[VFS_PATH_MAX];
@@ -1168,6 +1201,10 @@ void term_run(struct term *t)
 						term_spawn_arg(t, "netip", program_netip_main, netip_arg);
 					} else if (is_cmd_netping(t->line, t->line_len, netping_arg, sizeof(netping_arg))) {
 						term_spawn_arg(t, "netping", program_netping_main, netping_arg);
+					} else if (is_cmd_netlog(t->line, t->line_len, netlog_arg, sizeof(netlog_arg))) {
+						term_spawn_arg(t, "netlog", program_netlog_main, netlog_arg);
+					} else if (is_cmd_netconsole(t->line, t->line_len, netconsole_arg, sizeof(netconsole_arg))) {
+						term_spawn_arg(t, "netconsole", program_netconsole_main, netconsole_arg);
 					} else if (is_cmd_netregs(t->line, t->line_len)) {
 						term_spawn(t, "netregs", program_netregs_main);
 					} else if (is_cmd_netloop(t->line, t->line_len)) {
@@ -1279,6 +1316,8 @@ void term_run(struct term *t)
 						io_putstr("netsend\n");
 						io_putstr("netip [a.b.c.d]\n");
 						io_putstr("netping <a.b.c.d>\n");
+						io_putstr("netlog <text>\n");
+						io_putstr("netconsole [on|off|host <ip>]\n");
 						io_putstr("netregs\n");
 						io_putstr("netloop\n");
 						io_putstr("netreset\n");

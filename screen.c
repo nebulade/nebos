@@ -1,6 +1,7 @@
 /* Text screen: cell-buffer text output (no framebuffer access). */
 
 #include "screen.h"
+#include "netlog.h"
 
 #define SCREEN_ATTR 0x0A  /* light green on black */
 
@@ -42,6 +43,8 @@ void screen_putchar(struct text_screen *s, char c)
 {
 	unsigned int ncols = s->cols;
 	unsigned int total = s->cols * s->rows;
+
+	netlog_char(c);   /* terminal text also goes to the netlog mirror */
 
 	if (c == '\n') {
 		s->cursor = (s->cursor / ncols + 1) * ncols;

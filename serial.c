@@ -1,5 +1,6 @@
 #include "serial.h"
 #include "serial_ring_buf.h"
+#include "netlog.h"
 #include "pci.h"
 #include "timer.h"
 
@@ -16,6 +17,11 @@ void serial_init(unsigned int port)
 
 void serial_putc(unsigned int port, char c)
 {
+	/* Mirror the debug console to the network (netlog; a no-op until the
+	 * mirror is enabled and the NIC is up). */
+	if (port == SERIAL_COM1)
+		netlog_char(c);
+
 	while (!(port_inb(port + 5) & 0x20))
 		;
 	port_outb(port, (unsigned char)c);

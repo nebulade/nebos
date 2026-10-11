@@ -5,6 +5,7 @@
 #include "timer.h"
 #include "netdev.h"
 #include "net.h"
+#include "netlog.h"
 
 /* Shared frame buffers (file scope, not stack: the 4 KB process stack can't
    hold a full-size frame, and keeping them out of BSS-as-much-as-possible
@@ -251,6 +252,91 @@ void program_ping_main(void)
 	put_dec(count);
 	io_putstr(" replies)\n");
 	netdev_release();
+}
+
+/* ---- netlog: send a text line to the LAN as a UDP datagram ---- */
+
+void program_netlog_main(const char *arg)
+{
+	static const unsigned char bcast_mac[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+	unsigned char dst[4];
+	unsigned int len = 0;
+
+	if (arg[0] == '\0') {
+		io_putstr("netlog: usage netlog <text>\n");
+		return;
+	}
+	while (arg[len] && len < NET_UDP_MAX)
+		len++;
+
+	netlog_get_host(dst);
+	if (net_udp_send(bcast_mac, dst, NETLOG_PORT, NETLOG_PORT,
+			 arg, len) != 0) {
+		io_putstr("netlog: send failed\n");
+		return;
+	}
+	io_putstr("netlog: sent ");
+	put_dec(len);
+	io_putstr(" bytes to UDP port ");
+	put_dec(NETLOG_PORT);
+	io_putchar('\n');
+}
+
+/* ---- netconsole: the debug-output mirror (see netlog.c) ---- */
+
+static int arg_is(const char *arg, const char *word)
+{
+	unsigned int i = 0;
+
+	while (arg[i] && word[i] && arg[i] == word[i])
+		i++;
+	return arg[i] == '\0' && word[i] == '\0';
+}
+
+void program_netconsole_main(const char *arg)
+{
+	unsigned char ip[4];
+
+	if (arg[0] == '\0') {
+		io_putstr("netconsole: mirror ");
+		io_putstr(netlog_get_enabled() ? "on" : "off");
+		io_putstr(", host ");
+		netlog_get_host(ip);
+		put_ip(ip);
+		io_putstr(", udp port ");
+		put_dec(NETLOG_PORT);
+		io_putchar('\n');
+		io_putstr("netconsole: usage netconsole on|off|host <a.b.c.d>\n");
+		return;
+	}
+
+	if (arg_is(arg, "on")) {
+		netlog_set_enabled(1);
+		io_putstr("netconsole: mirror on\n");
+		return;
+	}
+	if (arg_is(arg, "off")) {
+		netlog_set_enabled(0);
+		io_putstr("netconsole: mirror off\n");
+		return;
+	}
+	if (arg[0] == 'h' && arg[1] == 'o' && arg[2] == 's' && arg[3] == 't') {
+		const char *p = arg + 4;
+
+		while (*p == ' ')
+			p++;
+		if (*p == '\0' || net_parse_ip(p, ip) != 0) {
+			io_putstr("netconsole: usage netconsole host <a.b.c.d>\n");
+			return;
+		}
+		netlog_set_host(ip);
+		io_putstr("netconsole: host ");
+		put_ip(ip);
+		io_putchar('\n');
+		return;
+	}
+
+	io_putstr("netconsole: usage netconsole on|off|host <a.b.c.d>\n");
 }
 
 /* ---- netreset: ask the driver for a full NIC re-init ---- */

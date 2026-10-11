@@ -9,6 +9,8 @@
 #include "kdbg.h"
 #include "kexec.h"
 #include "mouse.h"
+#include "netkexec.h"
+#include "netlog.h"
 #include "process.h"
 #include "rtc.h"
 #include "timer.h"
@@ -592,9 +594,18 @@ static void wm_blink_cursor(void)
 
 static void wm_handle_kexec(void)
 {
-	if (!kexec_busy && kexec_pending()) {
+	if (kexec_busy)
+		return;
+	if (kexec_pending()) {
 		kexec_busy = 1;
 		if (process_create("kexec", program_kexec_main) < 0)
+			kexec_busy = 0;
+		return;
+	}
+	/* Same over UDP: the host's `make net-dev` is picked up from here. */
+	if (netkexec_pending()) {
+		kexec_busy = 1;
+		if (process_create("netkexec", program_netkexec_main) < 0)
 			kexec_busy = 0;
 	}
 }
@@ -607,6 +618,7 @@ void wm_run(void)
 		wm_handle_mouse();
 		wm_handle_keyboard();
 		wm_blink_cursor();
+		netlog_flush();
 		wm_handle_kexec();
 		wm_redraw_if_needed();
 		vga_fb_flush_pending_check();

@@ -4,3 +4,5 @@
 *.img
 send_serial
 kexec_send
+netkexec_send
+netmonitor

@@ -7,6 +7,7 @@
 #include "mm.h"
 #include "mouse.h"
 #include "netdev.h"
+#include "netlog.h"
 #include "paging.h"
 #include "process.h"
 #include "timer.h"
@@ -198,5 +199,8 @@ void kernel_main(void)
 	/* Bring the NIC up before the WM loop starts, so an idle board can pick
 	 * up a network kexec (`make net-dev`) without any typing. */
 	netdev_active();
+	/* Network console mirror from the very first line on; the ring holds the
+	 * early boot output until the WM loop starts flushing it. */
+	netlog_init();
 	wm_run();
 }
