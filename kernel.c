@@ -7,6 +7,7 @@
 #include "mm.h"
 #include "mouse.h"
 #include "netdev.h"
+#include "dhcp.h"
 #include "netlog.h"
 #include "paging.h"
 #include "process.h"
@@ -175,6 +176,9 @@ void kernel_main(void)
 
 	serial_init(SERIAL_COM1);
 	serial_ring_init();
+	/* Network console mirror from the very first line on; the ring holds the
+	 * early boot output until the WM loop starts flushing it. */
+	netlog_init();
 	serial_puts(SERIAL_COM1, "\n" OS_NAME " v" OS_VERSION " booted\n");
 	mm_init();
 	mm_dump();
@@ -199,8 +203,8 @@ void kernel_main(void)
 	/* Bring the NIC up before the WM loop starts, so an idle board can pick
 	 * up a network kexec (`make net-dev`) without any typing. */
 	netdev_active();
-	/* Network console mirror from the very first line on; the ring holds the
-	 * early boot output until the WM loop starts flushing it. */
-	netlog_init();
+	/* With a NIC present, try DHCP; on failure the static default stays. */
+	if (netdev_active())
+		dhcp_run(3000);
 	wm_run();
 }

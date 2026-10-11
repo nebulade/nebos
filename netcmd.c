@@ -5,6 +5,7 @@
 #include "timer.h"
 #include "netdev.h"
 #include "net.h"
+#include "dhcp.h"
 #include "netlog.h"
 
 /* Shared frame buffers (file scope, not stack: the 4 KB process stack can't
@@ -69,6 +70,8 @@ static int ip_eq(const unsigned char *a, const unsigned char *b)
 void program_netinfo_main(void)
 {
 	const struct netdev *nd = netdev_active();
+	unsigned char ip[4], mask[4], gw[4], server[4];
+	unsigned int lease = 0;
 
 	if (!nd) {
 		io_putstr("netinfo: no NIC found\n");
@@ -80,9 +83,45 @@ void program_netinfo_main(void)
 	io_putstr(nd->chip);
 	io_putstr(")\n");
 	nd->print_info();
+
+	net_get_ip(ip);
+	net_get_mask(mask);
+	net_get_gateway(gw);
 	io_putstr("ip=");
-	net_print_ip();
+	put_ip(ip);
+	if (mask[0] || mask[1] || mask[2] || mask[3]) {
+		io_putstr("/");
+		put_ip(mask);
+	}
 	io_putchar('\n');
+	if (gw[0] || gw[1] || gw[2] || gw[3]) {
+		io_putstr("gw=");
+		put_ip(gw);
+		io_putchar('\n');
+	}
+	if (dhcp_last_info(server, &lease)) {
+		io_putstr("dhcp: server ");
+		put_ip(server);
+		io_putstr(" lease ");
+		put_dec(lease);
+		io_putstr("s\n");
+	}
+}
+
+/* ---- dhcp ---- */
+
+void program_dhcp_main(void)
+{
+	switch (dhcp_run(4000)) {
+	case 0:
+		break;                  /* dhcp_run() printed the lease */
+	case -1:
+		/* message already printed */
+		break;
+	default:
+		io_putstr("dhcp: no NIC\n");
+		break;
+	}
 }
 
 /* ---- netregs: driver register dump ---- */
@@ -643,21 +682,48 @@ static void netping_run(const char *arg)
 	nd->get_mac(my_mac);
 	net_get_ip(my_ip);
 
+	/* With a mask and gateway known, off-subnet targets go via the router;
+	 * we can only ARP for the next hop. */
 	{
-		int r = netping_arp(nd, my_mac, my_ip, target, target_mac);
+		unsigned char mask[4], gw[4], hop[4];
+		unsigned int j, off = 0;
 
-		if (r == -2) {
-			io_putstr("netping: transmit failed (see netregs)\n");
-			return;
+		net_get_mask(mask);
+		net_get_gateway(gw);
+		for (j = 0; j < 4; j++)
+			hop[j] = target[j];
+		if ((mask[0] || mask[1] || mask[2] || mask[3]) &&
+		    (gw[0] || gw[1] || gw[2] || gw[3])) {
+			for (j = 0; j < 4; j++) {
+				if ((target[j] & mask[j]) != (my_ip[j] & mask[j]))
+					off = 1;
+			}
 		}
-		if (r != 0) {
-			io_putstr("netping: no ARP reply from ");
+		if (off) {
+			for (j = 0; j < 4; j++)
+				hop[j] = gw[j];
+			io_putstr("netping: ");
 			put_ip(target);
+			io_putstr(" via ");
+			put_ip(hop);
 			io_putchar('\n');
-			return;
+		}
+
+		{
+			int r = netping_arp(nd, my_mac, my_ip, hop, target_mac);
+
+			if (r == -2) {
+				io_putstr("netping: transmit failed (see netregs)\n");
+				return;
+			}
+			if (r != 0) {
+				io_putstr("netping: no ARP reply from ");
+				put_ip(hop);
+				io_putchar('\n');
+				return;
+			}
 		}
 	}
-
 	io_putstr("netping: ");
 	put_ip(target);
 	io_putstr(" is-at ");

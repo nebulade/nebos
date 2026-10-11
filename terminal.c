@@ -41,6 +41,7 @@ extern void program_netip_main(const char *arg);
 extern void program_netping_main(const char *arg);
 extern void program_netlog_main(const char *arg);
 extern void program_netconsole_main(const char *arg);
+extern void program_dhcp_main(void);
 extern void program_netregs_main(void);
 extern void program_netloop_main(void);
 extern void program_netreset_main(void);
@@ -382,6 +383,22 @@ static int is_cmd_netconsole(const char *line, unsigned int line_len, char *arg_
 	while (i < line_len && j + 1 < buf_size)
 		arg_buf[j++] = line[i++];
 	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_dhcp(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 'd' || line[i+1] != 'h' || line[i+2] != 'c' ||
+	    line[i+3] != 'p')
+		return 0;
+	i += 4;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -1205,6 +1222,8 @@ void term_run(struct term *t)
 						term_spawn_arg(t, "netlog", program_netlog_main, netlog_arg);
 					} else if (is_cmd_netconsole(t->line, t->line_len, netconsole_arg, sizeof(netconsole_arg))) {
 						term_spawn_arg(t, "netconsole", program_netconsole_main, netconsole_arg);
+					} else if (is_cmd_dhcp(t->line, t->line_len)) {
+						term_spawn(t, "dhcp", program_dhcp_main);
 					} else if (is_cmd_netregs(t->line, t->line_len)) {
 						term_spawn(t, "netregs", program_netregs_main);
 					} else if (is_cmd_netloop(t->line, t->line_len)) {
@@ -1318,6 +1337,7 @@ void term_run(struct term *t)
 						io_putstr("netping <a.b.c.d>\n");
 						io_putstr("netlog <text>\n");
 						io_putstr("netconsole [on|off|host <ip>]\n");
+						io_putstr("dhcp\n");
 						io_putstr("netregs\n");
 						io_putstr("netloop\n");
 						io_putstr("netreset\n");

@@ -43,13 +43,13 @@ make clean
 | `0x900`   | kexec flat GDT + GDTR (built at runtime; below the kernel) |
 | `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
-| `0x20000` | (free — kernel upper bound used to be here, now `0x30000`) |
-| `0x30000` | ISA DMA buffer (`disk.c`) + kernel upper bound (`kernel.ld` ASSERT) |
-| `0x30800` | Protected-mode stack top (`vesa_stage.S`) |
-| `0x30F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
-| `0x31000` | User program load address (`run.c`, `user.ld`) |
-| `0x42000` | Fallback process stack pool (8 × 4 KB; primary stacks come from the frame allocator, ≥ `0x900000`, see `process.c`/`mm.c`) |
-| `0x50000` | kexec staging buffer (received kernel image, up to 0x28200 B) |
+| `0x4000`  | ISA DMA buffer, one sector (`disk.c`) |
+| `0x40000` | Kernel upper bound (`kernel.ld` ASSERT) |
+| `0x40800` | Protected-mode stack top (`vesa_stage.S`, `kexec_tramp.S`) |
+| `0x40F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
+| `0x41000` | User program load address (`run.c`, `user.ld`) |
+| `0x50000` | Fallback process stack pool (8 × 4 KB; primary stacks come from the frame allocator, ≥ `0x900000`, see `process.c`/`mm.c`) |
+| `0x58000` | kexec staging buffer (received kernel image, up to 0x38200 B; ends below the VGA window) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
 ## Key files
@@ -65,7 +65,7 @@ make clean
   1 MB and an 8 MB VGA-shadow region. `kmalloc.c/h` — a power-of-two heap
   allocator on top of the frame allocator (used for the process table). Process
   stacks (≥ `0x900000`) come from the frame allocator, with an 8-stack fallback
-  pool at `0x42000`.
+  pool at `0x50000`.
 - **Paging**: `paging.c/h` — identity-maps RAM (4 MB pages via CR4.PSE) + the
   LFB (uncacheable) and enables CR0.PG/WP. A single shared page directory for
   now (no per-process address spaces yet). The kexec trampoline
@@ -91,23 +91,52 @@ make clean
   `blkdev.c` (floppy + IDE registry), `ata.c` (ATA PIO), `disk.c` (FDC + ISA DMA ch2, retries).
 - **Serial**: `serial.c`, `serial_ring_buf.c/h`, `bin_recv.c/h`, `serial_recv.c`,
   `serial_loop.c`, `send_serial.c` — 16550 UART, IRQ-driven ring buffer, XMODEM.
+- **Network**: `netdev.c/h` — NIC driver registry (`struct netdev`, first probe
+  wins; drivers: `r8168.c` RTL8111/8168 (PCIe, polled, C+ mode) and `ne2000.c`
+  RTL8029 (QEMU/ISA)). `net.c` — ARP + ICMP echo, IPv4/UDP send + parse helpers,
+  frame decode, `net_checksum()`. `dhcp.c` — minimal DHCP client (DISCOVER →
+  OFFER → REQUEST → ACK; runs at boot when a NIC is present, 3 s budget, keeps
+  the static address when no server answers; `dhcp` re-runs it). `netcmd.c` —
+  the
+  `netinfo`/`netrecv`/`netsend`/`netip`/`dhcp`/`ping`/`netping`/`netregs`
+  commands.  Static IP default `192.168.178.240`, mask/gateway learned from
+  DHCP (off-subnet `netping` goes via the router).
 - **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `bootstrap.c`, and the
   host-side `kexec_send.c` — reload the kernel over serial without rebooting
   (C-light: reuses the current framebuffer, re-runs `kernel_main`).
+  `netkexec.c/h` + host-side `netkexec_send.c` do the same over UDP
+  (`make net-dev BOARD_IP=…`): the WM loop auto-detects the header, the board
+  acks every datagram with the next expected offset, verifies the checksum and
+  jumps. While idle the same loop answers ARP/ICMP for our IP, so the board is
+  reachable (and MAC-resolvable) without running any command.
 - **Mouse**: `mouse.c` — PS/2 + IntelliMouse, hardware cursor.
 - **USB**: `uhci.c/h`, `usb.c/h`, `lsusb.c` — UHCI host controller (PCI scan,
   polling transfers, no IRQ), USB core enumeration with hub recursion, and the
   `lsusb` command.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
-  `0x31000`, API function-pointer struct at `0x30F00`. `space` = Space Invaders.
+  `0x41000`, API function-pointer struct at `0x40F00`. `space` = Space Invaders.
 
 ## Shell commands
 
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <file>`, `space`,
-`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `storage`, `mem`, `format <device>`,
+`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `storage`, `mem`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
+
+Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
+DHCP client), `ping` (responds to ARP/ICMP for our IP for 30 s),
+`netping <a.b.c.d>` (active ARP + ICMP echo with RTT, via the gateway when the
+target is off-subnet), `netloop` (PHY loopback TX/RX self-test), `netreset`
+(full NIC re-init), `netlog <text>` (one UDP datagram to port 19290),
+`netconsole on|off|host <a.b.c.d>` (the debug-output mirror, see below) and
+`netregs` (register dump, decoded ISR + counters).  On boot, if a NIC is
+present, a DHCP client runs with a 3 s budget (requesting the current address)
+and falls back to the static default when no server answers.  The board also
+answers ARP/ICMP for its IP while idle.
+`lspci` lists every PCI function (one line each); with a filter (`lspci 8168`,
+`lspci 02`) it also prints BAR details, type and size for matching functions.
+`peek <addr> [len]` hex-dumps memory (identity map, so MMIO registers too).
 
 Each terminal has a current working directory (shown in the prompt as `[dir] > `),
 changed with `cd`; paths may be absolute (`/floppy1/…`) or relative (`.`, `..`,
@@ -160,6 +189,54 @@ Notes: the kexec path rebuilds a flat GDT at `0x900` before jumping (the old GDT
 lives inside the overwritten kernel region), so it's safe to edit any file,
 including `vesa_stage.S`/`boot.S` layout — but the video *mode* itself is only
 re-applied on a full floppy/USB boot (C-light reuses the current LFB).
+
+## Network hot-reload (net-dev) workflow
+
+For boards without a serial console (the ASUS AT3IONT-I), the same reload runs
+over the network instead:
+
+```sh
+make net-dev                    # pushes kernel.bin to BOARD_IP (default 192.168.178.240)
+make net-dev BOARD_IP=192.168.178.42
+```
+
+The board must be idle at a shell prompt: the WM loop polls the NIC, answers
+ARP/ICMP for its IP, and auto-detects the `"KXNU"` header datagram (UDP port
+19288).  The host tool (`netkexec_send.c`) then does a stop-and-wait transfer:
+the board acks every datagram with the next expected offset, verifies the
+32-bit checksum and jumps.  ~130 KB takes about a second on a wired LAN.
+While a net command owns the receiver (`netrecv`/`ping`/`netping`/`netloop`)
+or a kexec is in progress, the auto-detect pauses.
+
+The board's address comes from DHCP when a server is present (the DHCP client
+runs at boot; `netinfo` shows ip/mask/gateway and the lease), so use
+`make net-dev BOARD_IP=<leased address>` — or `netip` on the board to pin one.
+
+## Network console (`make netmon`)
+
+The serial console is mirrored to UDP port 19290, so a board without a serial
+port gets the same visibility as `make monitor`:
+
+- everything written to COM1 (`serial_puts` — driver bring-up trails, MTRR
+  dumps, kexec progress) and
+- everything written to a terminal screen (`io_putstr` — shell output, command
+  results, `netrecv` dumps)
+
+is buffered in RAM as it is produced and flushed from the WM loop as
+line-sized datagrams.  On the host:
+
+```sh
+make netmon                 # builds + runs netmonitor (Ctrl-C to exit)
+make netmon | tee board.log
+./netmonitor 19290          # different port
+```
+
+The mirror is **on** by default and broadcasts; `netconsole host <laptop-ip>`
+narrows it to one host (datagrams carry the broadcast MAC, so the board needs
+no ARP entry for it), `netconsole off`/`on` toggles it, and `netlog <text>`
+sends an ad-hoc line.  Nothing is sent before the NIC is up, the producer
+never blocks (a full buffer drops characters and reports it), and the flush
+pauses while a net command owns the receiver.
 
 ## Serial debug monitor (`dbg`)
 
@@ -234,7 +311,7 @@ was wedged in firmware/SMM before IRQ1 was delivered.
 Layout (bottom-left, and a heartbeat square bottom-right):
 
 ```
-MTRRdef 00000E06 vcnt 8            <- boot info rows (yellow), up to 10
+MTRRdef 00000E06 vcnt 8            <- boot info rows (yellow), up to 14
 M0 b=00000000 m=FF000800 WB
 ...
 WC=e7 b=FD000000 s=00800000
@@ -269,9 +346,11 @@ API / wiring:
 
 - `kdbg_init()` — cache LFB geometry; call after `vga_shadow_init()`.
 - `kdbg_status()` — redraw the live rows; called from key paths and the PIT.
-- `kdbg_info(row, s)` — set one of 10 info rows (row 0 = lowest, at
+- `kdbg_info(row, s)` — set one of 14 info rows (row 0 = lowest, at
   `fb_h-31`). Text is **copied**, so stack buffers are fine, and it is safe to
   call before `kdbg_init()` (stored, drawn once the framebuffer is up).
+- `kdbg_info_alloc()` — claim the next free info row (`-1` when full); boot
+  subsystems (MTRR dump, NIC) take rows in init order without colliding.
 - `kdbg_pit_tick()` — called from the PIT stub (`switch.S`); blinks the
   heartbeat and refreshes the overlay every second.
 - Counters live in `kdbg.c`, bumped from `io.c` (`kbd_irq`,
@@ -282,7 +361,7 @@ Caveats:
 
 - Pixels are written directly to the LFB; WM full redraws overwrite them but
   the 1 Hz refresh brings them back.
-- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x30000`
+- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x40000`
   boundary (`kernel.ld` ASSERT).
 
 ## Conventions & gotchas
