@@ -57,7 +57,7 @@ void gdt_tss_init(void)
 	__asm__ volatile ("lgdt %0" : : "m"(gdtp));
 
 	tss.ss0  = 0x10;    /* kernel data segment */
-	tss.esp0 = 0x30800; /* bootstrap stack; updated by switch.S per process */
+	tss.esp0 = 0x40800; /* bootstrap stack; updated by switch.S per process */
 	tss.iomap_base = 0xFFFF;  /* no I/O permission bitmap (deny ring-3 I/O) */
 	__asm__ volatile ("ltr %0" : : "r"((unsigned short)0x28));
 }

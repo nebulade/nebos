@@ -5,7 +5,7 @@
  * LFB are still valid) and jump straight to the new kernel's kernel_main,
  * which re-inits IDT/PIC/PIT/mouse/process/VGA-shadow/terminal from scratch.
  *
- * Because this code lives at 0x7E00..0x30000 (inside the region we overwrite),
+ * Because this code lives at 0x7E00..0x40000 (inside the region we overwrite),
  * the final "copy image to 0x7E00 and jump" is done by a small
  * position-independent trampoline relocated to 0x800 (below the kernel).
  *
@@ -26,10 +26,14 @@
 #include "serial.h"
 
 #define KEXEC_MAGIC 0x4345584B /* "KXEC" little-endian */
-#define KEXEC_STAGE 0x50000    /* staging buffer for the received image */
-#define KEXEC_LOAD  0x7E00     /* where the kernel must be placed */
+
+/* The staging buffer must hold a full kernel image and stay below the VGA
+   window (0xA0000). */
+#if KEXEC_STAGE + KEXEC_MAX > 0xA0000
+#error "kexec staging overlaps the VGA aperture"
+#endif
+
 #define KEXEC_TRAMP 0x800      /* relocated trampoline (below the kernel) */
-#define KEXEC_MAX   0x28200    /* max = kernel region 0x7E00..0x30000 */
 
 volatile int kexec_busy;
 volatile unsigned int kexec_progress;
@@ -148,6 +152,13 @@ void program_kexec_main(void)
 	io_puthex(entry);
 	io_putstr("\n");
 
+	kexec_jump(entry, size);
+}
+
+/* Relocate the trampoline to 0x800 (it survives the kernel overwrite) and
+ * jump to it with the staging/load/size/entry arguments.  Never returns. */
+void kexec_jump(unsigned int entry, unsigned int size)
+{
 	/* Relocate the trampoline to 0x800 so it survives the kernel overwrite. */
 	{
 		const void *s = (const void *)kexec_trampoline;

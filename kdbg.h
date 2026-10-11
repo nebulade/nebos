@@ -23,6 +23,10 @@ void kdbg_panic(const char *name, unsigned int eip, unsigned int cr2);
    framebuffer is up. */
 void kdbg_info(unsigned int row, const char *s);
 
+/* Allocate the next free info row (boot subsystems claim rows in init
+   order).  Returns -1 when every row is already taken. */
+int kdbg_info_alloc(void);
+
 /* Counters shared by the keyboard IRQ, the WM and the terminal. */
 extern volatile unsigned int kdbg_irq_count;   /* IRQ1 entries */
 extern volatile unsigned int kdbg_irq_bytes;   /* scancode bytes read */

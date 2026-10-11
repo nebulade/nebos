@@ -66,7 +66,7 @@ kexec_trampoline:
 	 * this the jump below can execute stale instructions. */
 	wbinvd
 
-	movl  $0x30800, %esp
+	movl  $0x40800, %esp
 	jmp   *%edx
 
 .globl kexec_trampoline_end

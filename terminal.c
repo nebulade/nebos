@@ -32,7 +32,8 @@ extern void program_lsusb_main(void);
 extern void program_storage_main(void);
 extern void program_mem_main(void);
 extern void program_format_main(const char *arg);
-extern void program_lspci_main(void);
+extern void program_lspci_main(const char *filter);
+extern void program_peek_main(const char *arg);
 extern void program_netinfo_main(void);
 extern void program_netrecv_main(void);
 extern void program_netsend_main(void);
@@ -247,9 +248,10 @@ static int is_cmd_lsusb(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
-static int is_cmd_lspci(const char *line, unsigned int line_len)
+static int is_cmd_lspci(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
 {
-	unsigned int i = 0;
+	unsigned int i = 0, j = 0;
+
 	while (i < line_len && line[i] == ' ')
 		i++;
 	if (i + 5 > line_len)
@@ -258,6 +260,47 @@ static int is_cmd_lspci(const char *line, unsigned int line_len)
 	    line[i+3] != 'c' || line[i+4] != 'i')
 		return 0;
 	i += 5;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "lspci" must be a whole word */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_peek(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 'p' || line[i+1] != 'e' || line[i+2] != 'e' ||
+	    line[i+3] != 'k')
+		return 0;
+	i += 4;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "peek" must be a whole word */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -275,6 +318,36 @@ static int is_cmd_netinfo(const char *line, unsigned int line_len)
 	    line[i+6] != 'o')
 		return 0;
 	i += 7;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netconsole(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 10 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'c' || line[i+4] != 'o' || line[i+5] != 'n' ||
+	    line[i+6] != 's' || line[i+7] != 'o' || line[i+8] != 'l' ||
+	    line[i+9] != 'e')
+		return 0;
+	i += 10;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "netconsole" must be a whole word */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -964,6 +1037,8 @@ void term_run(struct term *t)
 					char ls_path[LS_PATH_MAX];
 					char format_dev[FORMAT_DEV_MAX];
 					char netip_arg[16];
+					char lspci_arg[16];
+					char peek_arg[32];
 					char resolved[VFS_PATH_MAX];
 					char save_resolved[SAVE_ARGS_MAX + VFS_PATH_MAX];
 					unsigned int kill_pid;
@@ -994,8 +1069,10 @@ void term_run(struct term *t)
 						}
 					} else if (is_cmd_lsusb(t->line, t->line_len)) {
 						term_spawn(t, "lsusb", program_lsusb_main);
-					} else if (is_cmd_lspci(t->line, t->line_len)) {
-						term_spawn(t, "lspci", program_lspci_main);
+					} else if (is_cmd_lspci(t->line, t->line_len, lspci_arg, sizeof(lspci_arg))) {
+						term_spawn_arg(t, "lspci", program_lspci_main, lspci_arg);
+					} else if (is_cmd_peek(t->line, t->line_len, peek_arg, sizeof(peek_arg))) {
+						term_spawn_arg(t, "peek", program_peek_main, peek_arg);
 					} else if (is_cmd_netinfo(t->line, t->line_len)) {
 						term_spawn(t, "netinfo", program_netinfo_main);
 					} else if (is_cmd_netrecv(t->line, t->line_len)) {
@@ -1102,7 +1179,8 @@ void term_run(struct term *t)
 						io_putstr("storage\n");
 						io_putstr("mem\n");
 						io_putstr("format <device>\n");
-						io_putstr("lspci\n");
+						io_putstr("lspci [id]\n");
+						io_putstr("peek <addr> [len]\n");
 						io_putstr("netinfo\n");
 						io_putstr("netrecv\n");
 						io_putstr("netsend\n");

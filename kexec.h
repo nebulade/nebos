@@ -4,6 +4,16 @@
 
 void program_kexec_main(void);
 
+/* Staging buffer for a received kernel image, and the maximum image size
+ * (the kernel region 0x7E00..0x40000).  Below the VGA window; see AGENTS.md. */
+#define KEXEC_STAGE 0x58000
+#define KEXEC_LOAD  0x7E00
+#define KEXEC_MAX   0x38200
+
+/* Copy the staged image (KEXEC_STAGE, `size` bytes) over the kernel region,
+ * relocate the trampoline and jump to `entry`.  Never returns. */
+void kexec_jump(unsigned int entry, unsigned int size);
+
 /* Non-zero while a kexec receive is in progress (prevents double-trigger). */
 extern volatile int kexec_busy;
 

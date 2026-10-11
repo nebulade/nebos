@@ -118,7 +118,7 @@ void process_init(void)
 	procs[0].screen     = (void *)0;
 	procs[0].stack_base = 0;  /* bootstrap stack, never freed */
 	procs[0].cr3        = paging_current_cr3();
-	procs[0].kstack_top = 0x30800;  /* bootstrap stack top */
+	procs[0].kstack_top = 0x40800;  /* bootstrap stack top */
 	name_copy(procs[0].name, "wm");
 	current_pid = 0;
 }
@@ -354,6 +354,17 @@ int process_create_user(const char *name, const void *image, unsigned int size)
 void process_set_screen(struct text_screen *screen)
 {
 	procs[current_pid].screen = screen;
+}
+
+void process_map_mmio_all(unsigned int phys_base, unsigned int size)
+{
+	unsigned int i, kernel_cr3 = paging_current_cr3();
+
+	paging_map_mmio(phys_base, size);
+	for (i = 0; i < proc_cap; i++) {
+		if (procs[i].cr3 && procs[i].cr3 != kernel_cr3)
+			paging_map_mmio_cr3(procs[i].cr3, phys_base, size);
+	}
 }
 
 void process_exit(void)

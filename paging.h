@@ -26,4 +26,9 @@ int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
  * whole number of 4 MB pages. */
 void paging_map_mmio(unsigned int phys_base, unsigned int size);
 
+/* Same, but into an explicit page directory (used to update per-process
+ * directories; see process_map_mmio_all()). */
+void paging_map_mmio_cr3(unsigned int cr3, unsigned int phys_base,
+			 unsigned int size);
+
 #endif

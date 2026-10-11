@@ -19,9 +19,10 @@ static unsigned int fb_w, fb_h, fb_pitch, fb_bpp;
 static volatile unsigned char *fb_lfb;
 static int fb_ok;
 
-#define KDBG_INFO_MAX 10
+#define KDBG_INFO_MAX 14
 static char kdbg_info_buf[KDBG_INFO_MAX][40];
 static unsigned char kdbg_info_used[KDBG_INFO_MAX];
+static unsigned int kdbg_info_next;
 
 void kdbg_init(void)
 {
@@ -164,6 +165,13 @@ static void kdbg_redraw_info(void)
 
 	for (r = 0; r < KDBG_INFO_MAX; r++)
 		kdbg_draw_info_row(r);
+}
+
+int kdbg_info_alloc(void)
+{
+	if (kdbg_info_next >= KDBG_INFO_MAX)
+		return -1;
+	return (int)kdbg_info_next++;
 }
 
 void kdbg_status(void)

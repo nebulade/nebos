@@ -1,4 +1,4 @@
-/* run command: load raw binary from a FAT filesystem to 0x31000 and execute.
+/* run command: load raw binary from a FAT filesystem to 0x41000 and execute.
  * Usage: run /<device>/<file>. */
 
 #include "fat.h"
@@ -10,7 +10,7 @@
 #include "vga.h"
 #include "vfs.h"
 
-#define PROGRAM_LOAD_ADDR 0x31000
+#define PROGRAM_LOAD_ADDR 0x41000
 #define PROGRAM_LOAD_MAX  0x10000
 
 void program_run_main(const char *filename)
@@ -70,7 +70,7 @@ void program_run_main(const char *filename)
 	((void (*)(void))PROGRAM_LOAD_ADDR)();
 }
 
-/* run serial: execute the binary already loaded at 0x31000 via serial_recv. */
+/* run serial: execute the binary already loaded at 0x41000 via serial_recv. */
 
 void program_run_serial_main(const char *arg)
 {

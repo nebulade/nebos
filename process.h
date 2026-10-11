@@ -7,7 +7,7 @@
 /* Process stacks are allocated from the frame allocator (mm.c), i.e. above the
  * VGA shadow buffer.  If that is unavailable (no E820 map) we fall back to a
  * small fixed pool below 1 MB so the system still boots with fewer processes. */
-#define PROC_FALLBACK_STACK_BASE 0x42000
+#define PROC_FALLBACK_STACK_BASE 0x50000
 #define PROC_FALLBACK_STACK_MAX  8
 
 #define PROC_UNUSED  0
@@ -52,6 +52,13 @@ int  process_create_ptr(const char *name, void (*entry)(void *), void *arg);
  * process.  Returns the pid, or -1 on error. */
 int  process_create_user(const char *name, const void *image, unsigned int size);
 void process_set_screen(struct text_screen *screen);
+
+/* Map an MMIO range into the kernel's page directory and every live process
+ * copy (and thus every process created later, which clones the kernel map).
+ * Drivers that map their register window at command time must use this: a
+ * process runs with its own page-directory copy, so paging_map_mmio() alone
+ * would only be visible to the kernel bootstrap context. */
+void process_map_mmio_all(unsigned int phys_base, unsigned int size);
 void process_exit(void);
 void schedule(void);
 void process_ps(void);

@@ -134,13 +134,21 @@ int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
 	return 1;
 }
 
-void paging_map_mmio(unsigned int phys_base, unsigned int size)
+/* Identity-map an MMIO range uncacheable into one page directory (4 MB pages;
+ * the range is rounded up to a whole number of them). */
+void paging_map_mmio_cr3(unsigned int cr3, unsigned int phys_base, unsigned int size)
 {
+	unsigned int *pd = (unsigned int *)cr3;
 	unsigned int p0 = phys_base >> 22;
 	unsigned int p1 = (phys_base + size + 0x3FFFFFu) >> 22;
 	unsigned int i;
 
 	for (i = p0; i < p1 && i < 1024; i++)
-		page_dir[i] = (i << 22) | PDE_PS | PDE_PCD |
-			      PDE_WRITABLE | PDE_PRESENT;
+		pd[i] = (i << 22) | PDE_PS | PDE_PCD |
+			PDE_WRITABLE | PDE_PRESENT;
+}
+
+void paging_map_mmio(unsigned int phys_base, unsigned int size)
+{
+	paging_map_mmio_cr3((unsigned int)page_dir, phys_base, size);
 }

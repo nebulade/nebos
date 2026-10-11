@@ -109,14 +109,14 @@ static const char *type_name(unsigned int t)
 	}
 }
 
-/* Dump MTRRdefType and the variable entries to kdbg and serial.  Returns
- * the next free kdbg info row. */
-static unsigned int dump_mtrrs(unsigned int vcnt)
+/* Dump MTRRdefType and the variable entries to kdbg and serial.  Rows come
+ * from the kdbg info pool, so other subsystems keep their own. */
+static void dump_mtrrs(unsigned int vcnt)
 {
 	char buf[56];
 	char *p;
 	unsigned int i, lo, hi, mlo, mhi;
-	unsigned int row = 0;
+	int row;
 
 	rdmsr(MSR_MTRR_DEF_TYPE, &lo, &hi);
 	p = buf;
@@ -125,7 +125,9 @@ static unsigned int dump_mtrrs(unsigned int vcnt)
 	p = app(p, " vcnt ");
 	*p++ = (char)('0' + (vcnt > 9 ? 9 : vcnt));
 	*p = '\0';
-	kdbg_info(row++, buf);
+	row = kdbg_info_alloc();
+	if (row >= 0)
+		kdbg_info((unsigned int)row, buf);
 	serial_puts(SERIAL_COM1, buf);
 	serial_puts(SERIAL_COM1, "\n");
 
@@ -147,11 +149,12 @@ static unsigned int dump_mtrrs(unsigned int vcnt)
 			p = app(p, type_name(lo));
 		}
 		*p = '\0';
-		kdbg_info(row++, buf);
+		row = kdbg_info_alloc();
+		if (row >= 0)
+			kdbg_info((unsigned int)row, buf);
 		serial_puts(SERIAL_COM1, buf);
 		serial_puts(SERIAL_COM1, "\n");
 	}
-	return row;
 }
 
 void mtrr_set_wc(unsigned int base, unsigned int size)
@@ -161,7 +164,7 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 	unsigned int vcnt;
 	unsigned int i, use = ~0u;
 	unsigned int region_size, align, physmask;
-	unsigned int row;
+	int row;
 	char buf[56];
 	char *p;
 
@@ -175,9 +178,9 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 	if (vcnt == 0)
 		return;
 
-	/* Dump the first 8 at most (kdbg has 10 info rows); the search
-	 * below still covers every variable range. */
-	row = dump_mtrrs(vcnt > 8 ? 8 : vcnt);
+	/* Dump the first 8 at most (kdbg info rows are a shared pool); the
+	 * search below still covers every variable range. */
+	dump_mtrrs(vcnt > 8 ? 8 : vcnt);
 
 	/* Round size up to the next power of two (min 4 KB). */
 	region_size = 0x1000;
@@ -213,7 +216,9 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 	if (use == ~0u) {
 		p = app(p, "WC skipped: no free MTRR entry");
 		*p = '\0';
-		kdbg_info(row, buf);
+		row = kdbg_info_alloc();
+		if (row >= 0)
+			kdbg_info((unsigned int)row, buf);
 		serial_puts(SERIAL_COM1, "mtrr: no free variable entry; skipping WC\n");
 		return;
 	}
@@ -241,7 +246,9 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 	p = app(p, " s=");
 	p = hex8(p, region_size);
 	*p = '\0';
-	kdbg_info(row, buf);
+	row = kdbg_info_alloc();
+	if (row >= 0)
+		kdbg_info((unsigned int)row, buf);
 
 	serial_puts(SERIAL_COM1, "mtrr: LFB WC [");
 	serial_puthex(SERIAL_COM1, base);
