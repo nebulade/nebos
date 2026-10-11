@@ -28,6 +28,7 @@ extern void program_mouseinfo_main(void);
 extern void program_serial_loop_main(const char *arg);
 extern void program_serial_recv_main(const char *arg);
 extern void program_run_serial_main(const char *arg);
+extern void program_run_embedded_main(const char *name);
 extern void program_lsusb_main(void);
 extern void program_storage_main(void);
 extern void program_mem_main(void);
@@ -308,6 +309,22 @@ static int is_cmd_peek(const char *line, unsigned int line_len, char *arg_buf, u
 	while (i < line_len && j + 1 < buf_size)
 		arg_buf[j++] = line[i++];
 	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_prog(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 'p' || line[i+1] != 'r' || line[i+2] != 'o' ||
+	    line[i+3] != 'g')
+		return 0;
+	i += 4;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -1278,7 +1295,9 @@ void term_run(struct term *t)
 							io_putstr("rm: path too long\n");
 						}
 					} else if (is_cmd_space(t->line, t->line_len)) {
-						io_putstr("space: not available in windowed mode yet\n");
+						term_spawn_arg(t, "space", program_run_embedded_main, "space");
+					} else if (is_cmd_prog(t->line, t->line_len)) {
+						term_spawn_arg(t, "prog", program_run_embedded_main, "prog");
 					} else if (is_cmd_display(t->line, t->line_len)) {
 						term_spawn(t, "display", program_display_main);
 					} else if (is_cmd_cpuinfo(t->line, t->line_len)) {
@@ -1317,8 +1336,9 @@ void term_run(struct term *t)
 						io_putstr("hello\n");
 						io_putstr("reboot\n");
 						io_putstr("poweroff\n");
-						io_putstr("run <file>\n");
+						io_putstr("run <name>|<file>\n");
 						io_putstr("space\n");
+						io_putstr("prog\n");
 						io_putstr("clock\n");
 						io_putstr("colors\n");
 						io_putstr("display\n");

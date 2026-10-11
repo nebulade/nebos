@@ -115,12 +115,20 @@ make clean
   `lsusb` command.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
-  `0x41000`, API function-pointer struct at `0x40F00`. `space` = Space Invaders.
+  `0x41000`, API function-pointer struct at `0x40F00`.  `prog`/`space` are
+  **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`, like
+  `hello.elf`), so `make dev`/`make net-dev` update them too and a board with
+  no readable filesystem can still run them: `run <name>` and the `prog`/
+  `space` commands use the embedded copy, `run /<device>/<file>` still loads
+  from FAT.  Rebuilds are wired (`space.c` -> `space.bin` -> `space_embed.o` ->
+  `kernel.elf`).  Note: full-screen programs draw over the WM, which keeps
+  repainting its desktop — running them windowed/cleanly is a follow-up.
 
 ## Shell commands
 
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
-`mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <file>`, `space`,
+`mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
+`prog`,
 `clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `storage`, `mem`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
