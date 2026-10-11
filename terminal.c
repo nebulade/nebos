@@ -38,6 +38,10 @@ extern void program_netinfo_main(void);
 extern void program_netrecv_main(void);
 extern void program_netsend_main(void);
 extern void program_netip_main(const char *arg);
+extern void program_netping_main(const char *arg);
+extern void program_netregs_main(void);
+extern void program_netloop_main(void);
+extern void program_netreset_main(void);
 extern void program_ping_main(void);
 
 /* Print the prompt (with the current directory) and set line_start. */
@@ -353,6 +357,57 @@ static int is_cmd_netconsole(const char *line, unsigned int line_len, char *arg_
 	return (i == line_len);
 }
 
+static int is_cmd_netregs(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'r' || line[i+4] != 'e' || line[i+5] != 'g' ||
+	    line[i+6] != 's')
+		return 0;
+	i += 7;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netloop(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'l' || line[i+4] != 'o' || line[i+5] != 'o' ||
+	    line[i+6] != 'p')
+		return 0;
+	i += 7;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netreset(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 8 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'r' || line[i+4] != 'e' || line[i+5] != 's' ||
+	    line[i+6] != 'e' || line[i+7] != 't')
+		return 0;
+	i += 8;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 static int is_cmd_netrecv(const char *line, unsigned int line_len)
 {
 	unsigned int i = 0;
@@ -400,6 +455,35 @@ static int is_cmd_netip(const char *line, unsigned int line_len, char *arg_buf, 
 	i += 5;
 	if (i < line_len && line[i] != ' ')
 		return 0;  /* "netip" must be a whole word */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netping(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 7 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'p' || line[i+4] != 'i' || line[i+5] != 'n' ||
+	    line[i+6] != 'g')
+		return 0;
+	i += 7;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "netping" must be a whole word */
 	while (i < line_len && line[i] == ' ')
 		i++;
 	if (i >= line_len) {
@@ -1037,6 +1121,7 @@ void term_run(struct term *t)
 					char ls_path[LS_PATH_MAX];
 					char format_dev[FORMAT_DEV_MAX];
 					char netip_arg[16];
+					char netping_arg[16];
 					char lspci_arg[16];
 					char peek_arg[32];
 					char resolved[VFS_PATH_MAX];
@@ -1081,6 +1166,14 @@ void term_run(struct term *t)
 						term_spawn(t, "netsend", program_netsend_main);
 					} else if (is_cmd_netip(t->line, t->line_len, netip_arg, sizeof(netip_arg))) {
 						term_spawn_arg(t, "netip", program_netip_main, netip_arg);
+					} else if (is_cmd_netping(t->line, t->line_len, netping_arg, sizeof(netping_arg))) {
+						term_spawn_arg(t, "netping", program_netping_main, netping_arg);
+					} else if (is_cmd_netregs(t->line, t->line_len)) {
+						term_spawn(t, "netregs", program_netregs_main);
+					} else if (is_cmd_netloop(t->line, t->line_len)) {
+						term_spawn(t, "netloop", program_netloop_main);
+					} else if (is_cmd_netreset(t->line, t->line_len)) {
+						term_spawn(t, "netreset", program_netreset_main);
 					} else if (is_cmd_ping(t->line, t->line_len)) {
 						term_spawn(t, "ping", program_ping_main);
 					} else if (is_cmd_storage(t->line, t->line_len)) {
@@ -1185,6 +1278,10 @@ void term_run(struct term *t)
 						io_putstr("netrecv\n");
 						io_putstr("netsend\n");
 						io_putstr("netip [a.b.c.d]\n");
+						io_putstr("netping <a.b.c.d>\n");
+						io_putstr("netregs\n");
+						io_putstr("netloop\n");
+						io_putstr("netreset\n");
 						io_putstr("ping\n");
 						io_putstr("ps\n");
 						io_putstr("kill <pid>\n");

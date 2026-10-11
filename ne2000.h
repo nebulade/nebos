@@ -23,4 +23,8 @@ int ne2000_rx(unsigned char *buf, unsigned int maxlen);
    Returns 0 on success, -1 on error. */
 int ne2000_tx(const unsigned char *buf, unsigned int len);
 
+/* netdev adapter (see netdev.h). */
+#include "netdev.h"
+extern const struct netdev ne2000_netdev;
+
 #endif

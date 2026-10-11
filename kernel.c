@@ -6,6 +6,7 @@
 #include "kmalloc.h"
 #include "mm.h"
 #include "mouse.h"
+#include "netdev.h"
 #include "paging.h"
 #include "process.h"
 #include "timer.h"
@@ -194,5 +195,8 @@ void kernel_main(void)
 	kdbg_init();
 	kdbg_status();
 	vfs_mount_all();
+	/* Bring the NIC up before the WM loop starts, so an idle board can pick
+	 * up a network kexec (`make net-dev`) without any typing. */
+	netdev_active();
 	wm_run();
 }
