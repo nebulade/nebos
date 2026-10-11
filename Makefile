@@ -13,7 +13,7 @@ ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb run-serial floppy usb space prog bootstrap dev monitor
+.PHONY: all clean run run-floppy run-usb run-serial floppy usb flash space prog bootstrap dev monitor
 
 all: floppy.img usb.img final.bin root.img
 
@@ -253,8 +253,18 @@ boot.bin: boot.elf
 kernel.bin: kernel.elf
 	$(OBJCOPY) -O binary $< $@
 
+# Byte offsets inside boot.bin (see boot.S). Keep decimal: dd's seek= does not
+# parse 0x… literals (it silently treats them as 0) and the error is hidden by
+# the 2>/dev/null below.
+# 62 = kernel_sectors field (0x3E)
+# 87 = low byte of the "movw $1, %si" kernel start LBA (0x57)
+# 26/28/32 = BPB: heads (0x1A, word), hidden sectors (0x1C, dword),
+#            total sectors 32-bit (0x20, dword)
 KERNEL_SECTORS_OFFSET = 62
-BOOT_SECTOR_START_OFFSET = 0x57
+BOOT_SECTOR_START_OFFSET = 87
+BPB_HEADS_OFFSET = 26
+BPB_HIDDEN_OFFSET = 28
+BPB_TOTAL_OFFSET = 32
 
 floppy.img: boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
@@ -268,8 +278,13 @@ usb.img: mbr.bin boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
 	cp boot.bin boot.bin.patched; \
 	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
-	printf '\x02' | dd of=boot.bin.patched bs=1 seek=$(BOOT_SECTOR_START_OFFSET) conv=notrunc 2>/dev/null; \
-	cat mbr.bin boot.bin.patched kernel.bin > $@; \
+	printf '\x40' | dd of=boot.bin.patched bs=1 seek=$(BOOT_SECTOR_START_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\xff\x00' | dd of=boot.bin.patched bs=1 seek=$(BPB_HEADS_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\x3f\x00\x00\x00' | dd of=boot.bin.patched bs=1 seek=$(BPB_HIDDEN_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\x08\xb7\x01\x00' | dd of=boot.bin.patched bs=1 seek=$(BPB_TOTAL_OFFSET) conv=notrunc 2>/dev/null; \
+	cat mbr.bin > $@; \
+	dd if=/dev/zero bs=512 count=62 2>/dev/null >> $@; \
+	cat boot.bin.patched kernel.bin >> $@; \
 	truncate -s 64M $@; \
 	rm -f boot.bin.patched
 
@@ -335,6 +350,11 @@ run: image.bin root.img
 floppy: floppy.img
 
 usb: usb.img
+
+# Write usb.img to a USB stick; prompts before destroying anything.
+#   make flash USB=/dev/sdX          FORCE=1 skips the removable-device check.
+flash: usb.img
+	@./flash.sh "$(USB)" "$(FORCE)"
 
 run-floppy: floppy.img root.img
 	qemu-system-i386 -M pc -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \

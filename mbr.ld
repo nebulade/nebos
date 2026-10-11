@@ -1,15 +1,13 @@
-/* MBR linker script: places code at offset 0 for raw binary output. */
+/* MBR: one 512-byte section at 0x7C00. mbr.S pads to offset 510 and emits
+ * the 0xAA55 signature inline, so objcopy -O binary yields exactly 512 bytes. */
 ENTRY(_start)
 
 SECTIONS
 {
-	. = 0x0;
-	.boot : AT(0x0) {
+	. = 0x7C00;
+	.boot : {
 		*(.text)
 		*(.rodata .rodata.*)
-		. = 0x1FE;
-		*(.bootsig)
-		. = 0x200;
 	}
 	/DISCARD/ : { *(.eh_frame) *(.note*) *(.comment) }
 }
