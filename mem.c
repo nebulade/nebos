@@ -1,4 +1,4 @@
-/* mem command: report total/free physical memory and the E820 map. */
+/* meminfo command: report total/free physical memory and the E820 map. */
 
 #include "io.h"
 #include "mm.h"

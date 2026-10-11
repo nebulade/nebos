@@ -770,16 +770,20 @@ static int is_cmd_storage(const char *line, unsigned int line_len)
 	return (i == line_len);
 }
 
-static int is_cmd_mem(const char *line, unsigned int line_len)
+static int is_cmd_meminfo(const char *line, unsigned int line_len)
 {
 	unsigned int i = 0;
 	while (i < line_len && line[i] == ' ')
 		i++;
-	if (i + 3 > line_len)
+	if (i + 7 > line_len)
 		return 0;
-	if (line[i] != 'm' || line[i+1] != 'e' || line[i+2] != 'm')
+	if (line[i] != 'm' || line[i+1] != 'e' || line[i+2] != 'm' ||
+	    line[i+3] != 'i' || line[i+4] != 'n' || line[i+5] != 'f' ||
+	    line[i+6] != 'o')
 		return 0;
-	i += 3;
+	i += 7;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "meminfo" must be a whole word */
 	while (i < line_len && line[i] == ' ')
 		i++;
 	return (i == line_len);
@@ -817,7 +821,7 @@ static const char *const help_items[] = {
 	"cd [path]", "ls [path]", "cat <path>", "save <path> <text>",
 	"rm <path>", "mkdir <path>", "rmdir <path>", "hello", "reboot",
 	"poweroff", "run <name>|<file>", "space", "prog", "clock", "colors",
-	"display", "cpuinfo", "lsusb", "mouseinfo", "storage", "mem",
+	"display", "cpuinfo", "lsusb", "mouseinfo", "storage", "meminfo",
 	"format <device>", "lspci [id]", "peek <addr> [len]", "poke <addr> <val>",
 	"netinfo",
 	"netrecv", "netsend", "netip [a.b.c.d]", "netping <a.b.c.d>",
@@ -1702,8 +1706,8 @@ void term_run(struct term *t)
 						term_spawn(t, "ping", program_ping_main);
 					} else if (is_cmd_storage(t->line, t->line_len)) {
 						term_spawn(t, "storage", program_storage_main);
-					} else if (is_cmd_mem(t->line, t->line_len)) {
-						term_spawn(t, "mem", program_mem_main);
+					} else if (is_cmd_meminfo(t->line, t->line_len)) {
+						term_spawn(t, "meminfo", program_mem_main);
 					} else if (is_cmd_clock(t->line, t->line_len)) {
 						io_putstr("clock: not available in windowed mode yet\n");
 					} else if (is_cmd_colors(t->line, t->line_len)) {
