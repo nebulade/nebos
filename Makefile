@@ -9,7 +9,7 @@ OBJCOPY = objcopy
 CFLAGS   = -ffreestanding -fno-pie -m32 -march=i586 -nostdlib -fno-stack-protector \
            -fno-asynchronous-unwind-tables -mno-sse -mno-sse2 -mno-mmx \
            -Wall -Wextra -O2 -c
-ASFLAGS  = --32
+ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
@@ -239,10 +239,10 @@ boot.elf: boot.o
 vesa_stage.o: vesa_stage.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-timer.o: timer.S
+timer.o: timer.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-switch.o: switch.S
+switch.o: switch.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
 entry.o: entry.S

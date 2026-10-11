@@ -55,8 +55,8 @@ unsigned int get_ticks_ms(void)
 	return ticks;
 }
 
-void exc_handler(unsigned int eip, unsigned int vector);
-void exc_handler(unsigned int eip, unsigned int vector)
+void exc_handler(unsigned int eip, unsigned int vector, unsigned int cs);
+void exc_handler(unsigned int eip, unsigned int vector, unsigned int cs)
 {
 	unsigned int cr2 = 0;
 	static const char * const names[] = {
@@ -69,6 +69,20 @@ void exc_handler(unsigned int eip, unsigned int vector)
 		"#XM SIMD Error",
 	};
 	__asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+
+	/* A fault from ring 3 is a bug in a user command (or its ELF): kill that
+	 * process and keep the kernel running.  Kernel faults still halt. */
+	if ((cs & 3) == 3) {
+		serial_puts(SERIAL_COM1, "\n*** user fault vec ");
+		serial_puthex(SERIAL_COM1, vector);
+		serial_puts(SERIAL_COM1, " eip=");
+		serial_puthex(SERIAL_COM1, eip);
+		serial_puts(SERIAL_COM1, " -- process killed\n");
+		io_putstr("\n*** fault: ");
+		io_putstr(vector < 20 ? names[vector] : "unknown vector");
+		io_putstr(" -- command killed\n");
+		process_exit();     /* marks us dead and waits to be switched out */
+	}
 	/* Draw the fault info directly into the framebuffer FIRST: with no
 	 * serial console attached, a fault was previously invisible (the text
 	 * went to the current process's screen buffer, which the WM never got
@@ -143,7 +157,8 @@ static void timer_init(void)
 	for (i = 0; i < 256; i++)
 		set_idt_gate(i, (unsigned int)default_irq_stub);
 
-	/* Exception handlers 0-31: print the fault name and halt. */
+	/* Exception handlers 0-31: ring-3 faults kill the process, kernel
+	   faults print the panic banner and halt (see exc_handler). */
 	for (i = 0; i < 32; i++)
 		set_idt_gate(i, exc_stub_table[i]);
 

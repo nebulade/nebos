@@ -24,6 +24,8 @@
 .extern kdbg_pit_tick
 .extern tss
 
+.include "irqret.inc"
+
 /* struct process offsets (must match process.h / process.c) */
 .equ PCB_ESP,   0
 .equ PCB_CR3,   32
@@ -93,6 +95,11 @@ pit_irq_stub:
 	movl  %ebx, tss+4           /* TSS.esp0 = this process's ring-0 stack top */
 
 .no_switch:
+	/* Both paths (return to the interrupted process, or to one just switched
+	 * in) must leave a usable data segment selector for the context being
+	 * resumed; ring-3 needs 0x23 (see irqret.inc). */
+	IRQ_RETURN_DS 36
+
 	popa
 	iret
 

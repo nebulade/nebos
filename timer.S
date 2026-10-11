@@ -3,6 +3,8 @@
 .code32
 .text
 
+.include "irqret.inc"
+
 .globl kbd_irq_stub
 kbd_irq_stub:
 	pusha
@@ -14,6 +16,7 @@ kbd_irq_stub:
 	movw  %ax, %fs
 	movw  %ax, %gs
 	call  kbd_irq
+	IRQ_RETURN_DS 36
 	popa
 	iret
 
@@ -26,6 +29,7 @@ fdc_irq_stub:
 	movw  %ax, %fs
 	movw  %ax, %gs
 	call  fdc_irq
+	IRQ_RETURN_DS 36
 	popa
 	iret
 
@@ -100,9 +104,11 @@ exc_common:
 	movw  %ax, %gs
 	popl  %eax
 
-	pushl 4(%esp)      /* faulting EIP -> 1st arg */
-	call  exc_handler  /* exc_handler(eip, vector) */
-	addl  $4, %esp
+	pushl 8(%esp)      /* CS  -> 3rd arg */
+	pushl 4(%esp)      /* vector -> 2nd arg */
+	pushl 12(%esp)     /* faulting EIP -> 1st arg */
+	call  exc_handler  /* exc_handler(eip, vector, cs) */
+	addl  $12, %esp
 	cli
 1:	hlt
 	jmp   1b

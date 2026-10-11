@@ -6,6 +6,8 @@
 .code32
 .text
 
+.include "irqret.inc"
+
 .globl syscall_stub
 syscall_stub:
 	/* Disable interrupts for the duration of the syscall: the trap gate keeps
@@ -34,5 +36,11 @@ syscall_stub:
 	call  syscall_dispatch
 	addl  $16, %esp
 	movl  %eax, 28(%esp)   /* overwrite the saved eax with the return value */
+
+	/* Returning to the ring-3 caller: leave it a usable data selector (the
+	 * IRET would null 0x10, and user code #GPs on its first data access).
+	 * See irqret.inc for the why; this gate is ring-3-only. */
+	IRQ_RETURN_DS 36
+
 	popa
 	iret

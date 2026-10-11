@@ -478,7 +478,9 @@ SMM) breaks otherwise.
 
 **Exception banner**: `exc_handler()` (`kernel.c`) calls `kdbg_panic()`, which
 draws a red banner with vector name, EIP and CR2 at the top of the screen
-(visible without serial) before the CPU halts.
+(visible without serial) before the CPU halts.  Faults from ring 3 do not halt:
+the process is killed (with a short message in its terminal and on serial) and
+the kernel keeps running.
 
 API / wiring:
 
@@ -517,6 +519,14 @@ Caveats:
   grown (new cluster allocation for directories is not implemented).
 - **Keep the memory map in sync** — hardcoded addresses appear in `.S`, `.c`, and
   linker scripts; changing one without the others breaks boot/loading.
+- **Ring-3 data segments** — when an IRET returns to ring 3, the CPU nulls
+  DS/ES/FS/GS whose DPL is below CPL 3.  Every stub that loads 0x10 to run
+  kernel code must therefore restore the user data selector (0x23) before
+  returning to a ring-3 context: use `IRQ_RETURN_DS <cs_offset>`
+  (`irqret.inc`), as `switch.S`, `timer.S` and `syscall_stub.S` do.  QEMU does
+  not model this nulling, so a missing restore only fails on real hardware
+  (symptom: ring-3 #GP on its first data access, e.g. a store through a
+  pointer).
 
 ## Known issues (candidates for future tasks)
 
