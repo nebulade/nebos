@@ -1,11 +1,11 @@
-/* Serial receive command: receives a binary via serial into 0x43000. */
+/* Serial receive command: receives a binary via serial into 0x45000. */
 
 #include "io.h"
 #include "serial.h"
 #include "bin_recv.h"
 
-#define PROGRAM_LOAD_ADDR 0x43000
-#define PROGRAM_LOAD_MAX  0x10000
+#define PROGRAM_LOAD_ADDR 0x45000
+#define PROGRAM_LOAD_MAX  0x9000   /* up to 0x4E000, below the 0x50000 stack pool */
 
 unsigned int serial_recv_size;
 

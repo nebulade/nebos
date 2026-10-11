@@ -97,7 +97,7 @@ int main(int argc, char **argv)
 	fseek(f, 0, SEEK_END);
 	size = ftell(f);
 	fseek(f, 0, SEEK_SET);
-	if (size <= 0 || size > 0x38200) {
+	if (size <= 0 || size > 0x3C200) {
 		fprintf(stderr, "netkexec_send: bad size %ld\n", size);
 		fclose(f);
 		return 1;

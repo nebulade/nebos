@@ -47,12 +47,12 @@ make clean
 | `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
 | `0x4000`  | ISA DMA buffer, one sector (`disk.c`) |
-| `0x42000` | Kernel upper bound (`kernel.ld` ASSERT) |
-| `0x42800` | Protected-mode stack top (`vesa_stage.S`, `kexec_tramp.S`) |
-| `0x42F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
-| `0x43000` | User program load address (`run.c`, `user.ld`) |
+| `0x44000` | Kernel upper bound (`kernel.ld` ASSERT) |
+| `0x44800` | Protected-mode stack top (`vesa_stage.S`, `kexec_tramp.S`) |
+| `0x44F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
+| `0x45000` | User program load address (`run.c`, `user.ld`) |
 | `0x50000` | Fallback process stack pool (8 × 4 KB; primary stacks come from the frame allocator, ≥ `0x900000`, see `process.c`/`mm.c`) |
-| `0x58000` | kexec staging buffer (received kernel image, up to 0x3A200 B; ends below the VGA window) |
+| `0x58000` | kexec staging buffer (received kernel image, up to 0x3C200 B; ends below the VGA window) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
 ## Key files
@@ -94,8 +94,9 @@ make clean
 - **On-screen debug**: `kdbg.c/h` — framebuffer debug overlay (live status rows,
   heartbeat, boot info rows, exception banner) for machines without serial; see
   the kdbg section below.
-- **Shell**: `terminal.c` — history, line editing, command dispatch (hand-rolled
-  `is_cmd_*` parsers). Runs in a window (`term_run(struct term *)`); reads keys
+- **Shell**: `terminal.c` — history, line editing (Tab completes command
+  names from the help table and VFS paths via `fat_list_dir`), command
+  dispatch (hand-rolled `is_cmd_*` parsers). Runs in a window (`term_run(struct term *)`); reads keys
   from its per-terminal queue (filled by the WM).
 - **Filesystem**: `fat.c` (FAT12/16/32 read/write, device-parameterized),
   `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
@@ -147,7 +148,7 @@ make clean
   scan generation counter.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
-  `0x43000`, API function-pointer struct at `0x42F00`.  `prog`/`space` are
+  `0x45000`, API function-pointer struct at `0x44F00`.  `prog`/`space` are
   **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`, like
   `hello.elf`), so `make dev`/`make net-dev` update them too and a board with
   no readable filesystem can still run them: `run <name>` and the `prog`/
@@ -477,7 +478,7 @@ Caveats:
 
 - Pixels are written directly to the LFB; WM full redraws overwrite them but
   the 1 Hz refresh brings them back.
-- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x42000`
+- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x44000`
   boundary (`kernel.ld` ASSERT).
 
 ## Conventions & gotchas

@@ -5,7 +5,7 @@
  * LFB are still valid) and jump straight to the new kernel's kernel_main,
  * which re-inits IDT/PIC/PIT/mouse/process/VGA-shadow/terminal from scratch.
  *
- * Because this code lives at 0x7E00..0x42000 (inside the region we overwrite),
+ * Because this code lives at 0x7E00..0x44000 (inside the region we overwrite),
  * the final "copy image to 0x7E00 and jump" is done by a small
  * position-independent trampoline relocated to 0x800 (below the kernel).
  *

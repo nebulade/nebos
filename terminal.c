@@ -1038,6 +1038,374 @@ static void history_load_into_line(struct term *t, unsigned int browse)
 	redraw_line_clear(t->line, len, len, t->line_start, old_len > len ? old_len : len);
 }
 
+/* ---- Tab completion ---- */
+
+/* Command names come from the help table ("ls [path]" -> "ls"). */
+static unsigned int help_name_len(const char *s)
+{
+	unsigned int n = 0;
+	while (s[n] && s[n] != ' ' && s[n] != '[' && s[n] != '<' && s[n] != '|')
+		n++;
+	return n;
+}
+
+static char lower_ch(char c)
+{
+	return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+}
+
+static int prefix_ci(const char *s, const char *prefix, unsigned int plen)
+{
+	unsigned int i;
+	for (i = 0; i < plen; i++)
+		if (lower_ch(s[i]) != lower_ch(prefix[i]))
+			return 0;
+	return 1;
+}
+
+/* "HELLO   TXT" -> "hello.txt" (a completion-ready 8.3 display name). */
+static void tab_display_name(const char *n, char *out)
+{
+	unsigned int bl = 0, el = 0, i, j = 0;
+
+	for (i = 0; i < 8 && n[i] && n[i] != ' '; i++)
+		bl = i + 1;
+	for (i = 8; i < 11 && n[i] && n[i] != ' '; i++)
+		el = i - 8 + 1;
+	for (i = 0; i < bl; i++)
+		out[j++] = lower_ch(n[i]);
+	if (el) {
+		out[j++] = '.';
+		for (i = 0; i < el; i++)
+			out[j++] = lower_ch(n[8 + i]);
+	}
+	out[j] = '\0';
+}
+
+/* Shared completion state (fat_list_dir takes no context pointer). */
+static char tab_prefix[16];
+static unsigned int tab_prefix_len;
+static unsigned int tab_count;
+static unsigned int tab_lcp_len;
+static char tab_lcp[16];
+static int tab_single_dir;
+static fat_fs_t *tab_fs;
+static unsigned int tab_dir_cluster;
+static unsigned int tab_col;
+static unsigned int tab_width;
+
+static void tab_collect_cb(const char *name, int is_dir, unsigned int size)
+{
+	char disp[16];
+	unsigned int i, n;
+
+	(void)size;
+	if (name[0] == '.')                 /* "." / ".." */
+		return;
+	tab_display_name(name, disp);
+	if (!prefix_ci(disp, tab_prefix, tab_prefix_len))
+		return;
+	n = 0;
+	while (disp[n])
+		n++;
+	if (tab_count == 0) {
+		for (i = 0; i < n; i++)
+			tab_lcp[i] = disp[i];
+		tab_lcp_len = n;
+		tab_single_dir = is_dir;
+	} else {
+		i = 0;
+		while (i < tab_lcp_len && i < n && tab_lcp[i] == disp[i])
+			i++;
+		tab_lcp_len = i;
+	}
+	tab_count++;
+}
+
+static void tab_print_one(const char *name, int is_dir)
+{
+	unsigned int n = 0, w;
+
+	while (name[n])
+		n++;
+	w = n + (is_dir ? 1 : 0);
+	if (tab_col > 0 && tab_col + 2 + w > tab_width) {
+		io_putchar('\n');
+		tab_col = 0;
+	}
+	if (tab_col > 0) {
+		io_putstr("  ");
+		tab_col += 2;
+	}
+	io_putstr(name);
+	if (is_dir)
+		io_putchar('/');
+	tab_col += w;
+}
+
+static void tab_print_cb(const char *name, int is_dir, unsigned int size)
+{
+	char disp[16];
+
+	(void)size;
+	if (name[0] == '.')
+		return;
+	tab_display_name(name, disp);
+	if (!prefix_ci(disp, tab_prefix, tab_prefix_len))
+		return;
+	tab_print_one(disp, is_dir);
+}
+
+static int tab_scan_dir(const char *abs)
+{
+	fat_fs_t *fs;
+	const char *fs_path;
+
+	if (vfs_resolve(abs, &fs, &fs_path) != 0)
+		return 0;
+	if (fat_resolve_dir(fs, fs_path, &tab_dir_cluster) != 0)
+		return 0;
+	tab_fs = fs;
+	tab_count = 0;
+	tab_lcp_len = 0;
+	fat_list_dir(fs, tab_dir_cluster, tab_collect_cb);
+	return (int)tab_count;
+}
+
+static int tab_scan_mounts(void)
+{
+	unsigned int i;
+
+	tab_count = 0;
+	tab_lcp_len = 0;
+	for (i = 0; i < vfs_mount_count; i++) {
+		const char *name = vfs_mounts[i].name;
+		unsigned int n = 0, j;
+
+		while (name[n])
+			n++;
+		if (!prefix_ci(name, tab_prefix, tab_prefix_len))
+			continue;
+		if (tab_count == 0) {
+			for (j = 0; j < n; j++)
+				tab_lcp[j] = name[j];
+			tab_lcp_len = n;
+		} else {
+			j = 0;
+			while (j < tab_lcp_len && j < n && tab_lcp[j] == name[j])
+				j++;
+			tab_lcp_len = j;
+		}
+		tab_count++;
+	}
+	return (int)tab_count;
+}
+
+/* Replace line[start,end) with ins, keep the tail and redraw. */
+static void term_replace(struct term *t, unsigned int start, unsigned int end,
+			 const char *ins)
+{
+	unsigned int inslen = 0, tail, i, old_len = t->line_len;
+
+	while (ins[inslen])
+		inslen++;
+	tail = old_len - end;
+	if (start + inslen + tail >= LINE_MAX)
+		return;
+	for (i = 0; i < tail; i++)
+		t->line[start + inslen + i] = t->line[end + i];
+	for (i = 0; i < inslen; i++)
+		t->line[start + i] = ins[i];
+	t->line_len = start + inslen + tail;
+	t->line[t->line_len] = '\0';
+	t->line_pos = start + inslen;
+	redraw_line_clear(t->line, t->line_len, t->line_pos, t->line_start,
+			  old_len > t->line_len ? old_len : t->line_len);
+}
+
+/* List the ambiguous matches below the line, then redraw prompt + line. */
+static void term_tab_ambiguous(struct term *t, int mounts)
+{
+	unsigned int i;
+
+	io_putchar('\n');
+	tab_col = 0;
+	tab_width = t->screen.cols;
+	if (mounts) {
+		for (i = 0; i < vfs_mount_count; i++) {
+			const char *name = vfs_mounts[i].name;
+			if (prefix_ci(name, tab_prefix, tab_prefix_len))
+				tab_print_one(name, 1);
+		}
+	} else {
+		fat_list_dir(tab_fs, tab_dir_cluster, tab_print_cb);
+	}
+	io_putchar('\n');
+	term_print_prompt(t, 1);
+	redraw_line_clear(t->line, t->line_len, t->line_pos, t->line_start, t->line_len);
+}
+
+/* Complete the token at the cursor: command name in the first token, a VFS
+ * path afterwards.  One match completes, several extend to the common
+ * prefix or are listed below the line. */
+static void term_complete(struct term *t)
+{
+	char token[LINE_MAX + 1];
+	char ins[LINE_MAX + 1];
+	char dir[VFS_PATH_MAX];
+	unsigned int start = t->line_pos, end, tl, i, j;
+
+	while (start > 0 && t->line[start - 1] != ' ')
+		start--;
+	end = t->line_pos;
+	while (end < t->line_len && t->line[end] != ' ')
+		end++;
+	tl = end - start;
+	for (i = 0; i < tl; i++)
+		token[i] = t->line[start + i];
+	token[tl] = '\0';
+
+	/* First token -> command name. */
+	{
+		int first = 1;
+		for (i = 0; i < start; i++)
+			if (t->line[i] != ' ') {
+				first = 0;
+				break;
+			}
+		if (first) {
+			unsigned int nitems = sizeof(help_items) / sizeof(help_items[0]);
+			unsigned int count = 0, lcp_len = 0, best = 0;
+			char lcp[16];
+
+			for (i = 0; i < nitems; i++) {
+				unsigned int nl = help_name_len(help_items[i]);
+
+				if (nl < tl || !prefix_ci(help_items[i], token, tl))
+					continue;
+				if (count == 0) {
+					for (j = 0; j < nl; j++)
+						lcp[j] = help_items[i][j];
+					lcp_len = nl;
+					best = i;
+				} else {
+					for (j = 0; j < lcp_len && j < nl &&
+						     lcp[j] == help_items[i][j]; j++)
+						;
+					lcp_len = j;
+				}
+				count++;
+			}
+			if (count == 0)
+				return;
+			if (count == 1) {
+				unsigned int nl = help_name_len(help_items[best]);
+				for (j = 0; j < nl; j++)
+					ins[j] = help_items[best][j];
+				ins[nl] = ' ';
+				ins[nl + 1] = '\0';
+				term_replace(t, start, end, ins);
+				return;
+			}
+			if (lcp_len > tl) {
+				for (j = 0; j < lcp_len; j++)
+					ins[j] = lcp[j];
+				ins[lcp_len] = '\0';
+				term_replace(t, start, end, ins);
+				return;
+			}
+			io_putchar('\n');
+			tab_col = 0;
+			tab_width = t->screen.cols;
+			for (i = 0; i < nitems; i++) {
+				unsigned int nl = help_name_len(help_items[i]);
+				char name[16];
+				if (nl < tl || !prefix_ci(help_items[i], token, tl))
+					continue;
+				for (j = 0; j < nl && j < 15; j++)
+					name[j] = help_items[i][j];
+				name[j] = '\0';
+				tab_print_one(name, 0);
+			}
+			io_putchar('\n');
+			term_print_prompt(t, 1);
+			redraw_line_clear(t->line, t->line_len, t->line_pos,
+					  t->line_start, t->line_len);
+			return;
+		}
+	}
+
+	/* Argument token -> VFS path. */
+	{
+		char dirpart[LINE_MAX + 1];
+		const char *last = 0, *p;
+		unsigned int dp, n;
+		int mounts = 0;
+
+		for (p = token; *p; p++)
+			if (*p == '/')
+				last = p;
+		if (last) {
+			dp = (unsigned int)(last - token) + 1;
+			for (i = 0; i < dp; i++)
+				dirpart[i] = token[i];
+			dirpart[dp] = '\0';
+			p = last + 1;
+		} else {
+			dp = 0;
+			dirpart[0] = '\0';
+			p = token;
+		}
+		{
+			unsigned int k = 0;
+			while (*p && k < 15)
+				tab_prefix[k++] = *p++;
+			tab_prefix[k] = '\0';
+			tab_prefix_len = k;
+		}
+
+		if (dirpart[0] == '/' && dirpart[1] == '\0')
+			mounts = 1;
+		if (dirpart[0] == '/') {
+			if (dp >= VFS_PATH_MAX)
+				return;
+			for (i = 0; dirpart[i]; i++)
+				dir[i] = dirpart[i];
+			dir[i] = '\0';
+		} else {
+			if (vfs_join_path(t->cwd, dirpart, dir, sizeof(dir)) != 0)
+				return;
+		}
+
+		n = mounts ? (unsigned int)tab_scan_mounts()
+			   : (unsigned int)tab_scan_dir(dir);
+		if (n == 0)
+			return;
+		if (dp + tab_lcp_len + 2 > LINE_MAX)
+			return;
+		if (n == 1) {
+			for (i = 0; i < dp; i++)
+				ins[i] = dirpart[i];
+			for (i = 0; i < tab_lcp_len; i++)
+				ins[dp + i] = tab_lcp[i];
+			ins[dp + tab_lcp_len] = (mounts || tab_single_dir) ? '/' : ' ';
+			ins[dp + tab_lcp_len + 1] = '\0';
+			term_replace(t, start, end, ins);
+			return;
+		}
+		if (tab_lcp_len > tab_prefix_len) {
+			for (i = 0; i < dp; i++)
+				ins[i] = dirpart[i];
+			for (i = 0; i < tab_lcp_len; i++)
+				ins[dp + i] = tab_lcp[i];
+			ins[dp + tab_lcp_len] = '\0';
+			term_replace(t, start, end, ins);
+			return;
+		}
+		term_tab_ambiguous(t, mounts);
+	}
+}
+
 /* Push current line to history if non-empty (and not duplicate of newest). */
 static void history_push(struct term *t, const char *line, unsigned int line_len)
 {
@@ -1258,6 +1626,8 @@ void term_run(struct term *t)
 						t->line[t->line_len] = '\0';
 						redraw_line_from(t->line, t->line_len, t->line_pos, t->line_start, t->line_pos);
 					}
+				} else if (k == '\t') {
+					term_complete(t);
 				} else if (k == '\n') {
 					char cat_fname[CAT_FNAME_MAX];
 					char save_args[SAVE_ARGS_MAX];

@@ -17,4 +17,4 @@ SECTIONS
 	}
 	_end = .;
 }
-ASSERT(_end <= 0x42000, "Kernel too large would overwrite stack/DMA at 0x42000");
+ASSERT(_end <= 0x44000, "Kernel too large would overwrite stack/DMA at 0x44000");
