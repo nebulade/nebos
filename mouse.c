@@ -2,6 +2,7 @@
 #include "cirrus.h"
 #include "radeon.h"
 #include "timer.h"
+#include "usbhid.h"
 #include "vga.h"
 
 #define PS2_DATA   0x60
@@ -260,12 +261,58 @@ void mouse_init(void)
 	mouse_streaming_flag = 1;
 }
 
+/* Move the cursor by a relative delta (PS/2 sign convention: +dx right,
+   +dy up), redrawing it with the current backend (hardware cursor or
+   shadow-buffer save/restore). */
+static void mouse_move(int dx, int dy)
+{
+	long nx, ny;
+
+	if (!mouse_cursor_flag)
+		return;
+
+	nx = (long)cur_x + dx;
+	ny = (long)cur_y - dy;
+	mouse_clamp_ptr(&nx, &ny);
+	if ((unsigned int)nx == cur_x && (unsigned int)ny == cur_y)
+		return;
+
+	if (mouse_hw_cursor) {
+		cur_x = (unsigned int)nx;
+		cur_y = (unsigned int)ny;
+		if (mouse_hw_cursor == 2)
+			radeon_cursor_move(cur_x, cur_y);
+		else
+			cirrus_cursor_move(cur_x, cur_y);
+	} else {
+		vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
+			cur_saved);
+		cur_x = (unsigned int)nx;
+		cur_y = (unsigned int)ny;
+		vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
+			cur_saved);
+		mouse_draw_cursor(cur_x, cur_y);
+	}
+}
+
 void mouse_poll_update(void)
 {
 	unsigned int guard = 0;
+	unsigned int usb_buttons = 0;
+	int usb_dx = 0, usb_dy = 0;
 
-	if (mouse_present_flag && !mouse_cursor_flag)
+	/* The cursor is set up for whichever backend shows up first (PS/2
+	   is probed at boot, USB may attach later). */
+	if ((mouse_present_flag || usbhid_mouse_attached()) && !mouse_cursor_flag)
 		mouse_cursor_setup();
+
+	/* USB HID mouse: reports arrive through the armed interrupt
+	   endpoint; the backend also handles hotplug/detach. */
+	if (usbhid_poll(&usb_buttons, &usb_dx, &usb_dy)) {
+		mouse_buttons = usb_buttons;
+		mouse_move(usb_dx, usb_dy);
+	}
+
 	if (!mouse_streaming_flag)
 		return;
 
@@ -300,33 +347,16 @@ void mouse_poll_update(void)
 		if ((b0 & 0xC0) != 0)
 			continue;
 
-		if (mouse_cursor_flag) {
-			long nx = (long)cur_x + dx;
-			long ny = (long)cur_y - dy;
-			mouse_clamp_ptr(&nx, &ny);
-			if ((unsigned int)nx != cur_x || (unsigned int)ny != cur_y) {
-				if (mouse_hw_cursor) {
-					cur_x = (unsigned int)nx;
-					cur_y = (unsigned int)ny;
-					if (mouse_hw_cursor == 2)
-						radeon_cursor_move(cur_x, cur_y);
-					else
-						cirrus_cursor_move(cur_x, cur_y);
-				} else {
-					vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
-						cur_saved);
-					cur_x = (unsigned int)nx;
-					cur_y = (unsigned int)ny;
-					vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
-						cur_saved);
-					mouse_draw_cursor(cur_x, cur_y);
-				}
-			}
-		}
+		mouse_move(dx, dy);
 	}
 }
 
 int mouse_is_present(void)
+{
+	return mouse_present_flag || usbhid_mouse_attached();
+}
+
+int mouse_ps2_present(void)
 {
 	return mouse_present_flag;
 }

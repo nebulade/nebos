@@ -38,5 +38,8 @@ int io_poll_key(void);
 /* Same as io_poll_key but also reads port 0x60 when buffer empty (for full-screen programs). */
 int io_poll_key_with_hw(void);
 unsigned char io_last_scancode(void);
+/* Queue a PS/2 set-1 scancode from a non-IRQ source (USB keyboard backend);
+   it is then decoded by the normal io_poll_key path. */
+void io_inject_scancode(unsigned char sc);
 
 #endif

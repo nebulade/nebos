@@ -13,6 +13,7 @@
 #include "process.h"
 #include "timer.h"
 #include "tss.h"
+#include "usbhid.h"
 #include "wm.h"
 #include "serial.h"
 #include "version.h"
@@ -195,6 +196,10 @@ void kernel_main(void)
 	gdt_tss_init();
 	timer_init();
 	mouse_init();
+	/* USB HID backend (mouse + keyboard): controller bring-up + first
+	 * scan; devices plugged in later are picked up by the hotplug
+	 * watcher in the WM loop. */
+	usbhid_init();
 	vga_shadow_init();
 	vga_fb_flush();
 	kdbg_init();

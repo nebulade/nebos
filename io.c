@@ -316,3 +316,21 @@ unsigned char io_last_scancode(void)
 {
 	return last_scancode;
 }
+
+/* Queue a scancode from a non-IRQ source (the USB keyboard backend); the
+   normal io_poll_key/io_poll_key_with_hw path then decodes it.  Interrupts
+   are masked while touching the ring so an IRQ1 producer cannot corrupt it. */
+void io_inject_scancode(unsigned char sc)
+{
+	unsigned int flags;
+
+	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
+	{
+		unsigned int next = (kbd_head + 1) % KBD_BUF_SIZE;
+		if (next != kbd_tail) {
+			kbd_buf[kbd_head] = sc;
+			kbd_head = next;
+		}
+	}
+	__asm__ volatile ("pushl %0; popfl" : : "r"(flags));
+}

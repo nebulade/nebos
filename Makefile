@@ -13,14 +13,14 @@ ASFLAGS  = --32
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb run-serial floppy usb flash space prog bootstrap dev net-dev netmon monitor
+.PHONY: all clean run run-floppy run-usb run-uhci test-usb run-serial floppy usb flash space prog bootstrap dev net-dev netmon monitor
 
 all: floppy.img usb.img final.bin root.img
 
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.o: kernel.c idle.h io.h mouse.h process.h terminal.h timer.h serial.h version.h vga.h
+kernel.o: kernel.c idle.h io.h mouse.h process.h terminal.h timer.h serial.h usbhid.h version.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 screen.o: screen.c screen.h
@@ -119,13 +119,19 @@ display.o: display.c io.h vga.h gpu.h ati.h radeon.h fbtext.h
 cpuinfo.o: cpuinfo.c io.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-mousecmd.o: mousecmd.c io.h mouse.h
+mousecmd.o: mousecmd.c io.h mouse.h usb.h usbhid.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-uhci.o: uhci.c uhci.h pci.h timer.h
+uhci.o: uhci.c uhci.h usb_hcd.h pci.h serial.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-usb.o: usb.c usb.h io.h timer.h uhci.h
+ohci.o: ohci.c ohci.h usb_hcd.h pci.h paging.h mm.h serial.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+usb.o: usb.c usb.h usb_hcd.h io.h serial.h timer.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+usbhid.o: usbhid.c usbhid.h io.h usb.h usb_hcd.h serial.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 lsusb.o: lsusb.c io.h usb.h
@@ -182,7 +188,7 @@ fatformat.o: fatformat.c fatformat.h blkdev.h
 format.o: format.c blkdev.h disk.h fatformat.h io.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-mouse.o: mouse.c mouse.h cirrus.h radeon.h timer.h vga.h
+mouse.o: mouse.c mouse.h cirrus.h radeon.h timer.h usbhid.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 idle.o: idle.c idle.h
@@ -251,7 +257,7 @@ syscall_stub.o: syscall_stub.S
 mem.o: mem.c mm.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o kdbg.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o dhcp.o hello_embed.o prog_embed.o space_embed.o
+kernel.elf: vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o dhcp.o hello_embed.o prog_embed.o space_embed.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -386,12 +392,29 @@ flash: usb.img
 	@./flash.sh "$(USB)" "$(FORCE)"
 
 run-floppy: floppy.img root.img
-	qemu-system-i386 -M pc -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 run-usb: usb.img root.img
-	qemu-system-i386 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -boot c -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -boot c -device pci-ohci -device usb-mouse -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -boot c -device pci-ohci -device usb-mouse -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
+
+# UHCI variant (machines with an Intel/VIA-style controller, and the
+# regression test for the UHCI backend of the USB core).
+run-uhci: floppy.img root.img
+	qemu-system-i386 -M pc -device piix3-usb-uhci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -device piix3-usb-uhci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+
+# Headless USB HID regression tests (QEMU + python3): cursor movement via
+# injected USB mouse reports and keyboard input via injected key events,
+# including hotplug.  See tools/*.py.
+test-usb: floppy.img root.img
+	python3 tools/qmp_cursor_test.py
+	python3 tools/qmp_cursor_test.py --uhci
+	python3 tools/qmp_cursor_test.py --uhci72
+	python3 tools/qmp_cursor_test.py --hotplug
+	python3 tools/qmp_keyboard_test.py
+	python3 tools/qmp_keyboard_test.py --hotplug
 
 scp-final: final.bin
 	scp final.bin root@192.168.0.136:
@@ -459,4 +482,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o usb.o lsusb.o kdbg.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o dhcp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o dhcp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

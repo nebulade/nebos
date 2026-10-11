@@ -12,6 +12,8 @@ Toolchain: `gcc` (32-bit multilib), `as`/`ld`/`objcopy`, `mtools` (`mcopy`/`mkfs
 make all        # floppy.img usb.img final.bin root.img
 make run        # boot floppy.img + root.img in QEMU (fallback: qemu-system-x86_64)
 make run-usb    # boot usb.img as an IDE disk
+make run-uhci   # like `make run` but with a UHCI controller + USB mouse
+make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make clean
 ```
 
@@ -109,10 +111,22 @@ make clean
   acks every datagram with the next expected offset, verifies the checksum and
   jumps. While idle the same loop answers ARP/ICMP for our IP, so the board is
   reachable (and MAC-resolvable) without running any command.
-- **Mouse**: `mouse.c` — PS/2 + IntelliMouse, hardware cursor.
-- **USB**: `uhci.c/h`, `usb.c/h`, `lsusb.c` — UHCI host controller (PCI scan,
-  polling transfers, no IRQ), USB core enumeration with hub recursion, and the
-  `lsusb` command.
+- **Mouse**: `mouse.c/h` — cursor move/draw shared by the PS/2 path
+  (IntelliMouse, Cirrus/Radeon hardware cursor) and the USB backend;
+  `usbhid.c/h` — USB HID boot devices: find + configure a mouse and/or
+  keyboard, arm their interrupt endpoints, decode mouse reports and inject
+  keyboard scancodes, watch for plug/unplug.
+- **USB**: `usb.c/h` — controller-agnostic core: device enumeration,
+  descriptor parsing, hub recursion, bus scans, per-controller addresses, the
+  hotplug watcher and the interrupt-IN consumers (mouse + keyboard).
+  `usb_hcd.h` is the
+  host-controller ops vtable; `uhci.c` (I/O-port UHCI, frame list at
+  `0x3000`, one instance) and `ohci.c` (MMIO OHCI, up to 4 instances, HCCA +
+  ED/TD lists, polling) implement it.  `lsusb.c` — the `lsusb` command (lists
+  every controller and its tree).  The devices work on both controller types
+  and can be plugged in at any time (root-port connect-change watcher);
+  `lsusb` re-enumerates the bus, after which `usbhid` re-inits itself via a
+  scan generation counter.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
   `0x41000`, API function-pointer struct at `0x40F00`.  `prog`/`space` are
@@ -246,6 +260,71 @@ sends an ad-hoc line.  Nothing is sent before the NIC is up, the producer
 never blocks (a full buffer drops characters and reports it), and the flush
 pauses while a net command owns the receiver.
 
+## USB HID (mouse + keyboard) / host controllers
+
+`usb.c` is controller-agnostic; the drivers implement the `usb_hcd_ops`
+vtable (`usb_hcd.h`): control transfers, root-port queries/reset, and two
+interrupt-IN slots (0 = mouse, 1 = keyboard). `usb_hcd_init()` picks UHCI
+when present, otherwise OHCI (`ohci.c` drives up to 4 instances — MCP79 has
+four).
+
+- **OHCI**: BAR0 MMIO (`paging_map_mmio()`), HCCA from the page allocator,
+  static 16-byte-aligned ED/TD sets. Control transfers run on the control
+  list (`HcControlHeadED` + CLF) and are polled via each TD's condition code
+  — a NAKed TD stays queued and is retried by the controller. Both HID EDs
+  (F = 0) are chained and referenced from all 32 HCCA interrupt-table slots,
+  so their TDs are serviced every frame. No IRQs and no DoneHead handling:
+  software just harvests retired TDs. **TDs must be initialized with
+  CC = NotAccessed (0xF)** — OHCI has no active bit, and a zero CC makes
+  software think a fresh TD already completed. TD data toggles are explicit:
+  DATA0 = `0x02000000`, DATA1 = `0x03000000` (`0` means "use the ED carry
+  bit"); a wrong value makes the first control transfer fail with a toggle
+  mismatch on real hardware while QEMU (which ignores toggles) is happy.
+  Control queues use a dummy TD as the tail anchor; the data stage is one
+  TD (the controller splits it into MPS-sized packets itself).
+- **UHCI**: I/O ports, frame list at `0x3000`, control QH + two more QHs
+  (one per interrupt slot) serviced every frame while the controller keeps
+  running. The PCI scan checks **all functions** (real PIIX3/PIIX4/VIA
+  layouts put the USB function at 0:07.2 / 0:01.2) and ignores controllers
+  whose BARs the firmware left unassigned. One instance only.
+- **Devices** (`usbhid.c`): every HID (class 3) interface with an
+  interrupt-IN endpoint gets its own interrupt slot (USB_HCD_INT_SLOTS = 6).
+  Boot interfaces (subclass 1, protocol 2/1) are used as-is in boot
+  protocol; other class-3 interfaces are classified by reading their HID
+  report descriptor (a mouse/pointer collection or relative X/Y input is a
+  mouse, a keyboard collection is a keyboard; absolute pointers/tablets are
+  ignored).  Composite devices (keyboard + mouse behind one receiver) and
+  several devices can therefore coexist; mouse reports from all slots are
+  merged.  Mouse reports are 3 bytes (`b0&7` buttons, signed dx/dy; HID's
+  +y is flipped to the PS/2 convention).  Keyboard reports are 8 bytes
+  (modifier byte + 6 keycodes); they are diffed against the previous report
+  and decoded through a HID-usage → scancode-set-1 table (including 0xE0
+  extended keys), then injected with `io_inject_scancode()` so the
+  terminal/WM see exactly what a PS/2 keyboard would produce.
+  `usbhid_poll()` (from `mouse_poll_update()`) also runs the hotplug
+  watcher: root-port connect changes are enumerated (throttled to 250 ms),
+  `CCS` low or a few TD errors detach a device.  A full scan (`lsusb`) bumps
+  `usb_generation()`, which makes `usbhid` detach and rescan, so `lsusb`
+  can't leave the devices dead.  The BIOS PS/2 legacy emulation is
+  deliberately disabled (PCI config `0xC0`) because the kernel now owns
+  these devices.
+- **Debug**: `ohci:` / `uhci:` / `usbhid:` lines go to COM1 (and through the
+  netlog mirror on serial-less boards); `mouseinfo` shows the active mouse
+  backend and whether a USB keyboard is attached; `usb.c`'s `USB_DEBUG` and
+  `usbhid.c`'s `USBHID_DEBUG` (both default 0) add scan/report tracing.
+  Headless tests: `make test-usb` runs `tools/qmp_cursor_test.py` (injects
+  mouse motion with QMP `input-send-event`, verifies the cursor with
+  `screendump`) and `tools/qmp_keyboard_test.py` (types with QMP `send-key`,
+  verifies the screen output); both take mode flags (`--uhci`, `--uhci72`,
+  `--multi`, `--hotplug`).
+- **Limits**: no EHCI (high-speed devices stay invisible), hotplug watches
+  root ports only (a device behind a hub is only enumerated when a scan
+  runs), HID report IDs are not handled (a device that prepends report IDs
+  decodes as garbage), absolute pointers/tablets are ignored, no wheel
+  events, and no USB keyboard means no keyboard at all if the BIOS legacy
+  emulation was the only other source (`make net-dev` still reloads the
+  kernel).
+
 ## Serial debug monitor (`dbg`)
 
 A ring-0 debugger driven over the serial link. On the PC type `dbg`, then drive
@@ -299,9 +378,16 @@ directly at boot — no keystroke injection needed:
 
 QEMU gotchas that bit once:
 
-- The default `-M pc` (QEMU ≥ 11) has **no USB controller**. Add
-  `-device piix3-usb-uhci` (plus `-device usb-mouse`/`usb-hub`/…) explicitly.
-  Cross-check the guest's view of the tree with the monitor `info usb`.
+- The default `-M pc` (QEMU ≥ 11) has **no USB controller**. The `run-floppy`
+  and `run-usb` targets therefore add `-device pci-ohci -device usb-mouse`
+  (the OHCI path, same controller type as the ASUS ION); `make run-uhci` runs
+  the same images with `-device piix3-usb-uhci -device usb-mouse` to exercise
+  the UHCI backend. To keep the controller but leave a device out (hotplug
+  test), drop it and use QMP `device_add`/`device_del`. A USB keyboard can be
+  added the same way (`-device usb-kbd`); QMP `send-key` then types on it
+  while the QEMU window's own keys still go to the PS/2 keyboard, so the dev
+  loop stays usable. Cross-check the guest's view of the tree with the
+  monitor `info usb`.
 - `pkill -f qemu-system-i386` matches *your own shell command line* (it contains
   the string) and kills your script; use `pkill qemu` (process-name match) or
   kill by PID.
