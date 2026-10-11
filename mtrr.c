@@ -5,12 +5,27 @@
  * 30 Hz shadow flush writes to VRAM is a separate uncached PCI transaction.
  * Marking the LFB range write-combining (WC) via an MTRR lets the CPU batch
  * those writes into burst transfers, which is the single biggest rendering
- * win on real hardware.  (The "P5 USWC" write-combining comment in vga_copy.S
- * does not hold on the Pentium 4 / Athlon class machines that ship with
- * Radeon RV280 cards.)
+ * win on real hardware.
+ *
+ * Two hard rules (the first key press froze an ASUS AT3IONT-I; these were
+ * the only places where the kernel touched cacheability behind the BIOS's
+ * back, and overwriting the BIOS's MMIO-cacheability entries is the prime
+ * suspect, so both are fixed to be safe regardless):
+ *
+ *  1. NEVER overwrite an enabled BIOS MTRR entry.  Only ever add the WC
+ *     range to a free variable entry; if none is free, skip WC entirely.
+ *  2. Get the physmask direction right: mask bits are "compare" bits and
+ *     are therefore the bitwise COMPLEMENT of (size - 1).  (The previous
+ *     version had them inverted, so e.g. a 16 MB request marked the first
+ *     4 KB of every 16 MB block as WC instead of the framebuffer range.)
+ *
+ * The MTRR layout found at boot and the result are dumped to the on-screen
+ * debug lines (kdbg) and to serial, so this can be inspected on machines
+ * without a serial console.
  */
 
 #include "mtrr.h"
+#include "kdbg.h"
 #include "serial.h"
 
 #define MSR_MTRRCAP        0x0FE
@@ -19,6 +34,7 @@
 #define MSR_MTRR_PHYSMASK0 0x201
 
 #define MTRR_TYPE_WC       0x01
+#define MTRR_VALID         0x800
 
 static void rdmsr(unsigned int msr, unsigned int *lo, unsigned int *hi)
 {
@@ -39,23 +55,129 @@ static int cpu_has_mtrr(void)
 	return (edx & (1u << 12)) != 0;
 }
 
+/* Mask bits for physical address bits 32..35+.  Those are reserved (writing
+ * 1 to an unimplemented bit faults) so ask CPUID for the real width.  All
+ * ones for the implemented high bits means "must match PHYSBASE", which is
+ * zero, so addresses >= 4 GB never match the WC entry. */
+static unsigned int mtrr_hi_mask(void)
+{
+	unsigned int eax, ebx, ecx, edx;
+	unsigned int bits, n;
+
+	__asm__ volatile ("cpuid"
+		: "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+		: "a"(0x80000000u), "c"(0));
+	if (eax < 0x80000008u)
+		return 0;
+	__asm__ volatile ("cpuid"
+		: "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+		: "a"(0x80000008u), "c"(0));
+	bits = eax & 0xFF;
+	if (bits <= 32)
+		return 0;
+	n = bits - 32;
+	if (n >= 32)
+		return 0xFFFFFFFFu;
+	return (1u << n) - 1;
+}
+
+static char *app(char *p, const char *s)
+{
+	while (*s)
+		*p++ = *s++;
+	return p;
+}
+
+static char *hex8(char *p, unsigned int v)
+{
+	static const char h[] = "0123456789ABCDEF";
+	int i;
+	for (i = 7; i >= 0; i--)
+		*p++ = h[(v >> (i * 4)) & 0xF];
+	return p;
+}
+
+static const char *type_name(unsigned int t)
+{
+	switch (t & 7) {
+	case 0: return "UC";
+	case 1: return "WC";
+	case 4: return "WT";
+	case 5: return "WP";
+	case 6: return "WB";
+	default: return "??";
+	}
+}
+
+/* Dump MTRRdefType and the variable entries to kdbg and serial.  Returns
+ * the next free kdbg info row. */
+static unsigned int dump_mtrrs(unsigned int vcnt)
+{
+	char buf[56];
+	char *p;
+	unsigned int i, lo, hi, mlo, mhi;
+	unsigned int row = 0;
+
+	rdmsr(MSR_MTRR_DEF_TYPE, &lo, &hi);
+	p = buf;
+	p = app(p, "MTRRdef ");
+	p = hex8(p, lo);
+	p = app(p, " vcnt ");
+	*p++ = (char)('0' + (vcnt > 9 ? 9 : vcnt));
+	*p = '\0';
+	kdbg_info(row++, buf);
+	serial_puts(SERIAL_COM1, buf);
+	serial_puts(SERIAL_COM1, "\n");
+
+	for (i = 0; i < vcnt && i < 8; i++) {
+		rdmsr(MSR_MTRR_PHYSBASE0 + 2 * i, &lo, &hi);
+		rdmsr(MSR_MTRR_PHYSMASK0 + 2 * i, &mlo, &mhi);
+		p = buf;
+		*p++ = 'M';
+		*p++ = (char)('0' + i);
+		*p++ = ' ';
+		if (!(mlo & MTRR_VALID)) {
+			p = app(p, "-");
+		} else {
+			p = app(p, "b=");
+			p = hex8(p, lo & 0xFFFFF000u);
+			p = app(p, " m=");
+			p = hex8(p, mlo & 0xFFFFF000u);
+			*p++ = ' ';
+			p = app(p, type_name(lo));
+		}
+		*p = '\0';
+		kdbg_info(row++, buf);
+		serial_puts(SERIAL_COM1, buf);
+		serial_puts(SERIAL_COM1, "\n");
+	}
+	return row;
+}
+
 void mtrr_set_wc(unsigned int base, unsigned int size)
 {
-	unsigned int lo, hi;
+	unsigned int lo, hi, mlo;
 	unsigned int def_type;
 	unsigned int vcnt;
-	unsigned int region_size, align;
-	unsigned int physmask;
+	unsigned int i, use = ~0u;
+	unsigned int region_size, align, physmask;
+	unsigned int row;
+	char buf[56];
+	char *p;
 
-	if (!cpu_has_mtrr())
-		return;
-	if (size == 0)
+	if (!cpu_has_mtrr() || size == 0)
 		return;
 
 	rdmsr(MSR_MTRRCAP, &lo, &hi);
 	vcnt = lo & 0xFF;
+	if (vcnt > 16)
+		vcnt = 16;   /* sanity cap; CPUs ship 8..10 variable ranges */
 	if (vcnt == 0)
 		return;
+
+	/* Dump the first 8 at most (kdbg has 10 info rows); the search
+	 * below still covers every variable range. */
+	row = dump_mtrrs(vcnt > 8 ? 8 : vcnt);
 
 	/* Round size up to the next power of two (min 4 KB). */
 	region_size = 0x1000;
@@ -67,7 +189,7 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 
 	/* A variable-range MTRR must be aligned to its own size.  The largest
 	 * region we may use is therefore the base address's own power-of-two
-	 * alignment (base & -base). */
+	 * alignment. */
 	align = base & (~base + 1u);
 	if (align == 0 || align > 0x80000000u)
 		align = 0x80000000u;
@@ -75,23 +197,51 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 		region_size = align;
 	if (region_size < 0x1000)
 		return;
-
 	base &= ~(region_size - 1);
 
-	/* PhysMask: address bits [11:0] are implicitly don't-care; bits
-	 * [35:12] are the mask, with a 1 = don't-care.  For a <4 GB region the
-	 * high 32-bit mask is 0 (bits 32..35 must match physbase == 0). */
-	physmask = ((region_size - 1) & 0xFFFFF000u) | 0x800;
+	/* Only ever use a free variable entry.  BIOS-populated entries may
+	 * keep chipset MMIO uncached and must not be disturbed. */
+	for (i = 0; i < vcnt; i++) {
+		rdmsr(MSR_MTRR_PHYSMASK0 + 2 * i, &mlo, &hi);
+		if (!(mlo & MTRR_VALID)) {
+			use = i;
+			break;
+		}
+	}
 
-	/* Update MTRR with the global enable temporarily cleared so an
+	p = buf;
+	if (use == ~0u) {
+		p = app(p, "WC skipped: no free MTRR entry");
+		*p = '\0';
+		kdbg_info(row, buf);
+		serial_puts(SERIAL_COM1, "mtrr: no free variable entry; skipping WC\n");
+		return;
+	}
+
+	/* PhysMask bits [35:12] are compare bits: 1 = the address bit must
+	 * match PHYSBASE.  For a 2^n-sized region, bits [n-1:12] are
+	 * don't-care (0) and every higher bit must match (1), i.e. the
+	 * complement of (size - 1). */
+	physmask = (~(region_size - 1) & 0xFFFFF000u) | MTRR_VALID;
+
+	/* Update the entry with the global enable temporarily cleared so an
 	 * in-progress region never exposes a bogus memory type. */
 	rdmsr(MSR_MTRR_DEF_TYPE, &def_type, &hi);
-	wrmsr(MSR_MTRR_DEF_TYPE, def_type & ~0x800u, 0);
+	wrmsr(MSR_MTRR_DEF_TYPE, def_type & ~MTRR_VALID, 0);
 
-	wrmsr(MSR_MTRR_PHYSBASE0, base | MTRR_TYPE_WC, 0);
-	wrmsr(MSR_MTRR_PHYSMASK0, physmask, 0);
+	wrmsr(MSR_MTRR_PHYSBASE0 + 2 * use, base | MTRR_TYPE_WC, 0);
+	wrmsr(MSR_MTRR_PHYSMASK0 + 2 * use, physmask, mtrr_hi_mask());
 
 	wrmsr(MSR_MTRR_DEF_TYPE, def_type, 0);
+
+	p = app(p, "WC=e");
+	*p++ = (char)('0' + (use > 9 ? 9 : use));
+	p = app(p, " b=");
+	p = hex8(p, base);
+	p = app(p, " s=");
+	p = hex8(p, region_size);
+	*p = '\0';
+	kdbg_info(row, buf);
 
 	serial_puts(SERIAL_COM1, "mtrr: LFB WC [");
 	serial_puthex(SERIAL_COM1, base);

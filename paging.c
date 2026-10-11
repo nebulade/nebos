@@ -61,8 +61,16 @@ void paging_init(void)
 		for (i = p0; i < p1 && i < 1024; i++)
 			page_dir[i] = (i << 22) | PDE_PS | PDE_PCD |
 				      PDE_WRITABLE | PDE_PRESENT;
-		/* Mark the framebuffer write-combining so VRAM writes batch. */
-		mtrr_set_wc(base, LFB_MAP_SIZE);
+		/* Mark the framebuffer write-combining so VRAM writes batch.
+		 * Use the actual framebuffer size (not the whole mapping) so
+		 * the WC range cannot swallow unrelated MMIO. */
+		{
+			unsigned int wc_size = (unsigned int)fb->pitch *
+					       fb->height;
+			if (wc_size == 0 || wc_size > LFB_MAP_SIZE)
+				wc_size = LFB_MAP_SIZE;
+			mtrr_set_wc(base, wc_size);
+		}
 	}
 
 	/* Load CR3, enable PSE, then PG + WP.  The jump flushes the prefetch
