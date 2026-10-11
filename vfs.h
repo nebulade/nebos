@@ -12,7 +12,7 @@ typedef struct {
 	int mounted;
 } vfs_mount_t;
 
-#define VFS_MAX_MOUNTS 12
+#define VFS_MAX_MOUNTS 24
 #define VFS_PATH_MAX   64
 extern vfs_mount_t vfs_mounts[VFS_MAX_MOUNTS];
 extern unsigned int vfs_mount_count;

@@ -29,6 +29,7 @@ typedef struct {
 	unsigned int data_start;        /* LBA of first data cluster */
 	unsigned int total_sectors;
 	unsigned int max_cluster;
+	unsigned int next_free;         /* allocation hint (FAT32: from FSInfo) */
 	char label[12];                /* trimmed 8.3 volume label + NUL */
 	int mounted;
 } fat_fs_t;
@@ -44,7 +45,7 @@ int fat_list_dir(fat_fs_t *fs, unsigned int dir_cluster, fat_root_callback_t cal
 int fat_read_file_in(fat_fs_t *fs, unsigned int dir_cluster, const char *name_8_3,
 		     void *buf, unsigned int max_len);
 
-/* Write / delete / mkdir / rmdir. Return -1 if FAT32 (read-only). */
+/* Write / delete / mkdir / rmdir (FAT12/16/32). */
 int fat_write_file_in(fat_fs_t *fs, unsigned int dir_cluster, const char *name_8_3,
 		      const void *buf, unsigned int size);
 int fat_delete_file_in(fat_fs_t *fs, unsigned int dir_cluster, const char *name_8_3);

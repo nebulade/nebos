@@ -42,4 +42,10 @@ unsigned char io_last_scancode(void);
    it is then decoded by the normal io_poll_key path. */
 void io_inject_scancode(unsigned char sc);
 
+/* While set, the WM stops draining the keyboard ring: an inline command
+   (e.g. `format`'s confirmation) is polling for keys itself.  The WM still
+   runs and the USB backend still queues scancodes. */
+void io_set_raw_keyboard(int on);
+int io_keyboard_raw(void);
+
 #endif

@@ -3,19 +3,20 @@
 #ifndef BLKDEV_H
 #define BLKDEV_H
 
-typedef enum { BLK_FLOPPY, BLK_IDE } blk_kind_t;
+typedef enum { BLK_FLOPPY, BLK_IDE, BLK_SATA } blk_kind_t;
 
 typedef struct {
-	const char *name;          /* "floppy0","floppy1","ide0".."ide3" */
+	const char *name;          /* "floppy0","floppy1","ide0".."ide3","sata0".. */
 	blk_kind_t kind;
-	unsigned int bus;          /* floppy: drive #; ide: 0=primary,1=secondary */
-	unsigned int unit;         /* ide: 0=master,1=slave */
-	int present;               /* IDE: set by IDENTIFY; floppy: always listed */
+	unsigned int bus;          /* floppy: drive #; ide: 0=primary,1=secondary;
+				    * sata: controller index (0) */
+	unsigned int unit;         /* ide: 0=master,1=slave; sata: AHCI port */
+	int present;               /* set by IDENTIFY; floppy: always listed */
 	unsigned int total_sectors;/* 0 if unknown (floppy) */
-	char model[41];            /* IDE model string */
+	char model[41];            /* IDE/SATA model string */
 } blk_dev_t;
 
-#define BLKDEV_MAX 8
+#define BLKDEV_MAX 16
 extern blk_dev_t blk_devs[BLKDEV_MAX];
 extern unsigned int blk_dev_count;
 

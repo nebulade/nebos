@@ -4,6 +4,7 @@
 #include "fatformat.h"
 #include "io.h"
 #include "vga.h"
+#include "vfs.h"
 
 static void list_devices(void)
 {
@@ -55,7 +56,7 @@ void program_format_main(const char *arg)
 		return;
 	}
 
-	if (d->kind == BLK_IDE && !d->present) {
+	if (d->kind != BLK_FLOPPY && !d->present) {
 		io_putstr("format: ");
 		io_putstr(d->name);
 		io_putstr(": not present\n");
@@ -67,15 +68,20 @@ void program_format_main(const char *arg)
 	io_putstr("? this destroys all data (y/n) ");
 	vga_fb_flush();
 
+	/* Keep the WM from draining the keyboard ring while we poll for the
+	 * confirmation (works for PS/2 and USB keyboards alike). */
+	io_set_raw_keyboard(1);
 	for (;;) {
 		k = io_poll_key_with_hw();
 		if (k == 'y' || k == 'Y')
 			break;
 		if (k == 'n' || k == 'N') {
+			io_set_raw_keyboard(0);
 			io_putstr("aborted\n");
 			return;
 		}
 	}
+	io_set_raw_keyboard(0);
 	io_putchar('\n');
 
 	io_putstr("formatting ");
@@ -87,6 +93,9 @@ void program_format_main(const char *arg)
 		io_putstr("format: failed\n");
 		return;
 	}
+
+	/* Make the fresh filesystem immediately usable (save/ls/cat). */
+	vfs_mount_all();
 
 	io_putstr("done\n");
 }

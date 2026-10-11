@@ -1,5 +1,4 @@
-/* FAT12/16/32 filesystem, device-parameterized (reads/writes via blk_read/blk_write).
- * FAT32 is read-only; writes (write/delete/mkdir/rmdir) target FAT12/16. */
+/* FAT12/16/32 filesystem, device-parameterized (reads/writes via blk_read/blk_write). */
 
 #include "fat.h"
 #include "io.h"
@@ -176,6 +175,7 @@ int fat_mount(blk_dev_t *dev, unsigned int part_lba, fat_fs_t *fs)
 	unsigned char *b = sector_buf;
 	unsigned int root_entries, total, sec_per_fat16, sec_per_fat32;
 	unsigned int root_dir_sectors, data_sectors, clusters, spc, media;
+	unsigned int fsinfo_sec;
 
 	if (!dev || !fs)
 		return -1;
@@ -254,6 +254,10 @@ int fat_mount(blk_dev_t *dev, unsigned int part_lba, fat_fs_t *fs)
 		fs->label[k] = '\0';
 	}
 
+	/* Capture the FSInfo sector number before the media check clobbers
+	 * sector_buf (see the allocation-hint block below). */
+	fsinfo_sec = (fs->type == FAT32) ? rd16(b + 0x30) : 0;
+
 	/* Validate the FAT media byte: rejects a boot disk whose BPB is fake
 	 * (its FAT area is actually kernel code). */
 	media = b[0x15];
@@ -261,6 +265,18 @@ int fat_mount(blk_dev_t *dev, unsigned int part_lba, fat_fs_t *fs)
 		return -2;
 	if (sector_buf[0] != media)
 		return -1;
+
+	/* Allocation hint: for FAT32 start from the FSInfo "next free cluster"
+	 * when it is sane, so repeated writes do not rescan the whole FAT. */
+	fs->next_free = 2;
+	if (fs->type == FAT32 && fsinfo_sec != 0 &&
+	    fat_read_sector(fs, fsinfo_sec) == 0 &&
+	    rd32(sector_buf + 0x000) == 0x41615252u &&
+	    rd32(sector_buf + 0x1FC) == 0xAA550000u) {
+		unsigned int nf = rd32(sector_buf + 0x1EC);
+		if (nf >= 2 && nf < fs->max_cluster)
+			fs->next_free = nf;
+	}
 
 	fs->mounted = 1;
 	return 0;
@@ -490,18 +506,35 @@ int fat_read_file_in(fat_fs_t *fs, unsigned int dir_cluster, const char *name_8_
 	return (int)copied;
 }
 
-/* ---- write support (FAT12/16 only) ---- */
+/* ---- write support ---- */
 
 static int fat_find_free_cluster(fat_fs_t *fs)
 {
-	unsigned int cluster;
+	unsigned int c, start;
 
-	for (cluster = 2; cluster < fs->max_cluster; cluster++) {
+	/* Scan forward from the last allocation (wrapping once).  Without the
+	 * hint a FAT32 root scan would re-read the whole FAT every time. */
+	start = fs->next_free;
+	if (start < 2 || start >= fs->max_cluster)
+		start = 2;
+
+	for (c = start; c < fs->max_cluster; c++) {
 		unsigned int val;
-		if (fat_entry_get(fs, cluster, &val) != 0)
+		if (fat_entry_get(fs, c, &val) != 0)
 			return -2;
-		if (val == 0x000)
-			return (int)cluster;
+		if (val == 0x000) {
+			fs->next_free = c + 1;
+			return (int)c;
+		}
+	}
+	for (c = 2; c < start; c++) {
+		unsigned int val;
+		if (fat_entry_get(fs, c, &val) != 0)
+			return -2;
+		if (val == 0x000) {
+			fs->next_free = c + 1;
+			return (int)c;
+		}
 	}
 	return -1;
 }
@@ -514,6 +547,8 @@ static int fat_free_chain(fat_fs_t *fs, unsigned int cluster)
 			return -2;
 		if (fat_entry_set(fs, cluster, 0x000) != 0)
 			return -2;
+		if (cluster < fs->next_free)
+			fs->next_free = cluster;
 		if (next < 2 || fat_is_eoc(fs, next))
 			break;
 		cluster = next;
@@ -569,6 +604,10 @@ static int fat_dir_entry_write(fat_fs_t *fs, unsigned int lba, unsigned int offs
 		sector_buf[offset + i] = 0;
 	sector_buf[offset + 26] = (unsigned char)(cluster & 0xFF);
 	sector_buf[offset + 27] = (unsigned char)((cluster >> 8) & 0xFF);
+	if (fs->type == FAT32) {   /* high 16 bits of the first cluster */
+		sector_buf[offset + 20] = (unsigned char)((cluster >> 16) & 0xFF);
+		sector_buf[offset + 21] = (unsigned char)((cluster >> 24) & 0xFF);
+	}
 	sector_buf[offset + 28] = (unsigned char)(size & 0xFF);
 	sector_buf[offset + 29] = (unsigned char)((size >> 8) & 0xFF);
 	sector_buf[offset + 30] = (unsigned char)((size >> 16) & 0xFF);
@@ -585,14 +624,6 @@ static int fat_mark_deleted(fat_fs_t *fs, unsigned int lba, unsigned int offset)
 	return (fat_write_sector(fs, lba) != 0) ? -2 : 0;
 }
 
-static int fat_writable(fat_fs_t *fs)
-{
-	if (fs->type != FAT32)
-		return 1;
-	io_putstr("read-only filesystem (FAT32)\n");
-	return 0;
-}
-
 int fat_write_file_in(fat_fs_t *fs, unsigned int dir_cluster, const char *name_8_3,
 		      const void *buf, unsigned int size)
 {
@@ -606,8 +637,6 @@ int fat_write_file_in(fat_fs_t *fs, unsigned int dir_cluster, const char *name_8
 	int r;
 
 	if (!fs || !fs->mounted || !name_8_3)
-		return -1;
-	if (!fat_writable(fs))
 		return -1;
 
 	for (i = 0; i < 11; i++)
@@ -698,8 +727,6 @@ int fat_delete_file_in(fat_fs_t *fs, unsigned int dir_cluster, const char *name_
 
 	if (!fs || !fs->mounted || !name_8_3)
 		return -1;
-	if (!fat_writable(fs))
-		return -1;
 
 	for (i = 0; i < 11; i++)
 		name[i] = (unsigned char)(name_8_3[i] >= 'a' && name_8_3[i] <= 'z'
@@ -739,8 +766,6 @@ int fat_mkdir(fat_fs_t *fs, unsigned int parent_cluster, const char *name_8_3)
 	int r;
 
 	if (!fs || !fs->mounted || !name_8_3)
-		return -1;
-	if (!fat_writable(fs))
 		return -1;
 
 	for (i = 0; i < 11; i++)
@@ -784,6 +809,12 @@ int fat_mkdir(fat_fs_t *fs, unsigned int parent_cluster, const char *name_8_3)
 		sector_buf[43] = 0x10;
 		sector_buf[58] = (unsigned char)(parent_cluster & 0xFF);
 		sector_buf[59] = (unsigned char)((parent_cluster >> 8) & 0xFF);
+		if (fs->type == FAT32) {   /* high halves of "." and ".." */
+			sector_buf[20] = (unsigned char)((cluster >> 16) & 0xFF);
+			sector_buf[21] = (unsigned char)((cluster >> 24) & 0xFF);
+			sector_buf[52] = (unsigned char)((parent_cluster >> 16) & 0xFF);
+			sector_buf[53] = (unsigned char)((parent_cluster >> 24) & 0xFF);
+		}
 		if (fat_write_sector(fs, base) != 0)
 			return -2;
 	}
@@ -808,8 +839,6 @@ int fat_rmdir(fat_fs_t *fs, unsigned int parent_cluster, const char *name_8_3)
 	int r, nonempty = 0;
 
 	if (!fs || !fs->mounted || !name_8_3)
-		return -1;
-	if (!fat_writable(fs))
 		return -1;
 
 	for (i = 0; i < 11; i++)

@@ -1,9 +1,32 @@
 /* Create a fresh FAT filesystem on a block device.
- * Floppy: FAT12 superfloppy (no MBR). IDE: MBR + single FAT16/32 partition. */
+ * Floppy: FAT12 superfloppy (no MBR). IDE/SATA: MBR + single FAT16/32 partition. */
 
 #include "fatformat.h"
+#include "mm.h"
 
 #define SEC_SIZE 512
+
+/* Zero-fill chunk size for the FAT/reserved/root areas.  Large disks would
+ * otherwise need millions of single-sector writes (a FAT32 on a 1 TB disk has
+ * ~2 M FAT sectors). */
+#define ZERO_CHUNK_PAGES 32
+
+/* Write `count` zero sectors at `lba` in `chunk`-sector pieces. */
+static int write_zeros(blk_dev_t *d, unsigned int lba, unsigned int count,
+		       const unsigned char *buf, unsigned int chunk)
+{
+	unsigned int done = 0;
+
+	while (done < count) {
+		unsigned int n = count - done;
+		if (n > chunk)
+			n = chunk;
+		if (blk_write(d, lba + done, buf, n) != 0)
+			return -1;
+		done += n;
+	}
+	return 0;
+}
 
 static void put16(unsigned char *p, unsigned int v)
 {
@@ -147,6 +170,8 @@ int fat_format(blk_dev_t *d)
 	static unsigned char sec[SEC_SIZE];
 	static unsigned char fat_sec[SEC_SIZE];
 	static unsigned char zero[SEC_SIZE];
+	unsigned char *zbuf;
+	unsigned int zchunk, zpages;
 	unsigned int fs_sectors, part_start;
 	unsigned int type, spc, root_entries;
 	unsigned int reserved, num_fats = 2, sec_per_fat, root_dir_sectors;
@@ -190,7 +215,27 @@ int fat_format(blk_dev_t *d)
 
 	zero_sector(zero);
 
-	/* 1. MBR (IDE only). */
+	/* Bulk zero buffer (a 1 TB FAT32 has ~2 M FAT sectors; single-sector
+	 * writes would take minutes).  Real disks only -- floppies keep the
+	 * 512-byte path. */
+	zbuf = zero;
+	zchunk = 1;
+	zpages = 0;
+	if (!is_floppy) {
+		zbuf = (unsigned char *)mm_alloc_pages(ZERO_CHUNK_PAGES);
+		if (zbuf) {
+			unsigned int k;
+			for (k = 0; k < ZERO_CHUNK_PAGES * PAGE_SIZE; k++)
+				zbuf[k] = 0;
+			zchunk = ZERO_CHUNK_PAGES * (PAGE_SIZE / SEC_SIZE);
+			zpages = ZERO_CHUNK_PAGES;
+		} else {
+			zbuf = zero;
+			zchunk = 1;
+		}
+	}
+
+	/* 1. MBR (IDE/SATA only). */
 	if (!is_floppy) {
 		unsigned char *e;
 		zero_sector(sec);
@@ -210,10 +255,8 @@ int fat_format(blk_dev_t *d)
 	/* 2. Reserved area + boot sector (+ FSInfo/backup for FAT32). */
 	build_boot_sector(sec, type, spc, reserved, num_fats, root_entries,
 			  sec_per_fat, fs_sectors, part_start, media);
-	for (i = 0; i < reserved; i++) {
-		if (blk_write(d, part_start + i, zero, 1) != 0)
-			return -1;
-	}
+	if (write_zeros(d, part_start, reserved, zbuf, zchunk) != 0)
+		return -1;
 	if (blk_write(d, part_start, sec, 1) != 0)
 		return -1;
 	if (type == 32) {
@@ -224,28 +267,32 @@ int fat_format(blk_dev_t *d)
 			return -1;
 	}
 
-	/* 3. FATs (two copies). */
+	/* 3. FATs (two copies).  The first sector carries the media byte and
+	 * the end-of-chain markers; the rest must be zero. */
 	build_fat_first_sector(fat_sec, type, media);
 	for (i = 0; i < num_fats; i++) {
-		unsigned int j;
-		for (j = 0; j < sec_per_fat; j++) {
-			const unsigned char *s = (j == 0) ? fat_sec : zero;
-			if (blk_write(d, part_start + fat_start + i * sec_per_fat + j,
-				      s, 1) != 0)
-				return -1;
-		}
+		unsigned int base = part_start + fat_start + i * sec_per_fat;
+		if (blk_write(d, base, fat_sec, 1) != 0)
+			return -1;
+		if (sec_per_fat > 1 &&
+		    write_zeros(d, base + 1, sec_per_fat - 1, zbuf, zchunk) != 0)
+			return -1;
 	}
 
 	/* 4. Root directory (FAT12/16) or root cluster (FAT32). */
 	if (type == 32) {
-		/* Root dir is cluster 2 at the start of the data region. */
-		for (i = 0; i < spc; i++)
-			if (blk_write(d, part_start + data_start + i, zero, 1) != 0)
-				return -1;
+		if (write_zeros(d, part_start + data_start, spc, zbuf, zchunk) != 0)
+			return -1;
 	} else {
-		for (i = 0; i < root_dir_sectors; i++)
-			if (blk_write(d, part_start + root_start + i, zero, 1) != 0)
-				return -1;
+		if (write_zeros(d, part_start + root_start, root_dir_sectors,
+				zbuf, zchunk) != 0)
+			return -1;
+	}
+
+	if (zpages) {
+		unsigned int k;
+		for (k = 0; k < zpages; k++)
+			mm_free_page((unsigned int)zbuf + k * PAGE_SIZE);
 	}
 
 	return 0;

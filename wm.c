@@ -387,6 +387,9 @@ static void wm_handle_keyboard(void)
 	int handled = 0;
 	int n;
 
+	if (io_keyboard_raw())
+		return;   /* an inline command is polling for keys itself */
+
 	if (!fw || !fw->term)
 		return;
 

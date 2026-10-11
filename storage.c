@@ -1,5 +1,6 @@
 /* storage command: refresh the filesystem cache and report devices + mounts. */
 
+#include "ahci.h"
 #include "blkdev.h"
 #include "io.h"
 #include "vfs.h"
@@ -20,20 +21,21 @@ static void put_dec(unsigned int n)
 	io_putstr(buf + i);
 }
 
-static void put_size(unsigned int bytes)
+/* Print a size given in 512-byte sectors (shifts avoid 32-bit overflow). */
+static void put_size_sectors(unsigned int sectors)
 {
-	if (bytes >= 1024u * 1024u * 1024u) {
-		unsigned int gb = bytes / (1024u * 1024u * 1024u);
-		unsigned int tenths = (bytes % (1024u * 1024u * 1024u)) * 10u / (1024u * 1024u * 1024u);
+	if (sectors >= 2u * 1024u * 1024u) {           /* >= 1 GiB */
+		unsigned int gb = sectors >> 21;
+		unsigned int tenths = ((sectors & 0x1FFFFFu) * 10u) >> 21;
 		put_dec(gb);
 		if (tenths) {
 			io_putchar('.');
 			put_dec(tenths);
 		}
 		io_putstr(" GB");
-	} else if (bytes >= 1024u * 1024u) {
-		unsigned int mb = bytes / (1024u * 1024u);
-		unsigned int tenths = (bytes % (1024u * 1024u)) * 10u / (1024u * 1024u);
+	} else if (sectors >= 2048u) {                 /* >= 1 MiB */
+		unsigned int mb = sectors >> 11;
+		unsigned int tenths = ((sectors & 0x7FFu) * 10u) >> 11;
 		put_dec(mb);
 		if (tenths) {
 			io_putchar('.');
@@ -41,7 +43,7 @@ static void put_size(unsigned int bytes)
 		}
 		io_putstr(" MB");
 	} else {
-		put_dec(bytes / 1024u);
+		put_dec(sectors / 2u);
 		io_putstr(" KB");
 	}
 }
@@ -62,7 +64,7 @@ static void report_fs(const char *name, const fat_fs_t *fs)
 	io_putstr(": ");
 	io_putstr(fat_name(fs->type));
 	io_putchar(' ');
-	put_size(fs->total_sectors * fs->bytes_per_sector);
+	put_size_sectors(fs->total_sectors);
 	if (fs->label[0]) {
 		io_putstr("  \"");
 		io_putstr(fs->label);
@@ -96,22 +98,42 @@ void program_storage_main(void)
 		blk_dev_t *d = &blk_devs[i];
 		int found = 0;
 
-		if (d->kind == BLK_IDE && !d->present) {
+		if (d->kind != BLK_FLOPPY && !d->present) {
 			io_putstr(d->name);
 			io_putstr(": not present\n");
 			continue;
 		}
 
-		for (j = 0; j < vfs_mount_count; j++) {
+		for (j = 0; j < vfs_mount_count; j++)
 			if (mount_belongs_to(vfs_mounts[j].name, d->name)) {
-				report_fs(vfs_mounts[j].name, &vfs_mounts[j].fs);
 				found = 1;
+				break;
 			}
-		}
 
-		if (!found) {
+		/* Real disks get a header line with model and size, floppies
+		 * keep the old single-line output. */
+		if (d->kind != BLK_FLOPPY) {
+			io_putstr(d->name);
+			io_putstr(": ");
+			if (d->model[0]) {
+				io_putstr(d->model);
+				io_putchar(' ');
+			}
+			put_size_sectors(d->total_sectors);
+			if (!found)
+				io_putstr("  no valid FAT filesystem");
+			io_putchar('\n');
+		} else if (!found) {
 			io_putstr(d->name);
 			io_putstr(": no valid FAT filesystem\n");
 		}
+
+		if (found)
+			for (j = 0; j < vfs_mount_count; j++)
+				if (mount_belongs_to(vfs_mounts[j].name, d->name))
+					report_fs(vfs_mounts[j].name, &vfs_mounts[j].fs);
 	}
+
+	if (!ahci_controller_present())
+		io_putstr("sata: no AHCI controller\n");
 }

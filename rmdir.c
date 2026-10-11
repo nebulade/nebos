@@ -18,7 +18,7 @@ void program_rmdir_main(const char *arg)
 	}
 
 	if (vfs_resolve(arg, &fs, &fs_path) != 0) {
-		io_putstr("rmdir: read-only filesystem\n");
+		io_putstr("rmdir: unknown device or invalid path\n");
 		return;
 	}
 

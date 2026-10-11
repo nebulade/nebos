@@ -20,7 +20,7 @@
 #define KERNEL_LOAD_ADDR 0x7E00
 #define BOOT_STACK       0x42800
 #define MAGIC            0x4345584B /* "KXEC" little-endian */
-#define MAX_SIZE         0x38200
+#define MAX_SIZE         0x3A200
 
 static inline void outb(unsigned short port, unsigned char v)
 {

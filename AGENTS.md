@@ -13,6 +13,7 @@ make all        # floppy.img usb.img final.bin root.img
 make run        # boot floppy.img + root.img in QEMU (fallback: qemu-system-x86_64)
 make run-usb    # boot usb.img as an IDE disk
 make run-uhci   # like `make run` but with a UHCI controller + USB mouse
+make run-ahci   # like `make run` + an ICH9 AHCI controller and a 512 MB SATA disk (sata0)
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make clean
 ```
@@ -51,7 +52,7 @@ make clean
 | `0x42F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
 | `0x43000` | User program load address (`run.c`, `user.ld`) |
 | `0x50000` | Fallback process stack pool (8 × 4 KB; primary stacks come from the frame allocator, ≥ `0x900000`, see `process.c`/`mm.c`) |
-| `0x58000` | kexec staging buffer (received kernel image, up to 0x38200 B; ends below the VGA window) |
+| `0x58000` | kexec staging buffer (received kernel image, up to 0x3A200 B; ends below the VGA window) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
 ## Key files
@@ -96,9 +97,18 @@ make clean
 - **Shell**: `terminal.c` — history, line editing, command dispatch (hand-rolled
   `is_cmd_*` parsers). Runs in a window (`term_run(struct term *)`); reads keys
   from its per-terminal queue (filled by the WM).
-- **Filesystem**: `fat.c` (FAT12/16/32 read + FAT12/16 write, device-parameterized),
+- **Filesystem**: `fat.c` (FAT12/16/32 read/write, device-parameterized),
   `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
-  `blkdev.c` (floppy + IDE registry), `ata.c` (ATA PIO), `disk.c` (FDC + ISA DMA ch2, retries).
+  `blkdev.c` (floppy + IDE + SATA registry), `ata.c` (ATA PIO, either the
+  legacy ports or the PCI IDE interface's native BARs — `ata_init_ports()`),
+  `disk.c` (FDC + ISA DMA ch2, retries).
+- **SATA/AHCI**: `ahci.c/h` — polled AHCI driver (first controller only, PCI
+  class `01:06:01`, no IRQs, no NCQ): port bring-up with COMRESET, IDENTIFY
+  (shared `ata_identify_parse()` with `ata.c`) and READ/WRITE DMA EXT through
+  a page-allocated bounce buffer (nothing large in BSS). Disks are registered
+  as `sata0`..`sataN` (named by AHCI port index) and mount like IDE disks
+  (`sata0p1` for an MBR partition). >2 TB disks are clamped to 32-bit LBA;
+  a disk added after boot needs a rescan (no COMRESET hotplug).
 - **Serial**: `serial.c`, `serial_ring_buf.c/h`, `bin_recv.c/h`, `serial_recv.c`,
   `serial_loop.c`, `send_serial.c` — 16550 UART, IRQ-driven ring buffer, XMODEM.
 - **Network**: `netdev.c/h` — NIC driver registry (`struct netdev`, first probe
@@ -479,7 +489,10 @@ Caveats:
   isolation: everything runs ring-0 and shares the address space.
 - **All drawing goes into the shadow buffer** (`vga_put_pixel_rgb` etc.); a 30 Hz
   flush copies dirty rows to VRAM. Full-screen programs call `vga_clear_rgb`.
-- **FAT is read-only** — parse/read only; no write/create/delete.
+- **FAT is read/write** — FAT12/16/32 read plus write/delete/mkdir/rmdir.
+  FAT32 allocation uses an FSInfo-seeded free-cluster hint; the FSInfo
+  free-count is not updated and a completely full FAT32 directory is not
+  grown (new cluster allocation for directories is not implemented).
 - **Keep the memory map in sync** — hardcoded addresses appear in `.S`, `.c`, and
   linker scripts; changing one without the others breaks boot/loading.
 
@@ -490,7 +503,7 @@ Caveats:
 2. `vga.c` `draw_flush_debug_square()` — leftover debug artifact, still draws a
    color-cycling 32×32 square in the corner on every flush.
 3. No per-process address spaces or process isolation (paging is identity-mapped).
-4. Read-only FAT filesystem.
+4. FAT32: FSInfo free-count not updated, no directory-chain growth.
 5. Implicit, hardcoded memory map (see table above).
 6. `disk.c` `fdc_reset()` and `fdc_init_once()` overlap/duplicate logic.
 7. `terminal.c` command dispatch is ~30 near-identical `is_cmd_*` functions;

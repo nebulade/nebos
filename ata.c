@@ -1,12 +1,17 @@
 /* ATA PIO driver: IDENTIFY + LBA28/LBA48 read/write, polled (no IRQ).
- * The ATA IRQs (14/15) stay masked at boot, so we poll BSY/DRQ/ERR. */
+ * The ATA IRQs (14/15) stay masked at boot, so we poll BSY/DRQ/ERR.
+ *
+ * Channel port bases default to the legacy primary/secondary ports and are
+ * replaced by the PCI IDE interface's BARs when it runs in native mode
+ * (nVidia MCP79 "compatibility mode" and friends). */
 
 #include "ata.h"
 #include "pci.h"
+#include "serial.h"
 #include "timer.h"
 
-static const unsigned short ata_base[2] = { 0x1F0, 0x170 };
-static const unsigned short ata_ctrl[2] = { 0x3F6, 0x376 };
+static unsigned short ata_base[2] = { 0x1F0, 0x170 };
+static unsigned short ata_ctrl[2] = { 0x3F6, 0x376 };
 
 /* Register offsets from the I/O base. */
 #define REG_DATA    0
@@ -30,6 +35,94 @@ static const unsigned short ata_ctrl[2] = { 0x3F6, 0x376 };
 #define CMD_WRITE     0x30   /* LBA28 */
 #define CMD_READ_EXT  0x24   /* LBA48 */
 #define CMD_WRITE_EXT 0x34   /* LBA48 */
+
+/* Point the primary/secondary channels at the PCI IDE interface's native
+ * per-channel I/O BARs when it uses native mode, keeping the legacy ports
+ * otherwise.  Runs once; without a PCI IDE function the defaults stay. */
+void ata_init_ports(void)
+{
+	static int inited;
+	unsigned int bus, dev, func;
+
+	if (inited)
+		return;
+	inited = 1;
+
+	for (bus = 0; bus < 256; bus++) {
+		for (dev = 0; dev < 32; dev++) {
+			unsigned int id = pci_cfg_read32(bus, dev, 0, 0x00);
+			unsigned int htype, nfunc;
+
+			if (id == 0xFFFFFFFFu || id == 0)
+				continue;
+			htype = (pci_cfg_read32(bus, dev, 0, 0x0C) >> 16) & 0xFFu;
+			nfunc = (htype & 0x80u) ? 8u : 1u;
+			for (func = 0; func < nfunc; func++) {
+				unsigned int idf = pci_cfg_read32(bus, dev, func, 0x00);
+				unsigned int crev, cls, sub, prog;
+				unsigned int bar0, bar1, bar2, bar3, cmd;
+				unsigned short b0, c0, b1, c1;
+
+				if (idf == 0xFFFFFFFFu || idf == 0)
+					continue;
+				crev = pci_cfg_read32(bus, dev, func, 0x08);
+				cls  = (crev >> 24) & 0xFFu;
+				sub  = (crev >> 16) & 0xFFu;
+				prog = (crev >> 8) & 0xFFu;
+				if (cls != 0x01 || sub != 0x01)
+					continue;
+
+				cmd = pci_cfg_read32(bus, dev, func, 0x04);
+				pci_cfg_write32(bus, dev, func, 0x04, cmd | 0x0005u);
+				bar0 = pci_cfg_read32(bus, dev, func, 0x10);
+				bar1 = pci_cfg_read32(bus, dev, func, 0x14);
+				bar2 = pci_cfg_read32(bus, dev, func, 0x18);
+				bar3 = pci_cfg_read32(bus, dev, func, 0x1C);
+
+				/* prog-if bit 0/2: primary/secondary native mode. */
+				if ((prog & 0x01u) && (bar0 & 0x1u)) {
+					b0 = (unsigned short)(bar0 & 0xFFFCu);
+					c0 = (bar1 & 0x1u)
+						? (unsigned short)(bar1 & 0xFFFCu)
+						: (unsigned short)(b0 + 8);
+				} else {
+					b0 = 0x1F0; c0 = 0x3F6;
+				}
+				if ((prog & 0x04u) && (bar2 & 0x1u)) {
+					b1 = (unsigned short)(bar2 & 0xFFFCu);
+					c1 = (bar3 & 0x1u)
+						? (unsigned short)(bar3 & 0xFFFCu)
+						: (unsigned short)(b1 + 8);
+				} else {
+					b1 = 0x170; c1 = 0x376;
+				}
+
+				ata_base[0] = b0; ata_ctrl[0] = c0;
+				ata_base[1] = b1; ata_ctrl[1] = c1;
+
+				serial_puts(SERIAL_COM1, "ata: pci ide ");
+				serial_putdec(SERIAL_COM1, bus);
+				serial_putc(SERIAL_COM1, ':');
+				serial_putdec(SERIAL_COM1, dev);
+				serial_putc(SERIAL_COM1, '.');
+				serial_putdec(SERIAL_COM1, func);
+				serial_puts(SERIAL_COM1, " prog ");
+				serial_puthex(SERIAL_COM1, prog);
+				serial_puts(SERIAL_COM1, " ch0 ");
+				serial_puthex(SERIAL_COM1, b0);
+				serial_putc(SERIAL_COM1, '-');
+				serial_puthex(SERIAL_COM1, c0);
+				serial_puts(SERIAL_COM1, " ch1 ");
+				serial_puthex(SERIAL_COM1, b1);
+				serial_putc(SERIAL_COM1, '-');
+				serial_puthex(SERIAL_COM1, c1);
+				serial_putc(SERIAL_COM1, '\n');
+				return;
+			}
+		}
+	}
+	serial_puts(SERIAL_COM1, "ata: no PCI IDE function, legacy ports\n");
+}
 
 /* Delay 400 ns by reading the alt-status register a few times. */
 static void ata_400ns(unsigned short ctrl)
@@ -98,13 +191,9 @@ static int ata_identify(int bus, int unit, unsigned short *id)
 	return 0;
 }
 
-int ata_probe(int bus, int unit, unsigned int *total_sectors, char model[41])
+int ata_identify_parse(const unsigned short *id, unsigned int *total_sectors, char model[41])
 {
-	static unsigned short id[256];
 	unsigned int sectors, lo, hi, i;
-
-	if (ata_identify(bus, unit, id) != 0)
-		return -1;
 
 	if (id[0] & 0x8000)     /* ATAPI (cdrom/zip): not a data disk */
 		return -1;
@@ -129,9 +218,21 @@ int ata_probe(int bus, int unit, unsigned int *total_sectors, char model[41])
 		hi = (unsigned int)id[102] | ((unsigned int)id[103] << 16);
 		if (lo || hi)
 			sectors = lo;
+		if (hi)
+			sectors = 0xFFFFFFFFu;  /* > 2 TB: clamp to 32-bit LBA */
 	}
 	*total_sectors = sectors;
 	return 0;
+}
+
+int ata_probe(int bus, int unit, unsigned int *total_sectors, char model[41])
+{
+	static unsigned short id[256];
+
+	if (ata_identify(bus, unit, id) != 0)
+		return -1;
+
+	return ata_identify_parse(id, total_sectors, model);
 }
 
 static inline void ata_insw(unsigned short port, void *dst, unsigned int count)

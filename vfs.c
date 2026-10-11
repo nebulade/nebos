@@ -23,20 +23,22 @@ static void put_dec(unsigned int n)
 	io_putstr(buf + i);
 }
 
-static void put_size(unsigned int bytes)
+/* Print a size given in 512-byte sectors.  Uses shifts (not bytes) so a
+ * >4 GB filesystem/disk does not overflow 32-bit arithmetic. */
+static void put_size_sectors(unsigned int sectors)
 {
-	if (bytes >= 1024u * 1024u * 1024u) {
-		unsigned int gb = bytes / (1024u * 1024u * 1024u);
-		unsigned int tenths = (bytes % (1024u * 1024u * 1024u)) * 10u / (1024u * 1024u * 1024u);
+	if (sectors >= 2u * 1024u * 1024u) {           /* >= 1 GiB */
+		unsigned int gb = sectors >> 21;
+		unsigned int tenths = ((sectors & 0x1FFFFFu) * 10u) >> 21;
 		put_dec(gb);
 		if (tenths) {
 			io_putchar('.');
 			put_dec(tenths);
 		}
 		io_putstr(" GB");
-	} else if (bytes >= 1024u * 1024u) {
-		unsigned int mb = bytes / (1024u * 1024u);
-		unsigned int tenths = (bytes % (1024u * 1024u)) * 10u / (1024u * 1024u);
+	} else if (sectors >= 2048u) {                 /* >= 1 MiB */
+		unsigned int mb = sectors >> 11;
+		unsigned int tenths = ((sectors & 0x7FFu) * 10u) >> 11;
 		put_dec(mb);
 		if (tenths) {
 			io_putchar('.');
@@ -44,7 +46,7 @@ static void put_size(unsigned int bytes)
 		}
 		io_putstr(" MB");
 	} else {
-		put_dec(bytes / 1024u);
+		put_dec(sectors / 2u);
 		io_putstr(" KB");
 	}
 }
@@ -100,7 +102,7 @@ void vfs_mount_all(void)
 	for (i = 0; i < blk_dev_count; i++) {
 		blk_dev_t *d = &blk_devs[i];
 
-		if (d->kind == BLK_IDE && !d->present)
+		if (d->kind != BLK_FLOPPY && !d->present)
 			continue;
 
 		if (d->kind == BLK_FLOPPY) {
@@ -108,7 +110,7 @@ void vfs_mount_all(void)
 			continue;
 		}
 
-		/* IDE: MBR -> FAT partitions, else superfloppy. */
+		/* IDE/SATA: MBR -> FAT partitions, else superfloppy. */
 		{
 			mbr_part_t parts[4];
 			int n, j;
@@ -156,7 +158,7 @@ void vfs_list_root(void)
 		io_putstr("  ");
 		io_putstr(fat_name(fs->type));
 		io_putchar(' ');
-		put_size(fs->total_sectors * fs->bytes_per_sector);
+		put_size_sectors(fs->total_sectors);
 		if (fs->label[0]) {
 			io_putstr("  \"");
 			io_putstr(fs->label);

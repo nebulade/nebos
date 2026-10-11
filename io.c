@@ -334,3 +334,15 @@ void io_inject_scancode(unsigned char sc)
 	}
 	__asm__ volatile ("pushl %0; popfl" : : "r"(flags));
 }
+
+static int kbd_raw;
+
+void io_set_raw_keyboard(int on)
+{
+	kbd_raw = on;
+}
+
+int io_keyboard_raw(void)
+{
+	return kbd_raw;
+}
