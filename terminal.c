@@ -17,14 +17,11 @@ extern void program_run_main(const char *filename);
 extern void program_clock_main(void);
 extern void program_colors_main(void);
 extern void program_display_main(void);
-extern void program_mouseinfo_main(void);
 extern void program_serial_loop_main(const char *arg);
 extern void program_serial_recv_main(const char *arg);
 extern void program_run_serial_main(const char *arg);
 extern void program_run_embedded_main(const char *name);
 extern void program_lsusb_main(void);
-extern void program_storage_main(void);
-extern void program_mem_main(void);
 extern void program_format_main(const char *arg);
 extern void program_lspci_main(const char *filter);
 extern void program_peek_main(const char *arg);
@@ -132,9 +129,9 @@ static const struct kcmd cmds[] = {
 	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
 	{ "cpuinfo",    "cpuinfo",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
 	{ "lsusb",      "lsusb",                         CK_SPAWN, 0, program_lsusb_main, 0, 0, 0 },
-	{ "mouseinfo",  "mouseinfo",                     CK_SPAWN, 0, program_mouseinfo_main, 0, 0, 0 },
-	{ "storage",    "storage",                       CK_SPAWN, 0, program_storage_main, 0, 0, 0 },
-	{ "meminfo",    "meminfo",                       CK_SPAWN, 0, program_mem_main, 0, 0, 0 },
+	{ "mouseinfo",  "mouseinfo",                     CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "storage",    "storage",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "meminfo",    "meminfo",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
 	{ "format",     "format <device>",               CK_CUSTOM, 0, 0, 0, 0, cmd_format },
 	{ "lspci",      "lspci [id]",                    CK_SPAWN_ARG, 0, 0, program_lspci_main, 0, 0 },
 	{ "peek",       "peek <addr> [len]",             CK_SPAWN_ARG, 0, 0, program_peek_main, 0, 0 },
@@ -182,6 +179,12 @@ extern unsigned char _binary_ucmd_mkdir_elf_start[];
 extern unsigned char _binary_ucmd_mkdir_elf_end[];
 extern unsigned char _binary_ucmd_rmdir_elf_start[];
 extern unsigned char _binary_ucmd_rmdir_elf_end[];
+extern unsigned char _binary_ucmd_meminfo_elf_start[];
+extern unsigned char _binary_ucmd_meminfo_elf_end[];
+extern unsigned char _binary_ucmd_mouseinfo_elf_start[];
+extern unsigned char _binary_ucmd_mouseinfo_elf_end[];
+extern unsigned char _binary_ucmd_storage_elf_start[];
+extern unsigned char _binary_ucmd_storage_elf_end[];
 
 struct ucmd_blob {
 	const char *name;
@@ -197,6 +200,9 @@ static const struct ucmd_blob ucmds[] = {
 	{ "rm",      _binary_ucmd_rm_elf_start,      _binary_ucmd_rm_elf_end },
 	{ "mkdir",   _binary_ucmd_mkdir_elf_start,   _binary_ucmd_mkdir_elf_end },
 	{ "rmdir",   _binary_ucmd_rmdir_elf_start,   _binary_ucmd_rmdir_elf_end },
+	{ "meminfo", _binary_ucmd_meminfo_elf_start, _binary_ucmd_meminfo_elf_end },
+	{ "mouseinfo", _binary_ucmd_mouseinfo_elf_start, _binary_ucmd_mouseinfo_elf_end },
+	{ "storage", _binary_ucmd_storage_elf_start, _binary_ucmd_storage_elf_end },
 };
 
 static const struct ucmd_blob *ucmd_lookup(const char *name)

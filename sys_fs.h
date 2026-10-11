@@ -8,6 +8,11 @@
  * away from the running process (see sys_fs.c). */
 extern volatile int sys_fs_busy;
 
+/* Enter/leave the fs-busy section (used by other disk-touching services,
+ * e.g. the storage info refresh). */
+void sys_fs_enter(void);
+void sys_fs_exit(void);
+
 int sys_read_file(const char *path, void *buf, unsigned int max);
 int sys_write_file(const char *path, const void *buf, unsigned int len);
 int sys_unlink(const char *path);

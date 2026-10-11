@@ -5,6 +5,7 @@
 #include "process.h"
 #include "serial.h"
 #include "sys_fs.h"
+#include "sys_info.h"
 #include "timer.h"
 
 int syscall_dispatch(int num, int a1, int a2, int a3)
@@ -37,6 +38,16 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		return sys_rmdir((const char *)a1);
 	case SYS_LIST_MOUNTS:
 		return sys_list_mounts((unsigned int)a1, (struct sys_mount *)a2);
+	case SYS_MEMINFO:
+		return sys_meminfo((struct sys_meminfo *)a1);
+	case SYS_E820:
+		return sys_e820((unsigned int)a1, (struct sys_e820 *)a2);
+	case SYS_MOUSEINFO:
+		return sys_mouseinfo((struct sys_mouseinfo *)a1);
+	case SYS_STORAGE_INFO:
+		return sys_storage_info((struct sys_storage_info *)a1);
+	case SYS_BLKDEV:
+		return sys_blkdev((unsigned int)a1, (struct sys_blkdev *)a2);
 	default:
 		return -1;
 	}

@@ -184,14 +184,16 @@ below the run area), so adding code no longer moves any address.
   ELFs linked at `USER_BASE` (`0x40000000`), built by the Makefile, embedded
   in the kernel image (`*_embed.o`) and listed as `CMD_USER` rows in the
   terminal's command registry (`cmds[]` + `ucmds[]`).  Moved so far:
-  `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`.  They talk to the
-  kernel through `int 0x80` (`syscall.h`: putstr/ticks/sleep/exit plus the
-  whole-file service in `sys_fs.c`) and inherit the terminal's screen, so
-  their output lands in the owning window.  New commands: add `ucmd_<name>.c`,
-  a `CMD_USER` row in `cmds[]`, and a blob in `ucmds[]` (the Makefile picks
-  the file up via its `ucmd_%` pattern rules).  The one argument is passed as
-  a C string on the top of the user stack (`process_create_user(..., arg)`),
-  so `_start(const char *arg)` needs no crt0.
+  `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
+  `mouseinfo`, `storage`.  They talk to the kernel through `int 0x80`
+  (`syscall.h`: putstr/ticks/sleep/exit, the whole-file service in
+  `sys_fs.c` and the small state snapshots in `sys_info.c`) and inherit the
+  terminal's screen, so their output lands in the owning window.  New
+  commands: add `ucmd_<name>.c`, a `CMD_USER` row in `cmds[]`, and a blob in
+  `ucmds[]` (the Makefile picks the file up via its `ucmd_%` pattern rules).
+  The one argument is passed as a C string on the top of the user stack
+  (`process_create_user(..., arg)`), so `_start(const char *arg)` needs no
+  crt0.
 
 ## Shell commands
 
@@ -226,9 +228,10 @@ changed with `cd`; paths may be absolute (`/floppy1/…`) or relative (`.`, `..`
 nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
-`cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir` and `rmdir` run as ring-3
-processes (embedded `ucmd_*.c`); the rest are kernel commands spawned as
-processes, or shell builtins (`cd`, `clear`, `help`).
+`cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
+`mouseinfo` and `storage` run as ring-3 processes (embedded `ucmd_*.c`); the
+rest are kernel commands spawned as processes, or shell builtins (`cd`,
+`clear`, `help`).
 
 ## Serial hot-reload (kexec) workflow
 

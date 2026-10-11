@@ -19,13 +19,13 @@
 
 volatile int sys_fs_busy;
 
-static void fs_enter(void)
+void sys_fs_enter(void)
 {
 	sys_fs_busy = 1;
 	__asm__ volatile ("sti");   /* the disk may need its IRQ */
 }
 
-static void fs_exit(void)
+void sys_fs_exit(void)
 {
 	__asm__ volatile ("cli");
 	sys_fs_busy = 0;
@@ -101,7 +101,7 @@ int sys_read_file(const char *path, void *buf, unsigned int max)
 	char name[12];
 	int r;
 
-	fs_enter();
+	sys_fs_enter();
 	r = fs_parent(path, &fs, &dir, name);
 	if (r == 0) {
 		r = fat_read_file_in(fs, dir, name, buf, max);
@@ -110,7 +110,7 @@ int sys_read_file(const char *path, void *buf, unsigned int max)
 		else if (r < 0)
 			r = SYS_ENOENT;
 	}
-	fs_exit();
+	sys_fs_exit();
 	return r;
 }
 
@@ -121,7 +121,7 @@ int sys_write_file(const char *path, const void *buf, unsigned int len)
 	char name[12];
 	int r;
 
-	fs_enter();
+	sys_fs_enter();
 	r = fs_parent(path, &fs, &dir, name);
 	if (r == 0) {
 		r = fat_write_file_in(fs, dir, name, buf, len);
@@ -130,7 +130,7 @@ int sys_write_file(const char *path, const void *buf, unsigned int len)
 		else if (r != 0)
 			r = SYS_EWRITE;
 	}
-	fs_exit();
+	sys_fs_exit();
 	return r;
 }
 
@@ -141,7 +141,7 @@ int sys_unlink(const char *path)
 	char name[12];
 	int r;
 
-	fs_enter();
+	sys_fs_enter();
 	r = fs_parent(path, &fs, &dir, name);
 	if (r == 0) {
 		r = fat_delete_file_in(fs, dir, name);
@@ -150,7 +150,7 @@ int sys_unlink(const char *path)
 		else if (r != 0)
 			r = SYS_ENOENT;
 	}
-	fs_exit();
+	sys_fs_exit();
 	return r;
 }
 
@@ -161,7 +161,7 @@ int sys_mkdir(const char *path)
 	char name[12];
 	int r;
 
-	fs_enter();
+	sys_fs_enter();
 	r = fs_parent(path, &fs, &dir, name);
 	if (r == 0) {
 		r = fat_mkdir(fs, dir, name);
@@ -170,7 +170,7 @@ int sys_mkdir(const char *path)
 		else if (r != 0)
 			r = SYS_EWRITE;
 	}
-	fs_exit();
+	sys_fs_exit();
 	return r;
 }
 
@@ -181,7 +181,7 @@ int sys_rmdir(const char *path)
 	char name[12];
 	int r;
 
-	fs_enter();
+	sys_fs_enter();
 	r = fs_parent(path, &fs, &dir, name);
 	if (r == 0) {
 		r = fat_rmdir(fs, dir, name);
@@ -190,7 +190,7 @@ int sys_rmdir(const char *path)
 		else if (r != 0)
 			r = SYS_EWRITE;
 	}
-	fs_exit();
+	sys_fs_exit();
 	return r;
 }
 
@@ -224,7 +224,7 @@ int sys_list_dir(const char *path, unsigned int index, struct sys_dirent *out)
 	unsigned int dir;
 	int r;
 
-	fs_enter();
+	sys_fs_enter();
 	r = fs_dir(path, &fs, &dir);
 	if (r == 0) {
 		list_index = index;
@@ -237,7 +237,7 @@ int sys_list_dir(const char *path, unsigned int index, struct sys_dirent *out)
 		else
 			r = list_done ? 1 : 0;   /* 1 = entry returned, 0 = end */
 	}
-	fs_exit();
+	sys_fs_exit();
 	return r;
 }
 
