@@ -33,4 +33,11 @@ int  netdev_in_use(void);
 /* Fill the active NIC's MAC; -1 (and a zero MAC) when there is no NIC. */
 int netdev_get_mac(unsigned char mac[6]);
 
+/* One shared frame-receive scratch buffer (1518 bytes) for protocol code that
+ * just needs somewhere for nd->rx() to land.  Only valid while the caller
+ * owns the NIC, and only until the next rx().  Shared so the DNS/TCP/ARP
+ * paths don't each carry their own frame buffer in the kernel's BSS. */
+unsigned char *netdev_rx_scratch(void);
+#define NETDEV_FRAME_MAX 1518
+
 #endif

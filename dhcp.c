@@ -149,6 +149,7 @@ static int dhcp_parse(const unsigned char *frame, unsigned int len,
 		      unsigned int xid, const unsigned char *my_mac,
 		      unsigned char *type, unsigned char yiaddr[4],
 		      unsigned char mask[4], unsigned char gw[4],
+		      unsigned char dns[4],
 		      unsigned int *lease, unsigned char server[4])
 {
 	const unsigned char *p;
@@ -176,6 +177,7 @@ static int dhcp_parse(const unsigned char *frame, unsigned int len,
 		yiaddr[i] = p[16 + i];
 		mask[i] = 0;
 		gw[i] = 0;
+		dns[i] = 0;
 		server[i] = 0;
 	}
 	*lease = 0;
@@ -212,6 +214,11 @@ static int dhcp_parse(const unsigned char *frame, unsigned int len,
 				for (i = 0; i < 4; i++)
 					gw[i] = p[o + 2 + i];
 			break;
+		case 6:                 /* DNS servers (first one wins) */
+			if (olen >= 4)
+				for (i = 0; i < 4; i++)
+					dns[i] = p[o + 2 + i];
+			break;
 		case 51:
 			if (olen >= 4)
 				*lease = rd32be(p + o + 2);
@@ -235,18 +242,19 @@ static int dhcp_wait(const struct netdev *nd, unsigned int xid,
 		     const unsigned char *my_mac, unsigned int deadline,
 		     unsigned char want, unsigned char yiaddr[4],
 		     unsigned char mask[4], unsigned char gw[4],
+		     unsigned char dns[4],
 		     unsigned int *lease, unsigned char server[4])
 {
 	while ((int)(get_ticks_ms() - deadline) < 0) {
 		unsigned char type;
-		unsigned char ryi[4], rmask[4], rgw[4], rserver[4];
+		unsigned char ryi[4], rmask[4], rgw[4], rdns[4], rserver[4];
 		unsigned int rlease;
 		int len = nd->rx(rxbuf, sizeof(rxbuf));
 
 		if (len < 0)
 			continue;
 		if (!dhcp_parse(rxbuf, (unsigned int)len, xid, my_mac, &type,
-				ryi, rmask, rgw, &rlease, rserver))
+				ryi, rmask, rgw, rdns, &rlease, rserver))
 			continue;
 		if (type == DHCP_NAK)
 			return -2;
@@ -259,6 +267,7 @@ static int dhcp_wait(const struct netdev *nd, unsigned int xid,
 				yiaddr[i] = ryi[i];
 				mask[i] = rmask[i];
 				gw[i] = rgw[i];
+				dns[i] = rdns[i];
 				server[i] = rserver[i];
 			}
 		}
@@ -277,7 +286,7 @@ int dhcp_run(unsigned int timeout_ms)
 	static const unsigned char zero_ip[4] = { 0, 0, 0, 0 };
 	const struct netdev *nd = netdev_active();
 	unsigned char my_mac[6], want_ip[4], current[4];
-	unsigned char yiaddr[4], mask[4], gw[4], server[4];
+	unsigned char yiaddr[4], mask[4], gw[4], dns[4], server[4];
 	unsigned int xid, start, deadline, tries;
 	unsigned int lease = 0;
 
@@ -313,7 +322,7 @@ int dhcp_run(unsigned int timeout_ms)
 			return -2;
 		}
 		if (dhcp_wait(nd, xid, my_mac, wait_until, DHCP_OFFER,
-			      yiaddr, mask, gw, &lease, server) == 0)
+			      yiaddr, mask, gw, dns, &lease, server) == 0)
 			break;
 		if ((int)(get_ticks_ms() - deadline) >= 0)
 			break;
@@ -348,7 +357,7 @@ int dhcp_run(unsigned int timeout_ms)
 			return -2;
 		}
 		r = dhcp_wait(nd, xid, my_mac, wait_until, DHCP_ACK,
-			      yiaddr, mask, gw, &lease, server);
+			      yiaddr, mask, gw, dns, &lease, server);
 		if (r == 0)
 			break;
 		if (r == -2) {          /* NAK: start over */
@@ -368,6 +377,8 @@ int dhcp_run(unsigned int timeout_ms)
 	}
 
 	net_configure(yiaddr, mask, gw);
+	if (dns[0] || dns[1] || dns[2] || dns[3])
+		net_set_dns(dns);
 	have_info = 1;
 	{
 		unsigned int i;
@@ -383,6 +394,10 @@ int dhcp_run(unsigned int timeout_ms)
 	put_ip(mask);
 	io_putstr(" gw ");
 	put_ip(gw);
+	if (dns[0] || dns[1] || dns[2] || dns[3]) {
+		io_putstr(" dns ");
+		put_ip(dns);
+	}
 	io_putstr(" lease ");
 	put_dec(lease);
 	io_putstr("s\n");

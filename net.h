@@ -31,10 +31,31 @@ void net_get_mask(unsigned char mask[4]);
 void net_get_gateway(unsigned char gw[4]);
 int  net_is_configured(void);   /* ip != 0.0.0.0 */
 
+/* DNS resolver address (DHCP option 6 or the `netdns` command); zero when
+ * unknown.  Kept across net_set_ip()/net_configure() so a manual setting
+ * survives a dhcp run without option 6. */
+void net_get_dns(unsigned char dns[4]);
+void net_set_dns(const unsigned char dns[4]);
+
+/* Next hop towards dst: the gateway when dst is off-subnet and a gateway is
+ * known, else dst itself. */
+void net_next_hop(const unsigned char dst[4], unsigned char hop[4]);
+
+/* Resolve dst_ip's MAC by ARP (3 tries, 1 s apart), polling the active NIC.
+ * Returns 0 on success, -1 when no reply arrived, -2 on transmit error.
+ * The caller must own the NIC (netdev_acquire). */
+int net_arp_resolve(const unsigned char *dst_ip, unsigned char mac[6]);
+
 const char *net_ethertype_name(unsigned short et);
 
 /* Internet checksum (16-bit one's complement, network byte order). */
 unsigned short net_checksum(const void *data, unsigned int len);
+
+/* TCP checksum over the IPv4 pseudo-header (src/dst/proto/length) plus the
+ * TCP header and payload; result is in network byte order. */
+unsigned short net_checksum_tcp(const unsigned char *src_ip,
+				const unsigned char *dst_ip,
+				const unsigned char *tcp, unsigned int len);
 
 /* Largest UDP payload net_udp_send() accepts. */
 #define NET_UDP_MAX 1400

@@ -10,7 +10,7 @@
 
 /* Shared frame buffers (file scope, not stack: the 4 KB process stack can't
    hold a full-size frame, and keeping them out of BSS-as-much-as-possible
-   avoids bloating the kernel past its 0x44000 limit). Max Ethernet frame is
+   avoids bloating the kernel past its 0x49000 limit). Max Ethernet frame is
    1518 bytes (14 header + 1500 payload + 4 VLAN). */
 #define NET_FRAME_MAX 1518
 static unsigned char net_rx_buf[NET_FRAME_MAX];
@@ -98,6 +98,16 @@ void program_netinfo_main(void)
 		io_putstr("gw=");
 		put_ip(gw);
 		io_putchar('\n');
+	}
+	{
+		unsigned char dns[4];
+
+		net_get_dns(dns);
+		if (dns[0] || dns[1] || dns[2] || dns[3]) {
+			io_putstr("dns=");
+			put_ip(dns);
+			io_putchar('\n');
+		}
 	}
 	if (dhcp_last_info(server, &lease)) {
 		io_putstr("dhcp: server ");

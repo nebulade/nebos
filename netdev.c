@@ -14,6 +14,16 @@ static const struct netdev *active;
 static int probed;
 static unsigned int busy;
 
+/* Shared receive scratch: see netdev.h.  One buffer, reused by every protocol
+ * that polls frames (they never run at the same time: the NIC is owned by one
+ * command via netdev_acquire()). */
+static unsigned char rx_scratch[NETDEV_FRAME_MAX];
+
+unsigned char *netdev_rx_scratch(void)
+{
+	return rx_scratch;
+}
+
 void netdev_acquire(void)
 {
 	busy++;

@@ -4,10 +4,12 @@
 #include "io.h"
 #include "netdev.h"
 #include "net.h"
+#include "timer.h"
 
 static unsigned char my_ip[4] = { 192, 168, 178, 240 };
 static unsigned char my_mask[4];
 static unsigned char my_gw[4];
+static unsigned char my_dns[4];
 
 /* ---- small print helpers (framebuffer console) ---- */
 
@@ -84,6 +86,33 @@ unsigned short net_checksum(const void *data, unsigned int len)
 	return (unsigned short)(~sum);
 }
 
+/* TCP checksum: the IPv4 pseudo-header plus the segment. */
+unsigned short net_checksum_tcp(const unsigned char *src_ip,
+				const unsigned char *dst_ip,
+				const unsigned char *tcp, unsigned int len)
+{
+	const unsigned char *p = tcp;
+	unsigned int sum = 0, i;
+
+	for (i = 0; i < 4; i += 2)
+		sum += ((unsigned int)src_ip[i] << 8) | src_ip[i + 1];
+	for (i = 0; i < 4; i += 2)
+		sum += ((unsigned int)dst_ip[i] << 8) | dst_ip[i + 1];
+	sum += IPPROTO_TCP;             /* pseudo-header protocol (0x0006) */
+	sum += len;                     /* TCP length */
+
+	while (len > 1) {
+		sum += ((unsigned int)p[0] << 8) | p[1];
+		p += 2;
+		len -= 2;
+	}
+	if (len)
+		sum += (unsigned int)p[0] << 8;
+	while (sum >> 16)
+		sum = (sum & 0xFFFFu) + (sum >> 16);
+	return (unsigned short)(~sum);
+}
+
 /* ---- IP address config ---- */
 
 void net_set_ip(const unsigned char ip[4])
@@ -135,6 +164,46 @@ void net_get_gateway(unsigned char gw[4])
 int net_is_configured(void)
 {
 	return my_ip[0] || my_ip[1] || my_ip[2] || my_ip[3];
+}
+
+void net_get_dns(unsigned char dns[4])
+{
+	unsigned int i;
+
+	for (i = 0; i < 4; i++)
+		dns[i] = my_dns[i];
+}
+
+void net_set_dns(const unsigned char dns[4])
+{
+	unsigned int i;
+
+	for (i = 0; i < 4; i++)
+		my_dns[i] = dns ? dns[i] : 0;
+}
+
+void net_next_hop(const unsigned char dst[4], unsigned char hop[4])
+{
+	unsigned int i, off = 0;
+
+	for (i = 0; i < 4; i++)
+		hop[i] = dst[i];
+
+	/* Without a mask/gateway (manual netip) keep treating the target as
+	 * directly reachable, like netping does. */
+	if (!(my_mask[0] || my_mask[1] || my_mask[2] || my_mask[3]) ||
+	    !(my_gw[0] || my_gw[1] || my_gw[2] || my_gw[3]))
+		return;
+
+	for (i = 0; i < 4; i++) {
+		if ((dst[i] & my_mask[i]) != (my_ip[i] & my_mask[i])) {
+			off = 1;
+			break;
+		}
+	}
+	if (off)
+		for (i = 0; i < 4; i++)
+			hop[i] = my_gw[i];
 }
 
 int net_parse_ip(const char *s, unsigned char ip[4])
@@ -284,6 +353,94 @@ int net_udp_parse(const unsigned char *f, unsigned int len,
 	*payload = udp + 8;
 	*plen = ip_len - ihl - 8;
 	return 1;
+}
+
+/* ---- ARP resolution (shared by the DNS resolver and the TCP client) ---- */
+
+/* ARP request "who has target? tell my_ip" -> 42-byte frame. */
+static unsigned int arp_build_request(const unsigned char *my_mac,
+				      const unsigned char *my_ip,
+				      const unsigned char *target_ip,
+				      unsigned char *out)
+{
+	unsigned char *a = out + 14;
+	unsigned int i;
+
+	for (i = 0; i < 6; i++)
+		out[i] = 0xFF;                        /* broadcast */
+	for (i = 0; i < 6; i++)
+		out[6 + i] = my_mac[i];
+	out[12] = 0x08;
+	out[13] = 0x06;
+	a[0] = 0; a[1] = 1;                           /* htype Ethernet */
+	a[2] = 0x08; a[3] = 0;                        /* ptype IPv4 */
+	a[4] = 6; a[5] = 4;
+	a[6] = 0; a[7] = 1;                           /* opcode request */
+	for (i = 0; i < 6; i++)                       /* sha */
+		a[8 + i] = my_mac[i];
+	for (i = 0; i < 4; i++)                       /* spa */
+		a[14 + i] = my_ip[i];
+	for (i = 0; i < 6; i++)                       /* tha */
+		a[18 + i] = 0;
+	for (i = 0; i < 4; i++)                       /* tpa */
+		a[24 + i] = target_ip[i];
+	return 42;
+}
+
+/* 1 + peer MAC if frame is an ARP reply from target_ip. */
+static int arp_parse_reply(const unsigned char *f, unsigned int len,
+			   const unsigned char *target_ip, unsigned char *mac)
+{
+	const unsigned char *a = f + 14;
+	unsigned int i;
+
+	if (len < 14 + 28)
+		return 0;
+	if ((((unsigned int)f[12] << 8) | f[13]) != ET_ARP)
+		return 0;
+	if ((((unsigned int)a[6] << 8) | a[7]) != 2)   /* opcode reply */
+		return 0;
+	if (a[4] != 6 || a[5] != 4)
+		return 0;
+	if (!ip_eq(a + 14, target_ip))                 /* sender IP == target */
+		return 0;
+	for (i = 0; i < 6; i++)
+		mac[i] = a[8 + i];
+	return 1;
+}
+
+int net_arp_resolve(const unsigned char *dst_ip, unsigned char mac[6])
+{
+	const struct netdev *nd = netdev_active();
+	unsigned char my_mac[6], my_ip[4];
+	unsigned char req[64];
+	unsigned char *rxbuf = netdev_rx_scratch();
+	unsigned int tries;
+
+	if (!nd || !nd->get_mac)
+		return -2;
+	nd->get_mac(my_mac);
+	net_get_ip(my_ip);
+
+	for (tries = 0; tries < 3; tries++) {
+		unsigned int deadline = get_ticks_ms() + 1000;
+		unsigned int reqlen = arp_build_request(my_mac, my_ip,
+							dst_ip, req);
+
+		if (nd->tx(req, reqlen) != 0)
+			return -2;
+
+		while ((int)(get_ticks_ms() - deadline) < 0) {
+			int len = nd->rx(rxbuf, NETDEV_FRAME_MAX);
+
+			if (len < 0)
+				continue;
+			if (arp_parse_reply(rxbuf, (unsigned int)len,
+					    dst_ip, mac))
+				return 0;
+		}
+	}
+	return -1;
 }
 
 /* ---- ethertype naming ---- */

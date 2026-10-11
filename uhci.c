@@ -72,7 +72,7 @@ struct uhci_qh {
 #define UHCI_NUM_TD 16
 
 /* Frame list lives in low memory (below the kernel at 0x7E00) to avoid
-   bloating the kernel's BSS past the 0x44000 linker budget. It must be
+   bloating the kernel's BSS past the 0x49000 linker budget. It must be
    4 KB aligned; 0x3000 is free after boot (see AGENTS.md memory map). */
 #define UHCI_FRAME_LIST_ADDR 0x3000u
 

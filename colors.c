@@ -16,7 +16,7 @@
 /* Precomputed hue-to-RGB lookup table. Packed as 0x00BBGGRR for fast 32-bit load.
  * The hue cycle is RAINBOW_FULL entries, but the table is decimated by
  * LUT_STEP: a 4-hue step is ~1.5% of a color segment and invisible, and the
- * smaller table keeps the kernel image under the 0x44000 memory-bound. */
+ * smaller table keeps the kernel image under the 0x49000 memory-bound. */
 #define LUT_STEP      4
 #define LUT_SIZE      (RAINBOW_FULL / LUT_STEP)
 

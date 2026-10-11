@@ -48,6 +48,9 @@ extern void program_netregs_main(void);
 extern void program_netloop_main(void);
 extern void program_netreset_main(void);
 extern void program_ping_main(void);
+extern void program_curl_main(const char *arg);
+extern void program_netdns_main(const char *arg);
+extern void program_lookup_main(const char *arg);
 
 /* Print the prompt (with the current directory) and set line_start. */
 static void term_print_prompt(struct term *t, int first)
@@ -590,6 +593,91 @@ static int is_cmd_netping(const char *line, unsigned int line_len, char *arg_buf
 	return (i == line_len);
 }
 
+/* One optional single-token argument (URL, name or dotted IP). */
+static int is_cmd_curl(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 'c' || line[i+1] != 'u' || line[i+2] != 'r' ||
+	    line[i+3] != 'l')
+		return 0;
+	i += 4;
+	if (i < line_len && line[i] != ' ')
+		return 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_netdns(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 6 > line_len)
+		return 0;
+	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
+	    line[i+3] != 'd' || line[i+4] != 'n' || line[i+5] != 's')
+		return 0;
+	i += 6;
+	if (i < line_len && line[i] != ' ')
+		return 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_lookup(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+{
+	unsigned int i = 0, j = 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 6 > line_len)
+		return 0;
+	if (line[i] != 'l' || line[i+1] != 'o' || line[i+2] != 'o' ||
+	    line[i+3] != 'k' || line[i+4] != 'u' || line[i+5] != 'p')
+		return 0;
+	i += 6;
+	if (i < line_len && line[i] != ' ')
+		return 0;
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len) {
+		if (buf_size > 0)
+			arg_buf[0] = '\0';
+		return 1;
+	}
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
 static int is_cmd_ping(const char *line, unsigned int line_len)
 {
 	unsigned int i = 0;
@@ -827,7 +915,8 @@ static const char *const help_items[] = {
 	"netrecv", "netsend", "netip [a.b.c.d]", "netping <a.b.c.d>",
 	"netlog <text>", "netconsole [on|off|host <ip>]", "dhcp", "netregs",
 	"netloop", "netreset", "ping", "ps", "kill <pid>", "kexec", "dbg",
-	"serial test|recv", "clear",
+	"serial test|recv", "clear", "curl <url>", "netdns [a.b.c.d]",
+	"lookup <name>",
 };
 
 static void help_puts(const char *s)
@@ -1642,6 +1731,9 @@ void term_run(struct term *t)
 					char netping_arg[16];
 					char netlog_arg[NET_UDP_ARG_MAX];
 					char netconsole_arg[NET_UDP_ARG_MAX];
+					char curl_arg[128];
+					char netdns_arg[32];
+					char lookup_arg[64];
 					char lspci_arg[16];
 					char peek_arg[32];
 					char resolved[VFS_PATH_MAX];
@@ -1702,6 +1794,12 @@ void term_run(struct term *t)
 						term_spawn(t, "netloop", program_netloop_main);
 					} else if (is_cmd_netreset(t->line, t->line_len)) {
 						term_spawn(t, "netreset", program_netreset_main);
+					} else if (is_cmd_netdns(t->line, t->line_len, netdns_arg, sizeof(netdns_arg))) {
+						term_spawn_arg(t, "netdns", program_netdns_main, netdns_arg);
+					} else if (is_cmd_curl(t->line, t->line_len, curl_arg, sizeof(curl_arg))) {
+						term_spawn_arg(t, "curl", program_curl_main, curl_arg);
+					} else if (is_cmd_lookup(t->line, t->line_len, lookup_arg, sizeof(lookup_arg))) {
+						term_spawn_arg(t, "lookup", program_lookup_main, lookup_arg);
 					} else if (is_cmd_ping(t->line, t->line_len)) {
 						term_spawn(t, "ping", program_ping_main);
 					} else if (is_cmd_storage(t->line, t->line_len)) {

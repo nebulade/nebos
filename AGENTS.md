@@ -13,6 +13,7 @@ make all        # floppy.img usb.img final.bin root.img
 make run        # boot floppy.img + root.img in QEMU (fallback: qemu-system-x86_64)
 make run-usb    # boot usb.img as an IDE disk
 make run-uhci   # like `make run` but with a UHCI controller + USB mouse
+make run-net    # like `make run` + a PCI NE2000 NIC on QEMU's user network (slirp; DHCP/DNS/NAT)
 make run-ahci   # like `make run` + an ICH9 AHCI controller and a 512 MB SATA disk (sata0)
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make clean
@@ -47,10 +48,10 @@ make clean
 | `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
 | `0x4000`  | ISA DMA buffer, one sector (`disk.c`) |
-| `0x44000` | Kernel upper bound (`kernel.ld` ASSERT) |
-| `0x44800` | Protected-mode stack top (`vesa_stage.S`, `kexec_tramp.S`) |
-| `0x44F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
-| `0x45000` | User program load address (`run.c`, `user.ld`) |
+| `0x49000` | Kernel upper bound (`kernel.ld` ASSERT) |
+| `0x49800` | Protected-mode stack top (`vesa_stage.S`, `kexec_tramp.S`) |
+| `0x49F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
+| `0x4A000` | User program load address (`run.c`, `user.ld`, max 0x6000 to the pool) |
 | `0x50000` | Fallback process stack pool (8 × 4 KB; primary stacks come from the frame allocator, ≥ `0x900000`, see `process.c`/`mm.c`) |
 | `0x58000` | kexec staging buffer (received kernel image, up to 0x3C200 B; ends below the VGA window) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
@@ -115,13 +116,21 @@ make clean
 - **Network**: `netdev.c/h` — NIC driver registry (`struct netdev`, first probe
   wins; drivers: `r8168.c` RTL8111/8168 (PCIe, polled, C+ mode) and `ne2000.c`
   RTL8029 (QEMU/ISA)). `net.c` — ARP + ICMP echo, IPv4/UDP send + parse helpers,
-  frame decode, `net_checksum()`. `dhcp.c` — minimal DHCP client (DISCOVER →
+  shared ARP resolution (`net_arp_resolve`) and routing (`net_next_hop`), frame
+  decode, `net_checksum()`/`net_checksum_tcp()`. `dhcp.c` — minimal DHCP client
+  (DISCOVER →
   OFFER → REQUEST → ACK; runs at boot when a NIC is present, 3 s budget, keeps
-  the static address when no server answers; `dhcp` re-runs it). `netcmd.c` —
-  the
+  the static address when no server answers; `dhcp` re-runs it; learns the DNS
+  server from option 6). `netcmd.c` — the
   `netinfo`/`netrecv`/`netsend`/`netip`/`dhcp`/`ping`/`netping`/`netregs`
-  commands.  Static IP default `192.168.178.240`, mask/gateway learned from
-  DHCP (off-subnet `netping` goes via the router).
+  commands.  `dns.c/h` — a minimal resolver (one recursive A query over UDP,
+  name-compression aware; `netdns` shows/sets the server, `lookup <name>`
+  resolves).  `tcp.c/h` — a minimal TCP *client* (connect/send/recv/close,
+  in-order receive, one segment of retransmit; the caller owns the NIC).
+  `curl.c` — the `curl` command: `http://host[:port]/path` GET with DNS, ARP,
+  HTTP/1.0 request and a dumped status/headers/body (no TLS, no redirects,
+  chunked decoded).  Static IP default `192.168.178.240`, mask/gateway learned
+  from DHCP (off-subnet traffic goes via the router).
 - **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `bootstrap.c`, and the
   host-side `kexec_send.c` — reload the kernel over serial without rebooting
   (C-light: reuses the current framebuffer, re-runs `kernel_main`).
@@ -148,7 +157,7 @@ make clean
   scan generation counter.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
-  `0x45000`, API function-pointer struct at `0x44F00`.  `prog`/`space` are
+  `0x4A000`, API function-pointer struct at `0x49F00`.  `prog`/`space` are
   **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`, like
   `hello.elf`), so `make dev`/`make net-dev` update them too and a board with
   no readable filesystem can still run them: `run <name>` and the `prog`/
@@ -170,11 +179,14 @@ DHCP client), `ping` (responds to ARP/ICMP for our IP for 30 s),
 `netping <a.b.c.d>` (active ARP + ICMP echo with RTT, via the gateway when the
 target is off-subnet), `netloop` (PHY loopback TX/RX self-test), `netreset`
 (full NIC re-init), `netlog <text>` (one UDP datagram to port 19290),
-`netconsole on|off|host <a.b.c.d>` (the debug-output mirror, see below) and
-`netregs` (register dump, decoded ISR + counters).  On boot, if a NIC is
-present, a DHCP client runs with a 3 s budget (requesting the current address)
-and falls back to the static default when no server answers.  The board also
-answers ARP/ICMP for its IP while idle.
+`netconsole on|off|host <a.b.c.d>` (the debug-output mirror, see below)
+`netregs` (register dump, decoded ISR + counters), `netdns [a.b.c.d]` (show or
+set the resolver) and `lookup <name>` (one DNS A query).  `curl <url>` fetches
+`http://host[:port]/path` with a minimal HTTP/1.0 GET and dumps the status
+line, headers and body (no TLS, no redirects; numeric hosts skip DNS).  On
+boot, if a NIC is present, a DHCP client runs with a 3 s budget (requesting the
+current address) and falls back to the static default when no server answers.
+The board also answers ARP/ICMP for its IP while idle.
 `lspci` lists every PCI function (one line each); with a filter (`lspci 8168`,
 `lspci 02`) it also prints BAR details, type and size for matching functions.
 `peek <addr> [len]` hex-dumps memory (identity map, so MMIO registers too).
@@ -478,7 +490,7 @@ Caveats:
 
 - Pixels are written directly to the LFB; WM full redraws overwrite them but
   the 1 Hz refresh brings them back.
-- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x44000`
+- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x49000`
   boundary (`kernel.ld` ASSERT).
 
 ## Conventions & gotchas
