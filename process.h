@@ -5,9 +5,8 @@
 #define PROC_STACK_SIZE 0x1000  /* 4 KB per process (= 1 page) */
 
 /* Process stacks are allocated from the frame allocator (mm.c), i.e. above the
- * VGA shadow buffer.  If that is unavailable (no E820 map) we fall back to a
- * small fixed pool below 1 MB so the system still boots with fewer processes. */
-#define PROC_FALLBACK_STACK_BASE 0x50000
+ * VGA shadow buffer.  If a page is unavailable we fall back to a small static
+ * pool in BSS so the system still boots with fewer processes. */
 #define PROC_FALLBACK_STACK_MAX  8
 
 #define PROC_UNUSED  0

@@ -17,8 +17,8 @@
  *  - Cursor mode is RADEON_CRTC_CUR_MODE_24BPP (2) in bits 22:20.
  *
  * NOTE: the bitmap is written straight into VRAM.  Do not use a local
- * [16 KB] array -- the kernel stack is only 2 KB (0x49800..0x49000) and a
- * 16 KB stack allocation overflows it.
+ * [16 KB] array -- the kernel stack is 8 KB (the in-image .stack section,
+ * see kernel.ld) and a 16 KB stack allocation overflows it.
  */
 
 #include "radeon.h"

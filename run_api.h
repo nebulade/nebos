@@ -3,7 +3,9 @@
 #ifndef RUN_API_H
 #define RUN_API_H
 
-#define PROGRAM_API_ADDR 0x49F00
+/* Sits just below the program load area, inside the low 1 MB the frame
+ * allocator reserves; keep in sync with run.c and user.ld. */
+#define PROGRAM_API_ADDR 0x7FF00
 #define IO_KEY_ESC       0x1B
 #define IO_KEY_SPACE     0x20
 #define IO_KEY_LEFT      0x100

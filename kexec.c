@@ -5,9 +5,9 @@
  * LFB are still valid) and jump straight to the new kernel's kernel_entry,
  * which re-inits IDT/PIC/PIT/mouse/process/VGA-shadow/terminal from scratch.
  *
- * Because this code lives at 0x7E00..0x49000 (inside the region we overwrite),
- * the final "copy image to 0x7E00 and jump" is done by a small
- * position-independent trampoline relocated to 0x800 (below the kernel).
+ * Because this code lives inside the kernel region we overwrite, the final
+ * "copy image to 0x7E00 and jump" is done by a small position-independent
+ * trampoline relocated to 0x800 (below the kernel).
  *
  * The terminal polls kexec_pending() on its idle loop, so `make dev` on the
  * host alone triggers the reload (no typing required). The manual `kexec`
@@ -23,15 +23,41 @@
 
 #include "kexec.h"
 #include "io.h"
+#include "mm.h"
 #include "serial.h"
 
 #define KEXEC_MAGIC 0x4345584B /* "KXEC" little-endian */
 
-/* The staging buffer must hold a full kernel image and stay below the VGA
-   window (0xA0000). */
-#if KEXEC_STAGE + KEXEC_MAX > 0xA0000
-#error "kexec staging overlaps the VGA aperture"
-#endif
+/* Staging buffer for the received image: allocated from the frame allocator
+ * when the header arrives, so no fixed low-memory region is needed.  It sits
+ * above the VGA shadow reserve (>= 0x900000), far from the 0x7E00 load
+ * address, so the trampoline's forward copy can never overlap itself. */
+unsigned int kexec_stage;
+static unsigned int kexec_stage_pages;
+
+int kexec_stage_alloc(unsigned int size)
+{
+	unsigned int pages;
+
+	if (size == 0 || size > KEXEC_MAX)
+		return 0;
+	pages = (size + 0xFFF) >> 12;
+	kexec_stage = mm_alloc_pages(pages);
+	if (!kexec_stage)
+		return 0;
+	kexec_stage_pages = pages;
+	return 1;
+}
+
+void kexec_stage_free(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < kexec_stage_pages; i++)
+		mm_free_page(kexec_stage + i * 0x1000);
+	kexec_stage_pages = 0;
+	kexec_stage = 0;
+}
 
 #define KEXEC_TRAMP 0x800      /* relocated trampoline (below the kernel) */
 
@@ -86,9 +112,9 @@ static int kexec_fail(const char *msg)
 
 static int kexec_recv(unsigned int *entry, unsigned int *size)
 {
-	volatile unsigned char *dst = (volatile unsigned char *)KEXEC_STAGE;
 	unsigned int i, magic = 0, n;
 	unsigned char c, sum = 0, chk;
+	volatile unsigned char *dst;
 
 	for (i = 0; i < 4; i++) {
 		if (!serial_ring_wait(5000, &c))
@@ -113,12 +139,18 @@ static int kexec_recv(unsigned int *entry, unsigned int *size)
 	}
 	if (*size == 0 || *size > KEXEC_MAX)
 		return kexec_fail("kexec: bad size\n");
+	if (!kexec_stage_alloc(*size))
+		return kexec_fail("kexec: out of memory (staging)\n");
+	dst = (volatile unsigned char *)kexec_stage;
+
 	kexec_total = *size;
 	kexec_progress = 0;
 
 	for (n = 0; n < *size; n++) {
-		if (!serial_ring_wait(5000, &c))
+		if (!serial_ring_wait(5000, &c)) {
+			kexec_stage_free();
 			return kexec_fail("kexec: timeout (data)\n");
+		}
 		dst[n] = c;
 		sum += c;
 		kexec_progress = n + 1;
@@ -127,10 +159,14 @@ static int kexec_recv(unsigned int *entry, unsigned int *size)
 	}
 	io_putchar('\n');
 
-	if (!serial_ring_wait(5000, &chk))
+	if (!serial_ring_wait(5000, &chk)) {
+		kexec_stage_free();
 		return kexec_fail("kexec: timeout (checksum)\n");
-	if (chk != sum)
+	}
+	if (chk != sum) {
+		kexec_stage_free();
 		return kexec_fail("kexec: checksum mismatch\n");
+	}
 
 	return 0;
 }
@@ -179,6 +215,6 @@ void kexec_jump(unsigned int entry, unsigned int size)
 	__asm__ volatile (
 		"jmp *%4"
 		:
-		: "a"(KEXEC_STAGE), "b"(KEXEC_LOAD), "c"(size), "d"(entry), "r"(KEXEC_TRAMP)
+		: "a"(kexec_stage), "b"(KEXEC_LOAD), "c"(size), "d"(entry), "r"(KEXEC_TRAMP)
 		: "memory");
 }

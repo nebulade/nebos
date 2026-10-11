@@ -223,7 +223,7 @@ stage2_pm:
 	movw  %ax, %fs
 	movw  %ax, %gs
 	movw  %ax, %ss
-	movl  $0x49800, %esp
+	movl  $__boot_stack_top, %esp
 	jmp   kernel_entry
 
 .align 4

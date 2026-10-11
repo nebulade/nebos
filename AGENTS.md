@@ -46,16 +46,19 @@ make clean
 | `0x7E00`  | Kernel load / VESA-stage entry (`kernel.ld`) |
 | `0x800`   | kexec trampoline (relocated at runtime; below the kernel) |
 | `0x900`   | kexec flat GDT + GDTR (built at runtime; below the kernel) |
-| `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`) |
+| `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`); also the kexec trampoline's private stack top (grows down, below the map) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
 | `0x4000`  | ISA DMA buffer, one sector (`disk.c`) |
-| `0x49000` | Kernel upper bound (`kernel.ld` ASSERT) |
-| `0x49800` | Protected-mode stack top (`vesa_stage.S`, `kexec_tramp.S`) |
-| `0x49F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
-| `0x4A000` | User program load address (`run.c`, `user.ld`, max 0x6000 to the pool) |
-| `0x50000` | Fallback process stack pool (8 × 4 KB; primary stacks come from the frame allocator, ≥ `0x900000`, see `process.c`/`mm.c`) |
-| `0x58000` | kexec staging buffer (received kernel image, up to 0x3C200 B; ends below the VGA window) |
+| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs it stays below `0x7F000`) |
+| (in-image) | Bootstrap/protected-mode stack: 8 KB `.stack` NOLOAD section, `__boot_stack_top`/`__boot_stack_bottom` (travels with the kernel) |
+| `0x7FF00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
+| `0x80000` | Legacy ring-0 program load area (`run.c`, `serial_recv.c`, `user.ld`; max 0x6000, inside the reserved low 1 MB) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
+
+Everything else is dynamic: process stacks and the kexec staging buffer come
+from the frame allocator (≥ `0x900000`), and the fallback stack pool is a
+static BSS array.  The kernel region itself only has one wall (`_end`
+below the run area), so adding code no longer moves any address.
 
 ## Key files
 
@@ -70,7 +73,7 @@ make clean
   1 MB and an 8 MB VGA-shadow region. `kmalloc.c/h` — a power-of-two heap
   allocator on top of the frame allocator (used for the process table). Process
   stacks (≥ `0x900000`) come from the frame allocator, with an 8-stack fallback
-  pool at `0x50000`.
+  pool (a static BSS array; no fixed address).
 - **Paging**: `paging.c/h` — identity-maps RAM (4 MB pages via CR4.PSE) + the
   LFB (uncacheable) and enables CR0.PG/WP. A single shared page directory for
   now (no per-process address spaces yet). The kexec trampoline
@@ -162,7 +165,7 @@ make clean
   scan generation counter.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
-  `0x4A000`, API function-pointer struct at `0x49F00`.  `prog`/`space` are
+  `0x80000`, API function-pointer struct at `0x7FF00`.  `prog`/`space` are
   **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`, like
   `hello.elf`), so `make dev`/`make net-dev` update them too and a board with
   no readable filesystem can still run them: `run <name>` and the `prog`/
@@ -496,8 +499,8 @@ Caveats:
 
 - Pixels are written directly to the LFB; WM full redraws overwrite them but
   the 1 Hz refresh brings them back.
-- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x49000`
-  boundary (`kernel.ld` ASSERT).
+- Info rows cost ~0.5 KB BSS; keep the kernel under the `0x7F000` boundary
+  (`kernel.ld` ASSERT).
 
 ## Conventions & gotchas
 

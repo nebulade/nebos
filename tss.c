@@ -2,6 +2,10 @@
 
 #include "tss.h"
 
+/* Top of the in-image bootstrap stack (see kernel.ld): used until the first
+ * context switch replaces TSS.esp0 with the process's own kernel stack. */
+extern char __boot_stack_top[];
+
 struct tss tss;
 
 struct gdt_entry {
@@ -57,7 +61,7 @@ void gdt_tss_init(void)
 	__asm__ volatile ("lgdt %0" : : "m"(gdtp));
 
 	tss.ss0  = 0x10;    /* kernel data segment */
-	tss.esp0 = 0x49800; /* bootstrap stack; updated by switch.S per process */
+	tss.esp0 = (unsigned int)__boot_stack_top;
 	tss.iomap_base = 0xFFFF;  /* no I/O permission bitmap (deny ring-3 I/O) */
 	__asm__ volatile ("ltr %0" : : "r"((unsigned short)0x28));
 }

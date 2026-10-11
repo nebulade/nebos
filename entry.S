@@ -3,15 +3,14 @@
  * transfer entry, see the dev/net-dev targets).
  *
  * It exists so a kernel reload cannot inherit a stale stack: the jumping
- * kernel's trampoline (kexec_tramp.S) sets ESP from a constant that was baked
- * into the *old* build's memory map.  If the map moved in between (the kernel
- * region grew), that stack can sit inside the new image and the BSS clear
- * would wipe the stack it is running on.  Re-pointing ESP here, before any
- * stack use, makes every reload independent of the old layout. */
+ * kernel's trampoline (kexec_tramp.S) copies the new image over this one
+ * while running on its own private stack, then jumps here.  Re-pointing ESP
+ * before any stack use makes the reload independent of where either build
+ * put its stacks. */
 .code32
 .text
 
 .globl kernel_entry
 kernel_entry:
-	movl  $0x49800, %esp
+	movl  $__boot_stack_top, %esp
 	jmp   kernel_main

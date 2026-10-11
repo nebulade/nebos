@@ -18,6 +18,14 @@
 .globl kexec_trampoline
 kexec_trampoline:
 	cli
+
+	/* Private stack: the copy below overwrites the kernel image, including
+	 * whatever stack we were called on.  Use the free gap below the E820
+	 * map at 0x1000 (trampoline at 0x800, flat GDT at 0x900 -- the stack
+	 * only ever dips a few words).  entry.S re-points ESP once the new
+	 * image is in place. */
+	movl  $0x1000, %esp
+
 	pushl %eax
 	pushl %ebx
 	pushl %ecx
@@ -66,7 +74,6 @@ kexec_trampoline:
 	 * this the jump below can execute stale instructions. */
 	wbinvd
 
-	movl  $0x49800, %esp
 	jmp   *%edx
 
 .globl kexec_trampoline_end

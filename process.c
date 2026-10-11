@@ -17,6 +17,9 @@ static unsigned int proc_cap;            /* current capacity of procs[] */
 static unsigned int next_pid_counter = 1; /* monotonic, wraps */
 static unsigned int fallback_stack_next;  /* 0..PROC_FALLBACK_STACK_MAX */
 
+/* Top of the in-image bootstrap stack (see kernel.ld). */
+extern char __boot_stack_top[];
+
 #define INITIAL_PROC_CAP 16
 
 /* ---- interrupt flag save/restore (for short critical sections) ---- */
@@ -32,6 +35,11 @@ static inline void irq_restore(unsigned int flags)
 	__asm__ volatile ("pushl %0; popfl" : : "r"(flags));
 }
 
+/* Fallback pool: a static array, so its address is not a fixed memory-map
+ * entry (same reasoning as the in-image stack in kernel.ld). */
+static unsigned int fallback_stacks[PROC_FALLBACK_STACK_MAX][PROC_STACK_SIZE / 4]
+	__attribute__((aligned(16)));
+
 /* Allocate a process stack and return its BASE address (page-aligned), or 0.
  * *owned is set to 1 if it came from the frame allocator (must be freed on
  * exit), 0 if it came from the fallback pool. */
@@ -43,12 +51,10 @@ static unsigned int stack_alloc(int *owned)
 		return base;
 	}
 	if (fallback_stack_next < PROC_FALLBACK_STACK_MAX) {
-		unsigned int top = PROC_FALLBACK_STACK_BASE
-			+ fallback_stack_next * PROC_STACK_SIZE
-			+ PROC_STACK_SIZE;
+		base = (unsigned int)&fallback_stacks[fallback_stack_next][0];
 		fallback_stack_next++;
 		*owned = 0;
-		return top - PROC_STACK_SIZE;
+		return base;
 	}
 	return 0;
 }
@@ -118,7 +124,7 @@ void process_init(void)
 	procs[0].screen     = (void *)0;
 	procs[0].stack_base = 0;  /* bootstrap stack, never freed */
 	procs[0].cr3        = paging_current_cr3();
-	procs[0].kstack_top = 0x49800;  /* bootstrap stack top */
+	procs[0].kstack_top = (unsigned int)__boot_stack_top;
 	name_copy(procs[0].name, "wm");
 	current_pid = 0;
 }

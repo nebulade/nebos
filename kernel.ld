@@ -15,6 +15,17 @@ SECTIONS
 		*(.bss .bss.*) *(COMMON)
 		__bss_end = .;
 	}
+	/* Bootstrap/protected-mode stack: inside the image's RAM footprint
+	 * (NOLOAD, so it costs no file bytes), which means its address travels
+	 * with the kernel instead of being a fixed one that kernel growth has
+	 * to be scheduled around.  It must sit *after* __bss_end: the BSS clear
+	 * would otherwise wipe the stack kernel_main is running on. */
+	.stack (NOLOAD) : {
+		. = ALIGN(16);
+		__boot_stack_bottom = .;
+		. += 0x2000;             /* 8 KB */
+		__boot_stack_top = .;
+	}
 	_end = .;
 }
-ASSERT(_end <= 0x49000, "Kernel too large would overwrite stack/DMA at 0x49000");
+ASSERT(_end <= 0x7F000, "Kernel too large: would reach the run area at 0x80000");

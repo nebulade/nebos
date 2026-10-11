@@ -175,7 +175,7 @@ static void send_ack(unsigned int next_offset, unsigned int status)
 
 static int netkexec_recv(void)
 {
-	volatile unsigned char *stage = (volatile unsigned char *)KEXEC_STAGE;
+	volatile unsigned char *stage = (volatile unsigned char *)kexec_stage;
 	unsigned int offset = 0, retries = 0, sum = 0;
 	unsigned int deadline = get_ticks_ms() + 3000;
 
@@ -247,8 +247,16 @@ void program_netkexec_main(void)
 	io_puthex(x_size);
 	io_putstr(" bytes over UDP...\n");
 
+	if (!kexec_stage_alloc(x_size)) {
+		io_putstr("netkexec: out of memory (staging)\n");
+		netdev_release();
+		kexec_busy = 0;
+		return;
+	}
+
 	if (netkexec_recv() != 0) {
 		io_putstr("\nnetkexec: aborted (timeout or checksum)\n");
+		kexec_stage_free();
 		netdev_release();
 		kexec_busy = 0;
 		return;

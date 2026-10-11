@@ -11,7 +11,7 @@
 
 /* Shared frame buffers (file scope, not stack: the 4 KB process stack can't
    hold a full-size frame, and keeping them out of BSS-as-much-as-possible
-   avoids bloating the kernel past its 0x49000 limit). Max Ethernet frame is
+   avoids bloating the kernel image). Max Ethernet frame is
    1518 bytes (14 header + 1500 payload + 4 VLAN). */
 #define NET_FRAME_MAX 1518
 static unsigned char net_rx_buf[NET_FRAME_MAX];

@@ -1,11 +1,11 @@
-/* Serial receive command: receives a binary via serial into 0x4A000. */
+/* Serial receive command: receives a binary via serial into 0x80000. */
 
 #include "io.h"
 #include "serial.h"
 #include "bin_recv.h"
 
-#define PROGRAM_LOAD_ADDR 0x4A000
-#define PROGRAM_LOAD_MAX  0x6000   /* up to 0x50000, below the stack pool */
+#define PROGRAM_LOAD_ADDR 0x80000
+#define PROGRAM_LOAD_MAX  0x6000   /* up to 0x86000, below the VGA window */
 
 unsigned int serial_recv_size;
 

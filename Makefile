@@ -383,8 +383,8 @@ space_embed.o: space.bin
 bootstrap.o: bootstrap.c
 	$(CC) $(CFLAGS) -o $@ $<
 
-bootstrap.elf: bootstrap.o
-	$(LD) -T user.ld -nostdlib -m elf_i386 -o $@ $<
+bootstrap.elf: bootstrap.o bootstrap.ld
+	$(LD) -T bootstrap.ld -nostdlib -m elf_i386 -o $@ $<
 
 bootstrap.bin: bootstrap.elf
 	$(OBJCOPY) -O binary $< $@
