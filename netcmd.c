@@ -1,11 +1,12 @@
-/* Network commands: netinfo, netrecv, netsend, netip, ping (responder) and
- * netping (active ARP + ICMP echo), over the netdev NIC layer. */
+/* Network commands: netinfo, netrecv, netsend, netip, pong (responder) and
+ * ping (active ARP + ICMP echo), over the netdev NIC layer. */
 
 #include "io.h"
 #include "timer.h"
 #include "netdev.h"
 #include "net.h"
 #include "dhcp.h"
+#include "dns.h"
 #include "netlog.h"
 
 /* Shared frame buffers (file scope, not stack: the 4 KB process stack can't
@@ -260,19 +261,19 @@ void program_netip_main(const char *arg)
 	io_putchar('\n');
 }
 
-/* ---- ping: answer ARP/ICMP for our IP (responder mode) ---- */
+/* ---- pong: answer ARP/ICMP for our IP (responder mode) ---- */
 
-void program_ping_main(void)
+void program_pong_main(void)
 {
 	const struct netdev *nd = netdev_active();
 	unsigned int deadline, count = 0;
 
 	if (!nd) {
-		io_putstr("ping: no NIC found\n");
+		io_putstr("pong: no NIC found\n");
 		return;
 	}
 
-	io_putstr("ping: answering ARP/ICMP for 30s (ip=");
+	io_putstr("pong: answering ARP/ICMP for 30s (ip=");
 	net_print_ip();
 	io_putstr(")...\n");
 	netdev_acquire();
@@ -297,7 +298,7 @@ void program_ping_main(void)
 		}
 	}
 
-	io_putstr("ping: done (");
+	io_putstr("pong: done (");
 	put_dec(count);
 	io_putstr(" replies)\n");
 	netdev_release();
@@ -482,13 +483,13 @@ void program_netloop_main(void)
 	netdev_release();
 }
 
-/* ---- netping: active ARP + ICMP echo ---- */
+/* ---- ping: active ARP + ICMP echo ---- */
 
-#define NETPING_COUNT  4
-#define NETPING_ID     0x4E42   /* "NB" */
-#define NETPING_WAIT_MS 1000
+#define PING_COUNT  4
+#define PING_ID     0x4E42   /* "NB" */
+#define PING_WAIT_MS 1000
 
-static unsigned int netping_sent_ms[NETPING_COUNT];
+static unsigned int ping_sent_ms[PING_COUNT];
 
 /* ARP request "who has target? tell my_ip" -> 42-byte frame. */
 static unsigned int build_arp_request(const unsigned char *my_mac,
@@ -579,8 +580,8 @@ static unsigned int build_icmp_echo(const unsigned char *src_mac,
 	ic[0] = ICMP_ECHO_REQUEST;
 	ic[1] = 0;
 	ic[2] = 0; ic[3] = 0;
-	ic[4] = (unsigned char)(NETPING_ID >> 8);
-	ic[5] = (unsigned char)(NETPING_ID & 0xFF);
+	ic[4] = (unsigned char)(PING_ID >> 8);
+	ic[5] = (unsigned char)(PING_ID & 0xFF);
 	ic[6] = (unsigned char)(seq >> 8);
 	ic[7] = (unsigned char)(seq & 0xFF);
 	pl[0] = 'n'; pl[1] = 'e'; pl[2] = 'b'; pl[3] = 'o';
@@ -623,10 +624,10 @@ static int parse_icmp_reply(const unsigned char *f, unsigned int len,
 	if (ic[0] != ICMP_ECHO_REPLY || ic[1] != 0)
 		return 0;
 	id = ((unsigned short)ic[4] << 8) | ic[5];
-	if (id != NETPING_ID)
+	if (id != PING_ID)
 		return 0;
 	*seq = ((unsigned short)ic[6] << 8) | ic[7];
-	if (*seq < 1 || *seq > NETPING_COUNT)
+	if (*seq < 1 || *seq > PING_COUNT)
 		return 0;
 	return 1;
 }
@@ -635,7 +636,7 @@ static int parse_icmp_reply(const unsigned char *f, unsigned int len,
  * Returns 0 = resolved, -1 = no reply, -2 = transmit failed.
  * Prints the frames seen while waiting (capped) so a silent peer, a filtered
  * reply and a reply we refuse to parse can be told apart on screen. */
-static int netping_arp(const struct netdev *nd, const unsigned char *my_mac,
+static int ping_arp(const struct netdev *nd, const unsigned char *my_mac,
 		       const unsigned char *my_ip, const unsigned char *target_ip,
 		       unsigned char *target_mac)
 {
@@ -643,12 +644,12 @@ static int netping_arp(const struct netdev *nd, const unsigned char *my_mac,
 	unsigned int tries, seen = 0;
 
 	for (tries = 0; tries < 3; tries++) {
-		unsigned int deadline = get_ticks_ms() + NETPING_WAIT_MS;
+		unsigned int deadline = get_ticks_ms() + PING_WAIT_MS;
 		unsigned int flen = build_arp_request(my_mac, my_ip, target_ip, frame);
 
 		if (nd->tx(frame, flen) != 0)
 			return -2;
-		io_putstr("netping: ARP request sent (try ");
+		io_putstr("ping: ARP request sent (try ");
 		put_dec(tries + 1);
 		io_putstr("/3)\n");
 		while (get_ticks_ms() < deadline) {
@@ -657,7 +658,7 @@ static int netping_arp(const struct netdev *nd, const unsigned char *my_mac,
 			if (len < 0)
 				continue;
 			if (seen < 8) {
-				io_putstr("netping: rx ");
+				io_putstr("ping: rx ");
 				net_decode_frame(net_rx_buf, (unsigned int)len);
 				io_putchar('\n');
 				seen++;
@@ -667,28 +668,35 @@ static int netping_arp(const struct netdev *nd, const unsigned char *my_mac,
 				return 0;
 		}
 	}
-	io_putstr("netping: saw ");
+	io_putstr("ping: saw ");
 	put_dec(seen);
 	io_putstr(" frame(s) while waiting\n");
 	return -1;
 }
 
-static void netping_run(const char *arg)
+static void ping_run(const char *arg)
 {
 	const struct netdev *nd;
 	unsigned char target[4], my_ip[4], my_mac[6], target_mac[6];
 	unsigned int i, replies = 0;
 
-	if (arg[0] == '\0' || net_parse_ip(arg, target) != 0) {
-		io_putstr("netping: usage netping <a.b.c.d>\n");
+	if (arg[0] == '\0') {
+		io_putstr("ping: usage ping <host|a.b.c.d>\n");
 		return;
 	}
 
 	nd = netdev_active();
 	if (!nd) {
-		io_putstr("netping: no NIC found\n");
+		io_putstr("ping: no NIC found\n");
 		return;
 	}
+
+	/* Dotted IP, or a name to resolve first. */
+	if (net_parse_ip(arg, target) != 0) {
+		if (dns_resolve(arg, target) != 0)
+			return;
+	}
+
 	nd->get_mac(my_mac);
 	net_get_ip(my_ip);
 
@@ -712,7 +720,7 @@ static void netping_run(const char *arg)
 		if (off) {
 			for (j = 0; j < 4; j++)
 				hop[j] = gw[j];
-			io_putstr("netping: ");
+			io_putstr("ping: ");
 			put_ip(target);
 			io_putstr(" via ");
 			put_ip(hop);
@@ -720,40 +728,40 @@ static void netping_run(const char *arg)
 		}
 
 		{
-			int r = netping_arp(nd, my_mac, my_ip, hop, target_mac);
+			int r = ping_arp(nd, my_mac, my_ip, hop, target_mac);
 
 			if (r == -2) {
-				io_putstr("netping: transmit failed (see netregs)\n");
+				io_putstr("ping: transmit failed (see netregs)\n");
 				return;
 			}
 			if (r != 0) {
-				io_putstr("netping: no ARP reply from ");
+				io_putstr("ping: no ARP reply from ");
 				put_ip(hop);
 				io_putchar('\n');
 				return;
 			}
 		}
 	}
-	io_putstr("netping: ");
+	io_putstr("ping: ");
 	put_ip(target);
 	io_putstr(" is-at ");
 	put_mac(target_mac);
 	io_putchar('\n');
 
-	for (i = 0; i < NETPING_COUNT; i++) {
+	for (i = 0; i < PING_COUNT; i++) {
 		unsigned char frame[64];
 		unsigned int flen, deadline;
 		int got = 0;
 
 		flen = build_icmp_echo(my_mac, target_mac, my_ip, target,
 				       (unsigned short)(i + 1), frame);
-		netping_sent_ms[i] = get_ticks_ms();
+		ping_sent_ms[i] = get_ticks_ms();
 		if (nd->tx(frame, flen) != 0) {
-			io_putstr("netping: transmit failed\n");
+			io_putstr("ping: transmit failed\n");
 			return;
 		}
 
-		deadline = get_ticks_ms() + NETPING_WAIT_MS;
+		deadline = get_ticks_ms() + PING_WAIT_MS;
 		while (get_ticks_ms() < deadline && !got) {
 			unsigned short seq;
 			int len = nd->rx(net_rx_buf, NET_FRAME_MAX);
@@ -764,7 +772,7 @@ static void netping_run(const char *arg)
 			if (!parse_icmp_reply(net_rx_buf, (unsigned int)len,
 					      my_ip, target, &seq))
 				continue;
-			rtt = get_ticks_ms() - netping_sent_ms[seq - 1];
+			rtt = get_ticks_ms() - ping_sent_ms[seq - 1];
 			io_putstr("reply: seq=");
 			put_dec(seq);
 			io_putstr(" rtt=");
@@ -777,24 +785,24 @@ static void netping_run(const char *arg)
 			replies++;
 		}
 		if (!got) {
-			io_putstr("netping: timeout, seq=");
+			io_putstr("ping: timeout, seq=");
 			put_dec(i + 1);
 			io_putchar('\n');
 		}
 	}
 
-	io_putstr("netping: ");
+	io_putstr("ping: ");
 	put_dec(replies);
 	io_putstr("/");
-	put_dec(NETPING_COUNT);
+	put_dec(PING_COUNT);
 	io_putstr(" replies from ");
 	put_ip(target);
 	io_putchar('\n');
 }
 
-void program_netping_main(const char *arg)
+void program_ping_main(const char *arg)
 {
 	netdev_acquire();
-	netping_run(arg);
+	ping_run(arg);
 	netdev_release();
 }

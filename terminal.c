@@ -40,17 +40,17 @@ extern void program_netinfo_main(void);
 extern void program_netrecv_main(void);
 extern void program_netsend_main(void);
 extern void program_netip_main(const char *arg);
-extern void program_netping_main(const char *arg);
 extern void program_netlog_main(const char *arg);
 extern void program_netconsole_main(const char *arg);
 extern void program_dhcp_main(void);
 extern void program_netregs_main(void);
 extern void program_netloop_main(void);
 extern void program_netreset_main(void);
-extern void program_ping_main(void);
+extern void program_pong_main(void);
+extern void program_ping_main(const char *arg);
 extern void program_curl_main(const char *arg);
 extern void program_netdns_main(const char *arg);
-extern void program_lookup_main(const char *arg);
+extern void program_host_main(const char *arg);
 
 /* Print the prompt (with the current directory) and set line_start. */
 static void term_print_prompt(struct term *t, int first)
@@ -564,20 +564,20 @@ static int is_cmd_netip(const char *line, unsigned int line_len, char *arg_buf, 
 	return (i == line_len);
 }
 
-static int is_cmd_netping(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+/* One optional single-token argument (hostname or dotted IP). */
+static int is_cmd_ping(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
 {
 	unsigned int i = 0, j = 0;
 	while (i < line_len && line[i] == ' ')
 		i++;
-	if (i + 7 > line_len)
+	if (i + 4 > line_len)
 		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'p' || line[i+4] != 'i' || line[i+5] != 'n' ||
-	    line[i+6] != 'g')
+	if (line[i] != 'p' || line[i+1] != 'i' || line[i+2] != 'n' ||
+	    line[i+3] != 'g')
 		return 0;
-	i += 7;
+	i += 4;
 	if (i < line_len && line[i] != ' ')
-		return 0;  /* "netping" must be a whole word */
+		return 0;  /* "ping" must be a whole word */
 	while (i < line_len && line[i] == ' ')
 		i++;
 	if (i >= line_len) {
@@ -650,17 +650,18 @@ static int is_cmd_netdns(const char *line, unsigned int line_len, char *arg_buf,
 	return (i == line_len);
 }
 
-static int is_cmd_lookup(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
+/* One optional single-token argument (DNS name). */
+static int is_cmd_host(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
 {
 	unsigned int i = 0, j = 0;
 	while (i < line_len && line[i] == ' ')
 		i++;
-	if (i + 6 > line_len)
+	if (i + 4 > line_len)
 		return 0;
-	if (line[i] != 'l' || line[i+1] != 'o' || line[i+2] != 'o' ||
-	    line[i+3] != 'k' || line[i+4] != 'u' || line[i+5] != 'p')
+	if (line[i] != 'h' || line[i+1] != 'o' || line[i+2] != 's' ||
+	    line[i+3] != 't')
 		return 0;
-	i += 6;
+	i += 4;
 	if (i < line_len && line[i] != ' ')
 		return 0;
 	while (i < line_len && line[i] == ' ')
@@ -678,14 +679,14 @@ static int is_cmd_lookup(const char *line, unsigned int line_len, char *arg_buf,
 	return (i == line_len);
 }
 
-static int is_cmd_ping(const char *line, unsigned int line_len)
+static int is_cmd_pong(const char *line, unsigned int line_len)
 {
 	unsigned int i = 0;
 	while (i < line_len && line[i] == ' ')
 		i++;
 	if (i + 4 > line_len)
 		return 0;
-	if (line[i] != 'p' || line[i+1] != 'i' || line[i+2] != 'n' || line[i+3] != 'g')
+	if (line[i] != 'p' || line[i+1] != 'o' || line[i+2] != 'n' || line[i+3] != 'g')
 		return 0;
 	i += 4;
 	while (i < line_len && line[i] == ' ')
@@ -912,11 +913,11 @@ static const char *const help_items[] = {
 	"display", "cpuinfo", "lsusb", "mouseinfo", "storage", "meminfo",
 	"format <device>", "lspci [id]", "peek <addr> [len]", "poke <addr> <val>",
 	"netinfo",
-	"netrecv", "netsend", "netip [a.b.c.d]", "netping <a.b.c.d>",
+	"netrecv", "netsend", "netip [a.b.c.d]", "ping <host|a.b.c.d>",
 	"netlog <text>", "netconsole [on|off|host <ip>]", "dhcp", "netregs",
-	"netloop", "netreset", "ping", "ps", "kill <pid>", "kexec", "dbg",
+	"netloop", "netreset", "pong", "ps", "kill <pid>", "kexec", "dbg",
 	"serial test|recv", "clear", "curl <url>", "netdns [a.b.c.d]",
-	"lookup <name>",
+	"host <name>",
 };
 
 static void help_puts(const char *s)
@@ -1728,12 +1729,12 @@ void term_run(struct term *t)
 					char ls_path[LS_PATH_MAX];
 					char format_dev[FORMAT_DEV_MAX];
 					char netip_arg[16];
-					char netping_arg[16];
+					char ping_arg[64];
 					char netlog_arg[NET_UDP_ARG_MAX];
 					char netconsole_arg[NET_UDP_ARG_MAX];
 					char curl_arg[128];
 					char netdns_arg[32];
-					char lookup_arg[64];
+					char host_arg[64];
 					char lspci_arg[16];
 					char peek_arg[32];
 					char resolved[VFS_PATH_MAX];
@@ -1780,8 +1781,8 @@ void term_run(struct term *t)
 						term_spawn(t, "netsend", program_netsend_main);
 					} else if (is_cmd_netip(t->line, t->line_len, netip_arg, sizeof(netip_arg))) {
 						term_spawn_arg(t, "netip", program_netip_main, netip_arg);
-					} else if (is_cmd_netping(t->line, t->line_len, netping_arg, sizeof(netping_arg))) {
-						term_spawn_arg(t, "netping", program_netping_main, netping_arg);
+					} else if (is_cmd_ping(t->line, t->line_len, ping_arg, sizeof(ping_arg))) {
+						term_spawn_arg(t, "ping", program_ping_main, ping_arg);
 					} else if (is_cmd_netlog(t->line, t->line_len, netlog_arg, sizeof(netlog_arg))) {
 						term_spawn_arg(t, "netlog", program_netlog_main, netlog_arg);
 					} else if (is_cmd_netconsole(t->line, t->line_len, netconsole_arg, sizeof(netconsole_arg))) {
@@ -1798,10 +1799,10 @@ void term_run(struct term *t)
 						term_spawn_arg(t, "netdns", program_netdns_main, netdns_arg);
 					} else if (is_cmd_curl(t->line, t->line_len, curl_arg, sizeof(curl_arg))) {
 						term_spawn_arg(t, "curl", program_curl_main, curl_arg);
-					} else if (is_cmd_lookup(t->line, t->line_len, lookup_arg, sizeof(lookup_arg))) {
-						term_spawn_arg(t, "lookup", program_lookup_main, lookup_arg);
-					} else if (is_cmd_ping(t->line, t->line_len)) {
-						term_spawn(t, "ping", program_ping_main);
+					} else if (is_cmd_host(t->line, t->line_len, host_arg, sizeof(host_arg))) {
+						term_spawn_arg(t, "host", program_host_main, host_arg);
+					} else if (is_cmd_pong(t->line, t->line_len)) {
+						term_spawn(t, "pong", program_pong_main);
 					} else if (is_cmd_storage(t->line, t->line_len)) {
 						term_spawn(t, "storage", program_storage_main);
 					} else if (is_cmd_meminfo(t->line, t->line_len)) {

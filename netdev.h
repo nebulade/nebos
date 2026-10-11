@@ -24,7 +24,7 @@ struct netdev {
 const struct netdev *netdev_active(void);
 
 /* Busy gate for commands that poll the NIC for a while (netrecv, ping,
- * netping, netloop, netkexec): the background kexec watcher must not steal
+ * netloop, netkexec): the background kexec watcher must not steal
  * frames while one of them owns the receiver. */
 void netdev_acquire(void);
 void netdev_release(void);

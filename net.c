@@ -190,7 +190,7 @@ void net_next_hop(const unsigned char dst[4], unsigned char hop[4])
 		hop[i] = dst[i];
 
 	/* Without a mask/gateway (manual netip) keep treating the target as
-	 * directly reachable, like netping does. */
+	 * directly reachable, like ping does. */
 	if (!(my_mask[0] || my_mask[1] || my_mask[2] || my_mask[3]) ||
 	    !(my_gw[0] || my_gw[1] || my_gw[2] || my_gw[3]))
 		return;

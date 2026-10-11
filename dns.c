@@ -333,12 +333,12 @@ void program_netdns_main(const char *arg)
 	io_putchar('\n');
 }
 
-void program_lookup_main(const char *arg)
+void program_host_main(const char *arg)
 {
 	unsigned char ip[4];
 
 	if (arg[0] == '\0') {
-		io_putstr("lookup: usage lookup <name>\n");
+		io_putstr("host: usage host <name>\n");
 		return;
 	}
 

@@ -7,8 +7,8 @@
  * Returns 0 on success.  The caller must own the NIC (netdev_acquire). */
 int dns_resolve(const char *name, unsigned char ip[4]);
 
-/* `netdns [a.b.c.d]` (show/set the resolver) and `lookup <name>`. */
+/* `netdns [a.b.c.d]` (show/set the resolver) and `host <name>`. */
 void program_netdns_main(const char *arg);
-void program_lookup_main(const char *arg);
+void program_host_main(const char *arg);
 
 #endif

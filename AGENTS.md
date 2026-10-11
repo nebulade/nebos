@@ -123,9 +123,9 @@ make clean
   OFFER → REQUEST → ACK; runs at boot when a NIC is present, 3 s budget, keeps
   the static address when no server answers; `dhcp` re-runs it; learns the DNS
   server from option 6). `netcmd.c` — the
-  `netinfo`/`netrecv`/`netsend`/`netip`/`dhcp`/`ping`/`netping`/`netregs`
+  `netinfo`/`netrecv`/`netsend`/`netip`/`dhcp`/`pong`/`ping`/`netregs`
   commands.  `dns.c/h` — a minimal resolver (one recursive A query over UDP,
-  name-compression aware; `netdns` shows/sets the server, `lookup <name>`
+  name-compression aware; `netdns` shows/sets the server, `host <name>`
   resolves).  `tcp.c/h` — a minimal TCP *client* (connect/send/recv/close,
   in-order receive, one segment of retransmit; the caller owns the NIC).
   `curl.c` — the `curl` command: `http://host[:port]/path` GET with DNS, ARP,
@@ -180,13 +180,14 @@ make clean
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
-DHCP client), `ping` (responds to ARP/ICMP for our IP for 30 s),
-`netping <a.b.c.d>` (active ARP + ICMP echo with RTT, via the gateway when the
-target is off-subnet), `netloop` (PHY loopback TX/RX self-test), `netreset`
+DHCP client), `pong` (responds to ARP/ICMP for our IP for 30 s),
+`ping <host|a.b.c.d>` (active ARP + ICMP echo with RTT; resolves DNS names,
+goes via the gateway when the target is off-subnet), `netloop` (PHY loopback
+TX/RX self-test), `netreset`
 (full NIC re-init), `netlog <text>` (one UDP datagram to port 19290),
 `netconsole on|off|host <a.b.c.d>` (the debug-output mirror, see below)
 `netregs` (register dump, decoded ISR + counters), `netdns [a.b.c.d]` (show or
-set the resolver) and `lookup <name>` (one DNS A query).  `curl <url>` fetches
+set the resolver) and `host <name>` (one DNS A query).  `curl <url>` fetches
 `http://host[:port]/path` with a minimal HTTP/1.0 GET and dumps the status
 line, headers and body (no TLS, no redirects; numeric hosts skip DNS).  On
 boot, if a NIC is present, a DHCP client runs with a 3 s budget (requesting the
@@ -265,7 +266,7 @@ ARP/ICMP for its IP, and auto-detects the `"KXNU"` header datagram (UDP port
 19288).  The host tool (`netkexec_send.c`) then does a stop-and-wait transfer:
 the board acks every datagram with the next expected offset, verifies the
 32-bit checksum and jumps.  ~130 KB takes about a second on a wired LAN.
-While a net command owns the receiver (`netrecv`/`ping`/`netping`/`netloop`)
+While a net command owns the receiver (`netrecv`/`ping`/`netloop`)
 or a kexec is in progress, the auto-detect pauses.
 
 The board's address comes from DHCP when a server is present (the DHCP client
