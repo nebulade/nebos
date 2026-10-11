@@ -35,6 +35,7 @@ extern void program_mem_main(void);
 extern void program_format_main(const char *arg);
 extern void program_lspci_main(const char *filter);
 extern void program_peek_main(const char *arg);
+extern void program_poke_main(const char *arg);
 extern void program_netinfo_main(void);
 extern void program_netrecv_main(void);
 extern void program_netsend_main(void);
@@ -314,8 +315,34 @@ static int is_cmd_peek(const char *line, unsigned int line_len, char *arg_buf, u
 	return (i == line_len);
 }
 
-static int is_cmd_prog(const char *line, unsigned int line_len)
+/* poke <addr> <val>: write one dword to memory/MMIO. */
+static int is_cmd_poke(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
 {
+	unsigned int i = 0, j = 0;
+
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i + 4 > line_len)
+		return 0;
+	if (line[i] != 'p' || line[i+1] != 'o' || line[i+2] != 'k' ||
+	    line[i+3] != 'e')
+		return 0;
+	i += 4;
+	if (i < line_len && line[i] != ' ')
+		return 0;  /* "poke" must be a whole word */
+	while (i < line_len && line[i] == ' ')
+		i++;
+	if (i >= line_len)
+		return 0;  /* address and value required */
+	while (i < line_len && j + 1 < buf_size)
+		arg_buf[j++] = line[i++];
+	arg_buf[j] = '\0';
+	while (i < line_len && line[i] == ' ')
+		i++;
+	return (i == line_len);
+}
+
+static int is_cmd_prog(const char *line, unsigned int line_len){
 	unsigned int i = 0;
 	while (i < line_len && line[i] == ' ')
 		i++;
@@ -784,6 +811,58 @@ static int is_cmd_format(const char *line, unsigned int line_len, char *dev_buf,
 	return (i == line_len && j > 0);
 }
 
+/* Help listing: printed as two 32-column columns so it fits the 64-column
+   terminal without scrolling. */
+static const char *const help_items[] = {
+	"cd [path]", "ls [path]", "cat <path>", "save <path> <text>",
+	"rm <path>", "mkdir <path>", "rmdir <path>", "hello", "reboot",
+	"poweroff", "run <name>|<file>", "space", "prog", "clock", "colors",
+	"display", "cpuinfo", "lsusb", "mouseinfo", "storage", "mem",
+	"format <device>", "lspci [id]", "peek <addr> [len]", "poke <addr> <val>",
+	"netinfo",
+	"netrecv", "netsend", "netip [a.b.c.d]", "netping <a.b.c.d>",
+	"netlog <text>", "netconsole [on|off|host <ip>]", "dhcp", "netregs",
+	"netloop", "netreset", "ping", "ps", "kill <pid>", "kexec", "dbg",
+	"serial test|recv", "clear",
+};
+
+static void help_puts(const char *s)
+{
+	while (*s)
+		io_putchar(*s++);
+}
+
+static void help_item_pad(const char *s)
+{
+	unsigned int n = 0;
+
+	while (s[n]) {
+		io_putchar(s[n]);
+		n++;
+	}
+	while (n < 32) {
+		io_putchar(' ');
+		n++;
+	}
+}
+
+static void help_print(void)
+{
+	unsigned int nitems = sizeof(help_items) / sizeof(help_items[0]);
+	unsigned int half = (nitems + 1) / 2;
+	unsigned int k;
+
+	for (k = 0; k < half; k++) {
+		if (k + half < nitems) {
+			help_item_pad(help_items[k]);
+			help_puts(help_items[k + half]);
+		} else {
+			help_puts(help_items[k]);
+		}
+		io_putchar('\n');
+	}
+}
+
 static int is_cmd_help(const char *line, unsigned int line_len)
 {
 	unsigned int i = 0;
@@ -1225,6 +1304,8 @@ void term_run(struct term *t)
 						term_spawn_arg(t, "lspci", program_lspci_main, lspci_arg);
 					} else if (is_cmd_peek(t->line, t->line_len, peek_arg, sizeof(peek_arg))) {
 						term_spawn_arg(t, "peek", program_peek_main, peek_arg);
+					} else if (is_cmd_poke(t->line, t->line_len, peek_arg, sizeof(peek_arg))) {
+						term_spawn_arg(t, "poke", program_poke_main, peek_arg);
 					} else if (is_cmd_netinfo(t->line, t->line_len)) {
 						term_spawn(t, "netinfo", program_netinfo_main);
 					} else if (is_cmd_netrecv(t->line, t->line_len)) {
@@ -1326,48 +1407,7 @@ void term_run(struct term *t)
 					} else if (is_cmd_dbg(t->line, t->line_len)) {
 						program_dbg_main();
 					} else if (is_cmd_help(t->line, t->line_len)) {
-						io_putstr("cd [path]\n");
-						io_putstr("ls [path]\n");
-						io_putstr("cat <path>\n");
-						io_putstr("save <path> <text>\n");
-						io_putstr("rm <path>\n");
-						io_putstr("mkdir <path>\n");
-						io_putstr("rmdir <path>\n");
-						io_putstr("hello\n");
-						io_putstr("reboot\n");
-						io_putstr("poweroff\n");
-						io_putstr("run <name>|<file>\n");
-						io_putstr("space\n");
-						io_putstr("prog\n");
-						io_putstr("clock\n");
-						io_putstr("colors\n");
-						io_putstr("display\n");
-						io_putstr("cpuinfo\n");
-						io_putstr("lsusb\n");
-						io_putstr("mouseinfo\n");
-						io_putstr("storage\n");
-						io_putstr("mem\n");
-						io_putstr("format <device>\n");
-						io_putstr("lspci [id]\n");
-						io_putstr("peek <addr> [len]\n");
-						io_putstr("netinfo\n");
-						io_putstr("netrecv\n");
-						io_putstr("netsend\n");
-						io_putstr("netip [a.b.c.d]\n");
-						io_putstr("netping <a.b.c.d>\n");
-						io_putstr("netlog <text>\n");
-						io_putstr("netconsole [on|off|host <ip>]\n");
-						io_putstr("dhcp\n");
-						io_putstr("netregs\n");
-						io_putstr("netloop\n");
-						io_putstr("netreset\n");
-						io_putstr("ping\n");
-						io_putstr("ps\n");
-						io_putstr("kill <pid>\n");
-						io_putstr("kexec\n");
-						io_putstr("dbg\n");
-						io_putstr("serial test|recv\n");
-						io_putstr("clear\n");
+						help_print();
 				} else if (is_cmd_clear(t->line, t->line_len)) {
 					io_clear_screen();
 					term_print_prompt(t, 1);

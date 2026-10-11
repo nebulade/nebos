@@ -118,7 +118,7 @@ void process_init(void)
 	procs[0].screen     = (void *)0;
 	procs[0].stack_base = 0;  /* bootstrap stack, never freed */
 	procs[0].cr3        = paging_current_cr3();
-	procs[0].kstack_top = 0x40800;  /* bootstrap stack top */
+	procs[0].kstack_top = 0x42800;  /* bootstrap stack top */
 	name_copy(procs[0].name, "wm");
 	current_pid = 0;
 }

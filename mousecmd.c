@@ -80,4 +80,7 @@ void program_mouseinfo_main(void)
 
 	io_putstr("mouse cursor ");
 	io_putstr(mouse_cursor_visible() ? "visible\n" : "hidden\n");
+	io_putstr("mouse cursor backend ");
+	io_putstr(mouse_cursor_backend_name());
+	io_putchar('\n');
 }

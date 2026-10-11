@@ -46,10 +46,10 @@ make clean
 | `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
 | `0x4000`  | ISA DMA buffer, one sector (`disk.c`) |
-| `0x40000` | Kernel upper bound (`kernel.ld` ASSERT) |
-| `0x40800` | Protected-mode stack top (`vesa_stage.S`, `kexec_tramp.S`) |
-| `0x40F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
-| `0x41000` | User program load address (`run.c`, `user.ld`) |
+| `0x42000` | Kernel upper bound (`kernel.ld` ASSERT) |
+| `0x42800` | Protected-mode stack top (`vesa_stage.S`, `kexec_tramp.S`) |
+| `0x42F00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
+| `0x43000` | User program load address (`run.c`, `user.ld`) |
 | `0x50000` | Fallback process stack pool (8 × 4 KB; primary stacks come from the frame allocator, ≥ `0x900000`, see `process.c`/`mm.c`) |
 | `0x58000` | kexec staging buffer (received kernel image, up to 0x38200 B; ends below the VGA window) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
@@ -74,11 +74,19 @@ make clean
   (`kexec_tramp.S`) clears CR0.PG before the copy so it can overwrite the old
   kernel's page tables safely.
 - **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
-  terminal windows (64×20) with a system bar (banner + purple "+ New" button +
+  terminal windows (64×32) with a system bar (banner + purple "+ New" button +
   clock + rainbow). Click-to-focus, drag-by-title-bar, close (×). The "+ New"
   button and first boot spawn terminals; there is no `term` command.
-- **Graphics**: `vga.c/h`, `vga_copy.S`, `gpu.c`, `ati.c`, `nvidia.c`, `pci.h` —
-  VESA LFB + shadow buffer, 30 Hz dirty-row flush. ATI Mach64 CRTC fixup; NVIDIA no-op.
+- **Graphics**: `vga.c/h`, `vga_copy.S`, `gpu.c`, `ati.c`, `nvidia.c`, `nv50.c`,
+  `pci.h` — VESA LFB + shadow buffer, 30 Hz dirty-row flush. ATI Mach64 CRTC
+  fixup; NVIDIA is VBE-only (never touch the legacy VGA CRTC). `nvidia.c`
+  identifies the card, maps BAR0/BAR1/BAR3 and reads the MCP7x stolen-VRAM
+  geometry; `nv50.c` probes the nv50-family display engine at boot (read-only,
+  serial/netmon). The ION/AT3IONT-I hardware cursor is deliberately not driven:
+  the VBIOS keeps the display engine (INTR_1 bit 8, `0x6194e8` = 0x803), EVO
+  DMA channels never fetch until nouveau's full takeover (which re-programs the
+  mode itself), the cursor staging registers are engine-only, and a channel
+  that has run cannot be restarted — see the header of `nv50.c`.
 - **Text console**: `fbtext.c`, `font_8x8.c/h`, `io.c/h`, `screen.c/h` — 8×8 font,
   framebuffer glyph blitting (`fbtext_draw_cells`) and per-terminal cell buffers
   (`struct text_screen`).
@@ -129,7 +137,7 @@ make clean
   scan generation counter.
 - **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
-  `0x41000`, API function-pointer struct at `0x40F00`.  `prog`/`space` are
+  `0x43000`, API function-pointer struct at `0x42F00`.  `prog`/`space` are
   **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`, like
   `hello.elf`), so `make dev`/`make net-dev` update them too and a board with
   no readable filesystem can still run them: `run <name>` and the `prog`/
@@ -143,7 +151,7 @@ make clean
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
-`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `storage`, `mem`, `format <device>`,
+`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `mem`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
@@ -159,6 +167,8 @@ answers ARP/ICMP for its IP while idle.
 `lspci` lists every PCI function (one line each); with a filter (`lspci 8168`,
 `lspci 02`) it also prints BAR details, type and size for matching functions.
 `peek <addr> [len]` hex-dumps memory (identity map, so MMIO registers too).
+`poke <addr> <val>` writes one 32-bit dword and prints the read-back (for
+driving MMIO experiments from the shell).
 
 Each terminal has a current working directory (shown in the prompt as `[dir] > `),
 changed with `cd`; paths may be absolute (`/floppy1/…`) or relative (`.`, `..`,
@@ -428,7 +438,9 @@ the MTRR dump from `mtrr.c`: `MTRRdef` = default-type MSR + number of variable
 slots; `M0..M7` = the BIOS's own MTRR entries as found at boot (`-` = free
 slot; `b`/`m` = base/address mask; type `UC`/`WB`/`WC`/`WT`/`WP`); `WC=eN ...`
 = the write-combining entry the kernel added in free slot N for the
-framebuffer (or `WC skipped: no free MTRR entry`). Never overwrite
+framebuffer (or `WC skipped: no free MTRR entry`). An entry that already
+covers the LFB base (left by a previous kexec boot -- variable MTRRs survive
+a kernel reload) is reused instead of consuming another slot. Never overwrite
 BIOS-populated MTRR entries — chipset/MMIO uncacheability (and the USB-legacy
 SMM) breaks otherwise.
 
@@ -455,7 +467,7 @@ Caveats:
 
 - Pixels are written directly to the LFB; WM full redraws overwrite them but
   the 1 Hz refresh brings them back.
-- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x40000`
+- Info rows cost ~0.5 KB BSS; the kernel must stay under the `0x42000`
   boundary (`kernel.ld` ASSERT).
 
 ## Conventions & gotchas

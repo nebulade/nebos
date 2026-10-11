@@ -11,6 +11,10 @@ int mouse_ps2_present(void);
 int mouse_streaming_enabled(void);
 unsigned int mouse_device_id(void);
 int mouse_cursor_visible(void);
+/* Active cursor backend: 0 = software, 1 = Cirrus, 2 = Radeon. */
+int mouse_cursor_backend(void);
+/* Human-readable form of the above ("software", "nvidia hw", ...). */
+const char *mouse_cursor_backend_name(void);
 unsigned int mouse_packet_size(void);
 
 /* Current cursor position (hotspot) in framebuffer pixels. */

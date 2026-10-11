@@ -5,7 +5,7 @@
 void program_kexec_main(void);
 
 /* Staging buffer for a received kernel image, and the maximum image size
- * (the kernel region 0x7E00..0x40000).  Below the VGA window; see AGENTS.md. */
+ * (the kernel region 0x7E00..0x42000).  Below the VGA window; see AGENTS.md. */
 #define KEXEC_STAGE 0x58000
 #define KEXEC_LOAD  0x7E00
 #define KEXEC_MAX   0x38200

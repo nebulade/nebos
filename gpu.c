@@ -94,7 +94,8 @@ void gpu_init(unsigned int lfb_base)
 		ati_init(active_bus, active_dev);
 	} else if (active_vendor == PCI_VENDOR_NVIDIA) {
 		gpu_vendor_id = GPU_VENDOR_NVIDIA;
-		nvidia_init();
+		nvidia_init(active_bus, active_dev,
+			    (active_id >> 16) & 0xFFFF);
 	} else if (active_vendor == PCI_VENDOR_INTEL) {
 		gpu_vendor_id = GPU_VENDOR_INTEL;
 	} else if (active_vendor == PCI_VENDOR_CIRRUS) {

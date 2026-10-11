@@ -202,6 +202,24 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 		return;
 	base &= ~(region_size - 1);
 
+	/* A kernel reload does not reset the MTRRs: reuse the WC entry an
+	 * earlier boot left for this base instead of burning another variable
+	 * slot (the kexec dev loop would otherwise exhaust the entries). */
+	for (i = 0; i < vcnt; i++) {
+		unsigned int esize;
+
+		rdmsr(MSR_MTRR_PHYSBASE0 + 2 * i, &lo, &hi);
+		rdmsr(MSR_MTRR_PHYSMASK0 + 2 * i, &mlo, &hi);
+		if (!(mlo & MTRR_VALID) || (lo & 0xFF) != MTRR_TYPE_WC ||
+		    (lo & 0xFFFFF000u) != base)
+			continue;
+		esize = ((~mlo) & 0xFFFFF000u) + 0x1000;
+		if (esize < region_size)
+			continue;
+		serial_puts(SERIAL_COM1, "mtrr: LFB already write-combining\n");
+		return;
+	}
+
 	/* Only ever use a free variable entry.  BIOS-populated entries may
 	 * keep chipset MMIO uncached and must not be disturbed. */
 	for (i = 0; i < vcnt; i++) {

@@ -5,7 +5,7 @@
 #define SCREEN_H
 
 #define SCREEN_COLS 64
-#define SCREEN_ROWS 20
+#define SCREEN_ROWS 32
 
 struct text_screen {
 	unsigned short cells[SCREEN_COLS * SCREEN_ROWS];

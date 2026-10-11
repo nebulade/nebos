@@ -197,6 +197,9 @@ static void mouse_cursor_setup(void)
 		return;
 	}
 
+	/* NVIDIA nv50-family (ION/MCP79): no hardware cursor -- the VBIOS keeps
+	   the display engine (see nv50.c); the software cursor is used. */
+
 	mouse_hw_cursor = 0;
 	cur_x = 100;
 	cur_y = 100;
@@ -374,6 +377,20 @@ unsigned int mouse_device_id(void)
 int mouse_cursor_visible(void)
 {
 	return mouse_cursor_flag;
+}
+
+int mouse_cursor_backend(void)
+{
+	return mouse_hw_cursor;
+}
+
+const char *mouse_cursor_backend_name(void)
+{
+	switch (mouse_hw_cursor) {
+	case 1:  return "cirrus hw";
+	case 2:  return "radeon hw";
+	default: return "software";
+	}
 }
 
 unsigned int mouse_packet_size(void)

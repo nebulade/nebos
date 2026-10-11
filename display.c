@@ -4,7 +4,9 @@
 #include "vga.h"
 #include "gpu.h"
 #include "ati.h"
+#include "nvidia.h"
 #include "radeon.h"
+#include "mouse.h"
 #include "fbtext.h"
 
 static void put_uint(unsigned int n)
@@ -64,6 +66,9 @@ void program_display_main(void)
 	io_putstr("LFB ");
 	put_hex((unsigned int)(unsigned long)vga_fb_ptr());
 	io_putchar('\n');
+	io_putstr("LFB phys ");
+	put_hex((unsigned int)vga_fb_lfb_addr());
+	io_putchar('\n');
 	io_putstr("rendering: ");
 	io_putstr(vga_shadow_is_active() ? "shadow buffer" : "direct");
 	io_putchar('\n');
@@ -103,6 +108,29 @@ void program_display_main(void)
 			io_putchar('\n');
 		}
 	}
+	if (gpu_vendor() == GPU_VENDOR_NVIDIA) {
+		unsigned int lfb = (unsigned int)vga_fb_lfb_addr();
+		unsigned int bar3 = nvidia_bar3();
+
+		io_putstr("NVIDIA ");
+		io_putstr(nvidia_chip_name());
+		io_putstr(" chipset ");
+		put_hex(nvidia_chipset());
+		io_putstr(" regs ");
+		put_hex(nvidia_bar0());
+		io_putstr(" bar3 ");
+		put_hex(bar3);
+		if (bar3 && lfb >= bar3) {
+			/* VRAM offset of the raster (BAR3 maps VRAM 1:1):
+			   the base for offscreen VRAM (cursor image etc.). */
+			io_putstr(" FB ofs ");
+			put_hex(lfb - bar3);
+		}
+		io_putchar('\n');
+	}
+	io_putstr("cursor backend ");
+	io_putstr(mouse_cursor_backend_name());
+	io_putchar('\n');
 	io_putstr("text ");
 	put_uint(fbtext_get_cols());
 	io_putstr(" x ");

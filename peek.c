@@ -2,6 +2,8 @@
  * MMIO registers, e.g. a driver's BAR once mapped).
  *
  *   peek <addr> [len]      default len 64, max 256
+ *   poke <addr> <val>      write one dword (e.g. an MMIO register), print
+ *                          the read-back
  *
  * Reading an unmapped address faults; the exception handler shows EIP/CR2.
  */
@@ -88,4 +90,42 @@ void program_peek_main(const char *arg)
 		}
 		io_putchar('\n');
 	}
+}
+
+/* poke <addr> <val>: write one 32-bit dword and print the read-back.  Used to
+ * drive MMIO experiments (e.g. the GPU's PIO method interface) from the
+ * shell. */
+void program_poke_main(const char *arg)
+{
+	const char *p = arg;
+	volatile unsigned int *mem;
+	unsigned int addr, val;
+
+	if (parse_hex(p, &addr, &p) != 0) {
+		io_putstr("poke: usage poke <hexaddr> <hexval>\n");
+		return;
+	}
+	while (*p == ' ')
+		p++;
+	if (parse_hex(p, &val, &p) != 0) {
+		io_putstr("poke: usage poke <hexaddr> <hexval>\n");
+		return;
+	}
+	while (*p == ' ')
+		p++;
+	if (*p) {
+		io_putstr("poke: usage poke <hexaddr> <hexval>\n");
+		return;
+	}
+
+	mem = (volatile unsigned int *)(addr & ~3u);
+	*mem = val;
+
+	io_putstr("poke ");
+	put_hex8(addr & ~3u);
+	io_putstr(" <- ");
+	put_hex8(val);
+	io_putstr(" reads ");
+	put_hex8(*mem);
+	io_putchar('\n');
 }
