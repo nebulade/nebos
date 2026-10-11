@@ -13,17 +13,10 @@ extern unsigned char _binary_hello_elf_start[];
 extern unsigned char _binary_hello_elf_end[];
 extern void program_reboot_main(void);
 extern void program_poweroff_main(void);
-extern void program_ls_main(const char *path);
-extern void program_cat_main(const char *filename);
 extern void program_run_main(const char *filename);
-extern void program_save_main(const char *arg);
-extern void program_rm_main(const char *arg);
-extern void program_mkdir_main(const char *arg);
-extern void program_rmdir_main(const char *arg);
 extern void program_clock_main(void);
 extern void program_colors_main(void);
 extern void program_display_main(void);
-extern void program_cpuinfo_main(void);
 extern void program_mouseinfo_main(void);
 extern void program_serial_loop_main(const char *arg);
 extern void program_serial_recv_main(const char *arg);
@@ -63,869 +56,305 @@ static void term_print_prompt(struct term *t, int first)
 	t->line_start = io_get_cursor();
 }
 
-static int is_cmd_hello(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'h' || line[i+1] != 'e' || line[i+2] != 'l' || line[i+3] != 'l' || line[i+4] != 'o')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
+/* ---- Command registry ----
+ *
+ * One table drives command dispatch, `help` and Tab completion.  Most commands
+ * are spawned as separate kernel processes; the CK_CUSTOM handlers are the
+ * shell builtins, the commands that must run inline (ps/kill/kexec/...) and the
+ * ones deliberately unavailable in a windowed terminal. */
 
-static int is_cmd_reboot(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 6 > line_len)
-		return 0;
-	if (line[i] != 'r' || line[i+1] != 'e' || line[i+2] != 'b' || line[i+3] != 'o' || line[i+4] != 'o' || line[i+5] != 't')
-		return 0;
-	i += 6;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_poweroff(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 8 > line_len)
-		return 0;
-	if (line[i] != 'p' || line[i+1] != 'o' || line[i+2] != 'w' || line[i+3] != 'e' ||
-	    line[i+4] != 'r' || line[i+5] != 'o' || line[i+6] != 'f' || line[i+7] != 'f')
-		return 0;
-	i += 8;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_ls(const char *line, unsigned int line_len, char *path_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 2 > line_len)
-		return 0;
-	if (line[i] != 'l' || line[i+1] != 's')
-		return 0;
-	i += 2;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "ls" must be a whole word, so reject "lsusb" etc. */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			path_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		path_buf[j++] = line[i++];
-	path_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_cd(const char *line, unsigned int line_len, char *path_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 2 > line_len)
-		return 0;
-	if (line[i] != 'c' || line[i+1] != 'd')
-		return 0;
-	i += 2;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "cd" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			path_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		path_buf[j++] = line[i++];
-	path_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_clock(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'c' || line[i+1] != 'l' || line[i+2] != 'o' ||
-	    line[i+3] != 'c' || line[i+4] != 'k')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_colors(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 6 > line_len)
-		return 0;
-	if (line[i] != 'c' || line[i+1] != 'o' || line[i+2] != 'l' ||
-	    line[i+3] != 'o' || line[i+4] != 'r' || line[i+5] != 's')
-		return 0;
-	i += 6;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_display(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 'd' || line[i+1] != 'i' || line[i+2] != 's' || line[i+3] != 'p' ||
-	    line[i+4] != 'l' || line[i+5] != 'a' || line[i+6] != 'y')
-		return 0;
-	i += 7;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_cpuinfo(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 'c' || line[i+1] != 'p' || line[i+2] != 'u' || line[i+3] != 'i' ||
-	    line[i+4] != 'n' || line[i+5] != 'f' || line[i+6] != 'o')
-		return 0;
-	i += 7;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_mouseinfo(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 9 > line_len)
-		return 0;
-	if (line[i] != 'm' || line[i+1] != 'o' || line[i+2] != 'u' ||
-	    line[i+3] != 's' || line[i+4] != 'e' || line[i+5] != 'i' ||
-	    line[i+6] != 'n' || line[i+7] != 'f' || line[i+8] != 'o')
-		return 0;
-	i += 9;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_lsusb(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'l' || line[i+1] != 's' || line[i+2] != 'u' ||
-	    line[i+3] != 's' || line[i+4] != 'b')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_lspci(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'l' || line[i+1] != 's' || line[i+2] != 'p' ||
-	    line[i+3] != 'c' || line[i+4] != 'i')
-		return 0;
-	i += 5;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "lspci" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_peek(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'p' || line[i+1] != 'e' || line[i+2] != 'e' ||
-	    line[i+3] != 'k')
-		return 0;
-	i += 4;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "peek" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-/* poke <addr> <val>: write one dword to memory/MMIO. */
-static int is_cmd_poke(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'p' || line[i+1] != 'o' || line[i+2] != 'k' ||
-	    line[i+3] != 'e')
-		return 0;
-	i += 4;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "poke" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len)
-		return 0;  /* address and value required */
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_prog(const char *line, unsigned int line_len){
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'p' || line[i+1] != 'r' || line[i+2] != 'o' ||
-	    line[i+3] != 'g')
-		return 0;
-	i += 4;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netinfo(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'i' || line[i+4] != 'n' || line[i+5] != 'f' ||
-	    line[i+6] != 'o')
-		return 0;
-	i += 7;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netlog(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 6 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'l' || line[i+4] != 'o' || line[i+5] != 'g')
-		return 0;
-	i += 6;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "netlog" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netconsole(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 10 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'c' || line[i+4] != 'o' || line[i+5] != 'n' ||
-	    line[i+6] != 's' || line[i+7] != 'o' || line[i+8] != 'l' ||
-	    line[i+9] != 'e')
-		return 0;
-	i += 10;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "netconsole" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_dhcp(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'd' || line[i+1] != 'h' || line[i+2] != 'c' ||
-	    line[i+3] != 'p')
-		return 0;
-	i += 4;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netregs(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'r' || line[i+4] != 'e' || line[i+5] != 'g' ||
-	    line[i+6] != 's')
-		return 0;
-	i += 7;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netloop(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'l' || line[i+4] != 'o' || line[i+5] != 'o' ||
-	    line[i+6] != 'p')
-		return 0;
-	i += 7;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netreset(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 8 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'r' || line[i+4] != 'e' || line[i+5] != 's' ||
-	    line[i+6] != 'e' || line[i+7] != 't')
-		return 0;
-	i += 8;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netrecv(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'r' || line[i+4] != 'e' || line[i+5] != 'c' ||
-	    line[i+6] != 'v')
-		return 0;
-	i += 7;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netsend(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 's' || line[i+4] != 'e' || line[i+5] != 'n' ||
-	    line[i+6] != 'd')
-		return 0;
-	i += 7;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netip(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'i' || line[i+4] != 'p')
-		return 0;
-	i += 5;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "netip" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-/* One optional single-token argument (hostname or dotted IP). */
-static int is_cmd_ping(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'p' || line[i+1] != 'i' || line[i+2] != 'n' ||
-	    line[i+3] != 'g')
-		return 0;
-	i += 4;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "ping" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-/* One optional single-token argument (URL, name or dotted IP). */
-static int is_cmd_curl(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'c' || line[i+1] != 'u' || line[i+2] != 'r' ||
-	    line[i+3] != 'l')
-		return 0;
-	i += 4;
-	if (i < line_len && line[i] != ' ')
-		return 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_netdns(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 6 > line_len)
-		return 0;
-	if (line[i] != 'n' || line[i+1] != 'e' || line[i+2] != 't' ||
-	    line[i+3] != 'd' || line[i+4] != 'n' || line[i+5] != 's')
-		return 0;
-	i += 6;
-	if (i < line_len && line[i] != ' ')
-		return 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-/* One optional single-token argument (DNS name). */
-static int is_cmd_host(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'h' || line[i+1] != 'o' || line[i+2] != 's' ||
-	    line[i+3] != 't')
-		return 0;
-	i += 4;
-	if (i < line_len && line[i] != ' ')
-		return 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
-	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_pong(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'p' || line[i+1] != 'o' || line[i+2] != 'n' || line[i+3] != 'g')
-		return 0;
-	i += 4;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_space(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 's' || line[i+1] != 'p' || line[i+2] != 'a' ||
-	    line[i+3] != 'c' || line[i+4] != 'e')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-#define NET_UDP_ARG_MAX 128
-#define CAT_FNAME_MAX 64
-static int is_cmd_cat(const char *line, unsigned int line_len, char *filename_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 3 > line_len)
-		return 0;
-	if (line[i] != 'c' || line[i+1] != 'a' || line[i+2] != 't')
-		return 0;
-	i += 3;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len)
-		return 0;
-	j = 0;
-	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
-		filename_buf[j++] = line[i++];
-	filename_buf[j] = '\0';
-	return (j > 0);
-}
-
-static int is_cmd_run(const char *line, unsigned int line_len, char *filename_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 3 > line_len)
-		return 0;
-	if (line[i] != 'r' || line[i+1] != 'u' || line[i+2] != 'n')
-		return 0;
-	i += 3;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len)
-		return 0;
-	j = 0;
-	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
-		filename_buf[j++] = line[i++];
-	filename_buf[j] = '\0';
-	return (j > 0);
-}
-
-#define SAVE_ARGS_MAX 128
-#define RM_FNAME_MAX 64
-#define LS_PATH_MAX 64
-#define FORMAT_DEV_MAX 16
-
-static int is_cmd_save(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 's' || line[i+1] != 'a' || line[i+2] != 'v' || line[i+3] != 'e')
-		return 0;
-	i += 4;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len)
-		return 0;
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	while (j > 0 && arg_buf[j - 1] == ' ')
-		j--;
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len && j > 0);
-}
-
-static int is_cmd_rm(const char *line, unsigned int line_len, char *filename_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 2 > line_len)
-		return 0;
-	if (line[i] != 'r' || line[i+1] != 'm')
-		return 0;
-	i += 2;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len)
-		return 0;
-	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
-		filename_buf[j++] = line[i++];
-	filename_buf[j] = '\0';
-	return (j > 0);
-}
-
-static int is_cmd_mkdir(const char *line, unsigned int line_len, char *path_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'm' || line[i+1] != 'k' || line[i+2] != 'd' || line[i+3] != 'i' || line[i+4] != 'r')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len)
-		return 0;
-	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
-		path_buf[j++] = line[i++];
-	path_buf[j] = '\0';
-	return (j > 0);
-}
-
-static int is_cmd_rmdir(const char *line, unsigned int line_len, char *path_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'r' || line[i+1] != 'm' || line[i+2] != 'd' || line[i+3] != 'i' || line[i+4] != 'r')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len)
-		return 0;
-	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
-		path_buf[j++] = line[i++];
-	path_buf[j] = '\0';
-	return (j > 0);
-}
-
-static int is_cmd_storage(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 's' || line[i+1] != 't' || line[i+2] != 'o' ||
-	    line[i+3] != 'r' || line[i+4] != 'a' || line[i+5] != 'g' || line[i+6] != 'e')
-		return 0;
-	i += 7;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_meminfo(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 7 > line_len)
-		return 0;
-	if (line[i] != 'm' || line[i+1] != 'e' || line[i+2] != 'm' ||
-	    line[i+3] != 'i' || line[i+4] != 'n' || line[i+5] != 'f' ||
-	    line[i+6] != 'o')
-		return 0;
-	i += 7;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "meminfo" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_format(const char *line, unsigned int line_len, char *dev_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 6 > line_len)
-		return 0;
-	if (line[i] != 'f' || line[i+1] != 'o' || line[i+2] != 'r' ||
-	    line[i+3] != 'm' || line[i+4] != 'a' || line[i+5] != 't')
-		return 0;
-	i += 6;
-	if (i < line_len && line[i] != ' ')
-		return 0;  /* "format" must be a whole word */
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len)
-		return 0;
-	j = 0;
-	while (i < line_len && line[i] != ' ' && j < buf_size - 1)
-		dev_buf[j++] = line[i++];
-	dev_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len && j > 0);
-}
-
-/* Help listing: printed as two 32-column columns so it fits the 64-column
-   terminal without scrolling. */
-static const char *const help_items[] = {
-	"cd [path]", "ls [path]", "cat <path>", "save <path> <text>",
-	"rm <path>", "mkdir <path>", "rmdir <path>", "hello", "reboot",
-	"poweroff", "run <name>|<file>", "space", "prog", "clock", "colors",
-	"display", "cpuinfo", "lsusb", "mouseinfo", "storage", "meminfo",
-	"format <device>", "lspci [id]", "peek <addr> [len]", "poke <addr> <val>",
-	"netinfo",
-	"netrecv", "netsend", "netip [a.b.c.d]", "ping <host|a.b.c.d>",
-	"netlog <text>", "netconsole [on|off|host <ip>]", "dhcp", "netregs",
-	"netloop", "netreset", "pong", "ps", "kill <pid>", "kexec", "dbg",
-	"serial test|recv", "clear", "curl <url>", "netdns [a.b.c.d]",
-	"host <name>",
+enum cmd_kind {
+	CK_SPAWN = 0,        /* spawn, no arguments */
+	CK_SPAWN_ARG,        /* spawn with the raw remainder of the line */
+	CK_SPAWN_PATH,       /* whole remainder, resolved against the cwd */
+	CK_SPAWN_FIRST,      /* first token, resolved against the cwd */
+	CK_SPAWN_SAVE,       /* first token resolved, the rest kept as text */
+	CK_CUSTOM            /* handled by a cmd_*() handler below */
 };
 
-static void help_puts(const char *s)
+#define CMD_REQARG 0x01  /* the argument must be non-empty */
+#define CMD_OPTARG 0x02  /* an empty argument is allowed (CK_SPAWN_PATH) */
+#define CMD_USER   0x04  /* spawn an embedded ring-3 ELF (ucmds[]) */
+
+struct kcmd {
+	const char *name;               /* dispatch token */
+	const char *usage;              /* `help` line (and completion name) */
+	unsigned char kind;
+	unsigned char flags;
+	void (*fn)(void);               /* spawned entry, no argument */
+	void (*fn_arg)(const char *);   /* spawned entry with an argument */
+	const char *fixed;              /* CK_SPAWN: fixed argument, if any */
+	int (*custom)(struct term *t, const char *args);
+};
+
+/* The terminal's spawn/path helpers are defined later in this file. */
+static void term_cd(struct term *t, const char *arg);
+static void term_spawn(struct term *t, const char *name, void (*entry)(void));
+static void term_spawn_arg(struct term *t, const char *name,
+			   void (*entry)(const char *), const char *arg);
+static void term_resolve_first(struct term *t, const char *args,
+			       char *out, unsigned int out_size);
+static void cmd_spawn_user(struct term *t, const struct kcmd *c, const char *arg);
+
+static int cmd_cd(struct term *t, const char *args);
+static int cmd_clear(struct term *t, const char *args);
+static int cmd_clock(struct term *t, const char *args);
+static int cmd_colors(struct term *t, const char *args);
+static int cmd_dbg(struct term *t, const char *args);
+static int cmd_format(struct term *t, const char *args);
+static int cmd_hello(struct term *t, const char *args);
+static int cmd_help(struct term *t, const char *args);
+static int cmd_kexec(struct term *t, const char *args);
+static int cmd_kill(struct term *t, const char *args);
+static int cmd_poweroff(struct term *t, const char *args);
+static int cmd_ps(struct term *t, const char *args);
+static int cmd_reboot(struct term *t, const char *args);
+static int cmd_run(struct term *t, const char *args);
+static int cmd_serial(struct term *t, const char *args);
+
+/* Table order defines the `help` layout (printed as two columns). */
+static const struct kcmd cmds[] = {
+	{ "cd",         "cd [path]",                     CK_CUSTOM, 0, 0, 0, 0, cmd_cd },
+	{ "ls",         "ls [path]",                     CK_SPAWN_PATH, CMD_OPTARG | CMD_USER, 0, 0, 0, 0 },
+	{ "cat",        "cat <path>",                    CK_SPAWN_FIRST, CMD_USER, 0, 0, 0, 0 },
+	{ "save",       "save <path> <text>",            CK_SPAWN_SAVE, CMD_USER, 0, 0, 0, 0 },
+	{ "rm",         "rm <path>",                     CK_SPAWN_FIRST, CMD_USER, 0, 0, 0, 0 },
+	{ "mkdir",      "mkdir <path>",                  CK_SPAWN_FIRST, CMD_USER, 0, 0, 0, 0 },
+	{ "rmdir",      "rmdir <path>",                  CK_SPAWN_FIRST, CMD_USER, 0, 0, 0, 0 },
+	{ "hello",      "hello",                         CK_CUSTOM, 0, 0, 0, 0, cmd_hello },
+	{ "reboot",     "reboot",                        CK_CUSTOM, 0, 0, 0, 0, cmd_reboot },
+	{ "poweroff",   "poweroff",                      CK_CUSTOM, 0, 0, 0, 0, cmd_poweroff },
+	{ "run",        "run <name>|<file>",             CK_CUSTOM, 0, 0, 0, 0, cmd_run },
+	{ "space",      "space",                         CK_SPAWN, 0, 0, program_run_embedded_main, "space", 0 },
+	{ "prog",       "prog",                          CK_SPAWN, 0, 0, program_run_embedded_main, "prog", 0 },
+	{ "clock",      "clock",                         CK_CUSTOM, 0, 0, 0, 0, cmd_clock },
+	{ "colors",     "colors",                        CK_CUSTOM, 0, 0, 0, 0, cmd_colors },
+	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
+	{ "cpuinfo",    "cpuinfo",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "lsusb",      "lsusb",                         CK_SPAWN, 0, program_lsusb_main, 0, 0, 0 },
+	{ "mouseinfo",  "mouseinfo",                     CK_SPAWN, 0, program_mouseinfo_main, 0, 0, 0 },
+	{ "storage",    "storage",                       CK_SPAWN, 0, program_storage_main, 0, 0, 0 },
+	{ "meminfo",    "meminfo",                       CK_SPAWN, 0, program_mem_main, 0, 0, 0 },
+	{ "format",     "format <device>",               CK_CUSTOM, 0, 0, 0, 0, cmd_format },
+	{ "lspci",      "lspci [id]",                    CK_SPAWN_ARG, 0, 0, program_lspci_main, 0, 0 },
+	{ "peek",       "peek <addr> [len]",             CK_SPAWN_ARG, 0, 0, program_peek_main, 0, 0 },
+	{ "poke",       "poke <addr> <val>",             CK_SPAWN_ARG, CMD_REQARG, 0, program_poke_main, 0, 0 },
+	{ "netinfo",    "netinfo",                       CK_SPAWN, 0, program_netinfo_main, 0, 0, 0 },
+	{ "netrecv",    "netrecv",                       CK_SPAWN, 0, program_netrecv_main, 0, 0, 0 },
+	{ "netsend",    "netsend",                       CK_SPAWN, 0, program_netsend_main, 0, 0, 0 },
+	{ "netip",      "netip [a.b.c.d]",               CK_SPAWN_ARG, 0, 0, program_netip_main, 0, 0 },
+	{ "ping",       "ping <host|a.b.c.d>",           CK_SPAWN_ARG, 0, 0, program_ping_main, 0, 0 },
+	{ "netlog",     "netlog <text>",                 CK_SPAWN_ARG, 0, 0, program_netlog_main, 0, 0 },
+	{ "netconsole", "netconsole [on|off|host <ip>]", CK_SPAWN_ARG, 0, 0, program_netconsole_main, 0, 0 },
+	{ "dhcp",       "dhcp",                          CK_SPAWN, 0, program_dhcp_main, 0, 0, 0 },
+	{ "netregs",    "netregs",                       CK_SPAWN, 0, program_netregs_main, 0, 0, 0 },
+	{ "netloop",    "netloop",                       CK_SPAWN, 0, program_netloop_main, 0, 0, 0 },
+	{ "netreset",   "netreset",                      CK_SPAWN, 0, program_netreset_main, 0, 0, 0 },
+	{ "pong",       "pong",                          CK_SPAWN, 0, program_pong_main, 0, 0, 0 },
+	{ "ps",         "ps",                            CK_CUSTOM, 0, 0, 0, 0, cmd_ps },
+	{ "kill",       "kill <pid>",                    CK_CUSTOM, 0, 0, 0, 0, cmd_kill },
+	{ "kexec",      "kexec",                         CK_CUSTOM, 0, 0, 0, 0, cmd_kexec },
+	{ "dbg",        "dbg",                           CK_CUSTOM, 0, 0, 0, 0, cmd_dbg },
+	{ "serial",     "serial test|recv",              CK_CUSTOM, 0, 0, 0, 0, cmd_serial },
+	{ "clear",      "clear",                         CK_CUSTOM, 0, 0, 0, 0, cmd_clear },
+	{ "curl",       "curl <url>",                    CK_SPAWN_ARG, 0, 0, program_curl_main, 0, 0 },
+	{ "netdns",     "netdns [a.b.c.d]",              CK_SPAWN_ARG, 0, 0, program_netdns_main, 0, 0 },
+	{ "host",       "host <name>",                   CK_SPAWN_ARG, 0, 0, program_host_main, 0, 0 },
+	{ "help",       "help",                          CK_CUSTOM, 0, 0, 0, 0, cmd_help },
+};
+
+#define NCMDS (sizeof(cmds) / sizeof(cmds[0]))
+
+/* Embedded ring-3 command binaries (CK_USER rows above).  Built from
+ * ucmd_*.c by the Makefile; more can be added here as they move out of the
+ * kernel. */
+extern unsigned char _binary_ucmd_cpuinfo_elf_start[];
+extern unsigned char _binary_ucmd_cpuinfo_elf_end[];
+extern unsigned char _binary_ucmd_ls_elf_start[];
+extern unsigned char _binary_ucmd_ls_elf_end[];
+extern unsigned char _binary_ucmd_cat_elf_start[];
+extern unsigned char _binary_ucmd_cat_elf_end[];
+extern unsigned char _binary_ucmd_save_elf_start[];
+extern unsigned char _binary_ucmd_save_elf_end[];
+extern unsigned char _binary_ucmd_rm_elf_start[];
+extern unsigned char _binary_ucmd_rm_elf_end[];
+extern unsigned char _binary_ucmd_mkdir_elf_start[];
+extern unsigned char _binary_ucmd_mkdir_elf_end[];
+extern unsigned char _binary_ucmd_rmdir_elf_start[];
+extern unsigned char _binary_ucmd_rmdir_elf_end[];
+
+struct ucmd_blob {
+	const char *name;
+	const unsigned char *start;
+	const unsigned char *end;
+};
+
+static const struct ucmd_blob ucmds[] = {
+	{ "cpuinfo", _binary_ucmd_cpuinfo_elf_start, _binary_ucmd_cpuinfo_elf_end },
+	{ "ls",      _binary_ucmd_ls_elf_start,      _binary_ucmd_ls_elf_end },
+	{ "cat",     _binary_ucmd_cat_elf_start,     _binary_ucmd_cat_elf_end },
+	{ "save",    _binary_ucmd_save_elf_start,    _binary_ucmd_save_elf_end },
+	{ "rm",      _binary_ucmd_rm_elf_start,      _binary_ucmd_rm_elf_end },
+	{ "mkdir",   _binary_ucmd_mkdir_elf_start,   _binary_ucmd_mkdir_elf_end },
+	{ "rmdir",   _binary_ucmd_rmdir_elf_start,   _binary_ucmd_rmdir_elf_end },
+};
+
+static const struct ucmd_blob *ucmd_lookup(const char *name)
 {
-	while (*s)
-		io_putchar(*s++);
+	unsigned int i;
+
+	for (i = 0; i < sizeof(ucmds) / sizeof(ucmds[0]); i++) {
+		const char *n = ucmds[i].name;
+		unsigned int j = 0;
+
+		while (n[j] && n[j] == name[j])
+			j++;
+		if (n[j] == '\0' && name[j] == '\0')
+			return &ucmds[i];
+	}
+	return 0;
 }
 
+/* Find the registry entry whose name matches the first word of the line. */
+static const struct kcmd *cmd_lookup(const char *line, unsigned int line_len)
+{
+	unsigned int i = 0, j, k, m;
+
+	while (i < line_len && line[i] == ' ')
+		i++;
+	for (j = 0; i + j < line_len && line[i + j] != ' '; j++)
+		;
+	if (j == 0)
+		return 0;
+	for (k = 0; k < NCMDS; k++) {
+		const char *n = cmds[k].name;
+
+		for (m = 0; m < j && n[m]; m++)
+			if (line[i + m] != n[m])
+				break;
+		if (m == j && n[m] == '\0')
+			return &cmds[k];
+	}
+	return 0;
+}
+
+static void cmd_usage(const struct kcmd *c)
+{
+	io_putstr(c->name);
+	io_putstr(": usage ");
+	io_putstr(c->usage);
+	io_putchar('\n');
+}
+
+/* Copy the first token of `args` into `out` (0 when there is none). */
+static int cmd_first_token(const char *args, char *out, unsigned int out_size)
+{
+	unsigned int n = 0;
+
+	while (*args && *args != ' ') {
+		if (n + 1 >= out_size)
+			break;
+		out[n++] = *args++;
+	}
+	out[n] = '\0';
+	return n > 0;
+}
+
+/* Dispatch one registry entry.  Returns 1 when the handler already printed the
+ * next prompt (clear), 0 otherwise. */
+static int term_run_command(struct term *t, const struct kcmd *c)
+{
+	char args[LINE_MAX + 1];
+	unsigned int i = 0, n = 0;
+
+	/* Skip the command word, capture the trimmed argument text. */
+	while (i < t->line_len && t->line[i] == ' ')
+		i++;
+	while (i < t->line_len && t->line[i] != ' ')
+		i++;
+	while (i < t->line_len && t->line[i] == ' ')
+		i++;
+	while (i < t->line_len && n < LINE_MAX)
+		args[n++] = t->line[i++];
+	while (n > 0 && args[n - 1] == ' ')
+		n--;
+	args[n] = '\0';
+
+	if ((c->flags & CMD_REQARG) && args[0] == '\0') {
+		cmd_usage(c);
+		return 0;
+	}
+
+	switch (c->kind) {
+	case CK_SPAWN:
+		if (c->flags & CMD_USER)
+			cmd_spawn_user(t, c, c->fixed);
+		else if (c->fixed)
+			term_spawn_arg(t, c->name, c->fn_arg, c->fixed);
+		else
+			term_spawn(t, c->name, c->fn);
+		break;
+	case CK_SPAWN_ARG:
+		if (c->flags & CMD_USER)
+			cmd_spawn_user(t, c, args);
+		else
+			term_spawn_arg(t, c->name, c->fn_arg, args);
+		break;
+	case CK_SPAWN_PATH: {
+		char resolved[VFS_PATH_MAX];
+
+		if (vfs_join_path(t->cwd, args, resolved, sizeof(resolved)) != 0) {
+			io_putstr(c->name);
+			io_putstr(": path too long\n");
+			break;
+		}
+		if (c->flags & CMD_USER)
+			cmd_spawn_user(t, c, resolved);
+		else
+			term_spawn_arg(t, c->name, c->fn_arg, resolved);
+		break;
+	}
+	case CK_SPAWN_FIRST: {
+		char tok[VFS_PATH_MAX];
+		char resolved[VFS_PATH_MAX];
+
+		if (!cmd_first_token(args, tok, sizeof(tok))) {
+			cmd_usage(c);
+			break;
+		}
+		if (vfs_join_path(t->cwd, tok, resolved, sizeof(resolved)) != 0) {
+			io_putstr(c->name);
+			io_putstr(": path too long\n");
+			break;
+		}
+		if (c->flags & CMD_USER)
+			cmd_spawn_user(t, c, resolved);
+		else
+			term_spawn_arg(t, c->name, c->fn_arg, resolved);
+		break;
+	}
+	case CK_SPAWN_SAVE: {
+		char resolved[LINE_MAX + VFS_PATH_MAX];
+
+		if (args[0] == '\0') {
+			cmd_usage(c);
+			break;
+		}
+		term_resolve_first(t, args, resolved, sizeof(resolved));
+		if (c->flags & CMD_USER)
+			cmd_spawn_user(t, c, resolved);
+		else
+			term_spawn_arg(t, c->name, c->fn_arg, resolved);
+		break;
+	}
+	case CK_CUSTOM:
+		return c->custom(t, args);
+	}
+	return 0;
+}
+
+/* `help`: printed as two 32-column columns so it fits the 64-column terminal
+ * without scrolling. */
 static void help_item_pad(const char *s)
 {
 	unsigned int n = 0;
@@ -942,151 +371,196 @@ static void help_item_pad(const char *s)
 
 static void help_print(void)
 {
-	unsigned int nitems = sizeof(help_items) / sizeof(help_items[0]);
+	unsigned int nitems = NCMDS;
 	unsigned int half = (nitems + 1) / 2;
 	unsigned int k;
 
 	for (k = 0; k < half; k++) {
 		if (k + half < nitems) {
-			help_item_pad(help_items[k]);
-			help_puts(help_items[k + half]);
+			help_item_pad(cmds[k].usage);
+			io_putstr(cmds[k + half].usage);
 		} else {
-			help_puts(help_items[k]);
+			io_putstr(cmds[k].usage);
 		}
 		io_putchar('\n');
 	}
 }
 
-static int is_cmd_help(const char *line, unsigned int line_len)
+/* ---- Command handlers that run inline in the terminal ---- */
+
+static int cmd_cd(struct term *t, const char *args)
 {
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'h' || line[i+1] != 'e' || line[i+2] != 'l' || line[i+3] != 'p')
-		return 0;
-	i += 4;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
+	term_cd(t, args);
+	return 0;
 }
 
-static int is_cmd_clear(const char *line, unsigned int line_len)
+static int cmd_clear(struct term *t, const char *args)
 {
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'c' || line[i+1] != 'l' || line[i+2] != 'e' ||
-	    line[i+3] != 'a' || line[i+4] != 'r')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
+	(void)args;
+	io_clear_screen();
+	term_print_prompt(t, 1);
+	return 1;   /* prompt already printed */
 }
 
-static int is_cmd_ps(const char *line, unsigned int line_len)
+static int cmd_clock(struct term *t, const char *args)
 {
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 2 > line_len)
-		return 0;
-	if (line[i] != 'p' || line[i+1] != 's')
-		return 0;
-	i += 2;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
+	(void)t;
+	(void)args;
+	io_putstr("clock: not available in windowed mode yet\n");
+	return 0;
 }
 
-static int is_cmd_kill(const char *line, unsigned int line_len, unsigned int *pid_out)
+static int cmd_colors(struct term *t, const char *args)
 {
-	unsigned int i = 0, num = 0;
+	(void)t;
+	(void)args;
+	io_putstr("colors: not available in windowed mode yet\n");
+	return 0;
+}
+
+static int cmd_dbg(struct term *t, const char *args)
+{
+	(void)t;
+	(void)args;
+	program_dbg_main();
+	return 0;
+}
+
+static int cmd_format(struct term *t, const char *args)
+{
+	char dev[16];
+	unsigned int n = 0;
+	const char *p;
+
+	(void)t;
+	while (args[n] && args[n] != ' ' && n + 1 < sizeof(dev))
+		dev[n] = args[n], n++;
+	dev[n] = '\0';
+	p = args + n;
+	while (*p == ' ')
+		p++;
+	if (n == 0 || *p) {
+		io_putstr("format: usage format <device>\n");
+		return 0;
+	}
+	program_format_main(dev);
+	return 0;
+}
+
+static int cmd_hello(struct term *t, const char *args)
+{
+	int pid;
+
+	(void)args;
+	pid = process_create_user("hello", _binary_hello_elf_start,
+		(unsigned int)(_binary_hello_elf_end - _binary_hello_elf_start), 0);
+	if (pid < 0)
+		io_putstr("error: too many processes\n");
+	else
+		t->fg_pid = pid;
+	return 0;
+}
+
+static int cmd_help(struct term *t, const char *args)
+{
+	(void)t;
+	(void)args;
+	help_print();
+	return 0;
+}
+
+static int cmd_kexec(struct term *t, const char *args)
+{
+	(void)t;
+	(void)args;
+	if (kexec_busy) {
+		io_putstr("kexec: already receiving\n");
+		return 0;
+	}
+	kexec_busy = 1;
+	if (process_create("kexec", program_kexec_main) < 0) {
+		kexec_busy = 0;
+		io_putstr("error: too many processes\n");
+	}
+	return 0;
+}
+
+static int cmd_kill(struct term *t, const char *args)
+{
+	unsigned int pid = 0;
 	int has_digit = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 4 > line_len)
-		return 0;
-	if (line[i] != 'k' || line[i+1] != 'i' || line[i+2] != 'l' || line[i+3] != 'l')
-		return 0;
-	i += 4;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	while (i < line_len && line[i] >= '0' && line[i] <= '9') {
-		num = num * 10 + (unsigned int)(line[i] - '0');
+
+	(void)t;
+	while (*args >= '0' && *args <= '9') {
+		pid = pid * 10 + (unsigned int)(*args - '0');
+		args++;
 		has_digit = 1;
-		i++;
 	}
-	if (!has_digit)
+	while (*args == ' ')
+		args++;
+	if (!has_digit || *args) {
+		io_putstr("kill: usage kill <pid>\n");
 		return 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i != line_len)
-		return 0;
-	*pid_out = num;
-	return 1;
-}
-
-static int is_cmd_kexec(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 5 > line_len)
-		return 0;
-	if (line[i] != 'k' || line[i+1] != 'e' || line[i+2] != 'x' || line[i+3] != 'e' || line[i+4] != 'c')
-		return 0;
-	i += 5;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_dbg(const char *line, unsigned int line_len)
-{
-	unsigned int i = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 3 > line_len)
-		return 0;
-	if (line[i] != 'd' || line[i+1] != 'b' || line[i+2] != 'g')
-		return 0;
-	i += 3;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
-}
-
-static int is_cmd_serial(const char *line, unsigned int line_len, char *arg_buf, unsigned int buf_size)
-{
-	unsigned int i = 0, j = 0;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i + 6 > line_len)
-		return 0;
-	if (line[i] != 's' || line[i+1] != 'e' || line[i+2] != 'r' ||
-	    line[i+3] != 'i' || line[i+4] != 'a' || line[i+5] != 'l')
-		return 0;
-	i += 6;
-	while (i < line_len && line[i] == ' ')
-		i++;
-	if (i >= line_len) {
-		if (buf_size > 0)
-			arg_buf[0] = '\0';
-		return 1;
 	}
-	while (i < line_len && j + 1 < buf_size)
-		arg_buf[j++] = line[i++];
-	while (j > 0 && arg_buf[j - 1] == ' ')
-		j--;
-	arg_buf[j] = '\0';
-	while (i < line_len && line[i] == ' ')
-		i++;
-	return (i == line_len);
+	if (process_kill(pid) < 0)
+		io_putstr("kill: no such process\n");
+	else
+		io_putstr("killed\n");
+	return 0;
+}
+
+static int cmd_poweroff(struct term *t, const char *args)
+{
+	(void)t;
+	(void)args;
+	program_poweroff_main();
+	return 0;
+}
+
+static int cmd_ps(struct term *t, const char *args)
+{
+	(void)t;
+	(void)args;
+	process_ps();
+	return 0;
+}
+
+static int cmd_reboot(struct term *t, const char *args)
+{
+	(void)t;
+	(void)args;
+	program_reboot_main();
+	return 0;
+}
+
+static int cmd_run(struct term *t, const char *args)
+{
+	(void)t;
+	if (args[0] == 's' && args[1] == 'e' && args[2] == 'r' &&
+	    args[3] == 'i' && args[4] == 'a' && args[5] == 'l' &&
+	    args[6] == '\0') {
+		if (process_create_arg("run_serial", program_run_serial_main, "serial") < 0)
+			io_putstr("error: too many processes\n");
+	} else {
+		io_putstr("run: not available in windowed mode yet\n");
+	}
+	return 0;
+}
+
+static int cmd_serial(struct term *t, const char *args)
+{
+	(void)t;
+	if (args[0] == 't' && args[1] == 'e' && args[2] == 's' && args[3] == 't' &&
+	    args[4] == '\0') {
+		if (process_create_arg("serial_loop", program_serial_loop_main, "test") < 0)
+			io_putstr("error: too many processes\n");
+	} else if (args[0] == 'r' && args[1] == 'e' && args[2] == 'c' &&
+		   args[3] == 'v' && args[4] == '\0') {
+		program_serial_recv_main("recv");
+	} else {
+		io_putstr("serial: usage serial test|recv\n");
+	}
+	return 0;
 }
 
 /* Redraw line from index `from` to end, clear one cell after, set cursor to line_pos. */
@@ -1133,15 +607,6 @@ static void history_load_into_line(struct term *t, unsigned int browse)
 }
 
 /* ---- Tab completion ---- */
-
-/* Command names come from the help table ("ls [path]" -> "ls"). */
-static unsigned int help_name_len(const char *s)
-{
-	unsigned int n = 0;
-	while (s[n] && s[n] != ' ' && s[n] != '[' && s[n] != '<' && s[n] != '|')
-		n++;
-	return n;
-}
 
 static char lower_ch(char c)
 {
@@ -1368,23 +833,26 @@ static void term_complete(struct term *t)
 				break;
 			}
 		if (first) {
-			unsigned int nitems = sizeof(help_items) / sizeof(help_items[0]);
+			unsigned int nitems = NCMDS;
 			unsigned int count = 0, lcp_len = 0, best = 0;
 			char lcp[16];
 
 			for (i = 0; i < nitems; i++) {
-				unsigned int nl = help_name_len(help_items[i]);
+				const char *n = cmds[i].name;
+				unsigned int nl = 0;
 
-				if (nl < tl || !prefix_ci(help_items[i], token, tl))
+				while (n[nl])
+					nl++;
+				if (nl < tl || !prefix_ci(n, token, tl))
 					continue;
 				if (count == 0) {
-					for (j = 0; j < nl; j++)
-						lcp[j] = help_items[i][j];
-					lcp_len = nl;
+					for (j = 0; j < nl && j < sizeof(lcp) - 1; j++)
+						lcp[j] = n[j];
+					lcp_len = j;
 					best = i;
 				} else {
 					for (j = 0; j < lcp_len && j < nl &&
-						     lcp[j] == help_items[i][j]; j++)
+						     lcp[j] == n[j]; j++)
 						;
 					lcp_len = j;
 				}
@@ -1393,11 +861,15 @@ static void term_complete(struct term *t)
 			if (count == 0)
 				return;
 			if (count == 1) {
-				unsigned int nl = help_name_len(help_items[best]);
-				for (j = 0; j < nl; j++)
-					ins[j] = help_items[best][j];
-				ins[nl] = ' ';
-				ins[nl + 1] = '\0';
+				const char *n = cmds[best].name;
+				unsigned int nl = 0;
+
+				while (n[nl])
+					nl++;
+				for (j = 0; j < nl && j < LINE_MAX - 1; j++)
+					ins[j] = n[j];
+				ins[j] = ' ';
+				ins[j + 1] = '\0';
 				term_replace(t, start, end, ins);
 				return;
 			}
@@ -1412,12 +884,16 @@ static void term_complete(struct term *t)
 			tab_col = 0;
 			tab_width = t->screen.cols;
 			for (i = 0; i < nitems; i++) {
-				unsigned int nl = help_name_len(help_items[i]);
+				const char *n = cmds[i].name;
+				unsigned int nl = 0;
 				char name[16];
-				if (nl < tl || !prefix_ci(help_items[i], token, tl))
+
+				while (n[nl])
+					nl++;
+				if (nl < tl || !prefix_ci(n, token, tl))
 					continue;
 				for (j = 0; j < nl && j < 15; j++)
-					name[j] = help_items[i][j];
+					name[j] = n[j];
 				name[j] = '\0';
 				tab_print_one(name, 0);
 			}
@@ -1638,6 +1114,25 @@ static void term_spawn_arg(struct term *t, const char *name,
 		t->fg_pid = pid;
 }
 
+/* Spawn an embedded ring-3 command (CMD_USER rows); `arg` may be NULL. */
+static void cmd_spawn_user(struct term *t, const struct kcmd *c, const char *arg)
+{
+	const struct ucmd_blob *b = ucmd_lookup(c->name);
+	int pid;
+
+	if (!b) {
+		io_putstr(c->name);
+		io_putstr(": no embedded image\n");
+		return;
+	}
+	pid = process_create_user(c->name, b->start,
+		(unsigned int)(b->end - b->start), arg);
+	if (pid < 0)
+		io_putstr("error: too many processes\n");
+	else
+		t->fg_pid = pid;
+}
+
 void term_run(struct term *t)
 {
 	t->line_len         = 0;
@@ -1723,198 +1218,32 @@ void term_run(struct term *t)
 				} else if (k == '\t') {
 					term_complete(t);
 				} else if (k == '\n') {
-					char cat_fname[CAT_FNAME_MAX];
-					char save_args[SAVE_ARGS_MAX];
-					char rm_fname[RM_FNAME_MAX];
-					char ls_path[LS_PATH_MAX];
-					char format_dev[FORMAT_DEV_MAX];
-					char netip_arg[16];
-					char ping_arg[64];
-					char netlog_arg[NET_UDP_ARG_MAX];
-					char netconsole_arg[NET_UDP_ARG_MAX];
-					char curl_arg[128];
-					char netdns_arg[32];
-					char host_arg[64];
-					char lspci_arg[16];
-					char peek_arg[32];
-					char resolved[VFS_PATH_MAX];
-					char save_resolved[SAVE_ARGS_MAX + VFS_PATH_MAX];
-					unsigned int kill_pid;
 					int skip_prompt = 0;
 					io_putchar('\n');
 					history_push(t, t->line, t->line_len);
 					t->history_browse = 0;
-					if (is_cmd_hello(t->line, t->line_len)) {
-						int pid = process_create_user("hello",
-							_binary_hello_elf_start,
-							(unsigned int)(_binary_hello_elf_end -
-								_binary_hello_elf_start));
-						if (pid < 0)
-							io_putstr("error: too many processes\n");
-						else
-							t->fg_pid = pid;
-					} else if (is_cmd_reboot(t->line, t->line_len)) {
-						program_reboot_main();
-					} else if (is_cmd_poweroff(t->line, t->line_len)) {
-						program_poweroff_main();
-					} else if (is_cmd_cd(t->line, t->line_len, ls_path, LS_PATH_MAX)) {
-						term_cd(t, ls_path);
-					} else if (is_cmd_ls(t->line, t->line_len, ls_path, LS_PATH_MAX)) {
-						if (vfs_join_path(t->cwd, ls_path, resolved, sizeof(resolved)) == 0) {
-							term_spawn_arg(t, "ls", program_ls_main, resolved);
+					{
+						const struct kcmd *c =
+							cmd_lookup(t->line, t->line_len);
+
+						if (c) {
+							skip_prompt = term_run_command(t, c);
 						} else {
-							io_putstr("ls: path too long\n");
+							unsigned int si = 0;
+
+							while (si < t->line_len && t->line[si] == ' ')
+								si++;
+							if (si < t->line_len)
+								io_putstr("command not found\n");
 						}
-					} else if (is_cmd_lsusb(t->line, t->line_len)) {
-						term_spawn(t, "lsusb", program_lsusb_main);
-					} else if (is_cmd_lspci(t->line, t->line_len, lspci_arg, sizeof(lspci_arg))) {
-						term_spawn_arg(t, "lspci", program_lspci_main, lspci_arg);
-					} else if (is_cmd_peek(t->line, t->line_len, peek_arg, sizeof(peek_arg))) {
-						term_spawn_arg(t, "peek", program_peek_main, peek_arg);
-					} else if (is_cmd_poke(t->line, t->line_len, peek_arg, sizeof(peek_arg))) {
-						term_spawn_arg(t, "poke", program_poke_main, peek_arg);
-					} else if (is_cmd_netinfo(t->line, t->line_len)) {
-						term_spawn(t, "netinfo", program_netinfo_main);
-					} else if (is_cmd_netrecv(t->line, t->line_len)) {
-						term_spawn(t, "netrecv", program_netrecv_main);
-					} else if (is_cmd_netsend(t->line, t->line_len)) {
-						term_spawn(t, "netsend", program_netsend_main);
-					} else if (is_cmd_netip(t->line, t->line_len, netip_arg, sizeof(netip_arg))) {
-						term_spawn_arg(t, "netip", program_netip_main, netip_arg);
-					} else if (is_cmd_ping(t->line, t->line_len, ping_arg, sizeof(ping_arg))) {
-						term_spawn_arg(t, "ping", program_ping_main, ping_arg);
-					} else if (is_cmd_netlog(t->line, t->line_len, netlog_arg, sizeof(netlog_arg))) {
-						term_spawn_arg(t, "netlog", program_netlog_main, netlog_arg);
-					} else if (is_cmd_netconsole(t->line, t->line_len, netconsole_arg, sizeof(netconsole_arg))) {
-						term_spawn_arg(t, "netconsole", program_netconsole_main, netconsole_arg);
-					} else if (is_cmd_dhcp(t->line, t->line_len)) {
-						term_spawn(t, "dhcp", program_dhcp_main);
-					} else if (is_cmd_netregs(t->line, t->line_len)) {
-						term_spawn(t, "netregs", program_netregs_main);
-					} else if (is_cmd_netloop(t->line, t->line_len)) {
-						term_spawn(t, "netloop", program_netloop_main);
-					} else if (is_cmd_netreset(t->line, t->line_len)) {
-						term_spawn(t, "netreset", program_netreset_main);
-					} else if (is_cmd_netdns(t->line, t->line_len, netdns_arg, sizeof(netdns_arg))) {
-						term_spawn_arg(t, "netdns", program_netdns_main, netdns_arg);
-					} else if (is_cmd_curl(t->line, t->line_len, curl_arg, sizeof(curl_arg))) {
-						term_spawn_arg(t, "curl", program_curl_main, curl_arg);
-					} else if (is_cmd_host(t->line, t->line_len, host_arg, sizeof(host_arg))) {
-						term_spawn_arg(t, "host", program_host_main, host_arg);
-					} else if (is_cmd_pong(t->line, t->line_len)) {
-						term_spawn(t, "pong", program_pong_main);
-					} else if (is_cmd_storage(t->line, t->line_len)) {
-						term_spawn(t, "storage", program_storage_main);
-					} else if (is_cmd_meminfo(t->line, t->line_len)) {
-						term_spawn(t, "meminfo", program_mem_main);
-					} else if (is_cmd_clock(t->line, t->line_len)) {
-						io_putstr("clock: not available in windowed mode yet\n");
-					} else if (is_cmd_colors(t->line, t->line_len)) {
-						io_putstr("colors: not available in windowed mode yet\n");
-					} else if (is_cmd_cat(t->line, t->line_len, cat_fname, CAT_FNAME_MAX)) {
-						if (vfs_join_path(t->cwd, cat_fname, resolved, sizeof(resolved)) == 0) {
-							term_spawn_arg(t, "cat", program_cat_main, resolved);
-						} else {
-							io_putstr("cat: path too long\n");
-						}
-					} else if (is_cmd_run(t->line, t->line_len, cat_fname, CAT_FNAME_MAX)) {
-						if (cat_fname[0] == 's' && cat_fname[1] == 'e' &&
-						    cat_fname[2] == 'r' && cat_fname[3] == 'i' &&
-						    cat_fname[4] == 'a' && cat_fname[5] == 'l' &&
-						    cat_fname[6] == '\0') {
-							if (process_create_arg("run_serial", program_run_serial_main, cat_fname) < 0)
-								io_putstr("error: too many processes\n");
-						} else {
-							io_putstr("run: not available in windowed mode yet\n");
-						}
-					} else if (is_cmd_save(t->line, t->line_len, save_args, SAVE_ARGS_MAX)) {
-						term_resolve_first(t, save_args, save_resolved, sizeof(save_resolved));
-						term_spawn_arg(t, "save", program_save_main, save_resolved);
-					} else if (is_cmd_mkdir(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
-						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
-							term_spawn_arg(t, "mkdir", program_mkdir_main, resolved);
-						} else {
-							io_putstr("mkdir: path too long\n");
-						}
-					} else if (is_cmd_rmdir(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
-						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
-							term_spawn_arg(t, "rmdir", program_rmdir_main, resolved);
-						} else {
-							io_putstr("rmdir: path too long\n");
-						}
-					} else if (is_cmd_rm(t->line, t->line_len, rm_fname, RM_FNAME_MAX)) {
-						if (vfs_join_path(t->cwd, rm_fname, resolved, sizeof(resolved)) == 0) {
-							term_spawn_arg(t, "rm", program_rm_main, resolved);
-						} else {
-							io_putstr("rm: path too long\n");
-						}
-					} else if (is_cmd_space(t->line, t->line_len)) {
-						term_spawn_arg(t, "space", program_run_embedded_main, "space");
-					} else if (is_cmd_prog(t->line, t->line_len)) {
-						term_spawn_arg(t, "prog", program_run_embedded_main, "prog");
-					} else if (is_cmd_display(t->line, t->line_len)) {
-						term_spawn(t, "display", program_display_main);
-					} else if (is_cmd_cpuinfo(t->line, t->line_len)) {
-						term_spawn(t, "cpuinfo", program_cpuinfo_main);
-					} else if (is_cmd_mouseinfo(t->line, t->line_len)) {
-						term_spawn(t, "mouseinfo", program_mouseinfo_main);
-					} else if (is_cmd_format(t->line, t->line_len, format_dev, FORMAT_DEV_MAX)) {
-						program_format_main(format_dev);
-					} else if (is_cmd_ps(t->line, t->line_len)) {
-						process_ps();
-					} else if (is_cmd_kill(t->line, t->line_len, &kill_pid)) {
-						if (process_kill(kill_pid) < 0)
-							io_putstr("kill: no such process\n");
-						else
-							io_putstr("killed\n");
-					} else if (is_cmd_kexec(t->line, t->line_len)) {
-						if (kexec_busy) {
-							io_putstr("kexec: already receiving\n");
-						} else {
-							kexec_busy = 1;
-							if (process_create("kexec", program_kexec_main) < 0) {
-								kexec_busy = 0;
-								io_putstr("error: too many processes\n");
-							}
-						}
-					} else if (is_cmd_dbg(t->line, t->line_len)) {
-						program_dbg_main();
-					} else if (is_cmd_help(t->line, t->line_len)) {
-						help_print();
-				} else if (is_cmd_clear(t->line, t->line_len)) {
-					io_clear_screen();
-					term_print_prompt(t, 1);
-					skip_prompt = 1;
-				} else {
-					char serial_arg[8];
-					if (is_cmd_serial(t->line, t->line_len, serial_arg, sizeof(serial_arg))) {
-						if (serial_arg[0] == 't' && serial_arg[1] == 'e' &&
-						    serial_arg[2] == 's' && serial_arg[3] == 't' &&
-						    serial_arg[4] == '\0') {
-							if (process_create_arg("serial_loop", program_serial_loop_main, serial_arg) < 0)
-								io_putstr("error: too many processes\n");
-						} else if (serial_arg[0] == 'r' && serial_arg[1] == 'e' &&
-						           serial_arg[2] == 'c' && serial_arg[3] == 'v' &&
-						           serial_arg[4] == '\0') {
-							program_serial_recv_main(serial_arg);
-						} else {
-							io_putstr("serial: usage serial test|recv\n");
-						}
-					} else {
-						unsigned int i = 0;
-						while (i < t->line_len && t->line[i] == ' ')
-							i++;
-						if (i < t->line_len)
-							io_putstr("command not found\n");
 					}
-				}
-				t->line_len = 0;
-				t->line_pos = 0;
-				t->line[0]  = '\0';
-				if (!skip_prompt && t->fg_pid < 0) {
-					term_print_prompt(t, 0);
-				}
-			} else {
+					t->line_len = 0;
+					t->line_pos = 0;
+					t->line[0]  = '\0';
+					if (!skip_prompt && t->fg_pid < 0) {
+						term_print_prompt(t, 0);
+					}
+				} else {
 				unsigned char u = (unsigned char)k;
 				if (u >= 0x20 && u < 0x7F && t->line_len < LINE_MAX - 1) {
 					unsigned int i;

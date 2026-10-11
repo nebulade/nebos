@@ -100,14 +100,21 @@ below the run area), so adding code no longer moves any address.
   heartbeat, boot info rows, exception banner) for machines without serial; see
   the kdbg section below.
 - **Shell**: `terminal.c` — history, line editing (Tab completes command
-  names from the help table and VFS paths via `fat_list_dir`), command
-  dispatch (hand-rolled `is_cmd_*` parsers). Runs in a window (`term_run(struct term *)`); reads keys
-  from its per-terminal queue (filled by the WM).
+  names from the registry table and VFS paths via `fat_list_dir`), and a
+  table-driven command registry (`cmds[]`: name, usage, spawn kind/handler)
+  that drives dispatch, `help` and completion.  Runs in a window
+  (`term_run(struct term *)`); reads keys from its per-terminal queue
+  (filled by the WM).
 - **Filesystem**: `fat.c` (FAT12/16/32 read/write, device-parameterized),
   `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
   `blkdev.c` (floppy + IDE + SATA registry), `ata.c` (ATA PIO, either the
   legacy ports or the PCI IDE interface's native BARs — `ata_init_ports()`),
-  `disk.c` (FDC + ISA DMA ch2, retries).
+  `disk.c` (FDC + ISA DMA ch2, retries).  `sys_fs.c` is the file service for
+  ring-3 commands: whole-file read/write, index-based directory listing, mount
+  listing, unlink/mkdir/rmdir.  A FAT operation sets `sys_fs_busy`, which the
+  scheduler honours (no process switch during it): the FAT driver has static
+  state and the floppy still needs its IRQ.  So expect a brief system stall
+  (not ticks — the PIT keeps running) while a command reads or writes a disk.
 - **SATA/AHCI**: `ahci.c/h` — polled AHCI driver (first controller only, PCI
   class `01:06:01`, no IRQs, no NCQ): port bring-up with COMRESET, IDENTIFY
   (shared `ata_identify_parse()` with `ata.c`) and READ/WRITE DMA EXT through
@@ -173,6 +180,18 @@ below the run area), so adding code no longer moves any address.
   from FAT.  Rebuilds are wired (`space.c` -> `space.bin` -> `space_embed.o` ->
   `kernel.elf`).  Note: full-screen programs draw over the WM, which keeps
   repainting its desktop — running them windowed/cleanly is a follow-up.
+- **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld` — freestanding
+  ELFs linked at `USER_BASE` (`0x40000000`), built by the Makefile, embedded
+  in the kernel image (`*_embed.o`) and listed as `CMD_USER` rows in the
+  terminal's command registry (`cmds[]` + `ucmds[]`).  Moved so far:
+  `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`.  They talk to the
+  kernel through `int 0x80` (`syscall.h`: putstr/ticks/sleep/exit plus the
+  whole-file service in `sys_fs.c`) and inherit the terminal's screen, so
+  their output lands in the owning window.  New commands: add `ucmd_<name>.c`,
+  a `CMD_USER` row in `cmds[]`, and a blob in `ucmds[]` (the Makefile picks
+  the file up via its `ucmd_%` pattern rules).  The one argument is passed as
+  a C string on the top of the user stack (`process_create_user(..., arg)`),
+  so `_start(const char *arg)` needs no crt0.
 
 ## Shell commands
 
@@ -207,19 +226,25 @@ changed with `cd`; paths may be absolute (`/floppy1/…`) or relative (`.`, `..`
 nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
+`cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir` and `rmdir` run as ring-3
+processes (embedded `ucmd_*.c`); the rest are kernel commands spawned as
+processes, or shell builtins (`cd`, `clear`, `help`).
+
 ## Serial hot-reload (kexec) workflow
 
 Develop without reflashing the floppy. The serial link (COM1 ↔ `/dev/ttyUSB0`)
 runs at **115200 baud**. Two paths exist:
 
-- **Auto-detect** (the normal loop) — the terminal's idle loop watches the serial
+- **Auto-detect** (the normal loop) — the WM loop watches the serial
   ring buffer for the `"KXEC"` magic and auto-spawns the reload, so `make dev`
   alone boots a fresh kernel. The manual `kexec` command is kept as a fallback
   that waits for the same image.
 - **`bootstrap`** (one-time, zero-reflash) — a ring-0 program loaded through the
   existing `serial recv` + `run serial` path that switches the UART to 115200,
   receives a new kernel, and jumps into it. Used only to install the first new
-  kernel onto a machine still running an old (9600 baud) build.
+  kernel onto a machine still running an old (9600 baud) build; `bootstrap.bin`
+  is linked by `bootstrap.ld` at the *old* program address (`0x4A000`) because
+  that is where the old build's `serial recv` writes it.
 
 Wire protocol (host → target, sent immediately; no handshake):
 `[magic "KXEC"][entry u32 LE][size u32 LE][data][checksum u8]`.
@@ -536,7 +561,10 @@ Caveats:
    color-cycling 32×32 square in the corner on every flush.
 3. No per-process address spaces or process isolation (paging is identity-mapped).
 4. FAT32: FSInfo free-count not updated, no directory-chain growth.
-5. Implicit, hardcoded memory map (see table above).
-6. `disk.c` `fdc_reset()` and `fdc_init_once()` overlap/duplicate logic.
-7. `terminal.c` command dispatch is ~30 near-identical `is_cmd_*` functions;
-   a table-driven parser would reduce this.
+5. `disk.c` `fdc_reset()` and `fdc_init_once()` overlap/duplicate logic.
+6. The ring-0 `run` area (`0x80000`) and the program API at `0x7FF00` are the
+   last fixed low-memory addresses; moving `prog`/`space` to ring-3 would let
+   the whole block go (see the roadmap).
+7. Killing/reaping a ring-3 process frees its kernel stack and page directory
+   but not the user pages mapped into it (a few pages leak per command run;
+   needs a page-table walk/unmap on reap).

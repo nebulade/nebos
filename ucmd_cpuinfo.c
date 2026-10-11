@@ -1,23 +1,15 @@
-/* cpuinfo command: print CPU vendor/model and estimated current clock speed. */
+/* cpuinfo: ring-3 command process.
+ *
+ * Prints CPU vendor/model and estimated current clock speed.  Moved out of the
+ * kernel (see the command registry): it only needs CPUID/RDTSC, which ring-3
+ * may execute, plus the output/timer syscalls.  The old kernel version lived
+ * in cpuinfo.c and is gone. */
 
-#include "io.h"
-#include "timer.h"
+#include "ucmd_lib.h"
 
 static void put_uint(unsigned int n)
 {
-	char buf[12];
-	char *p = buf + sizeof(buf) - 1;
-	*p = '\0';
-	if (n == 0) {
-		io_putchar('0');
-		return;
-	}
-	while (n) {
-		*--p = (char)('0' + (n % 10));
-		n /= 10;
-	}
-	while (*p)
-		io_putchar(*p++);
+	u_putdec(n);
 }
 
 static void cpuid(unsigned int leaf, unsigned int subleaf,
@@ -51,15 +43,15 @@ static void trim_right_spaces(char *s)
 static void print_flag(const char *name, int *printed_any)
 {
 	if (*printed_any)
-		io_putchar(' ');
-	io_putstr(name);
+		u_putc(' ');
+	u_puts(name);
 	*printed_any = 1;
 }
 
 static void print_features_leaf1(unsigned int ecx1, unsigned int edx1)
 {
 	int any = 0;
-	io_putstr("ext l1 ");
+	u_puts("ext l1 ");
 	if (edx1 & (1u << 0))  print_flag("FPU", &any);
 	if (edx1 & (1u << 4))  print_flag("TSC", &any);
 	if (edx1 & (1u << 5))  print_flag("MSR", &any);
@@ -90,8 +82,8 @@ static void print_features_leaf1(unsigned int ecx1, unsigned int edx1)
 	if (ecx1 & (1u << 29)) print_flag("F16C", &any);
 	if (ecx1 & (1u << 30)) print_flag("RDRAND", &any);
 	if (!any)
-		io_putstr("none");
-	io_putchar('\n');
+		u_puts("none");
+	u_putc('\n');
 }
 
 static void print_features_leaf7(unsigned int max_leaf)
@@ -104,7 +96,7 @@ static void print_features_leaf7(unsigned int max_leaf)
 	(void)eax7;
 	(void)ecx7;
 	(void)edx7;
-	io_putstr("ext l7 ");
+	u_puts("ext l7 ");
 	if (ebx7 & (1u << 0))  print_flag("FSGSBASE", &any);
 	if (ebx7 & (1u << 3))  print_flag("BMI1", &any);
 	if (ebx7 & (1u << 5))  print_flag("AVX2", &any);
@@ -116,8 +108,8 @@ static void print_features_leaf7(unsigned int max_leaf)
 	if (ebx7 & (1u << 23)) print_flag("CLFLUSHOPT", &any);
 	if (ebx7 & (1u << 29)) print_flag("SHA", &any);
 	if (!any)
-		io_putstr("none");
-	io_putchar('\n');
+		u_puts("none");
+	u_putc('\n');
 }
 
 static void print_features_ext(unsigned int max_ext_leaf)
@@ -129,7 +121,7 @@ static void print_features_ext(unsigned int max_ext_leaf)
 	cpuid(0x80000001u, 0, &eax, &ebx, &ecx, &edx);
 	(void)eax;
 	(void)ebx;
-	io_putstr("ext x ");
+	u_puts("ext x ");
 	if (edx & (1u << 11)) print_flag("SYSCALL", &any);
 	if (edx & (1u << 20)) print_flag("NX", &any);
 	if (edx & (1u << 27)) print_flag("RDTSCP", &any);
@@ -140,8 +132,8 @@ static void print_features_ext(unsigned int max_ext_leaf)
 	if (ecx & (1u << 6))  print_flag("SSE4A", &any);
 	if (ecx & (1u << 8))  print_flag("PREFETCHW", &any);
 	if (!any)
-		io_putstr("none");
-	io_putchar('\n');
+		u_puts("none");
+	u_putc('\n');
 }
 
 static void print_cpuid_frequency(unsigned int max_leaf)
@@ -151,28 +143,28 @@ static void print_cpuid_frequency(unsigned int max_leaf)
 	if (max_leaf >= 0x15u) {
 		cpuid(0x15u, 0, &eax, &ebx, &ecx, &edx);
 		if (eax != 0 && ebx != 0) {
-			io_putstr("cpuid15 ratio ");
+			u_puts("cpuid15 ratio ");
 			put_uint(ebx);
-			io_putchar('/');
+			u_putc('/');
 			put_uint(eax);
 			if (ecx != 0) {
-				io_putstr(" crystal ");
+				u_puts(" crystal ");
 				put_uint(ecx / 1000000u);
-				io_putstr(" MHz");
+				u_puts(" MHz");
 			}
-			io_putchar('\n');
+			u_putc('\n');
 		}
 	}
 	if (max_leaf >= 0x16u) {
 		cpuid(0x16u, 0, &eax, &ebx, &ecx, &edx);
 		if (eax != 0 || ebx != 0 || ecx != 0) {
-			io_putstr("cpuid16 base ");
+			u_puts("cpuid16 base ");
 			put_uint(eax);
-			io_putstr(" max ");
+			u_puts(" max ");
 			put_uint(ebx);
-			io_putstr(" bus ");
+			u_puts(" bus ");
 			put_uint(ecx);
-			io_putstr(" MHz\n");
+			u_puts(" MHz\n");
 		}
 	}
 }
@@ -194,7 +186,7 @@ static void parse_family_model(unsigned int eax1,
 	*stepping_out = stepping;
 }
 
-void program_cpuinfo_main(void)
+void _start(void)
 {
 	unsigned int eax, ebx, ecx, edx;
 	unsigned int ecx1, edx1, ebx1;
@@ -219,14 +211,14 @@ void program_cpuinfo_main(void)
 	vendor[12] = '\0';
 	cpuid(0x80000000u, 0, &max_ext_leaf, &ebx, &ecx, &edx);
 
-	io_putstr("vendor ");
-	io_putstr(vendor);
-	io_putchar('\n');
-	io_putstr("cpuid max ");
+	u_puts("vendor ");
+	u_puts(vendor);
+	u_putc('\n');
+	u_puts("cpuid max ");
 	put_uint(max_leaf);
-	io_putstr(" ext max ");
+	u_puts(" ext max ");
 	put_uint(max_ext_leaf & 0xFFFFu);
-	io_putchar('\n');
+	u_putc('\n');
 
 	cpuid(1, 0, &eax, &ebx, &ecx, &edx);
 	ebx1 = ebx;
@@ -234,13 +226,13 @@ void program_cpuinfo_main(void)
 	edx1 = edx;
 	parse_family_model(eax, &family, &model, &stepping);
 
-	io_putstr("family ");
+	u_puts("family ");
 	put_uint(family);
-	io_putstr(" model ");
+	u_puts(" model ");
 	put_uint(model);
-	io_putstr(" stepping ");
+	u_puts(" stepping ");
 	put_uint(stepping);
-	io_putchar('\n');
+	u_putc('\n');
 
 	if (max_ext_leaf >= 0x80000004u) {
 		for (i = 0; i < 48; i++)
@@ -259,9 +251,9 @@ void program_cpuinfo_main(void)
 			has_brand = 1;
 	}
 	if (has_brand) {
-		io_putstr("brand ");
-		io_putstr(brand);
-		io_putchar('\n');
+		u_puts("brand ");
+		u_puts(brand);
+		u_putc('\n');
 	}
 
 	/* Logical processors package-wide from leaf 1 EBX[23:16]. */
@@ -286,21 +278,21 @@ void program_cpuinfo_main(void)
 	if (threads_per_core == 0)
 		threads_per_core = 1;
 
-	io_putstr("topology ");
+	u_puts("topology ");
 	put_uint(logical_cpus);
-	io_putstr(" logical, ");
+	u_puts(" logical, ");
 	put_uint(cores);
-	io_putstr(" cores, ");
+	u_puts(" cores, ");
 	put_uint(threads_per_core);
-	io_putstr(" threads/core\n");
+	u_puts(" threads/core\n");
 
 	print_cpuid_frequency(max_leaf);
 
-	start_ms = get_ticks_ms();
+	start_ms = u_ticks_ms();
 	t0 = read_tsc_low();
 	do {
-		__asm__ volatile ("hlt");
-		end_ms = get_ticks_ms();
+		u_sleep_ms(1);          /* hlt is ring-0; yield instead */
+		end_ms = u_ticks_ms();
 	} while (end_ms - start_ms < 200);
 	t1 = read_tsc_low();
 	delta_ms = end_ms - start_ms;
@@ -310,13 +302,15 @@ void program_cpuinfo_main(void)
 
 	/* MHz with one decimal: cycles / (ms * 100). */
 	mhz_x10 = delta_cycles / (delta_ms * 100);
-	io_putstr("clock tsc ");
+	u_puts("clock tsc ");
 	put_uint(mhz_x10 / 10);
-	io_putchar('.');
+	u_putc('.');
 	put_uint(mhz_x10 % 10);
-	io_putstr(" MHz (sampled)\n");
+	u_puts(" MHz (sampled)\n");
 
 	print_features_leaf1(ecx1, edx1);
 	print_features_leaf7(max_leaf);
 	print_features_ext(max_ext_leaf);
+
+	u_exit(0);
 }

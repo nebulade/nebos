@@ -8,6 +8,7 @@
 #include "mm.h"
 #include "paging.h"
 #include "serial.h"
+#include "sys_fs.h"
 #include "timer.h"
 
 struct process *procs;               /* dynamically-sized process table */
@@ -285,7 +286,8 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 }
 
 /* Load an ELF image into a fresh address space and run it as a ring-3 process. */
-int process_create_user(const char *name, const void *image, unsigned int size)
+int process_create_user(const char *name, const void *image, unsigned int size,
+			const char *arg)
 {
 	int slot, owned;
 	unsigned int base, top, *sp, cr3, entry;
@@ -313,34 +315,73 @@ int process_create_user(const char *name, const void *image, unsigned int size)
 		return -1;
 	}
 
-	/* Map the user stack just below USER_STACK_TOP. */
-	for (i = 0; i < USER_STACK_PAGES; i++) {
-		unsigned int phys = mm_alloc_page();
-		unsigned int va = USER_STACK_TOP - (unsigned int)(i + 1) * 0x1000;
-		if (!phys ||
-		    !paging_map_page(cr3, va, phys,
-				     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
+	/* Map the user stack just below USER_STACK_TOP.  Keep the top page's
+	 * physical address: the argument string is written through it (identity
+	 * mapped) after it is mapped in `cr3`. */
+	{
+		unsigned int top_phys = 0;
+		unsigned int user_esp = USER_STACK_TOP;
+
+		for (i = 0; i < USER_STACK_PAGES; i++) {
+			unsigned int phys = mm_alloc_page();
+			unsigned int va = USER_STACK_TOP - (unsigned int)(i + 1) * 0x1000;
+			if (!phys ||
+			    !paging_map_page(cr3, va, phys,
+					     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
+				mm_free_page(cr3);
+				irq_restore(flags);
+				return -1;
+			}
+			if (i == 0)
+				top_phys = phys;
+		}
+
+		/* One C string argument at the top of the user stack with a fake
+		 * return address below it, so `_start(const char *arg)` reads it
+		 * as its first parameter without needing a crt0.  The virtual
+		 * addresses go into the frame; the writes go through the identity
+		 * map at the same offset from the physical page top. */
+		{
+			unsigned int va_top = USER_STACK_TOP;
+			unsigned char *base_phys = (unsigned char *)(top_phys + 0x1000);
+			unsigned char *str_phys;
+			unsigned int *frame_phys;
+			unsigned int len = 0;
+			unsigned int va, k;
+
+			if (arg)
+				while (arg[len])
+					len++;
+			va = (va_top - (len + 1)) & ~15u;
+			if (va - 8 < USER_STACK_TOP - USER_STACK_PAGES * 0x1000) {
+				mm_free_page(cr3);
+				irq_restore(flags);
+				return -1;   /* argument does not fit the stack */
+			}
+			str_phys = base_phys - (va_top - va);
+			for (k = 0; k <= len; k++)
+				str_phys[k] = arg ? arg[k] : '\0';
+			frame_phys = (unsigned int *)(str_phys - 8);
+			frame_phys[0] = 0;   /* fake return address */
+			frame_phys[1] = va;  /* the argument pointer (user VA) */
+			user_esp = va - 8;
+		}
+		base = stack_alloc(&owned);
+		if (!base) {
 			mm_free_page(cr3);
 			irq_restore(flags);
 			return -1;
 		}
+		top = base + PROC_STACK_SIZE;
+		sp = (unsigned int *)top;
+		*--sp = 0x23;                 /* SS: user data */
+		*--sp = user_esp;             /* ESP: user stack + arg frame */
+		*--sp = 0x202;                /* EFLAGS: IF=1 */
+		*--sp = 0x1B;                 /* CS: user code */
+		*--sp = entry;                /* EIP */
+		*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* EAX ECX EDX EBX */
+		*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* ESP EBP ESI EDI */
 	}
-
-	base = stack_alloc(&owned);
-	if (!base) {
-		mm_free_page(cr3);
-		irq_restore(flags);
-		return -1;
-	}
-	top = base + PROC_STACK_SIZE;
-	sp = (unsigned int *)top;
-	*--sp = 0x23;                 /* SS: user data */
-	*--sp = USER_STACK_TOP;       /* ESP: user stack */
-	*--sp = 0x202;                /* EFLAGS: IF=1 */
-	*--sp = 0x1B;                 /* CS: user code */
-	*--sp = entry;                /* EIP */
-	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* EAX ECX EDX EBX */
-	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* ESP EBP ESI EDI */
 
 	procs[slot].esp        = (unsigned int)sp;
 	procs[slot].state      = PROC_READY;
@@ -403,6 +444,15 @@ void schedule(void)
 			procs[i].cr3 = 0;
 			procs[i].state = PROC_UNUSED;
 		}
+	}
+
+	/* A file syscall is in progress: stay on the current process so the FAT
+	 * driver's static state is never touched concurrently (see sys_fs.c).
+	 * Interrupts stay enabled, so the disk's IRQs are still serviced. */
+	if (sys_fs_busy) {
+		if (procs[current_pid].state == PROC_READY)
+			procs[current_pid].state = PROC_RUNNING;
+		return;
 	}
 
 	/* Wake sleeping processes whose deadline has passed. */

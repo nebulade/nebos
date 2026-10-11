@@ -56,12 +56,6 @@ disk.o: disk.c disk.h io.h timer.h
 fat.o: fat.c fat.h blkdev.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ls.o: ls.c fat.h io.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-cat.o: cat.c fat.h io.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
-
 run.o: run.c fat.h io.h fbtext.h run_api.h timer.h vga.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -117,9 +111,6 @@ colors.o: colors.c fbtext.h io.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 display.o: display.c io.h vga.h gpu.h ati.h nvidia.h radeon.h mouse.h fbtext.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-cpuinfo.o: cpuinfo.c io.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 mousecmd.o: mousecmd.c io.h mouse.h usb.h usbhid.h
@@ -218,18 +209,6 @@ kexec_tramp.o: kexec_tramp.S
 dbg.o: dbg.c dbg.h serial.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-save.o: save.c fat.h io.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-rm.o: rm.c fat.h io.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-mkdir.o: mkdir.c fat.h io.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-rmdir.o: rmdir.c fat.h io.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
-
 vfs.o: vfs.c vfs.h fat.h fatdetect.h blkdev.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -269,13 +248,16 @@ tss.o: tss.c tss.h
 syscall.o: syscall.c syscall.h io.h process.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-syscall_stub.o: syscall_stub.S
+sys_fs.o: sys_fs.c sys_fs.h syscall.h fat.h vfs.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
 mem.o: mem.c mm.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o ls.o cat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o ahci.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o curl.o hello_embed.o prog_embed.o space_embed.o
+kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o mouse.o mousecmd.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o ahci.o fatdetect.o storage.o fatformat.o format.o vfs.o sys_fs.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o curl.o hello_embed.o prog_embed.o space_embed.o ucmd_cpuinfo_embed.o ucmd_ls_embed.o ucmd_cat_embed.o ucmd_save_embed.o ucmd_rm_embed.o ucmd_mkdir_embed.o ucmd_rmdir_embed.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -355,6 +337,26 @@ prog.bin: prog.elf
 space: space.bin
 
 prog: prog.bin
+
+# Ring-3 commands (see the command registry in terminal.c): built as freestanding
+# ELFs at USER_BASE and embedded in the kernel image so `make dev`/`net-dev`
+# deliver them too.  New command: ucmd_<name>.c + a CMD_USER row in cmds[] and a
+# blob in ucmds[].
+UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir
+
+# Keep the linked ELFs around (make would treat them as disposable
+# intermediates between the pattern rules).
+.PRECIOUS: $(addprefix $(UCMDS),.elf)
+
+ucmd_%.o: ucmd_%.c ucmd_lib.h syscall.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+ucmd_%.elf: ucmd_%.o ucmd.ld
+	$(LD) -T ucmd.ld -nostdlib -m elf_i386 -o $@ $<
+	$(OBJCOPY) --strip-all $@ $@
+
+ucmd_%_embed.o: ucmd_%.elf
+	$(LD) -m elf_i386 -r -b binary -o $@ $<
 
 space.o: space.c run_api.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -526,4 +528,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o ls.o cat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o cpuinfo.o mouse.o mousecmd.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o ahci.o fatdetect.o storage.o fatformat.o format.o vfs.o idle.o kexec.o kexec_tramp.o dbg.o save.o rm.o mkdir.o rmdir.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o curl.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o mem.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o mouse.o mousecmd.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o ahci.o fatdetect.o storage.o fatformat.o format.o vfs.o sys_fs.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o netcmd.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o curl.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o $(addprefix $(UCMDS),.o) $(addprefix $(UCMDS),.elf) $(addsuffix _embed.o,$(UCMDS)) bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

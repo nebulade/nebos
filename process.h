@@ -48,8 +48,10 @@ int  process_create_arg(const char *name, void (*entry)(const char *),
 			const char *arg);
 int  process_create_ptr(const char *name, void (*entry)(void *), void *arg);
 /* Load an ELF image into a fresh address space and run it as a ring-3
- * process.  Returns the pid, or -1 on error. */
-int  process_create_user(const char *name, const void *image, unsigned int size);
+ * process, with `arg` (may be NULL) as the first C parameter of _start.
+ * Returns the pid, or -1 on error. */
+int process_create_user(const char *name, const void *image, unsigned int size,
+			const char *arg);
 void process_set_screen(struct text_screen *screen);
 
 /* Map an MMIO range into the kernel's page directory and every live process
