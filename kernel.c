@@ -11,6 +11,7 @@
 #include "netlog.h"
 #include "paging.h"
 #include "process.h"
+#include "ramfs.h"
 #include "timer.h"
 #include "tss.h"
 #include "usbhid.h"
@@ -220,6 +221,21 @@ void kernel_main(void)
 	kdbg_init();
 	kdbg_status();
 	vfs_mount_all();
+	/* The command pack: read-only, mounted at /ramfs (see ramfs.c). */
+	{
+		extern unsigned char _binary_cmds_pack_start[];
+		extern unsigned char _binary_cmds_pack_end[];
+		unsigned int pack_len = (unsigned int)(_binary_cmds_pack_end -
+						       _binary_cmds_pack_start);
+		if (ramfs_init(_binary_cmds_pack_start, pack_len) != 0)
+			serial_puts(SERIAL_COM1, "ramfs: bad pack\n");
+		else {
+			serial_puts(SERIAL_COM1, "ramfs: pack ok, ");
+			serial_putdec(SERIAL_COM1, ramfs_count());
+			serial_puts(SERIAL_COM1, " files\n");
+			vfs_mount_ramfs();
+		}
+	}
 	/* Bring the NIC up before the WM loop starts, so an idle board can pick
 	 * up a network kexec (`make net-dev`) without any typing. */
 	netdev_active();

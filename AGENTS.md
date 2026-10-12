@@ -99,22 +99,28 @@ below the run area), so adding code no longer moves any address.
 - **On-screen debug**: `kdbg.c/h` — framebuffer debug overlay (live status rows,
   heartbeat, boot info rows, exception banner) for machines without serial; see
   the kdbg section below.
-- **Shell**: `terminal.c` — history, line editing (Tab completes command
-  names from the registry table and VFS paths via `fat_list_dir`), and a
-  table-driven command registry (`cmds[]`: name, usage, spawn kind/handler)
-  that drives dispatch, `help` and completion.  Runs in a window
-  (`term_run(struct term *)`); reads keys from its per-terminal queue
+- **Shell**: `terminal.c` — history, line editing, and a table-driven command
+  registry (`cmds[]`: name, usage, spawn kind/handler) that holds only the
+  builtins (`cd`, `path`, `help`, `clear`) and the kernel commands.  Everything
+  else is a file on the per-terminal **PATH** (`struct term.path`, default
+  `/ramfs/bin`, `path` builtin to show/set): dispatch is builtins -> PATH ->
+  kernel commands, so a packed command can shadow a kernel one.  Tab
+  completion and `help` list the registry plus the PATH contents.  Runs in a
+  window (`term_run(struct term *)`); reads keys from its per-terminal queue
   (filled by the WM).
 - **Filesystem**: `fat.c` (FAT12/16/32 read/write, device-parameterized),
   `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
   `blkdev.c` (floppy + IDE + SATA registry), `ata.c` (ATA PIO, either the
   legacy ports or the PCI IDE interface's native BARs — `ata_init_ports()`),
-  `disk.c` (FDC + ISA DMA ch2, retries).  `sys_fs.c` is the file service for
-  ring-3 commands: whole-file read/write, index-based directory listing, mount
-  listing, unlink/mkdir/rmdir.  A FAT operation sets `sys_fs_busy`, which the
-  scheduler honours (no process switch during it): the FAT driver has static
-  state and the floppy still needs its IRQ.  So expect a brief system stall
-  (not ticks — the PIT keeps running) while a command reads or writes a disk.
+  `disk.c` (FDC + ISA DMA ch2, retries).  `vfs.c` exposes an `fs_ops` vtable
+  (FAT and the ramfs implement it) so the file service and the shell never
+  touch `fat_*` directly; `sys_fs.c` is the file service for ring-3 commands:
+  whole-file read/write, index-based directory listing, mount listing,
+  unlink/mkdir/rmdir (writes to the ramfs return a read-only error).  A FAT
+  operation sets `sys_fs_busy`, which the scheduler honours (no process switch
+  during it): the FAT driver has static state and the floppy still needs its
+  IRQ.  So expect a brief system stall (not ticks — the PIT keeps running)
+  while a command reads or writes a disk.
 - **SATA/AHCI**: `ahci.c/h` — polled AHCI driver (first controller only, PCI
   class `01:06:01`, no IRQs, no NCQ): port bring-up with COMRESET, IDENTIFY
   (shared `ata_identify_parse()` with `ata.c`) and READ/WRITE DMA EXT through
@@ -180,21 +186,22 @@ below the run area), so adding code no longer moves any address.
   from FAT.  Rebuilds are wired (`space.c` -> `space.bin` -> `space_embed.o` ->
   `kernel.elf`).  Note: full-screen programs draw over the WM, which keeps
   repainting its desktop — running them windowed/cleanly is a follow-up.
-- **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld` — freestanding
-  ELFs linked at `USER_BASE` (`0x40000000`), built by the Makefile, embedded
-  in the kernel image (`*_embed.o`) and listed as `CMD_USER` rows in the
-  terminal's command registry (`cmds[]` + `ucmds[]`).  Moved so far:
-  `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
-  `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`,
-  `ping`, `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`,
-  `netloop`, `netreset`, `curl`.  They talk to the kernel through `int 0x80`
-  (`syscall.h`: putstr/ticks/sleep/exit, the whole-file service in
+- **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld`, `mkpack.c`,
+  `ramfs.c/h` — freestanding ELFs linked at `USER_BASE` (`0x40000000`), packed
+  by `mkpack` into `cmds.pack` (as `bin/<name>`), embedded in the kernel
+  image (`cmds_pack.o`) and mounted read-only at `/ramfs`.  The shell finds
+  them through PATH (`/ramfs/bin` by default), loads the whole ELF through
+  the VFS and spawns it as a ring-3 process; `hello` is just `bin/hello`.
+  New command: add `ucmd_<name>.c` to UCMDS — the pack, the mount and the
+  PATH listing pick it up automatically.  They talk to the kernel through
+  `int 0x80` (`syscall.h`: putstr/ticks/sleep/exit, the whole-file service in
   `sys_fs.c`, the state snapshots in `sys_info.c` and the network service in
   `sys_net.c`) and inherit the terminal's screen, so their output lands in
-  the owning window.  New commands: add `ucmd_<name>.c`, a `CMD_USER` row in
-  `cmds[]`, and a blob in `ucmds[]` (the Makefile picks the file up via its
-  `ucmd_%` pattern rules).  The one argument is passed as a C string on the
-  top of the user stack (`process_create_user(..., arg)`), so
+  the owning window.  Each process inherits the spawning terminal's working
+  directory (`struct process.cwd`, exposed as `SYS_GETCWD`), and the file
+  syscalls resolve relative paths against it, so commands keep working after
+  `cd` (the shell passes arguments verbatim).  The one argument is passed as a
+  C string on the top of the user stack (`process_create_user(..., arg)`), so
   `_start(const char *arg)` needs no crt0.
 - **Network service**: `sys_net.c/h` — the NIC and the stack stay in the
   kernel; ring-3 commands get `SYS_NET_INFO`/config, the DNS and DHCP clients
@@ -247,9 +254,9 @@ filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
 `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
-`netreset` and `curl` run as ring-3 processes (embedded `ucmd_*.c`); the rest
-are kernel commands spawned as processes, or shell builtins (`cd`, `clear`,
-`help`).
+`netreset`, `curl` and `hello` are files in `/ramfs/bin` (packed by the
+Makefile), found through the shell's PATH; the rest are kernel commands
+spawned as processes, or builtins (`cd`, `path`, `help`, `clear`).
 
 ## Serial hot-reload (kexec) workflow
 
@@ -557,6 +564,13 @@ Caveats:
 - **Paging is on but flat** — identity-mapped 4 MB pages (`paging.c`), so
   physical == virtual everywhere. Still no per-process address spaces or process
   isolation: everything runs ring-0 and shares the address space.
+- **Fresh memory is not zeroed** — `mm_alloc_page`/`kmalloc` hand out whatever
+  RAM contained; QEMU starts guest RAM cleared, real hardware does not, so a
+  structure whose fields are read before being written must be cleared on
+  allocation.  `clear_proc()` (`process.c`) exists for exactly this: a stale
+  `procs[i].cr3` made the boot-time MMIO mapping (`paging_map_mmio_cr3`) fault
+  on the board while QEMU was fine.  Anything above `MM_MAX_PHYS` (128 MB) is
+  also *unmapped*, so a wild pointer there is an instant #PF.
 - **All drawing goes into the shadow buffer** (`vga_put_pixel_rgb` etc.); a 30 Hz
   flush copies dirty rows to VRAM. Full-screen programs call `vga_clear_rgb`.
 - **FAT is read/write** — FAT12/16/32 read plus write/delete/mkdir/rmdir.

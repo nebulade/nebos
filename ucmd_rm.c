@@ -24,6 +24,10 @@ void _start(const char *path)
 		u_puts("rm: not found\n");
 		u_exit(1);
 	}
+	if (r == SYS_EROFS) {
+		u_puts("rm: read-only filesystem\n");
+		u_exit(1);
+	}
 	if (r != 0) {
 		u_puts("rm: file not found\n");
 		u_exit(1);

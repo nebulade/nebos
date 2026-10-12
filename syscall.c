@@ -123,6 +123,18 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		return sys_net_arp((const unsigned char *)a1, (unsigned char *)a2);
 	case SYS_NET_CONFIGURED:
 		return sys_net_configured();
+	case SYS_GETCWD: {
+		const char *cwd = procs[current_pid].cwd;
+		char *out = (char *)a1;
+		unsigned int i = 0, max = (unsigned int)a2;
+
+		if (!cwd || max == 0)
+			return -1;
+		for (i = 0; cwd[i] && i + 1 < max; i++)
+			out[i] = cwd[i];
+		out[i] = '\0';
+		return 0;
+	}
 	default:
 		return -1;
 	}

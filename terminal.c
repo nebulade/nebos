@@ -9,8 +9,6 @@
 #include "terminal.h"
 #include "timer.h"
 
-extern unsigned char _binary_hello_elf_start[];
-extern unsigned char _binary_hello_elf_end[];
 extern void program_reboot_main(void);
 extern void program_poweroff_main(void);
 extern void program_run_main(const char *filename);
@@ -48,15 +46,11 @@ static void term_print_prompt(struct term *t, int first)
 enum cmd_kind {
 	CK_SPAWN = 0,        /* spawn, no arguments */
 	CK_SPAWN_ARG,        /* spawn with the raw remainder of the line */
-	CK_SPAWN_PATH,       /* whole remainder, resolved against the cwd */
-	CK_SPAWN_FIRST,      /* first token, resolved against the cwd */
-	CK_SPAWN_SAVE,       /* first token resolved, the rest kept as text */
 	CK_CUSTOM            /* handled by a cmd_*() handler below */
 };
 
 #define CMD_REQARG 0x01  /* the argument must be non-empty */
-#define CMD_OPTARG 0x02  /* an empty argument is allowed (CK_SPAWN_PATH) */
-#define CMD_USER   0x04  /* spawn an embedded ring-3 ELF (ucmds[]) */
+#define CMD_BUILTIN 0x04 /* handled inline, before the PATH lookup */
 
 struct kcmd {
 	const char *name;               /* dispatch token */
@@ -74,9 +68,7 @@ static void term_cd(struct term *t, const char *arg);
 static void term_spawn(struct term *t, const char *name, void (*entry)(void));
 static void term_spawn_arg(struct term *t, const char *name,
 			   void (*entry)(const char *), const char *arg);
-static void term_resolve_first(struct term *t, const char *args,
-			       char *out, unsigned int out_size);
-static void cmd_spawn_user(struct term *t, const struct kcmd *c, const char *arg);
+static int term_path_spawn(struct term *t, const char *word, const char *args);
 
 static int cmd_cd(struct term *t, const char *args);
 static int cmd_clear(struct term *t, const char *args);
@@ -84,8 +76,8 @@ static int cmd_clock(struct term *t, const char *args);
 static int cmd_colors(struct term *t, const char *args);
 static int cmd_dbg(struct term *t, const char *args);
 static int cmd_format(struct term *t, const char *args);
-static int cmd_hello(struct term *t, const char *args);
 static int cmd_help(struct term *t, const char *args);
+static int cmd_path(struct term *t, const char *args);
 static int cmd_kexec(struct term *t, const char *args);
 static int cmd_kill(struct term *t, const char *args);
 static int cmd_poweroff(struct term *t, const char *args);
@@ -94,163 +86,34 @@ static int cmd_reboot(struct term *t, const char *args);
 static int cmd_run(struct term *t, const char *args);
 static int cmd_serial(struct term *t, const char *args);
 
-/* Table order defines the `help` layout (printed as two columns). */
+/* Table order defines the `help` layout (printed as two columns).  Ring-3
+ * commands are not listed here: they are files on the PATH (see cmd_path). */
 static const struct kcmd cmds[] = {
-	{ "cd",         "cd [path]",                     CK_CUSTOM, 0, 0, 0, 0, cmd_cd },
-	{ "ls",         "ls [path]",                     CK_SPAWN_PATH, CMD_OPTARG | CMD_USER, 0, 0, 0, 0 },
-	{ "cat",        "cat <path>",                    CK_SPAWN_FIRST, CMD_USER, 0, 0, 0, 0 },
-	{ "save",       "save <path> <text>",            CK_SPAWN_SAVE, CMD_USER, 0, 0, 0, 0 },
-	{ "rm",         "rm <path>",                     CK_SPAWN_FIRST, CMD_USER, 0, 0, 0, 0 },
-	{ "mkdir",      "mkdir <path>",                  CK_SPAWN_FIRST, CMD_USER, 0, 0, 0, 0 },
-	{ "rmdir",      "rmdir <path>",                  CK_SPAWN_FIRST, CMD_USER, 0, 0, 0, 0 },
-	{ "hello",      "hello",                         CK_CUSTOM, 0, 0, 0, 0, cmd_hello },
-	{ "reboot",     "reboot",                        CK_CUSTOM, 0, 0, 0, 0, cmd_reboot },
-	{ "poweroff",   "poweroff",                      CK_CUSTOM, 0, 0, 0, 0, cmd_poweroff },
+	{ "cd",         "cd [path]",                     CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_cd },
+	{ "path",       "path [dir[:dir...]]",           CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_path },
+	{ "help",       "help",                          CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_help },
+	{ "clear",      "clear",                         CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_clear },
 	{ "run",        "run <name>|<file>",             CK_CUSTOM, 0, 0, 0, 0, cmd_run },
 	{ "space",      "space",                         CK_SPAWN, 0, 0, program_run_embedded_main, "space", 0 },
 	{ "prog",       "prog",                          CK_SPAWN, 0, 0, program_run_embedded_main, "prog", 0 },
+	{ "reboot",     "reboot",                        CK_CUSTOM, 0, 0, 0, 0, cmd_reboot },
+	{ "poweroff",   "poweroff",                      CK_CUSTOM, 0, 0, 0, 0, cmd_poweroff },
 	{ "clock",      "clock",                         CK_CUSTOM, 0, 0, 0, 0, cmd_clock },
 	{ "colors",     "colors",                        CK_CUSTOM, 0, 0, 0, 0, cmd_colors },
 	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
-	{ "cpuinfo",    "cpuinfo",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
 	{ "lsusb",      "lsusb",                         CK_SPAWN, 0, program_lsusb_main, 0, 0, 0 },
-	{ "mouseinfo",  "mouseinfo",                     CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "storage",    "storage",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "meminfo",    "meminfo",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
 	{ "format",     "format <device>",               CK_CUSTOM, 0, 0, 0, 0, cmd_format },
 	{ "lspci",      "lspci [id]",                    CK_SPAWN_ARG, 0, 0, program_lspci_main, 0, 0 },
 	{ "peek",       "peek <addr> [len]",             CK_SPAWN_ARG, 0, 0, program_peek_main, 0, 0 },
 	{ "poke",       "poke <addr> <val>",             CK_SPAWN_ARG, CMD_REQARG, 0, program_poke_main, 0, 0 },
-	{ "netinfo",    "netinfo",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "netrecv",    "netrecv",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "netsend",    "netsend",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "netip",      "netip [a.b.c.d]",               CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
-	{ "ping",       "ping <host|a.b.c.d>",           CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
-	{ "netlog",     "netlog <text>",                 CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
-	{ "netconsole", "netconsole [on|off|host <ip>]", CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
-	{ "dhcp",       "dhcp",                          CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "netregs",    "netregs",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "netloop",    "netloop",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "netreset",   "netreset",                      CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
-	{ "pong",       "pong",                          CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
 	{ "ps",         "ps",                            CK_CUSTOM, 0, 0, 0, 0, cmd_ps },
 	{ "kill",       "kill <pid>",                    CK_CUSTOM, 0, 0, 0, 0, cmd_kill },
 	{ "kexec",      "kexec",                         CK_CUSTOM, 0, 0, 0, 0, cmd_kexec },
 	{ "dbg",        "dbg",                           CK_CUSTOM, 0, 0, 0, 0, cmd_dbg },
 	{ "serial",     "serial test|recv",              CK_CUSTOM, 0, 0, 0, 0, cmd_serial },
-	{ "clear",      "clear",                         CK_CUSTOM, 0, 0, 0, 0, cmd_clear },
-	{ "curl",       "curl <url>",                    CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
-	{ "netdns",     "netdns [a.b.c.d]",              CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
-	{ "host",       "host <name>",                   CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
-	{ "help",       "help",                          CK_CUSTOM, 0, 0, 0, 0, cmd_help },
 };
 
 #define NCMDS (sizeof(cmds) / sizeof(cmds[0]))
-
-/* Embedded ring-3 command binaries (CK_USER rows above).  Built from
- * ucmd_*.c by the Makefile; more can be added here as they move out of the
- * kernel. */
-extern unsigned char _binary_ucmd_cpuinfo_elf_start[];
-extern unsigned char _binary_ucmd_cpuinfo_elf_end[];
-extern unsigned char _binary_ucmd_ls_elf_start[];
-extern unsigned char _binary_ucmd_ls_elf_end[];
-extern unsigned char _binary_ucmd_cat_elf_start[];
-extern unsigned char _binary_ucmd_cat_elf_end[];
-extern unsigned char _binary_ucmd_save_elf_start[];
-extern unsigned char _binary_ucmd_save_elf_end[];
-extern unsigned char _binary_ucmd_rm_elf_start[];
-extern unsigned char _binary_ucmd_rm_elf_end[];
-extern unsigned char _binary_ucmd_mkdir_elf_start[];
-extern unsigned char _binary_ucmd_mkdir_elf_end[];
-extern unsigned char _binary_ucmd_rmdir_elf_start[];
-extern unsigned char _binary_ucmd_rmdir_elf_end[];
-extern unsigned char _binary_ucmd_meminfo_elf_start[];
-extern unsigned char _binary_ucmd_meminfo_elf_end[];
-extern unsigned char _binary_ucmd_mouseinfo_elf_start[];
-extern unsigned char _binary_ucmd_mouseinfo_elf_end[];
-extern unsigned char _binary_ucmd_storage_elf_start[];
-extern unsigned char _binary_ucmd_storage_elf_end[];
-extern unsigned char _binary_ucmd_netinfo_elf_start[];
-extern unsigned char _binary_ucmd_netinfo_elf_end[];
-extern unsigned char _binary_ucmd_netip_elf_start[];
-extern unsigned char _binary_ucmd_netip_elf_end[];
-extern unsigned char _binary_ucmd_netdns_elf_start[];
-extern unsigned char _binary_ucmd_netdns_elf_end[];
-extern unsigned char _binary_ucmd_host_elf_start[];
-extern unsigned char _binary_ucmd_host_elf_end[];
-extern unsigned char _binary_ucmd_dhcp_elf_start[];
-extern unsigned char _binary_ucmd_dhcp_elf_end[];
-extern unsigned char _binary_ucmd_netsend_elf_start[];
-extern unsigned char _binary_ucmd_netsend_elf_end[];
-extern unsigned char _binary_ucmd_netrecv_elf_start[];
-extern unsigned char _binary_ucmd_netrecv_elf_end[];
-extern unsigned char _binary_ucmd_ping_elf_start[];
-extern unsigned char _binary_ucmd_ping_elf_end[];
-extern unsigned char _binary_ucmd_pong_elf_start[];
-extern unsigned char _binary_ucmd_pong_elf_end[];
-extern unsigned char _binary_ucmd_netlog_elf_start[];
-extern unsigned char _binary_ucmd_netlog_elf_end[];
-extern unsigned char _binary_ucmd_netconsole_elf_start[];
-extern unsigned char _binary_ucmd_netconsole_elf_end[];
-extern unsigned char _binary_ucmd_netregs_elf_start[];
-extern unsigned char _binary_ucmd_netregs_elf_end[];
-extern unsigned char _binary_ucmd_netloop_elf_start[];
-extern unsigned char _binary_ucmd_netloop_elf_end[];
-extern unsigned char _binary_ucmd_netreset_elf_start[];
-extern unsigned char _binary_ucmd_netreset_elf_end[];
-extern unsigned char _binary_ucmd_curl_elf_start[];
-extern unsigned char _binary_ucmd_curl_elf_end[];
-
-struct ucmd_blob {
-	const char *name;
-	const unsigned char *start;
-	const unsigned char *end;
-};
-
-static const struct ucmd_blob ucmds[] = {
-	{ "cpuinfo", _binary_ucmd_cpuinfo_elf_start, _binary_ucmd_cpuinfo_elf_end },
-	{ "ls",      _binary_ucmd_ls_elf_start,      _binary_ucmd_ls_elf_end },
-	{ "cat",     _binary_ucmd_cat_elf_start,     _binary_ucmd_cat_elf_end },
-	{ "save",    _binary_ucmd_save_elf_start,    _binary_ucmd_save_elf_end },
-	{ "rm",      _binary_ucmd_rm_elf_start,      _binary_ucmd_rm_elf_end },
-	{ "mkdir",   _binary_ucmd_mkdir_elf_start,   _binary_ucmd_mkdir_elf_end },
-	{ "rmdir",   _binary_ucmd_rmdir_elf_start,   _binary_ucmd_rmdir_elf_end },
-	{ "meminfo", _binary_ucmd_meminfo_elf_start, _binary_ucmd_meminfo_elf_end },
-	{ "mouseinfo", _binary_ucmd_mouseinfo_elf_start, _binary_ucmd_mouseinfo_elf_end },
-	{ "storage", _binary_ucmd_storage_elf_start, _binary_ucmd_storage_elf_end },
-	{ "netinfo", _binary_ucmd_netinfo_elf_start, _binary_ucmd_netinfo_elf_end },
-	{ "netip",   _binary_ucmd_netip_elf_start,   _binary_ucmd_netip_elf_end },
-	{ "netdns",  _binary_ucmd_netdns_elf_start,  _binary_ucmd_netdns_elf_end },
-	{ "host",    _binary_ucmd_host_elf_start,    _binary_ucmd_host_elf_end },
-	{ "dhcp",    _binary_ucmd_dhcp_elf_start,    _binary_ucmd_dhcp_elf_end },
-	{ "netsend",      _binary_ucmd_netsend_elf_start,              _binary_ucmd_netsend_elf_end },
-	{ "netrecv",      _binary_ucmd_netrecv_elf_start,              _binary_ucmd_netrecv_elf_end },
-	{ "ping",         _binary_ucmd_ping_elf_start,              _binary_ucmd_ping_elf_end },
-	{ "pong",         _binary_ucmd_pong_elf_start,              _binary_ucmd_pong_elf_end },
-	{ "netlog",       _binary_ucmd_netlog_elf_start,              _binary_ucmd_netlog_elf_end },
-	{ "netconsole",   _binary_ucmd_netconsole_elf_start,              _binary_ucmd_netconsole_elf_end },
-	{ "netregs",      _binary_ucmd_netregs_elf_start,              _binary_ucmd_netregs_elf_end },
-	{ "netloop",      _binary_ucmd_netloop_elf_start,              _binary_ucmd_netloop_elf_end },
-	{ "netreset",     _binary_ucmd_netreset_elf_start,              _binary_ucmd_netreset_elf_end },
-	{ "curl",         _binary_ucmd_curl_elf_start,                 _binary_ucmd_curl_elf_end },
-};
-
-
-static const struct ucmd_blob *ucmd_lookup(const char *name)
-{
-	unsigned int i;
-
-	for (i = 0; i < sizeof(ucmds) / sizeof(ucmds[0]); i++) {
-		const char *n = ucmds[i].name;
-		unsigned int j = 0;
-
-		while (n[j] && n[j] == name[j])
-			j++;
-		if (n[j] == '\0' && name[j] == '\0')
-			return &ucmds[i];
-	}
-	return 0;
-}
 
 /* Find the registry entry whose name matches the first word of the line. */
 static const struct kcmd *cmd_lookup(const char *line, unsigned int line_len)
@@ -283,39 +146,32 @@ static void cmd_usage(const struct kcmd *c)
 	io_putchar('\n');
 }
 
-/* Copy the first token of `args` into `out` (0 when there is none). */
-static int cmd_first_token(const char *args, char *out, unsigned int out_size)
+/* Split the line into the command word and the trimmed remainder. */
+static void term_split_line(struct term *t, char *word, unsigned int wsize,
+			    char *args, unsigned int asize)
 {
-	unsigned int n = 0;
-
-	while (*args && *args != ' ') {
-		if (n + 1 >= out_size)
-			break;
-		out[n++] = *args++;
-	}
-	out[n] = '\0';
-	return n > 0;
-}
-
-/* Dispatch one registry entry.  Returns 1 when the handler already printed the
- * next prompt (clear), 0 otherwise. */
-static int term_run_command(struct term *t, const struct kcmd *c)
-{
-	char args[LINE_MAX + 1];
 	unsigned int i = 0, n = 0;
 
-	/* Skip the command word, capture the trimmed argument text. */
 	while (i < t->line_len && t->line[i] == ' ')
 		i++;
-	while (i < t->line_len && t->line[i] != ' ')
-		i++;
+	while (i < t->line_len && t->line[i] != ' ' && n + 1 < wsize)
+		word[n++] = t->line[i++];
+	word[n] = '\0';
 	while (i < t->line_len && t->line[i] == ' ')
 		i++;
-	while (i < t->line_len && n < LINE_MAX)
+	n = 0;
+	while (i < t->line_len && n + 1 < asize)
 		args[n++] = t->line[i++];
 	while (n > 0 && args[n - 1] == ' ')
 		n--;
 	args[n] = '\0';
+}
+
+/* Dispatch one registry entry.  Returns 1 when the handler already printed the
+ * next prompt (clear), 0 otherwise. */
+static int term_run_command(struct term *t, const struct kcmd *c,
+			    const char *args)
+{
 
 	if ((c->flags & CMD_REQARG) && args[0] == '\0') {
 		cmd_usage(c);
@@ -324,66 +180,14 @@ static int term_run_command(struct term *t, const struct kcmd *c)
 
 	switch (c->kind) {
 	case CK_SPAWN:
-		if (c->flags & CMD_USER)
-			cmd_spawn_user(t, c, c->fixed);
-		else if (c->fixed)
+		if (c->fixed)
 			term_spawn_arg(t, c->name, c->fn_arg, c->fixed);
 		else
 			term_spawn(t, c->name, c->fn);
 		break;
 	case CK_SPAWN_ARG:
-		if (c->flags & CMD_USER)
-			cmd_spawn_user(t, c, args);
-		else
-			term_spawn_arg(t, c->name, c->fn_arg, args);
+		term_spawn_arg(t, c->name, c->fn_arg, args);
 		break;
-	case CK_SPAWN_PATH: {
-		char resolved[VFS_PATH_MAX];
-
-		if (vfs_join_path(t->cwd, args, resolved, sizeof(resolved)) != 0) {
-			io_putstr(c->name);
-			io_putstr(": path too long\n");
-			break;
-		}
-		if (c->flags & CMD_USER)
-			cmd_spawn_user(t, c, resolved);
-		else
-			term_spawn_arg(t, c->name, c->fn_arg, resolved);
-		break;
-	}
-	case CK_SPAWN_FIRST: {
-		char tok[VFS_PATH_MAX];
-		char resolved[VFS_PATH_MAX];
-
-		if (!cmd_first_token(args, tok, sizeof(tok))) {
-			cmd_usage(c);
-			break;
-		}
-		if (vfs_join_path(t->cwd, tok, resolved, sizeof(resolved)) != 0) {
-			io_putstr(c->name);
-			io_putstr(": path too long\n");
-			break;
-		}
-		if (c->flags & CMD_USER)
-			cmd_spawn_user(t, c, resolved);
-		else
-			term_spawn_arg(t, c->name, c->fn_arg, resolved);
-		break;
-	}
-	case CK_SPAWN_SAVE: {
-		char resolved[LINE_MAX + VFS_PATH_MAX];
-
-		if (args[0] == '\0') {
-			cmd_usage(c);
-			break;
-		}
-		term_resolve_first(t, args, resolved, sizeof(resolved));
-		if (c->flags & CMD_USER)
-			cmd_spawn_user(t, c, resolved);
-		else
-			term_spawn_arg(t, c->name, c->fn_arg, resolved);
-		break;
-	}
 	case CK_CUSTOM:
 		return c->custom(t, args);
 	}
@@ -484,25 +288,142 @@ static int cmd_format(struct term *t, const char *args)
 	return 0;
 }
 
-static int cmd_hello(struct term *t, const char *args)
+/* `path` builtin: show or set the command search path. */
+static int path_entry_ok(const char *entry)
 {
-	int pid;
+	unsigned int size = 0;
+	int is_dir = 0;
 
-	(void)args;
-	pid = process_create_user("hello", _binary_hello_elf_start,
-		(unsigned int)(_binary_hello_elf_end - _binary_hello_elf_start), 0);
-	if (pid < 0)
-		io_putstr("error: too many processes\n");
-	else
-		t->fg_pid = pid;
+	if (entry[0] != '/')
+		return 0;
+	return vfs_stat(entry, &size, &is_dir) == 0 && is_dir;
+}
+
+static int cmd_path(struct term *t, const char *args)
+{
+	if (args[0] == '\0') {
+		io_putstr("path=");
+		io_putstr(t->path);
+		io_putchar('\n');
+		return 0;
+	}
+
+	/* Validate every colon-separated entry (absolute, existing dir) and
+	 * rebuild the path without stray spaces. */
+	{
+		char entry[VFS_PATH_MAX];
+		char normalized[VFS_PATH_MAX];
+		unsigned int i = 0, n = 0, o = 0;
+
+		for (;;) {
+			char c = args[i];
+
+			if (c == ':' || c == '\0') {
+				entry[n] = '\0';
+				if (n > 0) {
+					unsigned int k;
+
+					if (!path_entry_ok(entry)) {
+						io_putstr("path: not a directory: ");
+						io_putstr(entry);
+						io_putchar('\n');
+						return 0;
+					}
+					if (o > 0) {
+						if (o + 1 >= sizeof(normalized)) {
+							io_putstr("path: too long\n");
+							return 0;
+						}
+						normalized[o++] = ':';
+					}
+					for (k = 0; entry[k]; k++) {
+						if (o + 1 >= sizeof(normalized)) {
+							io_putstr("path: too long\n");
+							return 0;
+						}
+						normalized[o++] = entry[k];
+					}
+				}
+				n = 0;
+				if (c == '\0')
+					break;
+				i++;
+				continue;
+			}
+			if (!(c == ' ' && n == 0)) {
+				if (n + 1 >= sizeof(entry)) {
+					io_putstr("path: entry too long\n");
+					return 0;
+				}
+				entry[n++] = c;
+			}
+			i++;
+		}
+		if (o == 0) {
+			io_putstr("path: empty\n");
+			return 0;
+		}
+		normalized[o] = '\0';
+		for (i = 0; i + 1 < sizeof(t->path) && normalized[i]; i++)
+			t->path[i] = normalized[i];
+		t->path[i] = '\0';
+	}
+	io_putstr("path set to ");
+	io_putstr(t->path);
+	io_putchar('\n');
 	return 0;
+}
+
+/* List the command files found on the search path. */
+static void help_print_path(struct term *t)
+{
+	const char *p = t->path;
+
+	while (*p) {
+		char dir[VFS_PATH_MAX];
+		unsigned int n = 0, col = 0, i;
+
+		while (*p && *p != ':' && n + 1 < sizeof(dir))
+			dir[n++] = *p++;
+		dir[n] = '\0';
+		if (*p == ':')
+			p++;
+		if (dir[0] == '\0')
+			continue;
+
+		io_putstr(dir);
+		io_putstr(":\n");
+		for (i = 0; ; i++) {
+			struct vfs_dirent d;
+			unsigned int len = 0;
+			int r = vfs_list_dir(dir, i, &d);
+
+			if (r != 1)
+				break;
+			if (d.is_dir)
+				continue;
+			while (d.name[len])
+				len++;
+			if (col > 0 && col + 2 + len > t->screen.cols) {
+				io_putchar('\n');
+				col = 0;
+			}
+			if (col > 0) {
+				io_putstr("  ");
+				col += 2;
+			}
+			io_putstr(d.name);
+			col += len;
+		}
+		io_putchar('\n');
+	}
 }
 
 static int cmd_help(struct term *t, const char *args)
 {
-	(void)t;
 	(void)args;
 	help_print();
+	help_print_path(t);
 	return 0;
 }
 
@@ -685,10 +606,25 @@ static unsigned int tab_count;
 static unsigned int tab_lcp_len;
 static char tab_lcp[16];
 static int tab_single_dir;
-static fat_fs_t *tab_fs;
-static unsigned int tab_dir_cluster;
+static int tab_raw_83;                      /* current dir holds raw 8.3 names */
+static char tab_scan_path[VFS_PATH_MAX];    /* dir of the last tab_scan_dir() */
 static unsigned int tab_col;
 static unsigned int tab_width;
+
+/* Display form of a name: FAT's raw 8.3 gets "NAME    EXT" -> "name.ext",
+ * everything else (ramfs) is just lowercased. */
+static void tab_disp_name(const char *name, char *out)
+{
+	unsigned int i;
+
+	if (tab_raw_83) {
+		tab_display_name(name, out);
+		return;
+	}
+	for (i = 0; name[i] && i < 15; i++)
+		out[i] = lower_ch(name[i]);
+	out[i] = '\0';
+}
 
 static void tab_collect_cb(const char *name, int is_dir, unsigned int size)
 {
@@ -698,7 +634,7 @@ static void tab_collect_cb(const char *name, int is_dir, unsigned int size)
 	(void)size;
 	if (name[0] == '.')                 /* "." / ".." */
 		return;
-	tab_display_name(name, disp);
+	tab_disp_name(name, disp);
 	if (!prefix_ci(disp, tab_prefix, tab_prefix_len))
 		return;
 	n = 0;
@@ -746,7 +682,7 @@ static void tab_print_cb(const char *name, int is_dir, unsigned int size)
 	(void)size;
 	if (name[0] == '.')
 		return;
-	tab_display_name(name, disp);
+	tab_disp_name(name, disp);
 	if (!prefix_ci(disp, tab_prefix, tab_prefix_len))
 		return;
 	tab_print_one(disp, is_dir);
@@ -754,17 +690,30 @@ static void tab_print_cb(const char *name, int is_dir, unsigned int size)
 
 static int tab_scan_dir(const char *abs)
 {
-	fat_fs_t *fs;
-	const char *fs_path;
+	struct vfs_mount *m;
+	const char *rel;
+	unsigned int i;
 
-	if (vfs_resolve(abs, &fs, &fs_path) != 0)
+	if (vfs_resolve(abs, &m, &rel) != 0)
 		return 0;
-	if (fat_resolve_dir(fs, fs_path, &tab_dir_cluster) != 0)
-		return 0;
-	tab_fs = fs;
+	tab_raw_83 = m->ops->raw_83;
+	{
+		unsigned int j;
+
+		for (j = 0; abs[j] && j + 1 < sizeof(tab_scan_path); j++)
+			tab_scan_path[j] = abs[j];
+		tab_scan_path[j] = '\0';
+	}
 	tab_count = 0;
 	tab_lcp_len = 0;
-	fat_list_dir(fs, tab_dir_cluster, tab_collect_cb);
+	for (i = 0; ; i++) {
+		struct vfs_dirent d;
+		int r = m->ops->list_dir(m, rel, i, &d);
+
+		if (r != 1)
+			break;
+		tab_collect_cb(d.name, (int)d.is_dir, d.size);
+	}
 	return (int)tab_count;
 }
 
@@ -834,11 +783,108 @@ static void term_tab_ambiguous(struct term *t, int mounts)
 				tab_print_one(name, 1);
 		}
 	} else {
-		fat_list_dir(tab_fs, tab_dir_cluster, tab_print_cb);
+		for (i = 0; ; i++) {
+			struct vfs_dirent d;
+			int r = vfs_list_dir(tab_scan_path, i, &d);
+
+			if (r != 1)
+				break;
+			tab_print_cb(d.name, (int)d.is_dir, d.size);
+		}
 	}
 	io_putchar('\n');
 	term_print_prompt(t, 1);
 	redraw_line_clear(t->line, t->line_len, t->line_pos, t->line_start, t->line_len);
+}
+
+/* Command-name completion state: fed from the registry rows and the PATH. */
+struct compl_state {
+	const char *token;
+	unsigned int tl;
+	unsigned int count;
+	unsigned int lcp_len;
+	char lcp[16];
+	char best[16];
+};
+
+static void compl_add(struct compl_state *st, const char *name)
+{
+	unsigned int nl = 0, j;
+
+	while (name[nl])
+		nl++;
+	if (nl < st->tl || !prefix_ci(name, st->token, st->tl))
+		return;
+	if (st->count == 0) {
+		for (j = 0; j < nl && j < sizeof(st->lcp) - 1; j++)
+			st->lcp[j] = name[j];
+		st->lcp[j] = '\0';
+		st->lcp_len = j;
+		for (j = 0; j < nl && j < sizeof(st->best) - 1; j++)
+			st->best[j] = name[j];
+		st->best[j] = '\0';
+	} else {
+		for (j = 0; j < st->lcp_len && j < nl && st->lcp[j] == name[j]; j++)
+			;
+		st->lcp_len = j;
+	}
+	st->count++;
+}
+
+static void compl_print_one(const char *name, unsigned int tl, const char *token)
+{
+	char buf[16];
+	unsigned int nl = 0, j;
+
+	while (name[nl])
+		nl++;
+	if (nl < tl || !prefix_ci(name, token, tl))
+		return;
+	for (j = 0; j < nl && j < 15; j++)
+		buf[j] = name[j];
+	buf[j] = '\0';
+	tab_print_one(buf, 0);
+}
+
+static void compl_consider(struct compl_state *st, const char *name, int print)
+{
+	if (print)
+		compl_print_one(name, st->tl, st->token);
+	else
+		compl_add(st, name);
+}
+
+/* Visit every command-name candidate: registry rows + files on the PATH. */
+static void compl_visit(struct term *t, struct compl_state *st, int print)
+{
+	const char *p;
+	unsigned int i;
+
+	for (i = 0; i < NCMDS; i++)
+		compl_consider(st, cmds[i].name, print);
+
+	p = t->path;
+	while (*p) {
+		char dir[VFS_PATH_MAX];
+		unsigned int n = 0;
+
+		while (*p && *p != ':' && n + 1 < sizeof(dir))
+			dir[n++] = *p++;
+		dir[n] = '\0';
+		if (*p == ':')
+			p++;
+		if (dir[0] == '\0')
+			continue;
+		for (i = 0; ; i++) {
+			struct vfs_dirent d;
+			int r = vfs_list_dir(dir, i, &d);
+
+			if (r != 1)
+				break;
+			if (!d.is_dir)
+				compl_consider(st, d.name, print);
+		}
+	}
 }
 
 /* Complete the token at the cursor: command name in the first token, a VFS
@@ -849,7 +895,7 @@ static void term_complete(struct term *t)
 	char token[LINE_MAX + 1];
 	char ins[LINE_MAX + 1];
 	char dir[VFS_PATH_MAX];
-	unsigned int start = t->line_pos, end, tl, i, j;
+	unsigned int start = t->line_pos, end, tl, i;
 
 	while (start > 0 && t->line[start - 1] != ' ')
 		start--;
@@ -870,70 +916,42 @@ static void term_complete(struct term *t)
 				break;
 			}
 		if (first) {
-			unsigned int nitems = NCMDS;
-			unsigned int count = 0, lcp_len = 0, best = 0;
-			char lcp[16];
+			struct compl_state st;
+			unsigned int j;
 
-			for (i = 0; i < nitems; i++) {
-				const char *n = cmds[i].name;
-				unsigned int nl = 0;
+			st.token = token;
+			st.tl = tl;
+			st.count = 0;
+			st.lcp_len = 0;
+			st.lcp[0] = '\0';
+			st.best[0] = '\0';
+			compl_visit(t, &st, 0);
 
-				while (n[nl])
-					nl++;
-				if (nl < tl || !prefix_ci(n, token, tl))
-					continue;
-				if (count == 0) {
-					for (j = 0; j < nl && j < sizeof(lcp) - 1; j++)
-						lcp[j] = n[j];
-					lcp_len = j;
-					best = i;
-				} else {
-					for (j = 0; j < lcp_len && j < nl &&
-						     lcp[j] == n[j]; j++)
-						;
-					lcp_len = j;
-				}
-				count++;
-			}
-			if (count == 0)
+			if (st.count == 0)
 				return;
-			if (count == 1) {
-				const char *n = cmds[best].name;
+			if (st.count == 1) {
 				unsigned int nl = 0;
 
-				while (n[nl])
+				while (st.best[nl])
 					nl++;
 				for (j = 0; j < nl && j < LINE_MAX - 1; j++)
-					ins[j] = n[j];
+					ins[j] = st.best[j];
 				ins[j] = ' ';
 				ins[j + 1] = '\0';
 				term_replace(t, start, end, ins);
 				return;
 			}
-			if (lcp_len > tl) {
-				for (j = 0; j < lcp_len; j++)
-					ins[j] = lcp[j];
-				ins[lcp_len] = '\0';
+			if (st.lcp_len > tl) {
+				for (j = 0; j < st.lcp_len; j++)
+					ins[j] = st.lcp[j];
+				ins[st.lcp_len] = '\0';
 				term_replace(t, start, end, ins);
 				return;
 			}
 			io_putchar('\n');
 			tab_col = 0;
 			tab_width = t->screen.cols;
-			for (i = 0; i < nitems; i++) {
-				const char *n = cmds[i].name;
-				unsigned int nl = 0;
-				char name[16];
-
-				while (n[nl])
-					nl++;
-				if (nl < tl || !prefix_ci(n, token, tl))
-					continue;
-				for (j = 0; j < nl && j < 15; j++)
-					name[j] = n[j];
-				name[j] = '\0';
-				tab_print_one(name, 0);
-			}
+			compl_visit(t, &st, 1);
 			io_putchar('\n');
 			term_print_prompt(t, 1);
 			redraw_line_clear(t->line, t->line_len, t->line_pos,
@@ -941,7 +959,7 @@ static void term_complete(struct term *t)
 			return;
 		}
 	}
-
+	
 	/* Argument token -> VFS path. */
 	{
 		char dirpart[LINE_MAX + 1];
@@ -1051,9 +1069,8 @@ static void history_push(struct term *t, const char *line, unsigned int line_len
 static void term_cd(struct term *t, const char *arg)
 {
 	char abs[VFS_PATH_MAX];
-	fat_fs_t *fs;
-	const char *fs_path;
-	unsigned int dir;
+	unsigned int size = 0;
+	int is_dir = 0;
 	int r;
 	unsigned int i;
 
@@ -1074,16 +1091,12 @@ static void term_cd(struct term *t, const char *arg)
 		return;
 	}
 
-	if (vfs_resolve(abs, &fs, &fs_path) != 0) {
-		io_putstr("cd: no such directory\n");
-		return;
-	}
-	r = fat_resolve_dir(fs, fs_path, &dir);
-	if (r == -2) {
+	r = vfs_stat(abs, &size, &is_dir);
+	if (r == VFS_EIO) {
 		io_putstr("cd: disk error\n");
 		return;
 	}
-	if (r != 0) {
+	if (r != 0 || !is_dir) {
 		io_putstr("cd: no such directory\n");
 		return;
 	}
@@ -1093,42 +1106,6 @@ static void term_cd(struct term *t, const char *arg)
 	t->cwd[i] = '\0';
 }
 
-/* Resolve the first token (path) of `args` against t->cwd, rebuilding
- * "abs-path rest-of-args" into out. Used by `save`. */
-static void term_resolve_first(struct term *t, const char *args,
-			       char *out, unsigned int out_size)
-{
-	char path[VFS_PATH_MAX];
-	char abs[VFS_PATH_MAX];
-	unsigned int i = 0, j = 0;
-
-	while (args[i] == ' ')
-		i++;
-	while (args[i] && args[i] != ' ' && j < sizeof(path) - 1)
-		path[j++] = args[i++];
-	path[j] = '\0';
-
-	if (vfs_join_path(t->cwd, path, abs, sizeof(abs)) != 0) {
-		abs[0] = '/';
-		abs[1] = '\0';
-	}
-	while (args[i] == ' ')
-		i++;
-
-	j = 0;
-	{
-		unsigned int k = 0;
-		while (abs[k] && j + 1 < out_size)
-			out[j++] = abs[k++];
-	}
-	if (args[i]) {
-		if (j + 1 < out_size)
-			out[j++] = ' ';
-		while (args[i] && j + 1 < out_size)
-			out[j++] = args[i++];
-	}
-	out[j] = '\0';
-}
 
 /* Spawn a foreground command process; the caller (term_run's wait loop)
  * waits for it to finish and handles Ctrl+C. */
@@ -1151,23 +1128,47 @@ static void term_spawn_arg(struct term *t, const char *name,
 		t->fg_pid = pid;
 }
 
-/* Spawn an embedded ring-3 command (CMD_USER rows); `arg` may be NULL. */
-static void cmd_spawn_user(struct term *t, const struct kcmd *c, const char *arg)
+/* PATH search: try each directory in t->path for `word`; the first hit is
+ * loaded and spawned as a ring-3 process.  Returns 1 when the command was
+ * found (spawned, or reported as bad), 0 when no directory has it. */
+static int term_path_spawn(struct term *t, const char *word, const char *args)
 {
-	const struct ucmd_blob *b = ucmd_lookup(c->name);
-	int pid;
+	const char *p = t->path;
 
-	if (!b) {
-		io_putstr(c->name);
-		io_putstr(": no embedded image\n");
-		return;
+	while (*p) {
+		char dir[VFS_PATH_MAX];
+		char full[VFS_PATH_MAX + LINE_MAX];
+		struct vfs_file f;
+		struct vfs_mount *m = 0;
+		unsigned int n = 0;
+		int r, pid;
+
+		while (*p && *p != ':' && n + 1 < sizeof(dir))
+			dir[n++] = *p++;
+		dir[n] = '\0';
+		if (*p == ':')
+			p++;
+		if (dir[0] == '\0')
+			continue;
+		if (vfs_join_path(dir, word, full, sizeof(full)) != 0)
+			continue;
+		r = vfs_load_file(full, &f, &m);
+		if (r != 0)
+			continue;
+
+		pid = process_create_user(word, f.data, f.size, args, t->cwd);
+		vfs_release_file(m, &f);
+		if (pid == -2) {
+			io_putstr(word);
+			io_putstr(": not an executable\n");
+		} else if (pid < 0) {
+			io_putstr("error: too many processes\n");
+		} else {
+			t->fg_pid = pid;
+		}
+		return 1;
 	}
-	pid = process_create_user(c->name, b->start,
-		(unsigned int)(b->end - b->start), arg);
-	if (pid < 0)
-		io_putstr("error: too many processes\n");
-	else
-		t->fg_pid = pid;
+	return 0;
 }
 
 void term_run(struct term *t)
@@ -1177,6 +1178,14 @@ void term_run(struct term *t)
 	t->line[0]          = '\0';
 	t->history_browse   = 0;
 	t->fg_pid           = -1;
+	if (t->path[0] == '\0') {
+		const char *def = "/ramfs/bin";
+		unsigned int i;
+
+		for (i = 0; def[i] && i + 1 < sizeof(t->path); i++)
+			t->path[i] = def[i];
+		t->path[i] = '\0';
+	}
 
 	io_clear_screen();
 	term_print_prompt(t, 1);
@@ -1260,18 +1269,23 @@ void term_run(struct term *t)
 					history_push(t, t->line, t->line_len);
 					t->history_browse = 0;
 					{
-						const struct kcmd *c =
-							cmd_lookup(t->line, t->line_len);
+						char word[LINE_MAX + 1];
+						char args[LINE_MAX + 1];
+						const struct kcmd *c;
 
-						if (c) {
-							skip_prompt = term_run_command(t, c);
-						} else {
-							unsigned int si = 0;
+						term_split_line(t, word, sizeof(word),
+								args, sizeof(args));
+						c = cmd_lookup(t->line, t->line_len);
 
-							while (si < t->line_len && t->line[si] == ' ')
-								si++;
-							if (si < t->line_len)
-								io_putstr("command not found\n");
+						if (c && (c->flags & CMD_BUILTIN)) {
+							skip_prompt = term_run_command(t, c, args);
+						} else if (word[0] != '\0' &&
+							   term_path_spawn(t, word, args)) {
+							/* spawned from the search path */
+						} else if (c) {
+							skip_prompt = term_run_command(t, c, args);
+						} else if (word[0] != '\0') {
+							io_putstr("command not found\n");
 						}
 					}
 					t->line_len = 0;

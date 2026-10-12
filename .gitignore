@@ -2,7 +2,9 @@
 *.bin
 *.elf
 *.img
+*.pack
 send_serial
 kexec_send
 netkexec_send
 netmonitor
+mkpack

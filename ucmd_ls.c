@@ -3,6 +3,8 @@
 
 #include "ucmd_lib.h"
 
+#define VFS_PATH_MAX 64
+
 #define BUF_SIZE 12
 
 static void put_size_sectors(unsigned int sectors)
@@ -62,6 +64,16 @@ static void print_entry(const struct sys_dirent *d)
 
 void _start(const char *path)
 {
+	char cwd[VFS_PATH_MAX];
+
+	/* The shell passes arguments verbatim; an empty one means the current
+	 * working directory (and "/" is the mount listing). */
+	if (!path || !path[0]) {
+		if (u_getcwd(cwd, sizeof(cwd)) != 0)
+			cwd[0] = '\0';
+		path = cwd;
+	}
+
 	if (!path || !path[0] || (path[0] == '/' && path[1] == '\0')) {
 		struct sys_mount m;
 		unsigned int i = 0;

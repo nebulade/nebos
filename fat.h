@@ -60,4 +60,8 @@ int fat_resolve_path(fat_fs_t *fs, const char *path, unsigned int *dir_cluster,
  * An empty path resolves to the root. */
 int fat_resolve_dir(fat_fs_t *fs, const char *path, unsigned int *dir_cluster);
 
+/* Stat a path: sets *is_dir and *size (file size; 0 for directories).
+ * Returns 0, -1 not found, -2 on I/O error. */
+int fat_stat(fat_fs_t *fs, const char *path, unsigned int *size, int *is_dir);
+
 #endif

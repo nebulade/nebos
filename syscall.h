@@ -67,6 +67,7 @@
 #define SYS_NET_NEXT_HOP  45  /* (dst[4], hop[4]) */
 #define SYS_NET_ARP       46  /* (ip[4], mac[6]) -> 0/-1/-2 (net_arp_resolve) */
 #define SYS_NET_CONFIGURED 47 /* () -> 1 when an IP address is set */
+#define SYS_GETCWD       48  /* (char *buf, unsigned max) -> 0; the caller's cwd */
 
 struct sys_netinfo {
 	unsigned int present;
@@ -88,6 +89,7 @@ struct sys_netinfo {
 #define SYS_ENOENT  (-4)     /* file/directory not found */
 #define SYS_EINVAL  (-5)     /* path is not valid for this operation */
 #define SYS_EWRITE  (-6)     /* write refused (full, or FAT rejected it) */
+#define SYS_EROFS   (-7)     /* read-only filesystem (ramfs) */
 
 /* One directory entry, raw 8.3 name exactly as stored (space padded). */
 struct sys_dirent {

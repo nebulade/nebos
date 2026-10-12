@@ -147,6 +147,11 @@ static inline void u_put_mac(const unsigned char mac[6])
 	}
 }
 
+static inline int u_getcwd(char *buf, unsigned int max)
+{
+	return u_syscall2(SYS_GETCWD, (int)buf, (int)max);
+}
+
 static inline unsigned int u_ticks_ms(void)
 {
 	return (unsigned int)u_syscall0(SYS_GET_TICKS_MS);

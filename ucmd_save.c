@@ -43,6 +43,10 @@ void _start(const char *arg)
 		u_puts("save: unknown device or invalid path\n");
 		u_exit(1);
 	}
+	if (r == SYS_EROFS) {
+		u_puts("save: read-only filesystem\n");
+		u_exit(1);
+	}
 	if (r == SYS_EIO) {
 		u_puts("save: disk write error\n");
 		u_exit(1);

@@ -18,6 +18,7 @@
 #define TIMESLICE_TICKS 20 /* context switch every 20 ms (PIT @ 1 kHz) */
 
 #define PROC_NAME_LEN 12
+#define PROC_CWD_MAX  64
 
 struct text_screen;  /* forward decl (see screen.h) */
 
@@ -31,6 +32,7 @@ struct process {
 	unsigned int cr3;            /* physical address of this process's page dir */
 	unsigned int kstack_top;     /* ring-0 stack top (for TSS esp0) */
 	unsigned int wake_ms;        /* tick deadline when PROC_SLEEPING */
+	char cwd[PROC_CWD_MAX];      /* working directory (ring-3 commands) */
 };
 
 /* User-mode virtual address layout (ring-3 processes). */
@@ -49,9 +51,10 @@ int  process_create_arg(const char *name, void (*entry)(const char *),
 int  process_create_ptr(const char *name, void (*entry)(void *), void *arg);
 /* Load an ELF image into a fresh address space and run it as a ring-3
  * process, with `arg` (may be NULL) as the first C parameter of _start.
- * Returns the pid, or -1 on error. */
+ * Returns the pid, -1 when out of resources, or -2 when the image is not a
+ * loadable ELF. */
 int process_create_user(const char *name, const void *image, unsigned int size,
-			const char *arg);
+			const char *arg, const char *cwd);
 void process_set_screen(struct text_screen *screen);
 
 /* Map an MMIO range into the kernel's page directory and every live process

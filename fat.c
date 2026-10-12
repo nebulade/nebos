@@ -962,3 +962,39 @@ int fat_resolve_dir(fat_fs_t *fs, const char *path, unsigned int *dir_cluster)
 	*dir_cluster = dir;
 	return 0;
 }
+
+/* Stat a path: directory, then file.  See fat.h. */
+int fat_stat(fat_fs_t *fs, const char *path, unsigned int *size, int *is_dir)
+{
+	unsigned int dir, sz;
+	char name_8_3[12];
+
+	if (fat_resolve_dir(fs, path, &dir) == 0) {
+		if (size)
+			*size = 0;
+		if (is_dir)
+			*is_dir = 1;
+		return 0;
+	}
+
+	{
+		int r = fat_resolve_path(fs, path, &dir, name_8_3);
+		unsigned char attr;
+
+		if (r == -2)
+			return -2;
+		if (r != 0)
+			return -1;
+		r = fat_lookup(fs, dir, (const unsigned char *)name_8_3, 0, &sz,
+			       &attr, 0, 0);
+		if (r == -2)
+			return -2;
+		if (r != 0)
+			return -1;
+		if (size)
+			*size = sz;
+		if (is_dir)
+			*is_dir = (attr & 0x10) ? 1 : 0;
+		return 0;
+	}
+}

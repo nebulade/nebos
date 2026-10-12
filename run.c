@@ -1,7 +1,6 @@
 /* run command: load raw binary from a FAT filesystem to 0x80000 and execute.
  * Usage: run /<device>/<file>. */
 
-#include "fat.h"
 #include "fbtext.h"
 #include "io.h"
 #include "run_api.h"
@@ -88,11 +87,10 @@ static int run_embedded(const char *name)
 
 void program_run_main(const char *filename)
 {
-	fat_fs_t *fs;
-	const char *fs_path;
-	unsigned int dir_cluster;
-	char name_8_3[12];
-	int n;
+	struct vfs_file f;
+	struct vfs_mount *m = 0;
+	unsigned int i;
+	int r;
 
 	if (!filename || !filename[0]) {
 		io_putstr("run: usage run <name>|/<device>/<file>\n");
@@ -103,30 +101,25 @@ void program_run_main(const char *filename)
 	if (run_embedded(filename))
 		return;
 
-	if (vfs_resolve(filename, &fs, &fs_path) != 0) {
-		io_putstr("run: unknown device or invalid path\n");
-		return;
-	}
-
-	n = fat_resolve_path(fs, fs_path, &dir_cluster, name_8_3);
-	if (n == -2) {
-		io_putstr("run: disk read error (see above)\n");
-		return;
-	}
-	if (n != 0) {
+	/* Anything else comes from a mounted filesystem (FAT or the ramfs). */
+	r = vfs_load_file(filename, &f, &m);
+	if (r == VFS_ENOENT) {
 		io_putstr("run: file not found\n");
 		return;
 	}
-
-	n = fat_read_file_in(fs, dir_cluster, name_8_3, (void *)PROGRAM_LOAD_ADDR, PROGRAM_LOAD_MAX);
-	if (n == -2) {
+	if (r != 0) {
 		io_putstr("run: disk read error (see above)\n");
 		return;
 	}
-	if (n <= 0) {
-		io_putstr("run: file not found\n");
+	if (f.size == 0 || f.size > PROGRAM_LOAD_MAX) {
+		io_putstr("run: file too large\n");
+		vfs_release_file(m, &f);
 		return;
 	}
+	for (i = 0; i < f.size; i++)
+		((unsigned char *)PROGRAM_LOAD_ADDR)[i] =
+			((const unsigned char *)f.data)[i];
+	vfs_release_file(m, &f);
 
 	io_drain_keyboard();
 	{

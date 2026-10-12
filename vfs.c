@@ -1,8 +1,11 @@
-/* Virtual filesystem: mount every device with a valid FAT filesystem under `/`. */
+/* Virtual filesystem: mount every device with a valid FAT filesystem under `/`,
+ * and the command pack (ramfs) at /ramfs.  File operations go through the
+ * fs_ops vtable so sys_fs.c and the shell stay filesystem-agnostic. */
 
 #include "vfs.h"
 #include "fatdetect.h"
 #include "io.h"
+#include "ramfs.h"
 
 vfs_mount_t vfs_mounts[VFS_MAX_MOUNTS];
 unsigned int vfs_mount_count;
@@ -61,22 +64,408 @@ static const char *fat_name(fat_type_t t)
 	}
 }
 
-static void mount_one(blk_dev_t *dev, unsigned int part_lba, const char *name)
+static void mem_copy(void *dst, const void *src, unsigned int n)
 {
-	fat_fs_t fs;
+	unsigned char *d = (unsigned char *)dst;
+	const unsigned char *s = (const unsigned char *)src;
+
+	while (n--)
+		*d++ = *s++;
+}
+
+static void copy_bounded(char *dst, const char *src, unsigned int size)
+{
+	unsigned int i = 0;
+
+	while (i + 1 < size && src[i]) {
+		dst[i] = src[i];
+		i++;
+	}
+	dst[i] = '\0';
+}
+
+/* ---- FAT implementation ---- */
+
+/* One load buffer for the shell: only one command is loaded at a time and the
+ * ELF loader has copied the segments out before we return. */
+static unsigned char fat_load_buf[VFS_FILE_MAX];
+
+static int fat_op_read_file(struct vfs_mount *m, const char *path,
+			    void *buf, unsigned int max)
+{
+	unsigned int dir;
+	char name[12];
+	int r = fat_resolve_path(&m->fs, path, &dir, name);
+
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_ENOENT;
+	r = fat_read_file_in(&m->fs, dir, name, buf, max);
+	if (r == -2)
+		return VFS_EIO;
+	if (r < 0)
+		return VFS_ENOENT;
+	return r;
+}
+
+static int fat_op_stat(struct vfs_mount *m, const char *path,
+		       unsigned int *size, int *is_dir)
+{
+	int r = fat_stat(&m->fs, path, size, is_dir);
+
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_ENOENT;
+	return 0;
+}
+
+static int fat_op_load_file(struct vfs_mount *m, const char *path,
+			    struct vfs_file *out)
+{
+	unsigned int size = 0;
+	int is_dir = 0, r;
+
+	r = fat_op_stat(m, path, &size, &is_dir);
+	if (r != 0)
+		return r;
+	if (is_dir || size == 0 || size > sizeof(fat_load_buf))
+		return VFS_EINVAL;
+	r = fat_op_read_file(m, path, fat_load_buf, sizeof(fat_load_buf));
+	if (r < 0)
+		return r;
+	out->data = fat_load_buf;
+	out->size = (unsigned int)r;
+	return 0;
+}
+
+static void fat_op_release_file(struct vfs_mount *m, struct vfs_file *f)
+{
+	(void)m;
+	(void)f;
+}
+
+static int fat_op_write_file(struct vfs_mount *m, const char *path,
+			     const void *buf, unsigned int len)
+{
+	unsigned int dir;
+	char name[12];
+	int r = fat_resolve_path(&m->fs, path, &dir, name);
+
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_EINVAL;
+	r = fat_write_file_in(&m->fs, dir, name, buf, len);
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_EINVAL;
+	return 0;
+}
+
+static int fat_op_unlink(struct vfs_mount *m, const char *path)
+{
+	unsigned int dir;
+	char name[12];
+	int r = fat_resolve_path(&m->fs, path, &dir, name);
+
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_ENOENT;
+	r = fat_delete_file_in(&m->fs, dir, name);
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_ENOENT;
+	return 0;
+}
+
+static int fat_op_mkdir(struct vfs_mount *m, const char *path)
+{
+	unsigned int dir;
+	char name[12];
+	int r = fat_resolve_path(&m->fs, path, &dir, name);
+
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_EINVAL;
+	r = fat_mkdir(&m->fs, dir, name);
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_EINVAL;   /* the FAT layer printed its own reason */
+	return 0;
+}
+
+static int fat_op_rmdir(struct vfs_mount *m, const char *path)
+{
+	unsigned int dir;
+	char name[12];
+	int r = fat_resolve_path(&m->fs, path, &dir, name);
+
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_EINVAL;
+	r = fat_rmdir(&m->fs, dir, name);
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_EINVAL;
+	return 0;
+}
+
+/* Index-based listing: fat_list_dir walks from the start each call and we
+ * count past `index` entries.  Directories are small. */
+static unsigned int fat_list_index;
+static struct vfs_dirent *fat_list_out;
+static int fat_list_done;
+static unsigned int fat_list_seen;
+
+static void fat_list_cb(const char *name, int is_dir, unsigned int size)
+{
+	unsigned int i;
+
+	if (fat_list_done || fat_list_seen < fat_list_index) {
+		fat_list_seen++;
+		return;
+	}
+	for (i = 0; i < 11; i++)
+		fat_list_out->name[i] = name[i] ? name[i] : ' ';
+	fat_list_out->name[11] = '\0';
+	fat_list_out->size = size;
+	fat_list_out->is_dir = (unsigned int)is_dir;
+	fat_list_done = 1;
+	fat_list_seen++;
+}
+
+static int fat_op_list_dir(struct vfs_mount *m, const char *path,
+			   unsigned int index, struct vfs_dirent *out)
+{
+	unsigned int dir;
+	int r = fat_resolve_dir(&m->fs, path, &dir);
+
+	if (r == -2)
+		return VFS_EIO;
+	if (r != 0)
+		return VFS_EINVAL;
+
+	fat_list_index = index;
+	fat_list_seen = 0;
+	fat_list_out = out;
+	fat_list_done = 0;
+	r = fat_list_dir(&m->fs, dir, fat_list_cb);
+	if (r == -2)
+		return VFS_EIO;
+	return fat_list_done ? 1 : 0;
+}
+
+static const struct fs_ops fat_ops = {
+	.raw_83 = 1,
+	.read_file = fat_op_read_file,
+	.load_file = fat_op_load_file,
+	.release_file = fat_op_release_file,
+	.stat = fat_op_stat,
+	.write_file = fat_op_write_file,
+	.unlink = fat_op_unlink,
+	.mkdir = fat_op_mkdir,
+	.rmdir = fat_op_rmdir,
+	.list_dir = fat_op_list_dir,
+};
+
+/* ---- ramfs implementation ---- */
+
+static int ramfs_op_read_file(struct vfs_mount *m, const char *path,
+			      void *buf, unsigned int max)
+{
+	const void *data;
+	unsigned int size = 0, n;
+
+	(void)m;
+	data = ramfs_lookup(path, &size);
+	if (!data)
+		return VFS_ENOENT;
+	n = size > max ? max : size;
+	mem_copy(buf, data, n);
+	return (int)n;
+}
+
+static int ramfs_op_load_file(struct vfs_mount *m, const char *path,
+			      struct vfs_file *out)
+{
+	const void *data;
+	unsigned int size = 0;
+
+	(void)m;
+	data = ramfs_lookup(path, &size);
+	if (!data)
+		return VFS_ENOENT;
+	out->data = data;
+	out->size = size;
+	return 0;
+}
+
+static void ramfs_op_release_file(struct vfs_mount *m, struct vfs_file *f)
+{
+	(void)m;
+	(void)f;
+}
+
+static int ramfs_op_stat(struct vfs_mount *m, const char *path,
+			 unsigned int *size, int *is_dir)
+{
+	const void *data;
+	unsigned int sz = 0;
+	struct ramfs_dirent e;
+
+	(void)m;
+	if (path[0] == '\0') {
+		if (size)
+			*size = 0;
+		if (is_dir)
+			*is_dir = 1;
+		return 0;
+	}
+	data = ramfs_lookup(path, &sz);
+	if (data) {
+		if (size)
+			*size = sz;
+		if (is_dir)
+			*is_dir = 0;
+		return 0;
+	}
+	if (ramfs_list(path, 0, &e) == 1) {
+		if (size)
+			*size = 0;
+		if (is_dir)
+			*is_dir = 1;
+		return 0;
+	}
+	return VFS_ENOENT;
+}
+
+static int ramfs_op_ro(struct vfs_mount *m, const char *path)
+{
+	(void)m;
+	(void)path;
+	return VFS_EROFS;
+}
+
+static int ramfs_op_write_file(struct vfs_mount *m, const char *path,
+			       const void *buf, unsigned int len)
+{
+	(void)buf;
+	(void)len;
+	return ramfs_op_ro(m, path);
+}
+
+static int ramfs_op_unlink(struct vfs_mount *m, const char *path)
+{
+	return ramfs_op_ro(m, path);
+}
+
+static int ramfs_op_mkdir(struct vfs_mount *m, const char *path)
+{
+	return ramfs_op_ro(m, path);
+}
+
+static int ramfs_op_rmdir(struct vfs_mount *m, const char *path)
+{
+	return ramfs_op_ro(m, path);
+}
+
+static int ramfs_op_list_dir(struct vfs_mount *m, const char *path,
+			     unsigned int index, struct vfs_dirent *out)
+{
+	struct ramfs_dirent e;
+
+	(void)m;
+	if (ramfs_list(path, index, &e) != 1)
+		return 0;
+	copy_bounded(out->name, e.name, sizeof(out->name));
+	out->size = e.size;
+	out->is_dir = e.is_dir;
+	return 1;
+}
+
+static const struct fs_ops ramfs_ops = {
+	.raw_83 = 0,
+	.read_file = ramfs_op_read_file,
+	.load_file = ramfs_op_load_file,
+	.release_file = ramfs_op_release_file,
+	.stat = ramfs_op_stat,
+	.write_file = ramfs_op_write_file,
+	.unlink = ramfs_op_unlink,
+	.mkdir = ramfs_op_mkdir,
+	.rmdir = ramfs_op_rmdir,
+	.list_dir = ramfs_op_list_dir,
+};
+
+/* ---- mounts ---- */
+
+static vfs_mount_t *mount_slot(const char *name)
+{
 	unsigned int i;
 
 	if (vfs_mount_count >= VFS_MAX_MOUNTS)
-		return;
+		return 0;
+	{
+		vfs_mount_t *m = &vfs_mounts[vfs_mount_count];
+
+		for (i = 0; name[i] && i < sizeof(m->name) - 1; i++)
+			m->name[i] = name[i];
+		m->name[i] = '\0';
+		m->mounted = 1;
+		return m;
+	}
+}
+
+static void mount_one(blk_dev_t *dev, unsigned int part_lba, const char *name)
+{
+	fat_fs_t fs;
+	vfs_mount_t *m;
+
 	if (fat_mount(dev, part_lba, &fs) != 0)
 		return;
-
-	for (i = 0; name[i] && i < sizeof(vfs_mounts[vfs_mount_count].name) - 1; i++)
-		vfs_mounts[vfs_mount_count].name[i] = name[i];
-	vfs_mounts[vfs_mount_count].name[i] = '\0';
-	vfs_mounts[vfs_mount_count].fs = fs;
-	vfs_mounts[vfs_mount_count].mounted = 1;
+	m = mount_slot(name);
+	if (!m)
+		return;
+	m->ops = &fat_ops;
+	m->fs = fs;
+	m->ro = 0;
+	m->total_sectors = fs.total_sectors;
+	copy_bounded(m->type, fat_name(fs.type), sizeof(m->type));
+	copy_bounded(m->label, fs.label, sizeof(m->label));
 	vfs_mount_count++;
+}
+
+void vfs_mount_ramfs(void)
+{
+	vfs_mount_t *m;
+
+	if (ramfs_count() == 0)
+		return;
+	m = mount_slot("ramfs");
+	if (!m)
+		return;
+	m->ops = &ramfs_ops;
+	m->ro = 1;
+	m->total_sectors = (ramfs_pack_size() + 511u) / 512u;
+	copy_bounded(m->type, "ramfs", sizeof(m->type));
+	m->label[0] = '\0';
+	vfs_mount_count++;
+}
+
+void vfs_refresh_ramfs(void)
+{
+	vfs_mount_t *m = vfs_find("ramfs");
+
+	if (m)
+		m->total_sectors = (ramfs_pack_size() + 511u) / 512u;
 }
 
 static void part_name(char *out, const char *base, unsigned int idx)
@@ -151,26 +540,30 @@ vfs_mount_t *vfs_find(const char *name)
 void vfs_list_root(void)
 {
 	unsigned int i;
+
 	for (i = 0; i < vfs_mount_count; i++) {
 		vfs_mount_t *m = &vfs_mounts[i];
-		fat_fs_t *fs = &m->fs;
+
 		io_putstr(m->name);
 		io_putstr("  ");
-		io_putstr(fat_name(fs->type));
+		io_putstr(m->type);
 		io_putchar(' ');
-		put_size_sectors(fs->total_sectors);
-		if (fs->label[0]) {
+		put_size_sectors(m->total_sectors);
+		if (m->label[0]) {
 			io_putstr("  \"");
-			io_putstr(fs->label);
+			io_putstr(m->label);
 			io_putchar('"');
 		}
+		if (m->ro)
+			io_putstr("  (ro)");
 		io_putchar('\n');
 	}
 }
 
-int vfs_resolve(const char *path, fat_fs_t **fs, const char **fs_path)
+int vfs_resolve(const char *path, struct vfs_mount **m_out,
+		const char **rel_out)
 {
-	unsigned int i = 0, j;
+	unsigned int i = 0, j = 0;
 	char name[16];
 	vfs_mount_t *m;
 
@@ -178,7 +571,6 @@ int vfs_resolve(const char *path, fat_fs_t **fs, const char **fs_path)
 		return -1;
 
 	i = 1;
-	j = 0;
 	while (path[i] && path[i] != '/' && j < sizeof(name) - 1)
 		name[j++] = path[i++];
 	name[j] = '\0';
@@ -190,9 +582,53 @@ int vfs_resolve(const char *path, fat_fs_t **fs, const char **fs_path)
 	if (!m)
 		return -1;
 
-	*fs = &m->fs;
-	*fs_path = path + i;
+	while (path[i] == '/')
+		i++;              /* the relative path has no leading '/' */
+
+	*m_out = m;
+	*rel_out = path + i;
 	return 0;
+}
+
+int vfs_load_file(const char *path, struct vfs_file *out,
+		  struct vfs_mount **m_out)
+{
+	struct vfs_mount *m;
+	const char *rel;
+	int r;
+
+	if (vfs_resolve(path, &m, &rel) != 0)
+		return VFS_ENOENT;
+	r = m->ops->load_file(m, rel, out);
+	if (r == 0 && m_out)
+		*m_out = m;
+	return r;
+}
+
+void vfs_release_file(struct vfs_mount *m, struct vfs_file *f)
+{
+	if (m && m->ops->release_file)
+		m->ops->release_file(m, f);
+}
+
+int vfs_stat(const char *path, unsigned int *size, int *is_dir)
+{
+	struct vfs_mount *m;
+	const char *rel;
+
+	if (vfs_resolve(path, &m, &rel) != 0)
+		return VFS_ENOENT;
+	return m->ops->stat(m, rel, size, is_dir);
+}
+
+int vfs_list_dir(const char *path, unsigned int index, struct vfs_dirent *out)
+{
+	struct vfs_mount *m;
+	const char *rel;
+
+	if (vfs_resolve(path, &m, &rel) != 0)
+		return VFS_ENOENT;
+	return m->ops->list_dir(m, rel, index, out);
 }
 
 int vfs_join_path(const char *cwd, const char *arg, char *out, unsigned int out_size)

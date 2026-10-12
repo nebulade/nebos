@@ -24,6 +24,10 @@ void _start(const char *path)
 		u_puts("rmdir: invalid path\n");
 		u_exit(1);
 	}
+	if (r == SYS_EROFS) {
+		u_puts("rmdir: read-only filesystem\n");
+		u_exit(1);
+	}
 	if (r != 0)
 		u_exit(1);   /* the FAT layer printed its own reason */
 	u_puts("rmdir ok\n");

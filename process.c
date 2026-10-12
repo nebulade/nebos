@@ -61,6 +61,19 @@ static unsigned int stack_alloc(int *owned)
 	return 0;
 }
 
+/* Clear one control block.  kmalloc memory is not zeroed and QEMU hides that
+ * (guest RAM starts cleared), so a fresh slot would otherwise carry garbage in
+ * cr3/pid/state; schedule() and process_map_mmio_all() trust those fields and
+ * a garbage cr3 made the boot-time MMIO mapping fault on real hardware. */
+static void clear_proc(struct process *p)
+{
+	unsigned char *b = (unsigned char *)p;
+	unsigned int i;
+
+	for (i = 0; i < sizeof(*p); i++)
+		b[i] = 0;
+}
+
 static void name_copy(char *dst, const char *src)
 {
 	unsigned int i;
@@ -82,7 +95,7 @@ static int grow_proc_table(void)
 	for (i = 0; i < proc_cap; i++)
 		np[i] = procs[i];
 	for (i = proc_cap; i < new_cap; i++)
-		np[i].state = PROC_UNUSED;
+		clear_proc(&np[i]);
 	kfree(procs);
 	procs = np;
 	proc_cap = new_cap;
@@ -118,7 +131,7 @@ void process_init(void)
 	}
 	proc_cap = INITIAL_PROC_CAP;
 	for (i = 0; i < proc_cap; i++)
-		procs[i].state = PROC_UNUSED;
+		clear_proc(&procs[i]);
 
 	procs[0].state      = PROC_RUNNING;
 	procs[0].pid        = 0;
@@ -281,14 +294,13 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 	procs[slot].kstack_top = top;
 	name_copy(procs[slot].name, name);
 	procs[slot].screen = procs[current_pid].screen;
-
 	irq_restore(flags);
 	return (int)procs[slot].pid;
 }
 
 /* Load an ELF image into a fresh address space and run it as a ring-3 process. */
 int process_create_user(const char *name, const void *image, unsigned int size,
-			const char *arg)
+			const char *arg, const char *cwd)
 {
 	int slot, owned;
 	unsigned int base, top, *sp, cr3, entry;
@@ -313,7 +325,7 @@ int process_create_user(const char *name, const void *image, unsigned int size,
 	if (!entry) {
 		mm_free_page(cr3);
 		irq_restore(flags);
-		return -1;
+		return -2;   /* not a loadable ELF */
 	}
 
 	/* Map the user stack just below USER_STACK_TOP.  Keep the top page's
@@ -392,6 +404,13 @@ int process_create_user(const char *name, const void *image, unsigned int size,
 	procs[slot].kstack_top = top;
 	name_copy(procs[slot].name, name);
 	procs[slot].screen = procs[current_pid].screen;
+	{
+		unsigned int k;
+
+		for (k = 0; cwd && cwd[k] && k + 1 < sizeof(procs[slot].cwd); k++)
+			procs[slot].cwd[k] = cwd[k];
+		procs[slot].cwd[k] = '\0';
+	}
 
 	irq_restore(flags);
 	return (int)procs[slot].pid;
@@ -410,6 +429,8 @@ void process_map_mmio_all(unsigned int phys_base, unsigned int size)
 
 	paging_map_mmio(phys_base, size);
 	for (i = 0; i < proc_cap; i++) {
+		if (procs[i].state == PROC_UNUSED || procs[i].state == PROC_DEAD)
+			continue;
 		if (procs[i].cr3 && procs[i].cr3 != kernel_cr3)
 			paging_map_mmio_cr3(procs[i].cr3, phys_base, size);
 	}

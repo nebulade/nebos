@@ -22,6 +22,7 @@ struct term {
 	unsigned int history_browse;
 	int fg_pid;                 /* foreground child pid, or -1 when none */
 	char cwd[VFS_PATH_MAX];     /* absolute current working directory */
+	char path[VFS_PATH_MAX];    /* command search path (colon separated) */
 	/* Per-terminal key queue: WM (slot 0) pushes, terminal process pops. */
 	int keys[KEY_BUF_SIZE];
 	unsigned int key_head;
