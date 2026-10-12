@@ -88,6 +88,65 @@ static inline void u_puthex(unsigned int n)
 	u_puts(buf);
 }
 
+/* "a.b.c.d" (strict, 4 parts, 0-255) -> 0, else -1. */
+static inline int u_parse_ip(const char *s, unsigned char ip[4])
+{
+	unsigned int i, val = 0, nparts = 0;
+	int have_digit = 0;
+
+	for (i = 0; ; i++) {
+		char c = s[i];
+
+		if (c >= '0' && c <= '9') {
+			val = val * 10 + (unsigned int)(c - '0');
+			if (val > 255)
+				return -1;
+			have_digit = 1;
+		} else if (c == '.' || c == '\0') {
+			if (!have_digit || nparts >= 4)
+				return -1;
+			ip[nparts++] = (unsigned char)val;
+			val = 0;
+			have_digit = 0;
+			if (c == '\0')
+				break;
+		} else {
+			return -1;
+		}
+	}
+	return (nparts == 4) ? 0 : -1;
+}
+
+static inline void u_put_ip(const unsigned char ip[4])
+{
+	unsigned int i;
+
+	for (i = 0; i < 4; i++) {
+		if (i)
+			u_putc('.');
+		u_putdec(ip[i]);
+	}
+}
+
+static inline void u_put_hex2(unsigned int v)
+{
+	static const char hex[] = "0123456789ABCDEF";
+
+	u_putc(hex[(v >> 4) & 0xF]);
+	u_putc(hex[v & 0xF]);
+}
+
+static inline void u_put_mac(const unsigned char mac[6])
+{
+	unsigned int i;
+
+	for (i = 0; i < 6; i++) {
+		if (i)
+			u_putc(':');
+		u_put_hex2(mac[i]);
+	}
+}
+
 static inline unsigned int u_ticks_ms(void)
 {
 	return (unsigned int)u_syscall0(SYS_GET_TICKS_MS);

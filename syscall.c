@@ -6,6 +6,7 @@
 #include "serial.h"
 #include "sys_fs.h"
 #include "sys_info.h"
+#include "sys_net.h"
 #include "timer.h"
 
 int syscall_dispatch(int num, int a1, int a2, int a3)
@@ -48,6 +49,60 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		return sys_storage_info((struct sys_storage_info *)a1);
 	case SYS_BLKDEV:
 		return sys_blkdev((unsigned int)a1, (struct sys_blkdev *)a2);
+	case SYS_NET_INFO:
+		return sys_net_info((struct sys_netinfo *)a1);
+	case SYS_NET_PRINT_INFO:
+		return sys_net_print_info();
+	case SYS_NET_ACQUIRE:
+		return sys_net_acquire();
+	case SYS_NET_RELEASE:
+		return sys_net_release();
+	case SYS_NET_MAC:
+		return sys_net_mac((unsigned char *)a1);
+	case SYS_NET_GET_IP:
+		sys_net_get_ip((unsigned char *)a1);
+		return 0;
+	case SYS_NET_SET_IP:
+		sys_net_set_ip((const unsigned char *)a1);
+		return 0;
+	case SYS_NET_GET_MASK:
+		sys_net_get_mask((unsigned char *)a1);
+		return 0;
+	case SYS_NET_GET_GW:
+		sys_net_get_gw((unsigned char *)a1);
+		return 0;
+	case SYS_NET_GET_DNS:
+		sys_net_get_dns((unsigned char *)a1);
+		return 0;
+	case SYS_NET_SET_DNS:
+		sys_net_set_dns((const unsigned char *)a1);
+		return 0;
+	case SYS_NET_TX:
+		return sys_net_tx((const unsigned char *)a1, (unsigned int)a2);
+	case SYS_NET_RX:
+		return sys_net_rx((unsigned char *)a1, (unsigned int)a2);
+	case SYS_NET_DECODE:
+		sys_net_decode((const unsigned char *)a1, (unsigned int)a2);
+		return 0;
+	case SYS_NET_REPLY:
+		return sys_net_reply((const unsigned char *)a1, (unsigned int)a2,
+				     (unsigned char *)a3);
+	case SYS_NET_LOOPBACK:
+		return sys_net_loopback(a1);
+	case SYS_NET_REGS:
+		return sys_net_regs();
+	case SYS_NET_RESET:
+		return sys_net_reset();
+	case SYS_DHCP_RUN:
+		return sys_dhcp_run((unsigned int)a1);
+	case SYS_DHCP_INFO:
+		return sys_dhcp_info((unsigned char *)a1, (unsigned int *)a2);
+	case SYS_DNS_RESOLVE:
+		return sys_dns_resolve((const char *)a1, (unsigned char *)a2);
+	case SYS_NETLOG:
+		return sys_netlog((const char *)a1);
+	case SYS_NETLOG_CONF:
+		return sys_netlog_conf(a1, (const unsigned char *)a2);
 	default:
 		return -1;
 	}

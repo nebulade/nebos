@@ -185,15 +185,24 @@ below the run area), so adding code no longer moves any address.
   in the kernel image (`*_embed.o`) and listed as `CMD_USER` rows in the
   terminal's command registry (`cmds[]` + `ucmds[]`).  Moved so far:
   `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
-  `mouseinfo`, `storage`.  They talk to the kernel through `int 0x80`
+  `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`,
+  `ping`, `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`,
+  `netloop`, `netreset`.  They talk to the kernel through `int 0x80`
   (`syscall.h`: putstr/ticks/sleep/exit, the whole-file service in
-  `sys_fs.c` and the small state snapshots in `sys_info.c`) and inherit the
-  terminal's screen, so their output lands in the owning window.  New
-  commands: add `ucmd_<name>.c`, a `CMD_USER` row in `cmds[]`, and a blob in
-  `ucmds[]` (the Makefile picks the file up via its `ucmd_%` pattern rules).
-  The one argument is passed as a C string on the top of the user stack
-  (`process_create_user(..., arg)`), so `_start(const char *arg)` needs no
-  crt0.
+  `sys_fs.c`, the state snapshots in `sys_info.c` and the network service in
+  `sys_net.c`) and inherit the terminal's screen, so their output lands in
+  the owning window.  New commands: add `ucmd_<name>.c`, a `CMD_USER` row in
+  `cmds[]`, and a blob in `ucmds[]` (the Makefile picks the file up via its
+  `ucmd_%` pattern rules).  The one argument is passed as a C string on the
+  top of the user stack (`process_create_user(..., arg)`), so
+  `_start(const char *arg)` needs no crt0.
+- **Network service**: `sys_net.c/h` — the NIC and the stack stay in the
+  kernel; ring-3 commands get `SYS_NET_INFO`/config, the DNS and DHCP clients
+  and the raw frame paths (`NET_TX/RX/DECODE/REPLY/LOOPBACK/REGS/RESET`), so
+  the packet-level commands ported unchanged.  The receiver is owned by one
+  process at a time (`netdev_acquire`): the background kexec watcher pauses
+  while a command owns it, and the reaper force-releases it if that process
+  dies (`sys_net_reap`, driven by `netdev_owner()`/`netdev_release_all()`).
 
 ## Shell commands
 
@@ -229,9 +238,11 @@ nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
-`mouseinfo` and `storage` run as ring-3 processes (embedded `ucmd_*.c`); the
-rest are kernel commands spawned as processes, or shell builtins (`cd`,
-`clear`, `help`).
+`mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
+`pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`
+and `netreset` run as ring-3 processes (embedded `ucmd_*.c`); the rest are
+kernel commands spawned as processes, or shell builtins (`cd`, `clear`,
+`help`).
 
 ## Serial hot-reload (kexec) workflow
 
@@ -571,3 +582,8 @@ Caveats:
 7. Killing/reaping a ring-3 process frees its kernel stack and page directory
    but not the user pages mapped into it (a few pages leak per command run;
    needs a page-table walk/unmap on reap).
+8. `curl` (needs a TCP socket API), `display` (needs a GPU snapshot) and
+   `lsusb` (a 45-byte wrapper around the USB tree printer) are the last
+   commands still living in the kernel, plus the privileged ones (`peek`,
+   `poke`, `dbg`, `serial`, `kexec`, `reboot`, `poweroff`, `format`,
+   `run`/`prog`/`space`, `ps`/`kill`).

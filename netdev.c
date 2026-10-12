@@ -2,6 +2,7 @@
 
 #include "netdev.h"
 #include "ne2000.h"
+#include "process.h"
 #include "r8168.h"
 static const struct netdev *const netdev_drivers[] = {
 	/* PCIe Gigabit first: on the AT3IONT-I this is the real NIC, while
@@ -13,6 +14,7 @@ static const struct netdev *const netdev_drivers[] = {
 static const struct netdev *active;
 static int probed;
 static unsigned int busy;
+static unsigned int owner_pid;   /* process that took the NIC (busy > 0) */
 
 /* Shared receive scratch: see netdev.h.  One buffer, reused by every protocol
  * that polls frames (they never run at the same time: the NIC is owned by one
@@ -26,13 +28,29 @@ unsigned char *netdev_rx_scratch(void)
 
 void netdev_acquire(void)
 {
+	if (busy == 0 && procs)
+		owner_pid = procs[current_pid].pid;
 	busy++;
 }
 
 void netdev_release(void)
 {
-	if (busy)
-		busy--;
+	if (busy && --busy == 0)
+		owner_pid = 0;
+}
+
+/* The process currently owning the NIC (0 when free), and a hard reset for
+ * the reaper: a process killed while inside a net operation must not leave
+ * the receiver owned forever (it would pause the kexec watcher). */
+unsigned int netdev_owner(void)
+{
+	return owner_pid;
+}
+
+void netdev_release_all(void)
+{
+	busy = 0;
+	owner_pid = 0;
 }
 
 int netdev_in_use(void)

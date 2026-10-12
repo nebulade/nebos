@@ -9,6 +9,7 @@
 #include "paging.h"
 #include "serial.h"
 #include "sys_fs.h"
+#include "sys_net.h"
 #include "timer.h"
 
 struct process *procs;               /* dynamically-sized process table */
@@ -436,6 +437,7 @@ void schedule(void)
 	 * so it is reaped on a later schedule() from another process's context. */
 	for (i = 0; i < proc_cap; i++) {
 		if (procs[i].state == PROC_DEAD && i != current_pid) {
+			sys_net_reap(procs[i].pid);   /* release a held NIC */
 			if (procs[i].stack_base)
 				mm_free_page(procs[i].stack_base);
 			if (procs[i].cr3 && procs[i].cr3 != paging_current_cr3())

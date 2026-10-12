@@ -30,6 +30,46 @@
 				refreshes the mount cache like `storage` did */
 #define SYS_BLKDEV       16  /* (unsigned int index, struct sys_blkdev *out) */
 
+/* Network service (see sys_net.c): the stack and NIC drivers stay in the
+ * kernel; user commands get the configuration, the DNS/DHCP clients and the
+ * raw frame paths (so the packet-level commands port unchanged). */
+#define SYS_NET_INFO      17  /* (struct sys_netinfo *out) -> 1 = NIC present */
+#define SYS_NET_PRINT_INFO 18 /* the driver's status lines */
+#define SYS_NET_ACQUIRE   19  /* take the receiver for this process (0/-1) */
+#define SYS_NET_RELEASE   20
+#define SYS_NET_MAC       21  /* (unsigned char mac[6]) -> 0/-1 */
+#define SYS_NET_GET_IP    22  /* (unsigned char ip[4]) */
+#define SYS_NET_SET_IP    23  /* (const unsigned char ip[4]) */
+#define SYS_NET_GET_MASK  24
+#define SYS_NET_GET_GW    25
+#define SYS_NET_GET_DNS   26
+#define SYS_NET_SET_DNS   27
+#define SYS_NET_TX        28  /* (const void *buf, unsigned len) -> 0/-1 */
+#define SYS_NET_RX        29  /* (void *buf, unsigned max) -> len/-1 */
+#define SYS_NET_DECODE    30  /* (const void *buf, unsigned len): one line */
+#define SYS_NET_REPLY     31  /* (in, len, out, max) -> reply length / 0 */
+#define SYS_NET_LOOPBACK  32  /* (int on) -> 0/-1 */
+#define SYS_NET_REGS      33  /* the driver's register dump */
+#define SYS_NET_RESET     34  /* driver re-init */
+#define SYS_DHCP_RUN      35  /* (timeout_ms) -> dhcp_run() result */
+#define SYS_DHCP_INFO     36  /* (unsigned char ip[4], unsigned *lease) -> 1 */
+#define SYS_DNS_RESOLVE   37  /* (name, unsigned char ip[4]) -> 0; caller owns */
+#define SYS_NETLOG        38  /* (const char *text) -> 0/-1 */
+#define SYS_NETLOG_CONF   39  /* (int enabled_or_-1, const ip[4] or NULL) */
+
+struct sys_netinfo {
+	unsigned int present;
+	unsigned char mac[6];
+	unsigned char ip[4];
+	unsigned char mask[4];
+	unsigned char gw[4];
+	unsigned char dns[4];
+	unsigned int mirror_on;
+	unsigned char mirror_host[4];
+	char name[8];
+	char chip[16];
+};
+
 /* Error codes returned by the file syscalls. */
 #define SYS_EIO     (-1)     /* disk I/O error */
 #define SYS_ENODEV  (-2)     /* no such device / unusable path prefix */

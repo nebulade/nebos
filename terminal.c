@@ -26,21 +26,7 @@ extern void program_format_main(const char *arg);
 extern void program_lspci_main(const char *filter);
 extern void program_peek_main(const char *arg);
 extern void program_poke_main(const char *arg);
-extern void program_netinfo_main(void);
-extern void program_netrecv_main(void);
-extern void program_netsend_main(void);
-extern void program_netip_main(const char *arg);
-extern void program_netlog_main(const char *arg);
-extern void program_netconsole_main(const char *arg);
-extern void program_dhcp_main(void);
-extern void program_netregs_main(void);
-extern void program_netloop_main(void);
-extern void program_netreset_main(void);
-extern void program_pong_main(void);
-extern void program_ping_main(const char *arg);
 extern void program_curl_main(const char *arg);
-extern void program_netdns_main(const char *arg);
-extern void program_host_main(const char *arg);
 
 /* Print the prompt (with the current directory) and set line_start. */
 static void term_print_prompt(struct term *t, int first)
@@ -136,18 +122,18 @@ static const struct kcmd cmds[] = {
 	{ "lspci",      "lspci [id]",                    CK_SPAWN_ARG, 0, 0, program_lspci_main, 0, 0 },
 	{ "peek",       "peek <addr> [len]",             CK_SPAWN_ARG, 0, 0, program_peek_main, 0, 0 },
 	{ "poke",       "poke <addr> <val>",             CK_SPAWN_ARG, CMD_REQARG, 0, program_poke_main, 0, 0 },
-	{ "netinfo",    "netinfo",                       CK_SPAWN, 0, program_netinfo_main, 0, 0, 0 },
-	{ "netrecv",    "netrecv",                       CK_SPAWN, 0, program_netrecv_main, 0, 0, 0 },
-	{ "netsend",    "netsend",                       CK_SPAWN, 0, program_netsend_main, 0, 0, 0 },
-	{ "netip",      "netip [a.b.c.d]",               CK_SPAWN_ARG, 0, 0, program_netip_main, 0, 0 },
-	{ "ping",       "ping <host|a.b.c.d>",           CK_SPAWN_ARG, 0, 0, program_ping_main, 0, 0 },
-	{ "netlog",     "netlog <text>",                 CK_SPAWN_ARG, 0, 0, program_netlog_main, 0, 0 },
-	{ "netconsole", "netconsole [on|off|host <ip>]", CK_SPAWN_ARG, 0, 0, program_netconsole_main, 0, 0 },
-	{ "dhcp",       "dhcp",                          CK_SPAWN, 0, program_dhcp_main, 0, 0, 0 },
-	{ "netregs",    "netregs",                       CK_SPAWN, 0, program_netregs_main, 0, 0, 0 },
-	{ "netloop",    "netloop",                       CK_SPAWN, 0, program_netloop_main, 0, 0, 0 },
-	{ "netreset",   "netreset",                      CK_SPAWN, 0, program_netreset_main, 0, 0, 0 },
-	{ "pong",       "pong",                          CK_SPAWN, 0, program_pong_main, 0, 0, 0 },
+	{ "netinfo",    "netinfo",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "netrecv",    "netrecv",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "netsend",    "netsend",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "netip",      "netip [a.b.c.d]",               CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
+	{ "ping",       "ping <host|a.b.c.d>",           CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
+	{ "netlog",     "netlog <text>",                 CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
+	{ "netconsole", "netconsole [on|off|host <ip>]", CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
+	{ "dhcp",       "dhcp",                          CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "netregs",    "netregs",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "netloop",    "netloop",                       CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "netreset",   "netreset",                      CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
+	{ "pong",       "pong",                          CK_SPAWN, CMD_USER, 0, 0, 0, 0 },
 	{ "ps",         "ps",                            CK_CUSTOM, 0, 0, 0, 0, cmd_ps },
 	{ "kill",       "kill <pid>",                    CK_CUSTOM, 0, 0, 0, 0, cmd_kill },
 	{ "kexec",      "kexec",                         CK_CUSTOM, 0, 0, 0, 0, cmd_kexec },
@@ -155,8 +141,8 @@ static const struct kcmd cmds[] = {
 	{ "serial",     "serial test|recv",              CK_CUSTOM, 0, 0, 0, 0, cmd_serial },
 	{ "clear",      "clear",                         CK_CUSTOM, 0, 0, 0, 0, cmd_clear },
 	{ "curl",       "curl <url>",                    CK_SPAWN_ARG, 0, 0, program_curl_main, 0, 0 },
-	{ "netdns",     "netdns [a.b.c.d]",              CK_SPAWN_ARG, 0, 0, program_netdns_main, 0, 0 },
-	{ "host",       "host <name>",                   CK_SPAWN_ARG, 0, 0, program_host_main, 0, 0 },
+	{ "netdns",     "netdns [a.b.c.d]",              CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
+	{ "host",       "host <name>",                   CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
 	{ "help",       "help",                          CK_CUSTOM, 0, 0, 0, 0, cmd_help },
 };
 
@@ -185,6 +171,34 @@ extern unsigned char _binary_ucmd_mouseinfo_elf_start[];
 extern unsigned char _binary_ucmd_mouseinfo_elf_end[];
 extern unsigned char _binary_ucmd_storage_elf_start[];
 extern unsigned char _binary_ucmd_storage_elf_end[];
+extern unsigned char _binary_ucmd_netinfo_elf_start[];
+extern unsigned char _binary_ucmd_netinfo_elf_end[];
+extern unsigned char _binary_ucmd_netip_elf_start[];
+extern unsigned char _binary_ucmd_netip_elf_end[];
+extern unsigned char _binary_ucmd_netdns_elf_start[];
+extern unsigned char _binary_ucmd_netdns_elf_end[];
+extern unsigned char _binary_ucmd_host_elf_start[];
+extern unsigned char _binary_ucmd_host_elf_end[];
+extern unsigned char _binary_ucmd_dhcp_elf_start[];
+extern unsigned char _binary_ucmd_dhcp_elf_end[];
+extern unsigned char _binary_ucmd_netsend_elf_start[];
+extern unsigned char _binary_ucmd_netsend_elf_end[];
+extern unsigned char _binary_ucmd_netrecv_elf_start[];
+extern unsigned char _binary_ucmd_netrecv_elf_end[];
+extern unsigned char _binary_ucmd_ping_elf_start[];
+extern unsigned char _binary_ucmd_ping_elf_end[];
+extern unsigned char _binary_ucmd_pong_elf_start[];
+extern unsigned char _binary_ucmd_pong_elf_end[];
+extern unsigned char _binary_ucmd_netlog_elf_start[];
+extern unsigned char _binary_ucmd_netlog_elf_end[];
+extern unsigned char _binary_ucmd_netconsole_elf_start[];
+extern unsigned char _binary_ucmd_netconsole_elf_end[];
+extern unsigned char _binary_ucmd_netregs_elf_start[];
+extern unsigned char _binary_ucmd_netregs_elf_end[];
+extern unsigned char _binary_ucmd_netloop_elf_start[];
+extern unsigned char _binary_ucmd_netloop_elf_end[];
+extern unsigned char _binary_ucmd_netreset_elf_start[];
+extern unsigned char _binary_ucmd_netreset_elf_end[];
 
 struct ucmd_blob {
 	const char *name;
@@ -203,7 +217,22 @@ static const struct ucmd_blob ucmds[] = {
 	{ "meminfo", _binary_ucmd_meminfo_elf_start, _binary_ucmd_meminfo_elf_end },
 	{ "mouseinfo", _binary_ucmd_mouseinfo_elf_start, _binary_ucmd_mouseinfo_elf_end },
 	{ "storage", _binary_ucmd_storage_elf_start, _binary_ucmd_storage_elf_end },
+	{ "netinfo", _binary_ucmd_netinfo_elf_start, _binary_ucmd_netinfo_elf_end },
+	{ "netip",   _binary_ucmd_netip_elf_start,   _binary_ucmd_netip_elf_end },
+	{ "netdns",  _binary_ucmd_netdns_elf_start,  _binary_ucmd_netdns_elf_end },
+	{ "host",    _binary_ucmd_host_elf_start,    _binary_ucmd_host_elf_end },
+	{ "dhcp",    _binary_ucmd_dhcp_elf_start,    _binary_ucmd_dhcp_elf_end },
+	{ "netsend",      _binary_ucmd_netsend_elf_start,              _binary_ucmd_netsend_elf_end },
+	{ "netrecv",      _binary_ucmd_netrecv_elf_start,              _binary_ucmd_netrecv_elf_end },
+	{ "ping",         _binary_ucmd_ping_elf_start,              _binary_ucmd_ping_elf_end },
+	{ "pong",         _binary_ucmd_pong_elf_start,              _binary_ucmd_pong_elf_end },
+	{ "netlog",       _binary_ucmd_netlog_elf_start,              _binary_ucmd_netlog_elf_end },
+	{ "netconsole",   _binary_ucmd_netconsole_elf_start,              _binary_ucmd_netconsole_elf_end },
+	{ "netregs",      _binary_ucmd_netregs_elf_start,              _binary_ucmd_netregs_elf_end },
+	{ "netloop",      _binary_ucmd_netloop_elf_start,              _binary_ucmd_netloop_elf_end },
+	{ "netreset",     _binary_ucmd_netreset_elf_start,              _binary_ucmd_netreset_elf_end },
 };
+
 
 static const struct ucmd_blob *ucmd_lookup(const char *name)
 {

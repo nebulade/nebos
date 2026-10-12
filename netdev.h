@@ -30,6 +30,11 @@ void netdev_acquire(void);
 void netdev_release(void);
 int  netdev_in_use(void);
 
+/* Process that currently owns the NIC (0 = free), and a hard reset used by
+ * the reaper so a killed process cannot leave the receiver owned. */
+unsigned int netdev_owner(void);
+void netdev_release_all(void);
+
 /* Fill the active NIC's MAC; -1 (and a zero MAC) when there is no NIC. */
 int netdev_get_mac(unsigned char mac[6]);
 
