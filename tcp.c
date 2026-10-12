@@ -22,11 +22,40 @@
  * receive side uses the shared frame scratch (netdev_rx_scratch()). */
 static unsigned char tx_frame[14 + 20 + 20 + TCP_MSS_OURS];
 
-/* Payload of a segment larger than the caller's buffer is held here, so no
- * bytes are lost; at most one segment can be outstanding. */
-static unsigned char hold_buf[TCP_MSS_OURS];
-static unsigned int hold_len;
-static unsigned int hold_pos;
+/* Receive queue: in-order payload accepted from the peer but not yet handed
+ * to the application.  Data can arrive while the app is inside tcp_send()
+ * (a TLS server sends session tickets right after the handshake), so it must
+ * be buffered, never ACKed and dropped.  A segment that does not fit is left
+ * unacknowledged and the peer retransmits it. */
+#define TCP_RXQ_SIZE 8192
+static unsigned char rxq[TCP_RXQ_SIZE];
+static unsigned int rxq_head, rxq_tail;
+
+static unsigned int rxq_len(void)
+{
+	return (rxq_head - rxq_tail) & (TCP_RXQ_SIZE - 1);
+}
+
+static unsigned int rxq_space(void)
+{
+	return TCP_RXQ_SIZE - 1 - rxq_len();
+}
+
+static void rxq_put(const unsigned char *p, unsigned int n)
+{
+	while (n--) {
+		rxq[rxq_head] = *p++;
+		rxq_head = (rxq_head + 1) & (TCP_RXQ_SIZE - 1);
+	}
+}
+
+static void rxq_get(unsigned char *p, unsigned int n)
+{
+	while (n--) {
+		*p++ = rxq[rxq_tail];
+		rxq_tail = (rxq_tail + 1) & (TCP_RXQ_SIZE - 1);
+	}
+}
 
 static unsigned int rd16(const unsigned char *p)
 {
@@ -211,6 +240,35 @@ static int tcp_parse_mss(const unsigned char *tcp, unsigned int doff,
 	return 0;
 }
 
+/* Take an incoming segment's payload/FIN into the receive queue.  Returns
+ * -2 on RST, 0 otherwise.  Duplicate/out-of-order data is re-ACKed to resync;
+ * a segment that does not fit the queue is not ACKed at all. */
+static int tcp_rx_data(struct tcp_conn *c, const struct tcp_seg *s)
+{
+	if (s->flags & TCP_RST)
+		return -2;
+
+	if (s->len) {
+		if (s->seq == c->rcv_nxt && s->len <= rxq_space()) {
+			rxq_put(s->data, s->len);
+			c->rcv_nxt += s->len;
+			tcp_send_segment(c, TCP_ACK, c->snd_nxt, c->rcv_nxt,
+					 0, 0, 0);
+		} else if (s->seq != c->rcv_nxt) {
+			tcp_send_segment(c, TCP_ACK, c->snd_nxt, c->rcv_nxt,
+					 0, 0, 0);
+		}
+	}
+	if ((s->flags & TCP_FIN) && !c->peer_fin &&
+	    s->seq + s->len == c->rcv_nxt) {
+		c->peer_fin = 1;
+		c->rcv_nxt++;
+		tcp_send_segment(c, TCP_ACK, c->snd_nxt, c->rcv_nxt,
+				 0, 0, 0);
+	}
+	return 0;
+}
+
 int tcp_connect(const unsigned char *dst_mac, const unsigned char *dst_ip,
 		unsigned int dport, struct tcp_conn *c)
 {
@@ -231,7 +289,7 @@ int tcp_connect(const unsigned char *dst_mac, const unsigned char *dst_ip,
 	c->rcv_nxt = 0;
 	c->peer_mss = 536;
 	c->peer_fin = 0;
-	hold_len = hold_pos = 0;
+	rxq_head = rxq_tail = 0;
 
 	for (tries = 0; tries < TCP_RETRIES; tries++) {
 		unsigned int deadline = get_ticks_ms() + TCP_RETRY_MS;
@@ -303,14 +361,10 @@ int tcp_send(struct tcp_conn *c, const void *data, unsigned int len)
 				c->snd_nxt = s.ack;
 				return 0;
 			}
-			/* Data before the request is fully acked: ACK it and
-			 * drop it; the peer retransmits if it cares. */
-			if (s.len) {
-				if (s.seq == c->rcv_nxt)
-					c->rcv_nxt += s.len;
-				tcp_send_segment(c, TCP_ACK, c->snd_nxt,
-						 c->rcv_nxt, 0, 0, 0);
-			}
+			/* Data arriving while we are sending: buffer it for
+			 * tcp_recv (never ACK and drop). */
+			if (tcp_rx_data(c, &s) == -2)
+				return -2;
 		}
 	}
 	return -1;
@@ -325,32 +379,32 @@ int tcp_recv(struct tcp_conn *c, unsigned char *out, unsigned int maxlen,
 	if (!nd)
 		return -2;
 
-	/* Drain a partially consumed segment first. */
-	if (hold_pos < hold_len) {
-		unsigned int n = hold_len - hold_pos;
-		unsigned int i;
-
-		if (n > maxlen)
-			n = maxlen;
-		for (i = 0; i < n; i++)
-			out[i] = hold_buf[hold_pos + i];
-		hold_pos += n;
-		return (int)n;
-	}
-	if (c->peer_fin)
-		return 0;
-
-	while ((int)(get_ticks_ms() - deadline_ms) < 0) {
+	/* Deliver what is already queued (may span several segments). */
+	for (;;) {
 		struct tcp_seg s;
-		int len = nd->rx(rxbuf, NETDEV_FRAME_MAX);
 
-		if (len < 0)
-			continue;
-		if (!tcp_parse(rxbuf, (unsigned int)len, c->dst_ip,
-			       c->dport, c->sport, &s))
-			continue;
-		if (s.flags & TCP_RST)
-			return -2;
+		if (rxq_len()) {
+			unsigned int n = rxq_len();
+
+			if (n > maxlen)
+				n = maxlen;
+			rxq_get(out, n);
+			return (int)n;
+		}
+		if (c->peer_fin)
+			return 0;
+		if ((int)(get_ticks_ms() - deadline_ms) >= 0)
+			return -1;
+
+		{
+			int len = nd->rx(rxbuf, NETDEV_FRAME_MAX);
+
+			if (len < 0)
+				continue;
+			if (!tcp_parse(rxbuf, (unsigned int)len, c->dst_ip,
+				       c->dport, c->sport, &s))
+				continue;
+		}
 
 		/* Track our send window (nothing pending here, but keeps
 		 * snd_una meaningful for the ACKs we emit). */
@@ -358,48 +412,9 @@ int tcp_recv(struct tcp_conn *c, unsigned char *out, unsigned int maxlen,
 		    (unsigned)(c->snd_nxt - c->snd_una))
 			c->snd_una = s.ack;
 
-		if (s.len) {
-			if (s.len > sizeof(hold_buf))     /* not ours to store */
-				continue;
-			if (s.seq == c->rcv_nxt) {
-				unsigned int take = s.len < maxlen ? s.len : maxlen;
-				unsigned int i;
-
-				for (i = 0; i < take; i++)
-					out[i] = s.data[i];
-				c->rcv_nxt += s.len;
-				if (s.len > take) {       /* hold the rest */
-					for (i = take; i < s.len; i++)
-						hold_buf[i - take] = s.data[i];
-					hold_len = s.len - take;
-					hold_pos = 0;
-				}
-				/* A FIN riding on the data consumes the next
-				 * sequence number after the payload. */
-				if ((s.flags & TCP_FIN) && !c->peer_fin) {
-					c->peer_fin = 1;
-					c->rcv_nxt++;
-				}
-				tcp_send_segment(c, TCP_ACK, c->snd_nxt,
-						 c->rcv_nxt, 0, 0, 0);
-				return (int)take;
-			}
-			/* Duplicate or out-of-order data: re-ACK to resync. */
-			tcp_send_segment(c, TCP_ACK, c->snd_nxt, c->rcv_nxt,
-					 0, 0, 0);
-			continue;
-		}
-		if (s.flags & TCP_FIN) {
-			if (s.seq == c->rcv_nxt) {
-				c->rcv_nxt++;
-				c->peer_fin = 1;
-				tcp_send_segment(c, TCP_ACK, c->snd_nxt,
-						 c->rcv_nxt, 0, 0, 0);
-				return 0;
-			}
-		}
+		if (tcp_rx_data(c, &s) == -2)
+			return -2;
 	}
-	return -1;
 }
 
 void tcp_close(struct tcp_conn *c)

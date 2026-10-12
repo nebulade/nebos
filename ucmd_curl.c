@@ -1,12 +1,17 @@
-/* curl: ring-3 command.  Fetch one http:// URL with a minimal HTTP/1.0 GET and
- * dump the status line, the headers and the body to the terminal.
+/* curl: ring-3 command.  Fetch one http:// or https:// URL with a minimal
+ * HTTP GET and dump the status line, the headers and the body to the terminal.
  *
- * Deliberately small: no TLS, no redirect following (a Location header is
- * reported), no gzip; a chunked response is decoded.  The TCP client (tcp.c)
- * and the DNS resolver stay in the kernel; the nic is owned for the run
- * (SYS_NET_ACQUIRE) and TCP goes through the SYS_TCP_* calls. */
+ * https uses the tls.c client (TLS 1.3, ChaCha20-Poly1305, X25519) WITHOUT
+ * certificate verification (phase A): the handshake is encrypted, but a
+ * man-in-the-middle is not detected; the leaf fingerprint is printed for a
+ * manual check.  Deliberately small otherwise: no redirect following (a
+ * Location header is reported), no gzip; a chunked response is decoded.
+ * The TCP client (tcp.c) and the DNS resolver stay in the kernel; the nic is
+ * owned for the run (SYS_NET_ACQUIRE) and TCP goes through the SYS_TCP_*
+ * calls. */
 
 #include "ucmd_lib.h"
+#include "tls.h"
 
 #define URL_HOST_MAX 128
 #define URL_PATH_MAX 128
@@ -21,7 +26,27 @@ struct url {
 	char host[URL_HOST_MAX];
 	char path[URL_PATH_MAX];
 	unsigned int port;
+	int secure;
 };
+
+static struct url u;
+
+/* ---- transport: plain TCP or TLS ---- */
+
+static int xport_send(const void *buf, unsigned int len)
+{
+	if (u.secure)
+		return tls_send(buf, len);
+	return (int)u_syscall2(SYS_TCP_SEND, (int)buf, (int)len);
+}
+
+static int xport_recv(void *buf, unsigned int max, unsigned int timeout_ms)
+{
+	if (u.secure)
+		return tls_recv(buf, max, timeout_ms);
+	return (int)u_syscall3(SYS_TCP_RECV, (int)buf, (int)max,
+			       (int)timeout_ms);
+}
 
 static int starts_with(const char *s, const char *prefix)
 {
@@ -37,17 +62,19 @@ static int starts_with(const char *s, const char *prefix)
 
 /* ---- URL parsing ---- */
 
-/* Parse http://host[:port][/path]; 0 on success, -1 error, -2 https. */
+/* Parse http:// or https:// host[:port][/path]; 0 on success, -1 error. */
 static int url_parse(const char *s, struct url *u)
 {
 	const char *p = s, *h;
 	unsigned int i;
+	int secure = 0;
 
-	if (starts_with(s, "https://"))
-		return -2;
-	if (starts_with(s, "http://"))
+	if (starts_with(s, "https://")) {
+		secure = 1;
+		p += 8;
+	} else if (starts_with(s, "http://")) {
 		p += 7;
-	else {
+	} else {
 		/* An unsupported scheme like ftp:// is easy to spot: a "://"
 		 * within the first few characters. */
 		for (i = 0; s[i] && i < 8; i++) {
@@ -57,6 +84,7 @@ static int url_parse(const char *s, struct url *u)
 				break;
 		}
 	}
+	u->secure = secure;
 
 	h = p;
 	while (*p && *p != '/' && *p != ':')
@@ -67,7 +95,7 @@ static int url_parse(const char *s, struct url *u)
 		u->host[i] = h[i];
 	u->host[i] = '\0';
 
-	u->port = 80;
+	u->port = secure ? 443 : 80;
 	if (*p == ':') {
 		unsigned int port = 0;
 
@@ -156,7 +184,7 @@ static int reader_fill(struct reader *r)
 	deadline = idle < r->total_deadline ? idle : r->total_deadline;
 	rel = (int)(deadline - now) > 0 ? deadline - now : 1;
 
-	n = u_syscall3(SYS_TCP_RECV, (int)r->buf, sizeof(r->buf), (int)rel);
+	n = xport_recv(r->buf, sizeof(r->buf), rel);
 	if (n > 0) {
 		r->len = (unsigned int)n;
 		r->pos = 0;
@@ -365,7 +393,6 @@ static unsigned int dump_chunked(struct reader *r)
 
 void _start(const char *arg)
 {
-	static struct url u;
 	static char req[REQ_MAX];
 	static struct reader r;
 	struct sys_netinfo ni;
@@ -373,18 +400,14 @@ void _start(const char *arg)
 	char line[LINE_MAX_C];
 	char location[128];
 	unsigned int n, status = 0, body = 0, content_len = 0;
-	int have_loc = 0, have_len = 0, chunked = 0, rv;
+	int have_loc = 0, have_len = 0, chunked = 0, rv, connected = 0;
 
 	if (!arg || !arg[0]) {
-		u_puts("curl: usage curl <http://host[:port]/[path]>\n");
+		u_puts("curl: usage curl <http|https://host[:port]/[path]>\n");
 		u_exit(1);
 	}
 
 	rv = url_parse(arg, &u);
-	if (rv == -2) {
-		u_puts("curl: https is not supported (no TLS)\n");
-		u_exit(1);
-	}
 	if (rv != 0) {
 		u_puts("curl: bad URL\n");
 		u_exit(1);
@@ -398,9 +421,9 @@ void _start(const char *arg)
 		u_exit(1);
 	}
 
-	u_puts("curl: GET http://");
+	u_puts(u.secure ? "curl: GET https://" : "curl: GET http://");
 	u_puts(u.host);
-	if (u.port != 80) {
+	if (u.port != (u.secure ? 443u : 80u)) {
 		u_puts(":");
 		u_putdec(u.port);
 	}
@@ -439,13 +462,24 @@ void _start(const char *arg)
 		u_puts("curl: connect failed\n");
 		goto out;
 	}
-	u_puts("curl: connected, sending request\n");
+	connected = 1;
+
+	if (u.secure) {
+		u_puts("curl: connected, TLS handshake\n");
+		if (tls_connect(u.host) != 0)
+			goto out;
+		u_puts("curl: WARNING: certificate NOT verified "
+		       "(trust-all mode)\n");
+	} else {
+		u_puts("curl: connected, sending request\n");
+	}
 
 	n = req_app(req, 0, "GET ");
 	n = req_app(req, n, u.path);
-	n = req_app(req, n, " HTTP/1.0\r\nHost: ");
+	n = req_app(req, n, u.secure ? " HTTP/1.1\r\nHost: "
+				     : " HTTP/1.0\r\nHost: ");
 	n = req_app(req, n, u.host);
-	if (u.port != 80) {
+	if (u.port != (u.secure ? 443u : 80u)) {
 		n = req_app(req, n, ":");
 		n = req_app_dec(req, n, u.port);
 	}
@@ -455,7 +489,7 @@ void _start(const char *arg)
 		u_puts("curl: request too long\n");
 		goto out;
 	}
-	rv = u_syscall2(SYS_TCP_SEND, (int)req, n);
+	rv = xport_send(req, n);
 	if (rv != 0) {
 		u_puts("curl: request send failed\n");
 		goto out;
@@ -524,8 +558,11 @@ void _start(const char *arg)
 	u_putdec(status);
 	u_putc('\n');
 
-	u_syscall0(SYS_TCP_CLOSE);
 out:
+	if (connected) {
+		tls_close();
+		u_syscall0(SYS_TCP_CLOSE);
+	}
 	u_syscall0(SYS_NET_RELEASE);
 	u_exit(0);
 }

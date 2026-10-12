@@ -13,7 +13,7 @@ ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb flash space prog bootstrap dev net-dev cmds-dev net-cmds netmon monitor
+.PHONY: all clean run run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb flash space prog bootstrap dev net-dev cmds-dev net-cmds netmon monitor test-crypto
 
 all: floppy.img usb.img final.bin root.img
 
@@ -349,6 +349,38 @@ ucmd_%.elf: ucmd_%.o ucmd.ld
 	$(LD) -T ucmd.ld -nostdlib -m elf_i386 -o $@ $<
 	$(OBJCOPY) --strip-all $@ $@
 
+# TLS 1.3 client library (ring-3, linked into ucmd_curl; see tls.h).  The
+# crypto files are pure freestanding C, so tls_test can exercise them on
+# the host (make test-crypto).
+TLSLIB_OBJS = tls_sha256.o tls_chacha20.o tls_x25519.o tls_rng.o tls.o
+
+ucmd_curl.elf: ucmd_curl.o $(TLSLIB_OBJS) ucmd.ld
+	$(LD) -T ucmd.ld -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
+	$(OBJCOPY) --strip-all $@ $@
+
+tls_sha256.o: tls_sha256.c tls_sha256.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+tls_chacha20.o: tls_chacha20.c tls_chacha20.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+tls_x25519.o: tls_x25519.c tls_x25519.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+tls_rng.o: tls_rng.c tls_rng.h tls_sha256.h ucmd_lib.h syscall.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+tls.o: tls.c tls.h tls_sha256.h tls_chacha20.h tls_x25519.h tls_rng.h \
+       ucmd_lib.h syscall.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+tls_test: tls_test.c tls_sha256.c tls_chacha20.c tls_x25519.c \
+	  tls_sha256.h tls_chacha20.h tls_x25519.h
+	gcc -O2 -I. -o $@ tls_test.c tls_sha256.c tls_chacha20.c tls_x25519.c
+
+test-crypto: tls_test
+	./tls_test
+
 mkpack: mkpack.c
 	gcc -O2 -o $@ $<
 
@@ -550,4 +582,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack.o ramfs.o payload.o mkpack $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack.o ramfs.o payload.o mkpack $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

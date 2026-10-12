@@ -147,11 +147,21 @@ below the run area), so adding code no longer moves any address.
   `netinfo`/`netrecv`/`netsend`/`netip`/`dhcp`/`pong`/`ping`/`netregs`
   commands.  `dns.c/h` — a minimal resolver (one recursive A query over UDP,
   name-compression aware; `netdns` shows/sets the server, `host <name>`
-  resolves).  `tcp.c/h` — a minimal TCP *client* (connect/send/recv/close,
-  in-order receive, one segment of retransmit; the caller owns the NIC).
-  `curl.c` — the `curl` command: `http://host[:port]/path` GET with DNS, ARP,
-  HTTP/1.0 request and a dumped status/headers/body (no TLS, no redirects,
-  chunked decoded).  Static IP default `192.168.178.240`, mask/gateway learned
+  resolves).  `tcp.c/h` — a minimal TCP *client* (connect/send/recv/close, in-order
+  receive with an 8 KB receive queue so data arriving during a send is never
+  lost, one segment of retransmit; the caller owns the NIC).
+  `curl` — the ring-3 command: `http://` or `https://` GET with DNS, ARP,
+  a dumped status/headers/body, chunked decoding (redirects are reported,
+  not followed).  `tls.c/h` + `tls_sha256.c`, `tls_chacha20.c`,
+  `tls_x25519.c`, `tls_rng.c` — the TLS 1.3 client the `https` path uses:
+  `TLS_CHACHA20_POLY1305_SHA256` + X25519 only, stream-oriented record
+  layer, leaf SHA-256 fingerprint printed for a manual check.  Certificates
+  are **not verified** (phase A: encryption without authentication; a
+  MITM is undetected) and the DRBG (`tls_rng.c`: RDTSC jitter + ticks +
+  MAC) is deliberately weak.  The crypto files are pure freestanding C
+  and have host vectors (`make test-crypto`, `tls_test.c`); the TLS code
+  lives in the command pack, so `make net-cmds` updates it without a
+  kernel reload.  Static IP default `192.168.178.240`, mask/gateway learned
   from DHCP (off-subnet traffic goes via the router).
 - **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `entry.S`, `bootstrap.c`, and the
   host-side `kexec_send.c` — reload the kernel over serial without rebooting
@@ -240,8 +250,10 @@ TX/RX self-test), `netreset`
 `netconsole on|off|host <a.b.c.d>` (the debug-output mirror, see below)
 `netregs` (register dump, decoded ISR + counters), `netdns [a.b.c.d]` (show or
 set the resolver) and `host <name>` (one DNS A query).  `curl <url>` fetches
-`http://host[:port]/path` with a minimal HTTP/1.0 GET and dumps the status
-line, headers and body (no TLS, no redirects; numeric hosts skip DNS).  On
+`http://` or `https:// host[:port]/path` with a minimal HTTP GET and dumps the
+status line, headers and body (redirects are reported, not followed; numeric
+hosts skip DNS).  `https` uses the phase-A TLS 1.3 client (no certificate
+verification; the leaf fingerprint is printed).  On
 boot, if a NIC is present, a DHCP client runs with a 3 s budget (requesting the
 current address) and falls back to the static default when no server answers.
 The board also answers ARP/ICMP for its IP while idle.

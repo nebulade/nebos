@@ -8,3 +8,4 @@ kexec_send
 netkexec_send
 netmonitor
 mkpack
+tls_test
