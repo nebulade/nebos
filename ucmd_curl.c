@@ -4,11 +4,12 @@
  * https uses the tls.c client (TLS 1.3, ChaCha20-Poly1305, X25519) WITHOUT
  * certificate verification (phase A): the handshake is encrypted, but a
  * man-in-the-middle is not detected; the leaf fingerprint is printed for a
- * manual check.  Deliberately small otherwise: no redirect following (a
- * Location header is reported), no gzip; a chunked response is decoded.
- * The TCP client (tcp.c) and the DNS resolver stay in the kernel; the nic is
- * owned for the run (SYS_NET_ACQUIRE) and TCP goes through the SYS_TCP_*
- * calls. */
+ * manual check.  Redirects (3xx + Location) are followed up to
+ * MAX_REDIRECTS hops: absolute URLs, absolute paths and relative paths
+ * (resolved against the current path, "."/".." collapsed).  No gzip; a
+ * chunked response is decoded.  The TCP client (tcp.c) and the DNS resolver
+ * stay in the kernel; the nic is owned for the run (SYS_NET_ACQUIRE) and
+ * TCP goes through the SYS_TCP_* calls. */
 
 #include "ucmd_lib.h"
 #include "tls.h"
@@ -18,6 +19,8 @@
 #define REQ_MAX      512
 #define LINE_MAX_C   320
 #define READER_MAX   1024
+#define LOCATION_MAX 256
+#define MAX_REDIRECTS 5
 
 #define IDLE_TIMEOUT_MS  10000
 #define TOTAL_TIMEOUT_MS 60000
@@ -127,6 +130,102 @@ static int url_parse(const char *s, struct url *u)
 		u->path[1] = '\0';
 	}
 	return 0;
+}
+
+/* ---- redirect target handling ---- */
+
+/* Normalize an absolute URL path in place: collapse "//", "." and ".." and
+ * keep the leading '/' plus a trailing one.  0 ok, -1 too long. */
+static int path_normalize(char *path)
+{
+	char tmp[URL_PATH_MAX];
+	unsigned int i, o = 1, len = 0, start, seglen, j;
+	int trailing;
+
+	while (path[len])
+		len++;
+	if (len == 0 || path[0] != '/')
+		return 0;
+	trailing = (len > 1 && path[len - 1] == '/');
+	tmp[0] = '/';
+	i = 1;
+	while (path[i]) {
+		while (path[i] == '/')
+			i++;
+		start = i;
+		while (path[i] && path[i] != '/')
+			i++;
+		seglen = i - start;
+		if (seglen == 0)
+			break;
+		if (seglen == 1 && path[start] == '.')
+			continue;
+		if (seglen == 2 && path[start] == '.' &&
+		    path[start + 1] == '.') {
+			while (o > 1 && tmp[o - 1] != '/')
+				o--;
+			if (o > 1)
+				o--;
+			continue;
+		}
+		if (o + seglen + 2 > sizeof(tmp))
+			return -1;
+		if (o > 1)
+			tmp[o++] = '/';
+		for (j = 0; j < seglen; j++)
+			tmp[o++] = path[start + j];
+	}
+	if (trailing && o > 1 && tmp[o - 1] != '/') {
+		if (o + 2 > sizeof(tmp))
+			return -1;
+		tmp[o++] = '/';
+	}
+	tmp[o] = '\0';
+	for (i = 0; i <= o; i++)
+		path[i] = tmp[i];
+	return 0;
+}
+
+/* Apply a Location header to the current URL.  Supports absolute URLs,
+ * absolute paths and relative paths (joined to the current path's
+ * directory).  0 ok, -1 unparsable/too long. */
+static int url_apply_location(struct url *u, const char *loc)
+{
+	char joined[URL_PATH_MAX];
+	unsigned int i, dirlen = 1, n = 0;
+
+	if (starts_with(loc, "http://") || starts_with(loc, "https://"))
+		return url_parse(loc, u);
+
+	if (loc[0] == '/') {
+		if (loc[1] == '/')
+			return -1;              /* scheme-relative: unsupported */
+		for (i = 0; loc[i]; i++) {
+			if (i + 1 >= URL_PATH_MAX)
+				return -1;
+			u->path[i] = loc[i];
+		}
+		u->path[i] = '\0';
+		return path_normalize(u->path);
+	}
+
+	/* Relative: keep the directory part of the current path. */
+	for (i = 0; u->path[i]; i++) {
+		if (u->path[i] == '/')
+			dirlen = i + 1;
+	}
+	while (loc[n])
+		n++;
+	if (dirlen + n + 1 > URL_PATH_MAX)
+		return -1;
+	for (i = 0; i < dirlen; i++)
+		joined[i] = u->path[i];
+	for (i = 0; i < n; i++)
+		joined[dirlen + i] = loc[i];
+	joined[dirlen + n] = '\0';
+	for (i = 0; i <= dirlen + n; i++)
+		u->path[i] = joined[i];
+	return path_normalize(u->path);
 }
 
 /* ---- request building ---- */
@@ -396,11 +495,11 @@ void _start(const char *arg)
 	static char req[REQ_MAX];
 	static struct reader r;
 	struct sys_netinfo ni;
-	unsigned char ip[4], hop[4], mac[6];
 	char line[LINE_MAX_C];
-	char location[128];
-	unsigned int n, status = 0, body = 0, content_len = 0;
-	int have_loc = 0, have_len = 0, chunked = 0, rv, connected = 0;
+	char location[LOCATION_MAX];
+	unsigned int status = 0, body = 0, content_len = 0;
+	unsigned int hops = 0;
+	int have_loc, have_len, chunked, rv, connected = 0, follow = 1;
 
 	if (!arg || !arg[0]) {
 		u_puts("curl: usage curl <http|https://host[:port]/[path]>\n");
@@ -420,143 +519,169 @@ void _start(const char *arg)
 		u_puts("curl: no IP address (run dhcp or netip)\n");
 		u_exit(1);
 	}
-
-	u_puts(u.secure ? "curl: GET https://" : "curl: GET http://");
-	u_puts(u.host);
-	if (u.port != (u.secure ? 443u : 80u)) {
-		u_puts(":");
-		u_putdec(u.port);
-	}
-	u_puts(u.path);
-	u_putc('\n');
-
 	if (u_syscall0(SYS_NET_ACQUIRE) != 0) {
 		u_puts("curl: NIC busy\n");
 		u_exit(1);
 	}
 
-	if (u_parse_ip(u.host, ip) != 0) {
-		if (u_syscall2(SYS_DNS_RESOLVE, (int)u.host, (int)ip) != 0)
-			goto out;
-	}
-
-	u_syscall2(SYS_NET_NEXT_HOP, (int)ip, (int)hop);
-	rv = u_syscall2(SYS_NET_ARP, (int)hop, (int)mac);
-	if (rv != 0) {
-		u_puts("curl: no ARP reply from ");
-		u_put_ip(hop);
-		u_putc('\n');
-		goto out;
-	}
-
-	rv = u_syscall3(SYS_TCP_CONNECT, (int)mac, (int)ip, (int)u.port);
-	if (rv == -1) {
-		u_puts("curl: connect timeout\n");
-		goto out;
-	}
-	if (rv == -2) {
-		u_puts("curl: connection refused\n");
-		goto out;
-	}
-	if (rv != 0) {
-		u_puts("curl: connect failed\n");
-		goto out;
-	}
-	connected = 1;
-
-	if (u.secure) {
-		u_puts("curl: connected, TLS handshake\n");
-		if (tls_connect(u.host) != 0)
-			goto out;
-		u_puts("curl: WARNING: certificate NOT verified "
-		       "(trust-all mode)\n");
-	} else {
-		u_puts("curl: connected, sending request\n");
-	}
-
-	n = req_app(req, 0, "GET ");
-	n = req_app(req, n, u.path);
-	n = req_app(req, n, u.secure ? " HTTP/1.1\r\nHost: "
-				     : " HTTP/1.0\r\nHost: ");
-	n = req_app(req, n, u.host);
-	if (u.port != (u.secure ? 443u : 80u)) {
-		n = req_app(req, n, ":");
-		n = req_app_dec(req, n, u.port);
-	}
-	n = req_app(req, n, "\r\nUser-Agent: nebos-curl/0.1\r\n"
-			    "Accept: */*\r\nConnection: close\r\n\r\n");
-	if ((int)n > u_syscall0(SYS_TCP_PEER_MSS)) {
-		u_puts("curl: request too long\n");
-		goto out;
-	}
-	rv = xport_send(req, n);
-	if (rv != 0) {
-		u_puts("curl: request send failed\n");
-		goto out;
-	}
-
-	r.len = 0;
-	r.pos = 0;
-	r.eof = 0;
-	r.error = 0;
-	r.total_deadline = u_ticks_ms() + TOTAL_TIMEOUT_MS;
-
-	rv = reader_readline(&r, line, sizeof(line));
-	if (rv < 0) {
-		u_puts("curl: no response (");
-		u_puts(r.error == -2 ? "reset" : "timeout");
-		u_puts(")\n");
-		goto out;
-	}
-	status = parse_status(line);
-	u_puts("curl: ");
-	u_puts(line);
-	u_putc('\n');
-
 	for (;;) {
+		unsigned char ip[4], hop[4], mac[6];
+		unsigned int n;
+
+		have_loc = have_len = chunked = 0;
+		content_len = 0;
+
+		u_puts(u.secure ? "curl: GET https://" : "curl: GET http://");
+		u_puts(u.host);
+		if (u.port != (u.secure ? 443u : 80u)) {
+			u_puts(":");
+			u_putdec(u.port);
+		}
+		u_puts(u.path);
+		u_putc('\n');
+
+		if (u_parse_ip(u.host, ip) != 0) {
+			if (u_syscall2(SYS_DNS_RESOLVE, (int)u.host, (int)ip) != 0)
+				goto out;
+		}
+
+		u_syscall2(SYS_NET_NEXT_HOP, (int)ip, (int)hop);
+		rv = u_syscall2(SYS_NET_ARP, (int)hop, (int)mac);
+		if (rv != 0) {
+			u_puts("curl: no ARP reply from ");
+			u_put_ip(hop);
+			u_putc('\n');
+			goto out;
+		}
+
+		rv = u_syscall3(SYS_TCP_CONNECT, (int)mac, (int)ip, (int)u.port);
+		if (rv == -1) {
+			u_puts("curl: connect timeout\n");
+			goto out;
+		}
+		if (rv == -2) {
+			u_puts("curl: connection refused\n");
+			goto out;
+		}
+		if (rv != 0) {
+			u_puts("curl: connect failed\n");
+			goto out;
+		}
+		connected = 1;
+
+		if (u.secure) {
+			u_puts("curl: connected, TLS handshake\n");
+			if (tls_connect(u.host) != 0)
+				goto out;
+			u_puts("curl: WARNING: certificate NOT verified "
+			       "(trust-all mode)\n");
+		} else {
+			u_puts("curl: connected, sending request\n");
+		}
+
+		n = req_app(req, 0, "GET ");
+		n = req_app(req, n, u.path);
+		n = req_app(req, n, u.secure ? " HTTP/1.1\r\nHost: "
+					     : " HTTP/1.0\r\nHost: ");
+		n = req_app(req, n, u.host);
+		if (u.port != (u.secure ? 443u : 80u)) {
+			n = req_app(req, n, ":");
+			n = req_app_dec(req, n, u.port);
+		}
+		n = req_app(req, n, "\r\nUser-Agent: nebos-curl/0.1\r\n"
+				    "Accept: */*\r\nConnection: close\r\n\r\n");
+		if ((int)n > u_syscall0(SYS_TCP_PEER_MSS)) {
+			u_puts("curl: request too long\n");
+			goto out;
+		}
+		rv = xport_send(req, n);
+		if (rv != 0) {
+			u_puts("curl: request send failed\n");
+			goto out;
+		}
+
+		r.len = 0;
+		r.pos = 0;
+		r.eof = 0;
+		r.error = 0;
+		r.total_deadline = u_ticks_ms() + TOTAL_TIMEOUT_MS;
+
 		rv = reader_readline(&r, line, sizeof(line));
 		if (rv < 0) {
-			u_puts("curl: connection lost in headers\n");
+			u_puts("curl: no response (");
+			u_puts(r.error == -2 ? "reset" : "timeout");
+			u_puts(")\n");
 			goto out;
 		}
-		if (rv == 0)
-			break;              /* end of headers */
+		status = parse_status(line);
+		u_puts("curl: ");
 		u_puts(line);
 		u_putc('\n');
-		if (hdr_match(line, "content-length"))
-			have_len = parse_dec_after_colon(line, &content_len);
-		else if (hdr_match(line, "transfer-encoding") &&
-			 contains_ci(line, "chunked"))
-			chunked = 1;
-		else if (hdr_match(line, "location")) {
-			copy_after_colon(line, location, sizeof(location));
-			have_loc = 1;
-		}
-	}
 
-	if (status >= 300 && status < 400 && have_loc) {
-		u_puts("curl: redirect not followed: ");
+		for (;;) {
+			rv = reader_readline(&r, line, sizeof(line));
+			if (rv < 0) {
+				u_puts("curl: connection lost in headers\n");
+				goto out;
+			}
+			if (rv == 0)
+				break;              /* end of headers */
+			u_puts(line);
+			u_putc('\n');
+			if (hdr_match(line, "content-length"))
+				have_len = parse_dec_after_colon(line,
+								 &content_len);
+			else if (hdr_match(line, "transfer-encoding") &&
+				 contains_ci(line, "chunked"))
+				chunked = 1;
+			else if (hdr_match(line, "location")) {
+				copy_after_colon(line, location,
+						 sizeof(location));
+				have_loc = 1;
+			}
+		}
+
+		if (status < 300 || status >= 400 || !have_loc)
+			break;                  /* final response: dump the body */
+
+		if (hops >= MAX_REDIRECTS) {
+			u_puts("curl: too many redirects\n");
+			follow = 0;
+			break;
+		}
+		u_puts("curl: redirect -> ");
 		u_puts(location);
 		u_putc('\n');
+		tls_close();
+		u_syscall0(SYS_TCP_CLOSE);
+		connected = 0;
+		if (url_apply_location(&u, location) != 0) {
+			u_puts("curl: bad redirect target\n");
+			follow = 0;
+			break;
+		}
+		hops++;
 	}
 
-	u_putc('\n');
-	if (chunked)
-		body = dump_chunked(&r);
-	else
-		body = dump_body(&r, have_len, content_len);
-	u_putc('\n');
+	if (follow && connected) {
+		u_putc('\n');
+		if (chunked)
+			body = dump_chunked(&r);
+		else
+			body = dump_body(&r, have_len, content_len);
+		u_putc('\n');
 
-	if (r.error == -2)
-		u_puts("curl: connection reset\n");
-	else if (r.error == -1)
-		u_puts("curl: timeout while reading body\n");
+		if (r.error == -2)
+			u_puts("curl: connection reset\n");
+		else if (r.error == -1)
+			u_puts("curl: timeout while reading body\n");
 
-	u_puts("curl: ");
-	u_putdec(body);
-	u_puts(" bytes received, status ");
-	u_putdec(status);
-	u_putc('\n');
+		u_puts("curl: ");
+		u_putdec(body);
+		u_puts(" bytes received, status ");
+		u_putdec(status);
+		u_putc('\n');
+	}
 
 out:
 	if (connected) {

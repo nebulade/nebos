@@ -899,4 +899,5 @@ void tls_close(void)
 
 	if (phase == 2 && !err && !eof)
 		send_record(21, cn, 2, 0);
+	phase = 0;                      /* no stale epoch on a later connection */
 }

@@ -151,9 +151,9 @@ below the run area), so adding code no longer moves any address.
   receive with an 8 KB receive queue so data arriving during a send is never
   lost, one segment of retransmit; the caller owns the NIC).
   `curl` — the ring-3 command: `http://` or `https://` GET with DNS, ARP,
-  a dumped status/headers/body, chunked decoding (redirects are reported,
-  not followed).  `tls.c/h` + `tls_sha256.c`, `tls_chacha20.c`,
-  `tls_x25519.c`, `tls_rng.c` — the TLS 1.3 client the `https` path uses:
+  a dumped status/headers/body, chunked decoding (redirects are followed,
+  up to 5 hops); TLS 1.3 via `tls.c/h` + `tls_sha256.c`, `tls_chacha20.c`,
+  `tls_x25519.c`, `tls_rng.c`:
   `TLS_CHACHA20_POLY1305_SHA256` + X25519 only, stream-oriented record
   layer, leaf SHA-256 fingerprint printed for a manual check.  Certificates
   are **not verified** (phase A: encryption without authentication; a
@@ -251,7 +251,7 @@ TX/RX self-test), `netreset`
 `netregs` (register dump, decoded ISR + counters), `netdns [a.b.c.d]` (show or
 set the resolver) and `host <name>` (one DNS A query).  `curl <url>` fetches
 `http://` or `https:// host[:port]/path` with a minimal HTTP GET and dumps the
-status line, headers and body (redirects are reported, not followed; numeric
+status line, headers and body (redirects are followed, up to 5 hops; numeric
 hosts skip DNS).  `https` uses the phase-A TLS 1.3 client (no certificate
 verification; the leaf fingerprint is printed).  On
 boot, if a NIC is present, a DHCP client runs with a 3 s budget (requesting the
