@@ -691,10 +691,10 @@ static void tab_print_cb(const char *name, int is_dir, unsigned int size)
 static int tab_scan_dir(const char *abs)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 	unsigned int i;
 
-	if (vfs_resolve(abs, &m, &rel) != 0)
+	if (vfs_resolve(abs, &m, rel, sizeof(rel)) != 0)
 		return 0;
 	tab_raw_83 = m->ops->raw_83;
 	{

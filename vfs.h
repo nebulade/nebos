@@ -84,10 +84,13 @@ vfs_mount_t *vfs_find(const char *name);
 /* Print the mount list (for `ls /`). */
 void vfs_list_root(void);
 
-/* Resolve an absolute path "/<mount>/<path>" into the mount and a path
- * relative to it ("" for the mount root).  Returns 0 or -1. */
+/* Resolve an absolute path "/<mount>/<path>" into the mount and a normalized
+ * path relative to it ("" for the mount root) in the caller's buffer.  `.`
+ * components are dropped, repeated slashes collapsed and a trailing slash
+ * removed, so directory paths from Tab completion ("/ramfs/bin/") work.
+ * Returns 0 or -1 (bad path / unknown mount). */
 int vfs_resolve(const char *path, struct vfs_mount **m,
-		const char **rel_path);
+		char *rel_path, unsigned int rel_size);
 
 /* Load a whole file (borrowed pointer for ramfs, the static buffer for FAT);
  * release it with vfs_release_file() after use. */

@@ -105,7 +105,9 @@ void _start(const char *path)
 			print_entry(&d);
 			i++;
 		}
-		if (r == SYS_ENODEV)
+		if (r == SYS_ENOENT)
+			u_puts("ls: no such file or directory\n");
+		else if (r == SYS_ENODEV)
 			u_puts("ls: no such device\n");
 		else if (r == SYS_ENOFS)
 			u_puts("ls: no filesystem on device\n");

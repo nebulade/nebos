@@ -114,7 +114,10 @@ below the run area), so adding code no longer moves any address.
   legacy ports or the PCI IDE interface's native BARs — `ata_init_ports()`),
   `disk.c` (FDC + ISA DMA ch2, retries).  `vfs.c` exposes an `fs_ops` vtable
   (FAT and the ramfs implement it) so the file service and the shell never
-  touch `fat_*` directly; `sys_fs.c` is the file service for ring-3 commands:
+  touch `fat_*` directly; `vfs_resolve()` normalizes the path relative to the
+  mount (drops `.` components, collapses and trims slashes) so directory
+  paths from Tab completion ("/ramfs/bin/") work.  `sys_fs.c` is the file
+  service for ring-3 commands:
   whole-file read/write, index-based directory listing, mount listing,
   unlink/mkdir/rmdir (writes to the ramfs return a read-only error).  A FAT
   operation sets `sys_fs_busy`, which the scheduler honours (no process switch

@@ -43,7 +43,7 @@ static int sys_err(int vfs_err)
 /* Resolve an absolute path to (mount, relative path); returns 0 or a SYS_E*
  * code (mirrors the old "no such device" vs "no filesystem" distinction). */
 static int fs_resolve(const char *path, struct vfs_mount **m,
-		      const char **rel)
+		      char *rel, unsigned int rel_size)
 {
 	char abs[VFS_PATH_MAX * 2];
 
@@ -59,7 +59,7 @@ static int fs_resolve(const char *path, struct vfs_mount **m,
 	}
 	if (path[0] == '/' && path[1] == '\0')
 		path = "/";     /* the root listing goes through vfs_resolve below */
-	if (vfs_resolve(path, m, rel) != 0)
+	if (vfs_resolve(path, m, rel, rel_size) != 0)
 		return vfs_device_known(path) ? SYS_ENOFS : SYS_ENODEV;
 	return 0;
 }
@@ -67,11 +67,11 @@ static int fs_resolve(const char *path, struct vfs_mount **m,
 int sys_read_file(const char *path, void *buf, unsigned int max)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 	int r;
 
 	sys_fs_enter();
-	r = fs_resolve(path, &m, &rel);
+	r = fs_resolve(path, &m, rel, sizeof(rel));
 	if (r == 0) {
 		r = m->ops->read_file(m, rel, buf, max);
 		if (r < 0)
@@ -84,11 +84,11 @@ int sys_read_file(const char *path, void *buf, unsigned int max)
 int sys_write_file(const char *path, const void *buf, unsigned int len)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 	int r;
 
 	sys_fs_enter();
-	r = fs_resolve(path, &m, &rel);
+	r = fs_resolve(path, &m, rel, sizeof(rel));
 	if (r == 0) {
 		r = m->ops->write_file(m, rel, buf, len);
 		if (r < 0)
@@ -101,11 +101,11 @@ int sys_write_file(const char *path, const void *buf, unsigned int len)
 int sys_unlink(const char *path)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 	int r;
 
 	sys_fs_enter();
-	r = fs_resolve(path, &m, &rel);
+	r = fs_resolve(path, &m, rel, sizeof(rel));
 	if (r == 0) {
 		r = m->ops->unlink(m, rel);
 		if (r < 0)
@@ -118,11 +118,11 @@ int sys_unlink(const char *path)
 int sys_mkdir(const char *path)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 	int r;
 
 	sys_fs_enter();
-	r = fs_resolve(path, &m, &rel);
+	r = fs_resolve(path, &m, rel, sizeof(rel));
 	if (r == 0) {
 		r = m->ops->mkdir(m, rel);
 		if (r < 0)
@@ -135,11 +135,11 @@ int sys_mkdir(const char *path)
 int sys_rmdir(const char *path)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 	int r;
 
 	sys_fs_enter();
-	r = fs_resolve(path, &m, &rel);
+	r = fs_resolve(path, &m, rel, sizeof(rel));
 	if (r == 0) {
 		r = m->ops->rmdir(m, rel);
 		if (r < 0)
@@ -152,11 +152,11 @@ int sys_rmdir(const char *path)
 int sys_list_dir(const char *path, unsigned int index, struct sys_dirent *out)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 	int r;
 
 	sys_fs_enter();
-	r = fs_resolve(path, &m, &rel);
+	r = fs_resolve(path, &m, rel, sizeof(rel));
 	if (r == 0) {
 		struct vfs_dirent d;
 		unsigned int i;

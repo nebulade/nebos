@@ -252,7 +252,7 @@ static int fat_op_list_dir(struct vfs_mount *m, const char *path,
 	if (r == -2)
 		return VFS_EIO;
 	if (r != 0)
-		return VFS_EINVAL;
+		return VFS_ENOENT;   /* not found (or not a directory) */
 
 	fat_list_index = index;
 	fat_list_seen = 0;
@@ -384,8 +384,20 @@ static int ramfs_op_list_dir(struct vfs_mount *m, const char *path,
 	struct ramfs_dirent e;
 
 	(void)m;
-	if (ramfs_list(path, index, &e) != 1)
-		return 0;
+	if (ramfs_list(path, index, &e) != 1) {
+		if (index == 0 && path[0] != '\0') {
+			unsigned int size = 0;
+
+			/* Nothing matched: report a missing path instead of an
+			 * empty directory (the pack has no empty directories --
+			 * one exists exactly as a prefix of file paths), and a
+			 * file as "not a directory". */
+			if (ramfs_lookup(path, &size))
+				return VFS_EINVAL;
+			return VFS_ENOENT;
+		}
+		return 0;   /* end of directory */
+	}
 	copy_bounded(out->name, e.name, sizeof(out->name));
 	out->size = e.size;
 	out->is_dir = e.is_dir;
@@ -561,13 +573,13 @@ void vfs_list_root(void)
 }
 
 int vfs_resolve(const char *path, struct vfs_mount **m_out,
-		const char **rel_out)
+		char *rel_path, unsigned int rel_size)
 {
-	unsigned int i = 0, j = 0;
+	unsigned int i = 0, j = 0, o = 0;
 	char name[16];
 	vfs_mount_t *m;
 
-	if (!path || path[0] != '/')
+	if (!path || path[0] != '/' || rel_size == 0)
 		return -1;
 
 	i = 1;
@@ -582,11 +594,36 @@ int vfs_resolve(const char *path, struct vfs_mount **m_out,
 	if (!m)
 		return -1;
 
-	while (path[i] == '/')
-		i++;              /* the relative path has no leading '/' */
+	/* Copy the remainder as a normalized relative path: skip slashes, drop
+	 * "." components and never leave a trailing one. */
+	while (path[i]) {
+		unsigned int clen = 0;
+		const char *comp;
+
+		while (path[i] == '/')
+			i++;
+		if (!path[i])
+			break;
+		comp = path + i;
+		while (path[i] && path[i] != '/') {
+			i++;
+			clen++;
+		}
+		if (clen == 1 && comp[0] == '.')
+			continue;
+		if (o + clen + 2 > rel_size)
+			return -1;
+		if (o > 0)
+			rel_path[o++] = '/';
+		{
+			unsigned int k;
+			for (k = 0; k < clen; k++)
+				rel_path[o++] = comp[k];
+		}
+	}
+	rel_path[o] = '\0';
 
 	*m_out = m;
-	*rel_out = path + i;
 	return 0;
 }
 
@@ -594,10 +631,10 @@ int vfs_load_file(const char *path, struct vfs_file *out,
 		  struct vfs_mount **m_out)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 	int r;
 
-	if (vfs_resolve(path, &m, &rel) != 0)
+	if (vfs_resolve(path, &m, rel, sizeof(rel)) != 0)
 		return VFS_ENOENT;
 	r = m->ops->load_file(m, rel, out);
 	if (r == 0 && m_out)
@@ -614,9 +651,9 @@ void vfs_release_file(struct vfs_mount *m, struct vfs_file *f)
 int vfs_stat(const char *path, unsigned int *size, int *is_dir)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 
-	if (vfs_resolve(path, &m, &rel) != 0)
+	if (vfs_resolve(path, &m, rel, sizeof(rel)) != 0)
 		return VFS_ENOENT;
 	return m->ops->stat(m, rel, size, is_dir);
 }
@@ -624,9 +661,9 @@ int vfs_stat(const char *path, unsigned int *size, int *is_dir)
 int vfs_list_dir(const char *path, unsigned int index, struct vfs_dirent *out)
 {
 	struct vfs_mount *m;
-	const char *rel;
+	char rel[VFS_PATH_MAX];
 
-	if (vfs_resolve(path, &m, &rel) != 0)
+	if (vfs_resolve(path, &m, rel, sizeof(rel)) != 0)
 		return VFS_ENOENT;
 	return m->ops->list_dir(m, rel, index, out);
 }
