@@ -594,6 +594,36 @@ static int pump_record(unsigned int deadline)
 		}
 		return 0;
 	}
+	if (hdr[0] == 21) {                     /* plaintext alert */
+		if (len != 2 || raw_read(rec_pt, 2, deadline) != 0) {
+			err = 3;
+			return -1;
+		}
+		u_puts("tls: server alert: ");
+		switch (rec_pt[1]) {
+		case 40:
+			u_puts("handshake failure");
+			break;
+		case 47:
+			u_puts("illegal parameter");
+			break;
+		case 70:
+			u_puts("protocol version (the server may not support TLS 1.3)");
+			break;
+		case 80:
+			u_puts("internal error");
+			break;
+		default:
+			u_puts("description ");
+			u_putdec(rec_pt[1]);
+			break;
+		}
+		u_puts(" (level ");
+		u_putdec(rec_pt[0]);
+		u_puts(")\n");
+		err = 4;
+		return -1;
+	}
 	if (phase == 0) {
 		if (hdr[0] != 22 || len > TLS_SH_MAX) {
 			err = 3;
