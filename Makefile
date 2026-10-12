@@ -13,7 +13,7 @@ ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb flash space prog bootstrap dev net-dev netmon monitor
+.PHONY: all clean run run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb flash space prog bootstrap dev net-dev cmds-dev net-cmds netmon monitor
 
 all: floppy.img usb.img final.bin root.img
 
@@ -248,7 +248,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o prog_embed.o space_embed.o cmds_pack.o ramfs.o
+kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o vga_copy.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o clock.o colors.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o kdbg.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o prog_embed.o space_embed.o cmds_pack.o ramfs.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -363,7 +363,11 @@ cmds.pack: $(addsuffix .elf,$(UCMDS)) hello.elf mkpack
 cmds_pack.o: cmds.pack
 	$(LD) -m elf_i386 -r -b binary -o cmds_pack.o cmds.pack
 
+payload.o: payload.c payload.h io.h mm.h ramfs.h serial.h vfs.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 ramfs.o: ramfs.c ramfs.h serial.h
+	$(CC) $(CFLAGS) -o $@ $<
 
 space.o: space.c run_api.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -515,6 +519,17 @@ dev: kernel.bin kexec_send
 	if [ -z "$$entry" ]; then echo "error: kernel_entry symbol not found"; exit 1; fi; \
 	echo "Sending kernel.bin (entry 0x$$entry) via $(SERIAL_DEV) @ $(SERIAL_BAUD)..."; \
 	./kexec_send $(SERIAL_DEV) $(SERIAL_BAUD) $$entry kernel.bin
+
+# Push just the command pack (cmds.pack) to a running board: no kernel
+# reload, the /ramfs contents are replaced in place.  The board must be idle
+# at a prompt (the WM loop auto-detects the transfer).
+cmds-dev: cmds.pack kexec_send
+	@echo "Sending cmds.pack via $(SERIAL_DEV) @ $(SERIAL_BAUD)..."
+	./kexec_send --payload $(SERIAL_DEV) $(SERIAL_BAUD) cmds.pack
+
+net-cmds: cmds.pack netkexec_send
+	@echo "Sending cmds.pack to $(BOARD_IP):$(NETKEXEC_PORT)..."
+	./netkexec_send --payload $(BOARD_IP) $(NETKEXEC_PORT) cmds.pack
 
 # Show the board's netlog stream (kernel debug + terminal text) like `make
 # monitor` does over serial.

@@ -276,10 +276,14 @@ runs at **115200 baud**. Two paths exist:
 
 Wire protocol (host → target, sent immediately; no handshake):
 `[magic "KXEC"][entry u32 LE][size u32 LE][data][checksum u8]`.
+The command pack has its own frame (`make cmds-dev`), the same layout with a
+`"KXNP"` magic (the entry field is ignored), which replaces /ramfs in place
+(see below).
 
 **Every iteration:**
 ```sh
-make dev            # builds kernel.bin, computes kernel_entry via nm, sends
+make dev            # builds kernel.bin (which carries cmds.pack), sends
+make cmds-dev       # optional: push just the command pack to a running board
 ```
 The reload is automatic. On boot the kernel prints `Nebs OS v<version> booted`
 to COM1, so a serial monitor can confirm the new build headlessly:
@@ -306,6 +310,26 @@ Notes: the kexec path rebuilds a flat GDT at `0x900` before jumping (the old GDT
 lives inside the overwritten kernel region), so it's safe to edit any file,
 including `vesa_stage.S`/`boot.S` layout — but the video *mode* itself is only
 re-applied on a full floppy/USB boot (C-light reuses the current LFB).
+
+## Command pack hot-reload (cmds-dev / net-cmds)
+
+The commands live in `cmds.pack` (`bin/<name>` entries, built by `mkpack`),
+which is embedded in `kernel.bin` and mounted read-only at `/ramfs`.  A
+running board can replace it without a kernel reload:
+
+```sh
+make cmds-dev       # serial:  ./kexec_send  --payload $(SERIAL_DEV) $(SERIAL_BAUD) cmds.pack
+make net-cmds       # network: ./netkexec_send --payload $(BOARD_IP) $(NETKEXEC_PORT) cmds.pack
+```
+
+The pack is received into page-allocated memory (magic "KXNP" over serial,
+the same stop-and-wait protocol with a "KXNP" header over UDP), validated
+*before* the swap, so a truncated or corrupt transfer leaves the running
+commands untouched; a good one is installed by `ramfs_replace()` and the
+previous received copy is freed.  Existing processes are unaffected (they
+already loaded their ELF), and the next spawn picks up the new files.  The
+WM idle loop auto-detects both the kernel (KXEC/KXNU) and the pack (KXNP)
+transfers, so a plain `make cmds-dev`/`make net-cmds` is enough.
 
 ## Network hot-reload (net-dev) workflow
 
@@ -486,6 +510,10 @@ QEMU gotchas that bit once:
 - `pkill -f qemu-system-i386` matches *your own shell command line* (it contains
   the string) and kills your script; use `pkill qemu` (process-name match) or
   kill by PID.
+- When a harness drives a `-serial unix:...` chardev, connect **before** the
+  guest boots (immediately after QEMU starts): QEMU discards guest output
+  written while no client is attached, so a late-connecting reader misses the
+  boot log (kexec tests that wait for it then mis-report a failed reload).
 
 ## On-screen debug overlay (`kdbg`)
 

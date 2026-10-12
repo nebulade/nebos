@@ -21,6 +21,7 @@
 
 #define DATA_MAX   1400
 #define MAGIC_HDR  0x554E584Bu   /* "KXNU" */
+#define MAGIC_PAY   0x504E584Bu   /* "KXNP" */
 #define MAGIC_DATA 0x444E584Bu   /* "KXND" */
 #define MAGIC_ACK  0x414E584Bu   /* "KXNA" */
 #define ACK_DONE   1
@@ -78,16 +79,33 @@ int main(int argc, char **argv)
 	FILE *f;
 	unsigned int offset = 0, sum = 0;
 	int fd, i, fails = 0;
+	int payload = 0;
 	struct sockaddr_in dst;
 
-	if (argc != 5) {
-		fprintf(stderr, "usage: %s <board-ip> <port> <entry-hex> <file>\n", argv[0]);
-		return 2;
+	/* --payload: replace the command pack (/ramfs) instead of the kernel. */
+	if (argc > 1 && strcmp(argv[1], "--payload") == 0) {
+		if (argc != 5) {
+			fprintf(stderr, "usage: %s --payload <board-ip> <port> <file>\n",
+				argv[0]);
+			return 2;
+		}
+		payload = 1;
+		ip = argv[2];
+		port = (unsigned int)strtoul(argv[3], NULL, 0);
+		path = argv[4];
+		entry = 0;
+	} else {
+		if (argc != 5) {
+			fprintf(stderr,
+				"usage: %s <board-ip> <port> <entry-hex> <file>\n",
+				argv[0]);
+			return 2;
+		}
+		ip = argv[1];
+		port = (unsigned int)strtoul(argv[2], NULL, 0);
+		entry = (unsigned int)strtoul(argv[3], NULL, 16);
+		path = argv[4];
 	}
-	ip = argv[1];
-	port = (unsigned int)strtoul(argv[2], NULL, 0);
-	entry = (unsigned int)strtoul(argv[3], NULL, 16);
-	path = argv[4];
 
 	f = fopen(path, "rb");
 	if (!f) {
@@ -126,10 +144,15 @@ int main(int argc, char **argv)
 	}
 
 	pkt = malloc(12 + DATA_MAX);
-	printf("netkexec: %s:%u, %ld bytes, entry 0x%08x\n", ip, port, size, entry);
+	if (payload)
+		printf("netkexec: %s:%u, %ld bytes, command pack for /ramfs\n",
+		       ip, port, size);
+	else
+		printf("netkexec: %s:%u, %ld bytes, entry 0x%08x\n",
+		       ip, port, size, entry);
 
 	/* Header first: the board answers with the first expected offset. */
-	wr32(pkt, MAGIC_HDR);
+	wr32(pkt, payload ? MAGIC_PAY : MAGIC_HDR);
 	wr32(pkt + 4, entry);
 	wr32(pkt + 8, (uint32_t)size);
 	wr32(pkt + 12, (uint32_t)sum);
@@ -190,7 +213,12 @@ int main(int argc, char **argv)
 		       offset, size);
 		fflush(stdout);
 	}
-	printf("\rnetkexec: 100%% (%ld bytes) - image accepted, board is jumping\n", size);
+	if (payload)
+		printf("\rnetkexec: 100%% (%ld bytes) - pack accepted, /ramfs replaced\n",
+		       size);
+	else
+		printf("\rnetkexec: 100%% (%ld bytes) - image accepted, board is jumping\n",
+		       size);
 	close(fd);
 	free(pkt);
 	free(data);

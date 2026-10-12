@@ -36,15 +36,33 @@ int main(int argc, char *argv[])
 	unsigned char hdr[12];
 	struct termios tty;
 	uint32_t entry;
+	const char *dev, *baud, *file;
+	int payload = 0;
 
-	if (argc != 5) {
-		fprintf(stderr, "Usage: %s <device> <baud> <entry_hex> <file>\n", argv[0]);
-		return 1;
+	if (argc > 1 && strcmp(argv[1], "--payload") == 0) {
+		if (argc != 5) {
+			fprintf(stderr, "Usage: %s --payload <device> <baud> <file>\n",
+				argv[0]);
+			return 1;
+		}
+		payload = 1;
+		dev = argv[2];
+		baud = argv[3];
+		file = argv[4];
+		entry = 0;
+	} else {
+		if (argc != 5) {
+			fprintf(stderr, "Usage: %s <device> <baud> <entry_hex> <file>\n",
+				argv[0]);
+			return 1;
+		}
+		dev = argv[1];
+		baud = argv[2];
+		entry = (uint32_t)strtoul(argv[3], NULL, 16);
+		file = argv[4];
 	}
 
-	entry = (uint32_t)strtoul(argv[3], NULL, 16);
-
-	fp = fopen(argv[4], "rb");
+	fp = fopen(file, "rb");
 	if (!fp) {
 		perror("fopen");
 		return 1;
@@ -71,7 +89,7 @@ int main(int argc, char *argv[])
 		cksum += data[i];
 	cksum &= 0xFF;
 
-	fd = open(argv[1], O_RDWR | O_NOCTTY);
+	fd = open(dev, O_RDWR | O_NOCTTY);
 	if (fd < 0) {
 		perror("open");
 		free(data);
@@ -85,8 +103,8 @@ int main(int argc, char *argv[])
 		close(fd);
 		return 1;
 	}
-	cfsetispeed(&tty, (speed_t)atoi(argv[2]));
-	cfsetospeed(&tty, (speed_t)atoi(argv[2]));
+	cfsetispeed(&tty, (speed_t)atoi(baud));
+	cfsetospeed(&tty, (speed_t)atoi(baud));
 	tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
 	tty.c_cflag |= CLOCAL | CREAD;
 	tty.c_cflag &= ~(PARENB | PARODD | CRTSCTS | CSTOPB);
@@ -102,9 +120,12 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	fprintf(stderr, "Sending %ld bytes (entry 0x%08x)...\n", size, entry);
+	if (payload)
+		fprintf(stderr, "Sending %ld bytes (command pack)...\n", size);
+	else
+		fprintf(stderr, "Sending %ld bytes (entry 0x%08x)...\n", size, entry);
 
-	memcpy(hdr, "KXEC", 4);
+	memcpy(hdr, payload ? "KXNP" : "KXEC", 4);
 	put32le(hdr + 4, entry);
 	put32le(hdr + 8, (uint32_t)size);
 

@@ -24,11 +24,15 @@
 #include "serial.h"
 #include "timer.h"
 #include "netkexec.h"
+#include "mm.h"
+#include "ramfs.h"
+#include "vfs.h"
 
 #define NETKEXEC_PORT       19288
 #define NETKEXEC_DATA_MAX   1400
 
 #define X_MAGIC_HDR   0x554E584Bu   /* "KXNU" */
+#define X_MAGIC_PAY   0x504E584Bu   /* "KXNP": a command pack for /ramfs */
 #define X_MAGIC_DATA  0x444E584Bu   /* "KXND" */
 #define X_MAGIC_ACK   0x414E584Bu   /* "KXNA" */
 
@@ -40,8 +44,29 @@ static unsigned char rxbuf[1520];       /* one full Ethernet frame */
 static unsigned char replybuf[1520];
 static unsigned char ackbuf[12];
 
+/* Page-allocated staging for a payload transfer (freed after the swap). */
+static unsigned int pay_buf;
+static unsigned int pay_size;
+
+static int net_payload_alloc(unsigned int size)
+{
+	pay_size = size;
+	pay_buf = mm_alloc_pages((size + 0xFFFu) >> 12);
+	return pay_buf != 0;
+}
+
+static void net_payload_free(void)
+{
+	unsigned int i;
+
+	for (i = 0; i * 0x1000 < pay_size; i++)
+		mm_free_page(pay_buf + i * 0x1000);
+	pay_buf = 0;
+}
+
 /* Pending transfer (filled by netkexec_pending). */
 static int have_header;
+static int payload_mode;         /* header was KXNP: replace the ramfs instead */
 static unsigned int x_entry, x_size, x_csum;
 static unsigned char peer_mac[6], peer_ip[4];
 static unsigned int peer_port;
@@ -148,11 +173,17 @@ int netkexec_pending(void)
 			nd->tx(replybuf, (unsigned int)rlen);
 		return 0;
 	}
-	if (plen < 16 || rd32(payload) != X_MAGIC_HDR)
+	if (plen < 16)
 		return 0;
-	if (plen < 16 || rd32(payload) != X_MAGIC_HDR)
-		return 0;
+	{
+		/* KXNU: kernel image (jump after the checksum); KXNP: a command
+		 * pack for /ramfs (swap it in and stay running). */
+		unsigned int magic = rd32(payload);
 
+		if (magic != X_MAGIC_HDR && magic != X_MAGIC_PAY)
+			return 0;
+		payload_mode = (magic == X_MAGIC_PAY);
+	}
 	x_entry = rd32(payload + 4);
 	x_size = rd32(payload + 8);
 	x_csum = rd32(payload + 12);
@@ -173,9 +204,9 @@ static void send_ack(unsigned int next_offset, unsigned int status)
 		     ackbuf, sizeof(ackbuf));
 }
 
-static int netkexec_recv(void)
+static int netkexec_recv(unsigned int stage_base)
 {
-	volatile unsigned char *stage = (volatile unsigned char *)kexec_stage;
+	volatile unsigned char *stage = (volatile unsigned char *)stage_base;
 	unsigned int offset = 0, retries = 0, sum = 0;
 	unsigned int deadline = get_ticks_ms() + 3000;
 
@@ -247,6 +278,44 @@ void program_netkexec_main(void)
 	io_puthex(x_size);
 	io_putstr(" bytes over UDP...\n");
 
+	if (payload_mode) {
+		unsigned int buf = 0;
+
+		if (!net_payload_alloc(x_size)) {
+			io_putstr("netkexec: out of memory (staging)\n");
+			netdev_release();
+			kexec_busy = 0;
+			return;
+		}
+		buf = pay_buf;
+
+		if (netkexec_recv(buf) != 0) {
+			io_putstr("\nnetkexec: aborted (timeout or checksum)\n");
+			net_payload_free();
+			netdev_release();
+			kexec_busy = 0;
+			return;
+		}
+
+		io_putstr("\nnetkexec: received ");
+		io_puthex(x_size);
+		io_putstr(" bytes, ");
+		if (ramfs_replace((const void *)buf, x_size) != 0) {
+			io_putstr("not a valid pack (unchanged)\n");
+			net_payload_free();     /* the ramfs kept the old pack */
+		} else {
+			vfs_refresh_ramfs();
+			io_putstr("pack installed (");
+			io_puthex(ramfs_count());
+			io_putstr(" files)\n");
+			pay_buf = 0;            /* ownership moved to the ramfs */
+			pay_size = 0;
+		}
+		netdev_release();
+		kexec_busy = 0;
+		return;
+	}
+
 	if (!kexec_stage_alloc(x_size)) {
 		io_putstr("netkexec: out of memory (staging)\n");
 		netdev_release();
@@ -254,7 +323,7 @@ void program_netkexec_main(void)
 		return;
 	}
 
-	if (netkexec_recv() != 0) {
+	if (netkexec_recv(kexec_stage) != 0) {
 		io_putstr("\nnetkexec: aborted (timeout or checksum)\n");
 		kexec_stage_free();
 		netdev_release();

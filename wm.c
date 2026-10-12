@@ -11,6 +11,7 @@
 #include "mouse.h"
 #include "netkexec.h"
 #include "netlog.h"
+#include "payload.h"
 #include "process.h"
 #include "rtc.h"
 #include "timer.h"
@@ -599,6 +600,14 @@ static void wm_handle_kexec(void)
 {
 	if (kexec_busy)
 		return;
+	/* A command pack for /ramfs (checked before kexec: both start with
+	 * 'K', and the kexec detector drops anything that is not KXEC). */
+	if (payload_pending()) {
+		kexec_busy = 1;
+		if (process_create("payload", program_payload_main) < 0)
+			kexec_busy = 0;
+		return;
+	}
 	if (kexec_pending()) {
 		kexec_busy = 1;
 		if (process_create("kexec", program_kexec_main) < 0)
