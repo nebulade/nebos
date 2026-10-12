@@ -21,6 +21,7 @@
 #define PROC_CWD_MAX  64
 
 struct text_screen;  /* forward decl (see screen.h) */
+struct sys_procinfo; /* forward decl (see syscall.h; `top` snapshot) */
 
 struct process {
 	unsigned int esp;
@@ -33,6 +34,11 @@ struct process {
 	unsigned int kstack_top;     /* ring-0 stack top (for TSS esp0) */
 	unsigned int wake_ms;        /* tick deadline when PROC_SLEEPING */
 	char cwd[PROC_CWD_MAX];      /* working directory (ring-3 commands) */
+	/* CPU accounting for `top`.  switch.S credits the running process on
+	 * every PIT tick, so the layout after cwd must match PCB_CPU_TICKS /
+	 * PCB_SIZE there (see the _Static_assert in process.c). */
+	unsigned int cpu_ticks;      /* ticks spent as the running process */
+	unsigned int start_ticks;    /* get_ticks_ms() at creation */
 };
 
 /* User-mode virtual address layout (ring-3 processes). */
@@ -66,6 +72,10 @@ void process_map_mmio_all(unsigned int phys_base, unsigned int size);
 void process_exit(void);
 void schedule(void);
 void process_ps(void);
+
+/* Fill *out with a snapshot of the index-th live process (slot order) for
+ * the `top` command.  Returns 1 when found, 0 at the end of the table. */
+int  process_procinfo(unsigned int index, struct sys_procinfo *out);
 int  process_kill(unsigned int pid);
 int  process_is_alive(unsigned int pid);
 void process_wait(unsigned int pid);

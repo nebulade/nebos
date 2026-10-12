@@ -333,7 +333,7 @@ prog: prog.bin
 # mounted at /ramfs/bin (the shell's PATH default).  New command: add
 # ucmd_<name>.c to UCMDS; the pack is rebuilt automatically.
 UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
-        ucmd_meminfo ucmd_mouseinfo ucmd_storage \
+        ucmd_meminfo ucmd_mouseinfo ucmd_storage ucmd_top \
         ucmd_netinfo ucmd_netip ucmd_netdns ucmd_host ucmd_dhcp \
         ucmd_netsend ucmd_netrecv ucmd_ping ucmd_pong ucmd_netlog \
         ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_curl

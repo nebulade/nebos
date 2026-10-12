@@ -157,6 +157,18 @@ static inline unsigned int u_ticks_ms(void)
 	return (unsigned int)u_syscall0(SYS_GET_TICKS_MS);
 }
 
+/* Cursor position of this process's terminal screen (linear cell index);
+ * used by `top` to repaint its frame in place. */
+static inline unsigned int u_get_cursor(void)
+{
+	return (unsigned int)u_syscall0(SYS_GET_CURSOR);
+}
+
+static inline void u_set_cursor(unsigned int pos)
+{
+	u_syscall1(SYS_SET_CURSOR, (int)pos);
+}
+
 static inline void u_sleep_ms(unsigned int ms)
 {
 	u_syscall1(SYS_SLEEP_MS, (int)ms);

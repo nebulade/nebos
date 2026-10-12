@@ -135,6 +135,14 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		out[i] = '\0';
 		return 0;
 	}
+	case SYS_PROCINFO:
+		return process_procinfo((unsigned int)a1,
+					(struct sys_procinfo *)a2);
+	case SYS_GET_CURSOR:
+		return (int)io_get_cursor();
+	case SYS_SET_CURSOR:
+		io_set_cursor((unsigned int)a1);
+		return 0;
 	default:
 		return -1;
 	}

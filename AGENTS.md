@@ -67,7 +67,9 @@ below the run area), so adding code no longer moves any address.
   `ps`/`kill`. Context switch happens in the PIT stub. Each process carries a
   `struct text_screen *screen` output target (child processes inherit it, so
   command output lands in the owning terminal). Exited processes are reaped and
-  their stacks freed by the scheduler.
+  their stacks freed by the scheduler. The PIT stub also credits every tick to
+  the running process (`cpu_ticks`/`start_ticks`; `process_procinfo()`, exposed
+  as `SYS_PROCINFO`), which the ring-3 `top` command turns into a live CPU%.
 - **Memory**: `mm.c/h` — INT 15h E820 detection (real-mode in `vesa_stage.S`,
   map at `0x1000`) + a bitmap page-frame allocator (4 KB pages). Reserves low
   1 MB and an 8 MB VGA-shadow region. `kmalloc.c/h` — a power-of-two heap
@@ -226,7 +228,7 @@ below the run area), so adding code no longer moves any address.
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
-`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `format <device>`,
+`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
@@ -254,7 +256,7 @@ changed with `cd`; paths may be absolute (`/floppy1/…`) or relative (`.`, `..`
 nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
-`cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
+`cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`,
 `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
 `netreset`, `curl` and `hello` are files in `/ramfs/bin` (packed by the

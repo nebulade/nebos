@@ -30,7 +30,8 @@
 .equ PCB_ESP,   0
 .equ PCB_CR3,   32
 .equ PCB_KSTACK_TOP, 36
-.equ PCB_SIZE,  108     /* sizeof(struct process): 44 + cwd[64] */
+.equ PCB_CPU_TICKS, 108  /* after cwd[64] */
+.equ PCB_SIZE,  116     /* sizeof(struct process): 44 + cwd[64] + 2*4 */
 
 .equ TIMESLICE, 20
 .equ FLUSH_INTERVAL, 33 /* 1000Hz PIT / 30Hz flush ≈ 33 ticks */
@@ -53,6 +54,12 @@ pit_irq_stub:
 	incl  ticks
 	movb  $0x20, %al
 	outb  %al, $0x20
+
+	/* Account this tick to the process that was interrupted (for `top`). */
+	movl  current_pid, %eax
+	imull $PCB_SIZE, %eax
+	addl  procs, %eax
+	incl  PCB_CPU_TICKS(%eax)
 
 	/* Poll UART for received serial data (prevents FIFO overflow). */
 	call  serial_poll

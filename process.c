@@ -10,6 +10,7 @@
 #include "serial.h"
 #include "sys_fs.h"
 #include "sys_net.h"
+#include "syscall.h"
 #include "timer.h"
 
 struct process *procs;               /* dynamically-sized process table */
@@ -23,6 +24,11 @@ static unsigned int fallback_stack_next;  /* 0..PROC_FALLBACK_STACK_MAX */
 extern char __boot_stack_top[];
 
 #define INITIAL_PROC_CAP 16
+
+/* switch.S addresses the table entries with an immediate PCB_SIZE/PCB_CPU_TICKS
+ * and cannot see this struct; keep the two in sync. */
+_Static_assert(sizeof(struct process) == 116,
+	       "struct process layout changed: update PCB_SIZE/PCB_CPU_TICKS in switch.S");
 
 /* ---- interrupt flag save/restore (for short critical sections) ---- */
 static inline unsigned int irq_save_disable(void)
@@ -140,6 +146,8 @@ void process_init(void)
 	procs[0].stack_base = 0;  /* bootstrap stack, never freed */
 	procs[0].cr3        = paging_current_cr3();
 	procs[0].kstack_top = (unsigned int)__boot_stack_top;
+	procs[0].cpu_ticks  = 0;
+	procs[0].start_ticks = 0;  /* the WM "starts" at boot */
 	name_copy(procs[0].name, "wm");
 	current_pid = 0;
 }
@@ -228,6 +236,8 @@ static int setup_process(const char *name, unsigned int entry,
 	procs[slot].stack_base = owned ? base : 0;
 	procs[slot].cr3        = cr3;
 	procs[slot].kstack_top = top;
+	procs[slot].cpu_ticks  = 0;
+	procs[slot].start_ticks = get_ticks_ms();
 	name_copy(procs[slot].name, name);
 	/* Child inherits the parent's output screen (command output lands in the
 	   terminal that spawned it). */
@@ -292,6 +302,8 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 	procs[slot].stack_base = owned ? base : 0;
 	procs[slot].cr3        = cr3;
 	procs[slot].kstack_top = top;
+	procs[slot].cpu_ticks  = 0;
+	procs[slot].start_ticks = get_ticks_ms();
 	name_copy(procs[slot].name, name);
 	procs[slot].screen = procs[current_pid].screen;
 	irq_restore(flags);
@@ -402,6 +414,8 @@ int process_create_user(const char *name, const void *image, unsigned int size,
 	procs[slot].stack_base = owned ? base : 0;
 	procs[slot].cr3        = cr3;
 	procs[slot].kstack_top = top;
+	procs[slot].cpu_ticks  = 0;
+	procs[slot].start_ticks = get_ticks_ms();
 	name_copy(procs[slot].name, name);
 	procs[slot].screen = procs[current_pid].screen;
 	{
@@ -553,6 +567,64 @@ void process_ps(void)
 		io_putstr(procs[i].name);
 		io_putchar('\n');
 	}
+}
+
+/* Count the 4 KB user pages mapped between USER_BASE and USER_STACK_TOP.
+ * A read-only page-directory walk (paging keeps everything identity-mapped,
+ * so the tables are directly addressable).  Used by `top` for the memory
+ * hint; ring-3 processes currently leak these pages on reap (known issue),
+ * but ex-processes are gone from the table by then anyway. */
+static unsigned int count_user_pages(unsigned int cr3)
+{
+	const unsigned int *pd;
+	unsigned int i, pages = 0;
+
+	if (!cr3)
+		return 0;
+	pd = (const unsigned int *)cr3;
+	for (i = USER_BASE >> 22; i <= (USER_STACK_TOP - 1) >> 22; i++) {
+		unsigned int pde = pd[i];
+		const unsigned int *pt;
+
+		if (!(pde & PTE_PRESENT) || (pde & 0x80))  /* 0x80: 4 MB page */
+			continue;
+		pt = (const unsigned int *)(pde & 0xFFFFF000u);
+		{
+			unsigned int j;
+			for (j = 0; j < 1024; j++)
+				if (pt[j] & PTE_PRESENT)
+					pages++;
+		}
+	}
+	return pages;
+}
+
+/* Snapshot of the index-th live process, for the `top` syscall.  Indexes over
+ * live processes in slot order, so callers iterate 0, 1, ... until 0. */
+int process_procinfo(unsigned int index, struct sys_procinfo *out)
+{
+	unsigned int i, seen = 0, life;
+
+	if (!out)
+		return 0;
+	for (i = 0; i < proc_cap; i++) {
+		if (procs[i].state == PROC_UNUSED || procs[i].state == PROC_DEAD)
+			continue;
+		if (seen++ != index)
+			continue;
+
+		life = get_ticks_ms() - procs[i].start_ticks;
+		out->pid        = procs[i].pid;
+		out->state      = procs[i].state;
+		out->cpu_ticks  = procs[i].cpu_ticks;
+		out->life_ticks = life ? life : 1;
+		/* Kernel stack page + page directory + user pages (the WM shares
+		 * the kernel directory; counting one is close enough). */
+		out->pages      = 2 + count_user_pages(procs[i].cr3);
+		name_copy(out->name, procs[i].name);
+		return 1;
+	}
+	return 0;
 }
 
 int process_kill(unsigned int pid)

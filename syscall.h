@@ -69,6 +69,12 @@
 #define SYS_NET_CONFIGURED 47 /* () -> 1 when an IP address is set */
 #define SYS_GETCWD       48  /* (char *buf, unsigned max) -> 0; the caller's cwd */
 
+/* Process snapshot for the `top` command (see process.c). */
+#define SYS_PROCINFO     49  /* (unsigned int index, struct sys_procinfo *out)
+				-> 1 when found, 0 at the end of the table */
+#define SYS_GET_CURSOR   50  /* () -> cursor position of the caller's screen */
+#define SYS_SET_CURSOR   51  /* (unsigned int pos) -> 0 */
+
 struct sys_netinfo {
 	unsigned int present;
 	unsigned char mac[6];
@@ -111,6 +117,17 @@ struct sys_meminfo {
 	unsigned int free_pages;
 	unsigned int page_size;
 	unsigned int e820_count;
+};
+
+/* One live process, for `top` (PROC_NAME_LEN = 12).  cpu_ticks/life_ticks
+ * are PIT ticks (1 kHz), so lifecycle percentages can be derived. */
+struct sys_procinfo {
+	unsigned int pid;
+	unsigned int state;       /* PROC_*: 1 ready, 2 running, 4 sleeping */
+	unsigned int cpu_ticks;   /* ticks spent as the running process */
+	unsigned int life_ticks;  /* ticks since creation, >= 1 */
+	unsigned int pages;       /* resident 4 KB pages (stack + dir + user) */
+	char name[12];
 };
 
 struct sys_e820 {
