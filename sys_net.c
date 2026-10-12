@@ -16,6 +16,27 @@
 #include "netdev.h"
 #include "netlog.h"
 #include "process.h"
+#include "tcp.h"
+#include "timer.h"
+
+/* One TCP connection at a time (the stack is single-connection, and the
+ * receiver is owned by the process using it). */
+static struct tcp_conn tcp;
+
+/* Long waits inside the stack (ARP/DNS/DHCP/TCP) spin on get_ticks_ms(), so
+ * they need interrupts: the syscall stub entered with them off, and a frozen
+ * tick counter would never satisfy a deadline.  The netdev ownership already
+ * serializes net users, so running with IRQs on (and being preempted) is
+ * safe. */
+static void net_enter(void)
+{
+	__asm__ volatile ("sti");
+}
+
+static void net_exit(void)
+{
+	__asm__ volatile ("cli");
+}
 
 static unsigned int caller_pid(void)
 {
@@ -167,7 +188,12 @@ int sys_net_reset(void)
 
 int sys_dhcp_run(unsigned int timeout_ms)
 {
-	return dhcp_run(timeout_ms);
+	int r;
+
+	net_enter();
+	r = dhcp_run(timeout_ms);
+	net_exit();
+	return r;
 }
 
 int sys_dhcp_info(unsigned char server[4], unsigned int *lease)
@@ -177,9 +203,90 @@ int sys_dhcp_info(unsigned char server[4], unsigned int *lease)
 
 int sys_dns_resolve(const char *name, unsigned char ip[4])
 {
+	int r;
+
 	if (!owns_nic())
 		return -1;
-	return dns_resolve(name, ip);
+	net_enter();
+	r = dns_resolve(name, ip);
+	net_exit();
+	return r;
+}
+
+/* ---- TCP client ---- */
+
+int sys_tcp_connect(const unsigned char mac[6], const unsigned char ip[4],
+		    unsigned int port)
+{
+	int r;
+
+	if (!owns_nic())
+		return -3;
+	net_enter();
+	r = tcp_connect(mac, ip, port, &tcp);
+	net_exit();
+	return r;
+}
+
+int sys_tcp_peer_mss(void)
+{
+	return (int)tcp.peer_mss;
+}
+
+int sys_tcp_send(const void *buf, unsigned int len)
+{
+	int r;
+
+	if (!owns_nic())
+		return -3;
+	net_enter();
+	r = tcp_send(&tcp, buf, len);
+	net_exit();
+	return r;
+}
+
+int sys_tcp_recv(void *buf, unsigned int max, unsigned int timeout_ms)
+{
+	int r;
+
+	if (!owns_nic())
+		return -2;
+	net_enter();
+	r = tcp_recv(&tcp, buf, max, get_ticks_ms() + timeout_ms);
+	net_exit();
+	return r;
+}
+
+void sys_tcp_close(void)
+{
+	if (!owns_nic())
+		return;
+	net_enter();
+	tcp_close(&tcp);
+	net_exit();
+}
+
+int sys_net_next_hop(const unsigned char dst[4], unsigned char hop[4])
+{
+	net_next_hop(dst, hop);
+	return 0;
+}
+
+int sys_net_arp(const unsigned char ip[4], unsigned char mac[6])
+{
+	int r;
+
+	if (!owns_nic())
+		return -2;
+	net_enter();
+	r = net_arp_resolve(ip, mac);
+	net_exit();
+	return r;
+}
+
+int sys_net_configured(void)
+{
+	return net_is_configured();
 }
 
 int sys_netlog(const char *text)

@@ -26,7 +26,6 @@ extern void program_format_main(const char *arg);
 extern void program_lspci_main(const char *filter);
 extern void program_peek_main(const char *arg);
 extern void program_poke_main(const char *arg);
-extern void program_curl_main(const char *arg);
 
 /* Print the prompt (with the current directory) and set line_start. */
 static void term_print_prompt(struct term *t, int first)
@@ -140,7 +139,7 @@ static const struct kcmd cmds[] = {
 	{ "dbg",        "dbg",                           CK_CUSTOM, 0, 0, 0, 0, cmd_dbg },
 	{ "serial",     "serial test|recv",              CK_CUSTOM, 0, 0, 0, 0, cmd_serial },
 	{ "clear",      "clear",                         CK_CUSTOM, 0, 0, 0, 0, cmd_clear },
-	{ "curl",       "curl <url>",                    CK_SPAWN_ARG, 0, 0, program_curl_main, 0, 0 },
+	{ "curl",       "curl <url>",                    CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
 	{ "netdns",     "netdns [a.b.c.d]",              CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
 	{ "host",       "host <name>",                   CK_SPAWN_ARG, CMD_USER, 0, 0, 0, 0 },
 	{ "help",       "help",                          CK_CUSTOM, 0, 0, 0, 0, cmd_help },
@@ -199,6 +198,8 @@ extern unsigned char _binary_ucmd_netloop_elf_start[];
 extern unsigned char _binary_ucmd_netloop_elf_end[];
 extern unsigned char _binary_ucmd_netreset_elf_start[];
 extern unsigned char _binary_ucmd_netreset_elf_end[];
+extern unsigned char _binary_ucmd_curl_elf_start[];
+extern unsigned char _binary_ucmd_curl_elf_end[];
 
 struct ucmd_blob {
 	const char *name;
@@ -231,6 +232,7 @@ static const struct ucmd_blob ucmds[] = {
 	{ "netregs",      _binary_ucmd_netregs_elf_start,              _binary_ucmd_netregs_elf_end },
 	{ "netloop",      _binary_ucmd_netloop_elf_start,              _binary_ucmd_netloop_elf_end },
 	{ "netreset",     _binary_ucmd_netreset_elf_start,              _binary_ucmd_netreset_elf_end },
+	{ "curl",         _binary_ucmd_curl_elf_start,                 _binary_ucmd_curl_elf_end },
 };
 
 

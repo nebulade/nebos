@@ -31,5 +31,14 @@ int sys_dhcp_info(unsigned char server[4], unsigned int *lease);
 int sys_dns_resolve(const char *name, unsigned char ip[4]);
 int sys_netlog(const char *text);
 int sys_netlog_conf(int enabled, const unsigned char *ip);
+int sys_tcp_connect(const unsigned char mac[6], const unsigned char ip[4],
+		    unsigned int port);
+int sys_tcp_peer_mss(void);
+int sys_tcp_send(const void *buf, unsigned int len);
+int sys_tcp_recv(void *buf, unsigned int max, unsigned int timeout_ms);
+void sys_tcp_close(void);
+int sys_net_next_hop(const unsigned char dst[4], unsigned char hop[4]);
+int sys_net_arp(const unsigned char ip[4], unsigned char mac[6]);
+int sys_net_configured(void);
 
 #endif

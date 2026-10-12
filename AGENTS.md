@@ -187,7 +187,7 @@ below the run area), so adding code no longer moves any address.
   `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
   `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`,
   `ping`, `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`,
-  `netloop`, `netreset`.  They talk to the kernel through `int 0x80`
+  `netloop`, `netreset`, `curl`.  They talk to the kernel through `int 0x80`
   (`syscall.h`: putstr/ticks/sleep/exit, the whole-file service in
   `sys_fs.c`, the state snapshots in `sys_info.c` and the network service in
   `sys_net.c`) and inherit the terminal's screen, so their output lands in
@@ -203,6 +203,13 @@ below the run area), so adding code no longer moves any address.
   process at a time (`netdev_acquire`): the background kexec watcher pauses
   while a command owns it, and the reaper force-releases it if that process
   dies (`sys_net_reap`, driven by `netdev_owner()`/`netdev_release_all()`).
+  The TCP client is exposed as `TCP_CONNECT/PEER_MSS/SEND/RECV/CLOSE` (one
+  connection at a time, `tcp.c` keeps the state) plus `NET_NEXT_HOP`/`NET_ARP`
+  for the route to the peer.  Calls that wait inside the stack (ARP, DNS,
+  DHCP, TCP) re-enable interrupts for the duration: the syscall stub enters
+  with them off, and the deadlines spin on `get_ticks_ms()` -- a frozen tick
+  counter would never satisfy them.  The netdev ownership already serializes
+  net users, so being preempted mid-wait is safe.
 
 ## Shell commands
 
@@ -239,9 +246,9 @@ filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`,
 `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
-`pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`
-and `netreset` run as ring-3 processes (embedded `ucmd_*.c`); the rest are
-kernel commands spawned as processes, or shell builtins (`cd`, `clear`,
+`pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
+`netreset` and `curl` run as ring-3 processes (embedded `ucmd_*.c`); the rest
+are kernel commands spawned as processes, or shell builtins (`cd`, `clear`,
 `help`).
 
 ## Serial hot-reload (kexec) workflow
@@ -582,8 +589,11 @@ Caveats:
 7. Killing/reaping a ring-3 process frees its kernel stack and page directory
    but not the user pages mapped into it (a few pages leak per command run;
    needs a page-table walk/unmap on reap).
-8. `curl` (needs a TCP socket API), `display` (needs a GPU snapshot) and
-   `lsusb` (a 45-byte wrapper around the USB tree printer) are the last
-   commands still living in the kernel, plus the privileged ones (`peek`,
-   `poke`, `dbg`, `serial`, `kexec`, `reboot`, `poweroff`, `format`,
-   `run`/`prog`/`space`, `ps`/`kill`).
+8. `display` (needs a GPU snapshot) and `lsusb` (a 45-byte wrapper around
+   the USB tree printer) are the last non-privileged commands still living in
+   the kernel, plus the privileged ones (`peek`, `poke`, `dbg`, `serial`,
+   `kexec`, `reboot`, `poweroff`, `format`, `run`/`prog`/`space`, `ps`/`kill`).
+9. Every ring-3 command is a full ELF whose LOAD segment starts at file
+   offset 0x1000 (the linker's page alignment), so ~4 KB of each ~8 KB blob is
+   padding: 25 commands carry ~100 KB of it.  Linking them with
+   `-z max-page-size=0x100` would remove most of that.

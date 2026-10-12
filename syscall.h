@@ -57,6 +57,17 @@
 #define SYS_NETLOG        38  /* (const char *text) -> 0/-1 */
 #define SYS_NETLOG_CONF   39  /* (int enabled_or_-1, const ip[4] or NULL) */
 
+/* TCP client (see sys_net.c/tcp.c): one connection at a time; the caller
+ * must own the NIC (SYS_NET_ACQUIRE). */
+#define SYS_TCP_CONNECT   40  /* (mac[6], ip[4], port) -> 0/-1/-2/-3 */
+#define SYS_TCP_PEER_MSS  41  /* () -> the peer's MSS of the current conn */
+#define SYS_TCP_SEND      42  /* (buf, len) -> 0/-1/-2/-3 */
+#define SYS_TCP_RECV      43  /* (buf, max, timeout_ms) -> >0/0/-1/-2 */
+#define SYS_TCP_CLOSE     44  /* () */
+#define SYS_NET_NEXT_HOP  45  /* (dst[4], hop[4]) */
+#define SYS_NET_ARP       46  /* (ip[4], mac[6]) -> 0/-1/-2 (net_arp_resolve) */
+#define SYS_NET_CONFIGURED 47 /* () -> 1 when an IP address is set */
+
 struct sys_netinfo {
 	unsigned int present;
 	unsigned char mac[6];

@@ -103,6 +103,26 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		return sys_netlog((const char *)a1);
 	case SYS_NETLOG_CONF:
 		return sys_netlog_conf(a1, (const unsigned char *)a2);
+	case SYS_TCP_CONNECT:
+		return sys_tcp_connect((const unsigned char *)a1,
+				       (const unsigned char *)a2,
+				       (unsigned int)a3);
+	case SYS_TCP_PEER_MSS:
+		return sys_tcp_peer_mss();
+	case SYS_TCP_SEND:
+		return sys_tcp_send((const void *)a1, (unsigned int)a2);
+	case SYS_TCP_RECV:
+		return sys_tcp_recv((void *)a1, (unsigned int)a2, (unsigned int)a3);
+	case SYS_TCP_CLOSE:
+		sys_tcp_close();
+		return 0;
+	case SYS_NET_NEXT_HOP:
+		return sys_net_next_hop((const unsigned char *)a1,
+					(unsigned char *)a2);
+	case SYS_NET_ARP:
+		return sys_net_arp((const unsigned char *)a1, (unsigned char *)a2);
+	case SYS_NET_CONFIGURED:
+		return sys_net_configured();
 	default:
 		return -1;
 	}
