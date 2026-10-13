@@ -21,14 +21,16 @@ static inline unsigned int row_to_y0(unsigned int row)
 	return row == 0 ? HEADER_TOP : (CONTENT_TOP + (row - 1) * ROW_HEIGHT);
 }
 
-/* Draw one 8x8 glyph at pixel (x0, y0). height 8 = glyph only; 10 = glyph + 2 rows bg (terminal row).
+/* Draw one 8x8 glyph at pixel (x0, y0), clipped to [cx0,cx1) x [cy0,cy1).
+   height 8 = glyph only; 10 = glyph + 2 rows bg (terminal row).
    skip_bg: 1 = only draw foreground (transparent background for overlays).
    Writes directly into the shadow buffer (no per-pixel function call); the
    caller is responsible for marking the affected rows dirty. */
-static void draw_glyph_at(unsigned int x0, unsigned int y0, unsigned char c,
+static void draw_glyph_at_clip(unsigned int x0, unsigned int y0, unsigned char c,
 		unsigned int r_fg, unsigned int g_fg, unsigned int b_fg,
 		unsigned int r_bg, unsigned int g_bg, unsigned int b_bg,
-		unsigned int height, int skip_bg)
+		unsigned int height, int skip_bg,
+		unsigned int cx0, unsigned int cy0, unsigned int cx1, unsigned int cy1)
 {
 	unsigned int x, y;
 	const unsigned char *glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
@@ -43,20 +45,30 @@ static void draw_glyph_at(unsigned int x0, unsigned int y0, unsigned char c,
 	for (y = 0; y < height; y++) {
 		unsigned char row_bits = (y < FONT_8X8_ROWS) ? glyph[y] : 0;
 		unsigned int py = y0 + y;
+		unsigned int xa, xb;
+
+		if (py < cy0 || py >= cy1)
+			continue;
+		/* Columns of this row inside the clip (a cell that merely
+		   intersects the clip is only painted where it is visible). */
+		xa = (x0 > cx0) ? x0 : cx0;
+		xb = (x0 + 8 < cx1) ? x0 + 8 : cx1;
+		if (xa >= xb)
+			continue;
 
 		if (bpp == 16) {
-			unsigned short *p = (unsigned short *)(fb + (unsigned long)py * pitch + x0 * 2);
-			for (x = 0; x < 8; x++) {
-				if (row_bits & (0x80u >> x))
+			unsigned short *p = (unsigned short *)(fb + (unsigned long)py * pitch + xa * 2);
+			for (x = xa; x < xb; x++) {
+				if (row_bits & (0x80u >> (x - x0)))
 					*p = fg16;
 				else if (!skip_bg)
 					*p = bg16;
 				p++;
 			}
 		} else if (bpp == 24) {
-			unsigned char *p = fb + (unsigned long)py * pitch + x0 * 3;
-			for (x = 0; x < 8; x++) {
-				if (row_bits & (0x80u >> x)) {
+			unsigned char *p = fb + (unsigned long)py * pitch + xa * 3;
+			for (x = xa; x < xb; x++) {
+				if (row_bits & (0x80u >> (x - x0))) {
 					p[0] = (unsigned char)b_fg; p[1] = (unsigned char)g_fg; p[2] = (unsigned char)r_fg;
 				} else if (!skip_bg) {
 					p[0] = (unsigned char)b_bg; p[1] = (unsigned char)g_bg; p[2] = (unsigned char)r_bg;
@@ -64,9 +76,9 @@ static void draw_glyph_at(unsigned int x0, unsigned int y0, unsigned char c,
 				p += 3;
 			}
 		} else {
-			unsigned int *p = (unsigned int *)(fb + (unsigned long)py * pitch + x0 * 4);
-			for (x = 0; x < 8; x++) {
-				if (row_bits & (0x80u >> x))
+			unsigned int *p = (unsigned int *)(fb + (unsigned long)py * pitch + xa * 4);
+			for (x = xa; x < xb; x++) {
+				if (row_bits & (0x80u >> (x - x0)))
 					*p = fg32;
 				else if (!skip_bg)
 					*p = bg32;
@@ -74,6 +86,15 @@ static void draw_glyph_at(unsigned int x0, unsigned int y0, unsigned char c,
 			}
 		}
 	}
+}
+
+static void draw_glyph_at(unsigned int x0, unsigned int y0, unsigned char c,
+		unsigned int r_fg, unsigned int g_fg, unsigned int b_fg,
+		unsigned int r_bg, unsigned int g_bg, unsigned int b_bg,
+		unsigned int height, int skip_bg)
+{
+	draw_glyph_at_clip(x0, y0, c, r_fg, g_fg, b_fg, r_bg, g_bg, b_bg,
+		height, skip_bg, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu);
 }
 
 /* VGA attribute (0-15) to RGB. Standard VGA palette. */
@@ -198,8 +219,9 @@ void fbtext_draw_cells_clip(const unsigned short *cells, unsigned int cols, unsi
 			unsigned int rf, gf, bf, rb, gb, bb;
 			attr_to_rgb(attr, 1, &rf, &gf, &bf);
 			attr_to_rgb(attr, 0, &rb, &gb, &bb);
-			draw_glyph_at(x0 + col * 8, y0 + row * ROW_HEIGHT, c,
-				rf, gf, bf, rb, gb, bb, ROW_HEIGHT, 0);
+			draw_glyph_at_clip(x0 + col * 8, y0 + row * ROW_HEIGHT, c,
+				rf, gf, bf, rb, gb, bb, ROW_HEIGHT, 0,
+				cx, cy, cx + cw, cy + ch);
 		}
 	}
 	vga_fb_mark_dirty_rect_xy(y0 + (unsigned int)row0 * ROW_HEIGHT,
