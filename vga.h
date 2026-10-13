@@ -56,8 +56,10 @@ void vga_fb_flush(void);
  * within one loop, large ones are chunked so they cannot stall input. */
 void vga_fb_flush_budget(unsigned int max_bytes);
 
-/* Per-iteration flush budget: roughly a millisecond of VRAM writes. */
-#define VGA_FLUSH_BUDGET_BYTES (256u * 1024u)
+/* Per-iteration flush budget: large enough that a window-sized repaint
+ * (~0.7 MB) is flushed as one frame, small enough that a full-screen repaint
+ * is chunked instead of stalling input behind it. */
+#define VGA_FLUSH_BUDGET_BYTES (1024u * 1024u)
 
 /* Returns 1 if shadow buffer is active, 0 if rendering directly to VRAM. */
 int vga_shadow_is_active(void);

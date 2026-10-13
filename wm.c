@@ -230,11 +230,35 @@ static void wm_clamp_window(struct window *w, int nx, int ny)
 	w->y = (unsigned int)ny;
 }
 
-/* Byte copy that handles overlapping source/destination. */
+/* Overlap-safe copy.  Moving a window copies most of its area, so take four
+   bytes at a time when both rows are dword aligned (32 bpp rows always are)
+   and fall back to bytes otherwise (24 bpp at an odd x). */
 static void wm_memmove(unsigned char *dst, const unsigned char *src, unsigned int n)
 {
 	if (dst == src || n == 0)
 		return;
+
+	if ((((unsigned int)dst | (unsigned int)src) & 3) == 0) {
+		unsigned int words = n >> 2;
+		unsigned int i;
+		unsigned int *dw = (unsigned int *)dst;
+		const unsigned int *sw = (const unsigned int *)src;
+
+		if (dst < src) {
+			for (i = 0; i < words; i++)
+				dw[i] = sw[i];
+			for (i = words << 2; i < n; i++)
+				dst[i] = src[i];
+		} else {
+			/* Overlapping move down: back to front. */
+			for (i = n; i > (words << 2); i--)
+				dst[i - 1] = src[i - 1];
+			for (i = words; i-- > 0; )
+				dw[i] = sw[i];
+		}
+		return;
+	}
+
 	if (dst < src) {
 		unsigned int i;
 		for (i = 0; i < n; i++)
@@ -317,8 +341,10 @@ static void wm_redraw_rect(unsigned int x, unsigned int y,
 }
 
 /* Move a window in the shadow buffer: copy its rect, redraw the exposed
-   sliver, keep the cursor on top, and mark the swept rows dirty.  Does not
-   touch VRAM; the main loop's budgeted flush copies the affected rows. */
+   sliver, keep the cursor on top, and flush the swept band immediately so a
+   drag step is always one consistent frame (a budgeted flush would copy only
+   the top rows of the band per iteration and the window would appear to
+   stretch while the mouse keeps moving). */
 static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 			   unsigned int nx, unsigned int ny)
 {
@@ -348,16 +374,16 @@ static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 		vga_fb_mark_dirty_rect_xy(y0, y1 - y0, x0, x1);
 	}
 	mouse_redraw_cursor();
+	vga_fb_flush();
 }
 
-/* Cirrus fast drag: also move the window in VRAM with the BitBLT engine, then
-   mirror in the shadow buffer and flush immediately. */
+/* Cirrus fast drag: also move the window in VRAM with the BitBLT engine
+   (wm_drag_shadow flushes the mirrored copy in the shadow buffer). */
 static void wm_drag_fast(struct window *w, unsigned int ox, unsigned int oy,
 			 unsigned int nx, unsigned int ny)
 {
 	cirrus_blit(ox, oy, nx, ny, w->pw, w->ph);
 	wm_drag_shadow(w, ox, oy, nx, ny);
-	vga_fb_flush();
 }
 
 static void wm_handle_mouse(void)

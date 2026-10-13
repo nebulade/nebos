@@ -634,8 +634,9 @@ Caveats:
 - **All drawing goes into the shadow buffer** (`vga_put_pixel_rgb` etc.); the
   main loop flushes dirty rows to VRAM on every iteration (byte budget, see
   `VGA_FLUSH_BUDGET_BYTES`) so small updates (cursor, a keystroke) reach the
-  screen within a loop instead of waiting for a fixed tick. Full-screen programs
-  call `vga_clear_rgb`.
+  screen within a loop instead of waiting for a fixed tick. A window drag
+  flushes its swept band immediately (`wm_drag_shadow`) so each step is one
+  consistent frame. Full-screen programs call `vga_clear_rgb`.
 - **FAT is read/write** — FAT12/16/32 read plus write/delete/mkdir/rmdir.
   FAT32 allocation uses an FSInfo-seeded free-cluster hint; the FSInfo
   free-count is not updated and a completely full FAT32 directory is not
