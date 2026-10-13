@@ -86,7 +86,9 @@ below the run area), so adding code no longer moves any address.
   clock + rainbow). Click-to-focus, drag-by-title-bar, close (×). The "+ New"
   button and first boot spawn terminals; there is no `term` command.  Content is
   repainted per damage rect (`wm_redraw_rect`: desktop fill + every intersecting
-  window back-to-front, clipped by `wm_draw_window_clip`), not by full redraws.
+  window back-to-front, clipped by `wm_draw_window_clip`), not by full redraws —
+  a text window only over its damaged cell block (`screen_damage_block`), a
+  canvas window over its whole content.
 - **Window graphics service**: `gfx.c/h` (RGB565 window canvases + bpp-aware
   blits), `sys_gfx.c/h` — a ring-3 command gets its window's canvas mapped RW at
   `0x50000000` (`SYS_GFX_BEGIN`; a mapped back buffer) and publishes frames with
@@ -116,7 +118,11 @@ below the run area), so adding code no longer moves any address.
   that has run cannot be restarted — see the header of `nv50.c`.
 - **Text console**: `fbtext.c`, `font_8x8.c/h`, `io.c/h`, `screen.c/h` — 8×8 font,
   framebuffer glyph blitting (`fbtext_draw_cells`) and per-terminal cell buffers
-  (`struct text_screen`).
+  (`struct text_screen`).  A screen tracks the changed cell block
+  (`screen_damage_block()`: `dmg_col0..dmg_col1`, `dmg_row0..dmg_row1`, grown by
+  `screen_damage_cell()`/`screen_damage_cursor()`, reset by
+  `screen_clear_damage()`), so the WM repaints a keystroke's cell instead of the
+  whole window content and the blink only marks the cursor's own cell.
 - **On-screen debug**: `kdbg.c/h` — framebuffer debug overlay (live status rows,
   heartbeat, boot info rows, exception banner) for machines without serial; see
   the kdbg section below.

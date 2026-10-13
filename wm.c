@@ -627,7 +627,7 @@ static void wm_redraw_if_needed(void)
 			if (windows[i].used) {
 				struct gfx_canvas *g = sys_gfx_canvas_for(&windows[i].term->screen);
 
-				windows[i].term->screen.dirty = 0;
+				screen_clear_damage(&windows[i].term->screen);
 				if (g)
 					g->drawn = seq_before[i];   /* keep a frame
 						presented during the render */
@@ -643,22 +643,31 @@ static void wm_redraw_if_needed(void)
 	}
 
 	/* Any window whose content changed (focused or not): repaint just its
-	   content rect through the damage-rect compositor. */
+	   damaged cell block (a canvas window repaints its whole content)
+	   through the damage-rect compositor. */
 	for (i = 0; i < MAX_WINDOWS; i++) {
+		struct text_screen *s = &windows[i].term->screen;
 		struct gfx_canvas *g;
-		unsigned int seq;
+		unsigned int seq, col0, row0, ncols, nrows;
 
 		if (!windows[i].used)
 			continue;
-		g = sys_gfx_canvas_for(&windows[i].term->screen);
-		if (!windows[i].term->screen.dirty && !(g && g->seq != g->drawn))
+		g = sys_gfx_canvas_for(s);
+		if (!screen_damage_block(s, &col0, &row0, &ncols, &nrows) &&
+		    !(g && g->seq != g->drawn))
 			continue;
 		seq = g ? g->seq : 0;   /* capture before compositing */
 		mouse_cursor_erase();
-		wm_redraw_rect(windows[i].x + 1, windows[i].y + 1 + WM_TITLE_H,
-			windows[i].pw - 2, SCREEN_ROWS * 10);
+		if (g)
+			wm_redraw_rect(windows[i].x + 1,
+				windows[i].y + 1 + WM_TITLE_H,
+				windows[i].pw - 2, SCREEN_ROWS * 10);
+		else
+			wm_redraw_rect(windows[i].x + 1 + col0 * 8,
+				windows[i].y + 1 + WM_TITLE_H + row0 * 10,
+				ncols * 8, nrows * 10);
 		mouse_redraw_cursor();
-		windows[i].term->screen.dirty = 0;
+		screen_clear_damage(s);
 		if (g)
 			g->drawn = seq;
 	}
@@ -691,7 +700,7 @@ static void wm_blink_cursor(void)
 	if (now - last_cursor_tick >= CURSOR_MS) {
 		last_cursor_tick = now;
 		fw->term->screen.cursor_visible = !fw->term->screen.cursor_visible;
-		fw->term->screen.dirty = 1;
+		screen_damage_cursor(&fw->term->screen);
 	}
 }
 

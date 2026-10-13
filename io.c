@@ -201,14 +201,14 @@ void io_cursor_show_block(void)
 {
 	struct text_screen *s = io_current_screen();
 	s->cursor_visible = 1;
-	s->dirty = 1;
+	screen_damage_cursor(s);
 }
 
 void io_cursor_hide_block(void)
 {
 	struct text_screen *s = io_current_screen();
 	s->cursor_visible = 0;
-	s->dirty = 1;
+	screen_damage_cursor(s);
 }
 
 void io_vga_write(unsigned int pos, unsigned short value)
