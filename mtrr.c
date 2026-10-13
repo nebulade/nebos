@@ -2,7 +2,7 @@
  * MTRR write-combining.
  *
  * The VESA LFB is mapped uncacheable (UC) by paging.c, so every dword the
- * 30 Hz shadow flush writes to VRAM is a separate uncached PCI transaction.
+ * shadow flush writes to VRAM is a separate uncached PCI transaction.
  * Marking the LFB range write-combining (WC) via an MTRR lets the CPU batch
  * those writes into burst transfers, which is the single biggest rendering
  * win on real hardware.

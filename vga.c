@@ -1,4 +1,4 @@
-/* VGA: VESA LFB (from boot) with shadow buffer and 30Hz USWC flush. */
+/* VGA: VESA LFB (from boot) with a shadow buffer and a damage-driven flush. */
 
 #include "vga.h"
 #include "pci.h"
@@ -415,8 +415,6 @@ void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
 /* Assembly row copy: rep movsl optimized for P5 USWC write-combining to UC memory. */
 extern void vga_fb_copy_row(void *dst, void *src, unsigned int dwords);
 
-int vga_shadow_flush_pending;
-
 void vga_shadow_init(void)
 {
 	vga_cache_boot_fb();
@@ -426,14 +424,16 @@ void vga_shadow_init(void)
 	vga_shadow_buf = (unsigned char *)VGA_SHADOW_BASE;
 	vga_shadow_pitch = vga_fb_pitch_val;
 	vga_shadow_size = vga_fb_h * vga_shadow_pitch;
-	vga_shadow_flush_pending = 0;
 	clear_dirty_rows();
 }
 
-/* Copy only dirty rows from shadow to VRAM, batching contiguous runs. */
-static void shadow_copy_dirty_rows(void)
+/* Copy dirty rows from shadow to VRAM, at most about `max_bytes` this call
+ * (0 = no limit).  A row is cleared as it is copied, so the next call resumes
+ * with whatever is left: a large repaint is spread over several main-loop
+ * iterations instead of stalling input behind it. */
+static unsigned int shadow_copy_dirty_rows(unsigned int max_bytes)
 {
-	unsigned int row;
+	unsigned int row, bytes = 0;
 	unsigned int pb = vga_pixel_bytes();
 	unsigned int align = (pb == 2) ? 2 : (pb == 3) ? 4 : 1;
 	unsigned int x0 = vga_dirty_x0;
@@ -454,39 +454,46 @@ static void shadow_copy_dirty_rows(void)
 	if (x1 > vga_fb_w)
 		x1 = vga_fb_w;
 	if (x0 >= x1)
-		return;
+		return 0;
 	dwords = ((x1 - x0) * pb) / 4;
 
 	for (row = 0; row < max_row; row++) {
 		if (vga_shadow_dirty_rows[row / 8] & (1 << (row % 8))) {
+			vga_shadow_dirty_rows[row / 8] &= ~(1 << (row % 8));
 			vga_fb_copy_row(
 				(void *)(dst + (unsigned long)row * vga_fb_pitch_val + x0 * pb),
 				(void *)(src + (unsigned long)row * vga_shadow_pitch + x0 * pb),
 				dwords);
+			bytes += dwords * 4;
+			if (max_bytes && bytes >= max_bytes)
+				break;
 		}
 	}
+	return bytes;
 }
 
-void vga_fb_flush_pending_check(void)
-{
-	if (!vga_shadow_flush_pending)
-		return;
-	vga_shadow_flush_pending = 0;
-	if (!any_dirty_rows())
-		return;
-	shadow_copy_dirty_rows();
-	clear_dirty_rows();
-}
-
-void vga_fb_flush(void)
+/* Copy up to `max_bytes` of the dirty shadow rows to VRAM.  Called from the
+ * main loop on every iteration: small updates (a cursor move is ~1 KB) reach
+ * the screen within one loop instead of waiting for a fixed 30 Hz tick, while
+ * a full-screen repaint is chunked so it cannot stall input. */
+void vga_fb_flush_budget(unsigned int max_bytes)
 {
 	vga_cache_boot_fb();
 	if (!vga_shadow_buf || !vga_fb_lfb)
 		return;
 	if (!any_dirty_rows())
 		return;
-	shadow_copy_dirty_rows();
-	clear_dirty_rows();
+	if (shadow_copy_dirty_rows(max_bytes) == 0) {
+		clear_dirty_rows();          /* degenerate span: drop the marks */
+		return;
+	}
+	if (!any_dirty_rows())
+		clear_dirty_rows();          /* also resets the dirty x-span */
+}
+
+void vga_fb_flush(void)
+{
+	vga_fb_flush_budget(0);
 }
 
 int vga_shadow_is_active(void)

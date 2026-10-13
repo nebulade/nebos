@@ -99,7 +99,8 @@ below the run area), so adding code no longer moves any address.
   `sys_gfx_reap`/`sys_gfx_collect` free the canvas after exit/crash.  `clock`
   and `colors` are its users.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `gpu.c`, `ati.c`, `nvidia.c`, `nv50.c`,
-  `pci.h` — VESA LFB + shadow buffer, 30 Hz dirty-row flush. ATI Mach64 CRTC
+  `pci.h` — VESA LFB + shadow buffer, damage-driven dirty-row flush (byte
+  budget per main-loop iteration, no fixed frame rate). ATI Mach64 CRTC
   fixup; NVIDIA is VBE-only (never touch the legacy VGA CRTC). `nvidia.c`
   identifies the card, maps BAR0/BAR1/BAR3 and reads the MCP7x stolen-VRAM
   geometry; `nv50.c` probes the nv50-family display engine at boot (read-only,
@@ -630,8 +631,11 @@ Caveats:
   `procs[i].cr3` made the boot-time MMIO mapping (`paging_map_mmio_cr3`) fault
   on the board while QEMU was fine.  Anything above `MM_MAX_PHYS` (128 MB) is
   also *unmapped*, so a wild pointer there is an instant #PF.
-- **All drawing goes into the shadow buffer** (`vga_put_pixel_rgb` etc.); a 30 Hz
-  flush copies dirty rows to VRAM. Full-screen programs call `vga_clear_rgb`.
+- **All drawing goes into the shadow buffer** (`vga_put_pixel_rgb` etc.); the
+  main loop flushes dirty rows to VRAM on every iteration (byte budget, see
+  `VGA_FLUSH_BUDGET_BYTES`) so small updates (cursor, a keystroke) reach the
+  screen within a loop instead of waiting for a fixed tick. Full-screen programs
+  call `vga_clear_rgb`.
 - **FAT is read/write** — FAT12/16/32 read plus write/delete/mkdir/rmdir.
   FAT32 allocation uses an FSInfo-seeded free-cluster hint; the FSInfo
   free-count is not updated and a completely full FAT32 directory is not

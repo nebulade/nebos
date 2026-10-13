@@ -1,4 +1,5 @@
-/* VGA: VESA LFB (from boot). Shadow buffer with 30Hz USWC flush. */
+/* VGA: VESA LFB (from boot). Shadow buffer, damage-driven flush with a
+ * per-iteration byte budget (no fixed frame rate). */
 #ifndef VGA_H
 #define VGA_H
 
@@ -19,7 +20,8 @@ struct vga_boot_fb_info {
 /* Shadow buffer lives at 1MB — safely above kernel, stacks, DMA, and program load area. */
 #define VGA_SHADOW_BASE 0x100000
 
-/* LFB API. RGB 0..255. All drawing goes into the shadow buffer; flush copies to VRAM at 30Hz. */
+/* LFB API. RGB 0..255. All drawing goes into the shadow buffer; the main loop
+ * flushes dirty areas to VRAM on every iteration (byte-budgeted). */
 unsigned int vga_fb_width(void);
 unsigned int vga_fb_height(void);
 unsigned int vga_fb_pitch(void);
@@ -45,14 +47,17 @@ void vga_fb_write_rect(unsigned int x, unsigned int y, unsigned int w, unsigned 
 /* Initialize shadow buffer (called once from kernel_main after vga_cache_boot_fb). */
 void vga_shadow_init(void);
 
-/* Copy shadow buffer to VRAM. Called by 30Hz timer or manually after init. */
+/* Copy shadow buffer to VRAM (everything dirty, no budget). Called after
+ * blocking redraws and at boot. */
 void vga_fb_flush(void);
 
-/* Flag set by PIT IRQ when 30Hz flush is due. Main loop checks and clears. */
-extern int vga_shadow_flush_pending;
+/* Copy up to max_bytes of the dirty shadow rows to VRAM (0 = no limit).
+ * Called by the main loop every iteration: small updates reach the screen
+ * within one loop, large ones are chunked so they cannot stall input. */
+void vga_fb_flush_budget(unsigned int max_bytes);
 
-/* Called from main loop: if pending, copies shadow to VRAM and draws debug square. */
-void vga_fb_flush_pending_check(void);
+/* Per-iteration flush budget: roughly a millisecond of VRAM writes. */
+#define VGA_FLUSH_BUDGET_BYTES (256u * 1024u)
 
 /* Returns 1 if shadow buffer is active, 0 if rendering directly to VRAM. */
 int vga_shadow_is_active(void);

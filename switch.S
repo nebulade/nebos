@@ -6,7 +6,7 @@
  * and -- when the timeslice expires -- call schedule() and swap ESP
  * to the next process.
  *
- * Shadow buffer flush: every ~33 ticks (30Hz), set pending flag.
+ * Shadow buffer flush: damage-driven, done by the main loop (byte budget).
  * Main loop checks dirty rows and copies only what changed.
  *
  * Serial poll: every tick, check UART for received data and push
@@ -19,7 +19,6 @@
 .extern current_pid
 .extern procs
 .extern schedule
-.extern vga_shadow_flush_pending
 .extern serial_poll
 .extern kdbg_pit_tick
 .extern tss
@@ -34,7 +33,6 @@
 .equ PCB_SIZE,  116     /* sizeof(struct process): 44 + cwd[64] + 2*4 */
 
 .equ TIMESLICE, 20
-.equ FLUSH_INTERVAL, 33 /* 1000Hz PIT / 30Hz flush ≈ 33 ticks */
 
 .globl pit_irq_stub
 pit_irq_stub:
@@ -67,13 +65,6 @@ pit_irq_stub:
 	/* On-screen debug heartbeat / status refresh (no serial console on
 	 * some targets; this keeps a live indicator on the framebuffer). */
 	call  kdbg_pit_tick
-
-	/* Shadow buffer flush at 30Hz: set pending flag, main loop does the copy. */
-	decl  flush_counter
-	jnz   .no_flush
-	movl  $FLUSH_INTERVAL, flush_counter
-	movl  $1, vga_shadow_flush_pending
-.no_flush:
 
 	/* Decrement timeslice counter; switch only when it reaches 0. */
 	decl  slice_counter
@@ -114,5 +105,3 @@ pit_irq_stub:
 .align 4
 slice_counter:
 	.long TIMESLICE
-flush_counter:
-	.long FLUSH_INTERVAL

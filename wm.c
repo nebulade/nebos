@@ -318,7 +318,7 @@ static void wm_redraw_rect(unsigned int x, unsigned int y,
 
 /* Move a window in the shadow buffer: copy its rect, redraw the exposed
    sliver, keep the cursor on top, and mark the swept rows dirty.  Does not
-   touch VRAM; the 30 Hz flush copies the affected rows. */
+   touch VRAM; the main loop's budgeted flush copies the affected rows. */
 static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 			   unsigned int nx, unsigned int ny)
 {
@@ -712,7 +712,7 @@ void wm_run(void)
 		wm_handle_kexec();
 		sys_gfx_collect();
 		wm_redraw_if_needed();
-		vga_fb_flush_pending_check();
+		vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
 		cpu_idle();
 	}
 }
