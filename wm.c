@@ -350,8 +350,6 @@ static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 {
 	int dx = (int)nx - (int)ox;
 	int dy = (int)ny - (int)oy;
-	unsigned int y0 = (oy < ny) ? oy : ny;
-	unsigned int y1 = ((oy > ny) ? oy : ny) + w->ph;
 
 	mouse_cursor_erase();
 	wm_shadow_copy(ox, oy, nx, ny, w->pw, w->ph);
@@ -365,14 +363,11 @@ static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 	else if (dx < 0)
 		wm_redraw_rect(nx + w->pw, oy, (unsigned int)(-dx), w->ph);
 
-	/* Mark the swept band so the flush copies the moved window + sliver.
-	   Limit the horizontal span to the window's swept x-range so the flush
-	   copies only ~pw columns instead of the full framebuffer width. */
-	{
-		unsigned int x0 = (ox < nx) ? ox : nx;
-		unsigned int x1 = ((ox > nx) ? ox : nx) + w->pw;
-		vga_fb_mark_dirty_rect_xy(y0, y1 - y0, x0, x1);
-	}
+	/* Only the moved window's new rect needs marking: the repaints above
+	   cover the exposed slivers exactly, and the cursor marks itself.  The
+	   damage list merges these when the step is small (the union is then
+	   the swept hull anyway) and keeps them apart after a big jump. */
+	vga_fb_mark_dirty_rect_xy(w->y, w->ph, w->x, w->x + w->pw);
 	mouse_redraw_cursor();
 	vga_fb_flush();
 }

@@ -1,4 +1,4 @@
-/* VGA: VESA LFB (from boot) with a shadow buffer and a damage-driven flush. */
+/* VGA: VESA LFB (from boot) with a shadow buffer and a damage-rect flush. */
 
 #include "vga.h"
 #include "pci.h"
@@ -16,69 +16,127 @@ static unsigned char *vga_shadow_buf;
 static unsigned int   vga_shadow_pitch;
 static unsigned int   vga_shadow_size;
 
-/* Dirty row bitmap: one bit per row. Max 2048 rows = 256 bytes. */
-#define MAX_DIRTY_ROWS 2048
-static unsigned char vga_shadow_dirty_rows[MAX_DIRTY_ROWS / 8];
+/* Damage rect list.  Each entry is a half-open [x0,x1) x [y0,y1) region of
+ * the shadow buffer that has not been copied to VRAM yet.  Entries merge when
+ * they overlap, touch or would barely waste space, so related marks (the
+ * per-pixel writes of one glyph or cursor draw, the rectangles of one window
+ * repaint) collapse into a few rects, while unrelated damage (a window and the
+ * cursor on the other side of the screen) stays separate and the flush copies
+ * each row only over the columns that changed.  A rect that is only partially
+ * flushed keeps its remaining rows and moves behind the newer damage. */
+#define DAMAGE_SLOTS 16
+struct damage_rect {
+	unsigned int x0, y0, x1, y1;
+};
+static struct damage_rect damage_rects[DAMAGE_SLOTS];
+static unsigned int damage_count;
 
-/* Horizontal span [x0, x1) of dirty pixels, so the flush copies only the
-   changed columns instead of whole rows. */
-static unsigned int vga_dirty_x0, vga_dirty_x1;
-
-static void mark_dirty_row(unsigned int y)
+static void damage_add(unsigned int x0, unsigned int y0,
+		       unsigned int x1, unsigned int y1)
 {
-	if (y < MAX_DIRTY_ROWS)
-		vga_shadow_dirty_rows[y / 8] |= (1 << (y % 8));
-}
+	unsigned int i;
 
-static void expand_dirty_x(unsigned int x0, unsigned int x1)
-{
-	if (x0 > vga_fb_w)
-		x0 = vga_fb_w;
 	if (x1 > vga_fb_w)
 		x1 = vga_fb_w;
-	if (x0 < vga_dirty_x0)
-		vga_dirty_x0 = x0;
-	if (x1 > vga_dirty_x1)
-		vga_dirty_x1 = x1;
+	if (y1 > vga_fb_h)
+		y1 = vga_fb_h;
+	if (x0 >= x1 || y0 >= y1)
+		return;
+
+	/* Already covered?  Scanning backwards catches the repeated per-pixel
+	   marks of a glyph or cursor draw in one step. */
+	for (i = damage_count; i-- > 0; ) {
+		struct damage_rect *d = &damage_rects[i];
+
+		if (x0 >= d->x0 && y0 >= d->y0 && x1 <= d->x1 && y1 <= d->y1)
+			return;
+	}
+
+	/* Merge with every rect this one touches; a merge can bring another
+	   rect into reach, so restart the scan after each one. */
+	for (i = 0; i < damage_count; ) {
+		struct damage_rect *d = &damage_rects[i];
+		unsigned int nx0 = (x0 < d->x0) ? x0 : d->x0;
+		unsigned int ny0 = (y0 < d->y0) ? y0 : d->y0;
+		unsigned int nx1 = (x1 > d->x1) ? x1 : d->x1;
+		unsigned int ny1 = (y1 > d->y1) ? y1 : d->y1;
+		unsigned int merged_area = (nx1 - nx0) * (ny1 - ny0);
+		unsigned int area = (d->x1 - d->x0) * (d->y1 - d->y0) +
+				    (x1 - x0) * (y1 - y0);
+
+		if (nx0 <= d->x1 && d->x0 <= nx1 &&
+		    ny0 <= d->y1 && d->y0 <= ny1 &&
+		    merged_area <= 2 * area) {
+			x0 = nx0;
+			y0 = ny0;
+			x1 = nx1;
+			y1 = ny1;
+			damage_rects[i] = damage_rects[--damage_count];
+			i = 0;
+			continue;
+		}
+		i++;
+	}
+
+	if (damage_count < DAMAGE_SLOTS) {
+		damage_rects[damage_count].x0 = x0;
+		damage_rects[damage_count].y0 = y0;
+		damage_rects[damage_count].x1 = x1;
+		damage_rects[damage_count].y1 = y1;
+		damage_count++;
+		return;
+	}
+
+	/* List full: extend whichever rect grows the least (correct, just a
+	   few redundant pixels copied). */
+	{
+		unsigned int best = 0, best_grow = 0xFFFFFFFFu;
+
+		for (i = 0; i < DAMAGE_SLOTS; i++) {
+			struct damage_rect *d = &damage_rects[i];
+			unsigned int nx0 = (x0 < d->x0) ? x0 : d->x0;
+			unsigned int ny0 = (y0 < d->y0) ? y0 : d->y0;
+			unsigned int nx1 = (x1 > d->x1) ? x1 : d->x1;
+			unsigned int ny1 = (y1 > d->y1) ? y1 : d->y1;
+			unsigned int grow = (nx1 - nx0) * (ny1 - ny0) -
+					    (d->x1 - d->x0) * (d->y1 - d->y0);
+
+			if (grow < best_grow) {
+				best_grow = grow;
+				best = i;
+			}
+		}
+		{
+			struct damage_rect *d = &damage_rects[best];
+
+			if (x0 < d->x0) d->x0 = x0;
+			if (y0 < d->y0) d->y0 = y0;
+			if (x1 > d->x1) d->x1 = x1;
+			if (y1 > d->y1) d->y1 = y1;
+		}
+	}
+}
+
+static int damage_any(void)
+{
+	return damage_count != 0;
+}
+
+static void damage_clear(void)
+{
+	damage_count = 0;
 }
 
 static void mark_dirty_rect_xy(unsigned int y, unsigned int h,
 			       unsigned int x0, unsigned int x1)
 {
-	unsigned int i;
-	for (i = 0; i < h; i++)
-		mark_dirty_row(y + i);
-	expand_dirty_x(x0, x1);
+	damage_add(x0, y, x1, y + h);
 }
 
 /* Full-width dirty rows (used where the x-extent isn't tracked). */
 static void mark_dirty_rect(unsigned int y, unsigned int h)
 {
-	mark_dirty_rect_xy(y, h, 0, vga_fb_w);
-}
-
-static int any_dirty_rows(void)
-{
-	unsigned int i;
-	unsigned int max_row = vga_fb_h;
-	if (max_row > MAX_DIRTY_ROWS)
-		max_row = MAX_DIRTY_ROWS;
-	for (i = 0; i < (max_row + 7) / 8; i++)
-		if (vga_shadow_dirty_rows[i])
-			return 1;
-	return 0;
-}
-
-static void clear_dirty_rows(void)
-{
-	unsigned int i;
-	unsigned int max_row = vga_fb_h;
-	if (max_row > MAX_DIRTY_ROWS)
-		max_row = MAX_DIRTY_ROWS;
-	for (i = 0; i < (max_row + 7) / 8; i++)
-		vga_shadow_dirty_rows[i] = 0;
-	vga_dirty_x0 = vga_fb_w;
-	vga_dirty_x1 = 0;
+	damage_add(0, y, vga_fb_w, y + h);
 }
 
 /*
@@ -424,55 +482,77 @@ void vga_shadow_init(void)
 	vga_shadow_buf = (unsigned char *)VGA_SHADOW_BASE;
 	vga_shadow_pitch = vga_fb_pitch_val;
 	vga_shadow_size = vga_fb_h * vga_shadow_pitch;
-	clear_dirty_rows();
+	damage_clear();
 }
 
-/* Copy dirty rows from shadow to VRAM, at most about `max_bytes` this call
- * (0 = no limit).  A row is cleared as it is copied, so the next call resumes
- * with whatever is left: a large repaint is spread over several main-loop
- * iterations instead of stalling input behind it. */
-static unsigned int shadow_copy_dirty_rows(unsigned int max_bytes)
+/* Copy damage rects from the shadow to VRAM, at most about `max_bytes` this
+ * call (0 = no limit), and drop the rects that are done.  A rect that fits
+ * the budget is copied whole even when that overshoots a little, so a
+ * window-sized repaint is never split across iterations; only a rect larger
+ * than the budget (a full-screen repaint) is chunked, and its remaining rows
+ * move to the back of the list so newer, smaller damage is flushed first. */
+static unsigned int shadow_copy_damage(unsigned int max_bytes)
 {
-	unsigned int row, bytes = 0;
+	unsigned int i = 0, bytes = 0;
 	unsigned int pb = vga_pixel_bytes();
 	unsigned int align = (pb == 2) ? 2 : (pb == 3) ? 4 : 1;
-	unsigned int x0 = vga_dirty_x0;
-	unsigned int x1 = vga_dirty_x1;
-	unsigned int dwords;
 	unsigned char *src = vga_shadow_buf;
 	unsigned char *dst = (unsigned char *)vga_fb_lfb;
-	unsigned int max_row = vga_fb_h;
-	if (max_row > MAX_DIRTY_ROWS)
-		max_row = MAX_DIRTY_ROWS;
 
-	/* Clamp and dword-align the horizontal span so each row copy is an
-	   integral number of dwords starting on a dword boundary. */
-	if (x1 > vga_fb_w)
-		x1 = vga_fb_w;
-	x0 &= ~(align - 1);
-	x1 = (x1 + align - 1) & ~(align - 1);
-	if (x1 > vga_fb_w)
-		x1 = vga_fb_w;
-	if (x0 >= x1)
-		return 0;
-	dwords = ((x1 - x0) * pb) / 4;
+	while (i < damage_count) {
+		struct damage_rect *d = &damage_rects[i];
+		unsigned int rx0 = d->x0 & ~(align - 1);
+		unsigned int rx1 = (d->x1 + align - 1) & ~(align - 1);
+		unsigned int row_bytes, rect_bytes, dwords, tail, y;
 
-	for (row = 0; row < max_row; row++) {
-		if (vga_shadow_dirty_rows[row / 8] & (1 << (row % 8))) {
-			vga_shadow_dirty_rows[row / 8] &= ~(1 << (row % 8));
-			vga_fb_copy_row(
-				(void *)(dst + (unsigned long)row * vga_fb_pitch_val + x0 * pb),
-				(void *)(src + (unsigned long)row * vga_shadow_pitch + x0 * pb),
-				dwords);
-			bytes += dwords * 4;
-			if (max_bytes && bytes >= max_bytes)
-				break;
+		if (rx1 > vga_fb_w)
+			rx1 = vga_fb_w;
+		if (rx0 >= rx1) {
+			damage_rects[i] = damage_rects[--damage_count];
+			continue;
 		}
+		row_bytes = (rx1 - rx0) * pb;
+		rect_bytes = row_bytes * (d->y1 - d->y0);
+		dwords = row_bytes / 4;
+		tail = row_bytes % 4;
+
+		/* The budget is spent and this rect is bigger than a whole
+		   call: leave it (rows already copied keep their progress). */
+		if (max_bytes && bytes > 0 && rect_bytes > max_bytes)
+			break;
+
+		for (y = d->y0; y < d->y1; y++) {
+			unsigned char *s = src + (unsigned long)y * vga_shadow_pitch + rx0 * pb;
+			unsigned char *t = dst + (unsigned long)y * vga_fb_pitch_val + rx0 * pb;
+
+			vga_fb_copy_row(t, s, dwords);
+			if (tail) {
+				unsigned int k;
+				for (k = dwords * 4; k < row_bytes; k++)
+					t[k] = s[k];
+			}
+			bytes += row_bytes;
+			if (max_bytes && rect_bytes > max_bytes && bytes >= max_bytes) {
+				d->y0 = y + 1;
+				break;
+			}
+		}
+		if (y < d->y1) {
+			/* Chunked: keep the remaining rows, behind the rest. */
+			struct damage_rect rest = *d;
+
+			damage_rects[i] = damage_rects[--damage_count];
+			damage_rects[damage_count++] = rest;
+			return bytes;
+		}
+		damage_rects[i] = damage_rects[--damage_count];
+		if (max_bytes && bytes >= max_bytes)
+			break;
 	}
 	return bytes;
 }
 
-/* Copy up to `max_bytes` of the dirty shadow rows to VRAM.  Called from the
+/* Copy up to `max_bytes` of the pending damage to VRAM.  Called from the
  * main loop on every iteration: small updates (a cursor move is ~1 KB) reach
  * the screen within one loop instead of waiting for a fixed 30 Hz tick, while
  * a full-screen repaint is chunked so it cannot stall input. */
@@ -481,14 +561,9 @@ void vga_fb_flush_budget(unsigned int max_bytes)
 	vga_cache_boot_fb();
 	if (!vga_shadow_buf || !vga_fb_lfb)
 		return;
-	if (!any_dirty_rows())
+	if (!damage_any())
 		return;
-	if (shadow_copy_dirty_rows(max_bytes) == 0) {
-		clear_dirty_rows();          /* degenerate span: drop the marks */
-		return;
-	}
-	if (!any_dirty_rows())
-		clear_dirty_rows();          /* also resets the dirty x-span */
+	shadow_copy_damage(max_bytes);
 }
 
 void vga_fb_flush(void)
@@ -503,17 +578,19 @@ int vga_shadow_is_active(void)
 
 void vga_fb_mark_dirty_rect(unsigned int y, unsigned int h)
 {
+	vga_cache_boot_fb();
 	mark_dirty_rect(y, h);
 }
 
-/* Mark rows dirty, limited to the horizontal span [x0, x1). */
+/* Mark a rectangle dirty, limited to the horizontal span [x0, x1). */
 void vga_fb_mark_dirty_rect_xy(unsigned int y, unsigned int h,
 			       unsigned int x0, unsigned int x1)
 {
+	vga_cache_boot_fb();
 	mark_dirty_rect_xy(y, h, x0, x1);
 }
 
 void vga_fb_clear_dirty(void)
 {
-	clear_dirty_rows();
+	damage_clear();
 }

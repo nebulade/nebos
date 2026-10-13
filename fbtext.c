@@ -325,7 +325,7 @@ void fbtext_draw_string_xy(unsigned int x0, unsigned int y0, const char *str,
 		draw_glyph_at(x0 + i * 8, y0, (unsigned char)str[i], r_fg, g_fg, b_fg, 0, 0, 0, FONT_8X8_ROWS, transparent_bg);
 		i++;
 	}
-	vga_fb_mark_dirty_rect(y0, FONT_8X8_ROWS);
+	vga_fb_mark_dirty_rect_xy(y0, FONT_8X8_ROWS, x0, x0 + i * 8);
 }
 
 /* Like fbtext_draw_string_xy, but per-pixel clipped to (cx, cy, cw, ch): only

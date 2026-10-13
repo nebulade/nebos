@@ -1,5 +1,6 @@
-/* VGA: VESA LFB (from boot). Shadow buffer, damage-driven flush with a
- * per-iteration byte budget (no fixed frame rate). */
+/* VGA: VESA LFB (from boot). Shadow buffer; the main loop copies pending
+ * damage rectangles to VRAM on every iteration (byte budget, no fixed frame
+ * rate). */
 #ifndef VGA_H
 #define VGA_H
 
@@ -51,7 +52,7 @@ void vga_shadow_init(void);
  * blocking redraws and at boot. */
 void vga_fb_flush(void);
 
-/* Copy up to max_bytes of the dirty shadow rows to VRAM (0 = no limit).
+/* Copy up to max_bytes of the pending damage rects to VRAM (0 = no limit).
  * Called by the main loop every iteration: small updates reach the screen
  * within one loop, large ones are chunked so they cannot stall input. */
 void vga_fb_flush_budget(unsigned int max_bytes);
@@ -67,11 +68,11 @@ int vga_shadow_is_active(void);
 /* Mark rows dirty for direct buffer manipulators (e.g. fbtext_scroll). */
 void vga_fb_mark_dirty_rect(unsigned int y, unsigned int h);
 
-/* Mark rows dirty, limited to the horizontal span [x0, x1). */
+/* Mark a rectangle dirty, limited to the horizontal span [x0, x1). */
 void vga_fb_mark_dirty_rect_xy(unsigned int y, unsigned int h,
 			       unsigned int x0, unsigned int x1);
 
-/* Clear the dirty-row bitmap (so only explicitly re-marked rows get flushed). */
+/* Drop all pending damage (so only explicitly re-marked areas get flushed). */
 void vga_fb_clear_dirty(void);
 
 #endif
