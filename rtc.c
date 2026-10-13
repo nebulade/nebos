@@ -19,32 +19,81 @@ static unsigned int bcd_to_bin(unsigned char bcd)
 	return (unsigned int)((bcd >> 4) * 10 + (bcd & 0x0F));
 }
 
+static int bcd_digits(unsigned char bcd)
+{
+	return (bcd & 0x0F) <= 9 && ((bcd >> 4) & 0x0F) <= 9;
+}
+
+/* Read hour/minute/second out of the CMOS.  A read that straddles the RTC's
+ * update cycle can tear (invalid BCD, or a value out of range), which used to
+ * feed nonsense into callers - retry a few times and fall back to the last
+ * values that validated.  Handles the 12-hour PM flag (hour bit 7). */
+static void rtc_read_time(unsigned int *hour, unsigned int *minute,
+			  unsigned int *second)
+{
+	static unsigned int last_h, last_m, last_s;
+	unsigned int tries;
+
+	for (tries = 0; tries < 4; tries++) {
+		unsigned int n = 0;
+		unsigned char s, m, h;
+		unsigned int sv, mv, hv;
+
+		while ((cmos_read(0x0A) & 0x80) && ++n < 10000)
+			;
+
+		s = cmos_read(0x00);
+		m = cmos_read(0x02);
+		h = (unsigned char)(cmos_read(0x04) & 0x7F);   /* drop the PM flag */
+
+		if (!bcd_digits(s) || !bcd_digits(m) || !bcd_digits(h))
+			continue;
+
+		sv = bcd_to_bin(s);
+		mv = bcd_to_bin(m);
+		hv = bcd_to_bin(h);
+		if (sv > 59 || mv > 59 || hv > 23)
+			continue;
+
+		last_h = hv;
+		last_m = mv;
+		last_s = sv;
+		break;
+	}
+
+	*hour = last_h;
+	*minute = last_m;
+	*second = last_s;
+}
+
 void rtc_read_datetime(char *buf)
 {
-	unsigned char sec, min, hour, day, month, year;
+	static unsigned int last_d = 1, last_mo = 1, last_y = 2000;
 	unsigned int s, m, h, d, mo, y;
+	unsigned char dd, mm, yy;
 
-	/* Wait for RTC update to finish. Timeout to avoid hang. */
+	rtc_read_time(&h, &m, &s);
+
+	/* Date registers (a torn read keeps the last good values). */
 	{
 		unsigned int n = 0;
+
 		while ((cmos_read(0x0A) & 0x80) && ++n < 10000)
 			;
 	}
+	dd = cmos_read(0x07);
+	mm = cmos_read(0x08);
+	yy = cmos_read(0x09);
+	if (bcd_digits(dd) && bcd_to_bin(dd) >= 1 && bcd_to_bin(dd) <= 31)
+		last_d = bcd_to_bin(dd);
+	if (bcd_digits(mm) && bcd_to_bin(mm) >= 1 && bcd_to_bin(mm) <= 12)
+		last_mo = bcd_to_bin(mm);
+	if (bcd_digits(yy))
+		last_y = 2000 + bcd_to_bin(yy);
 
-	sec   = cmos_read(0x00);
-	min   = cmos_read(0x02);
-	hour  = cmos_read(0x04);
-	day   = cmos_read(0x07);
-	month = cmos_read(0x08);
-	year  = cmos_read(0x09);
-
-	s  = bcd_to_bin(sec);
-	m  = bcd_to_bin(min);
-	h  = bcd_to_bin(hour);
-	d  = bcd_to_bin(day);
-	mo = bcd_to_bin(month);
-	y  = bcd_to_bin(year);
-	y += 2000;
+	d = last_d;
+	mo = last_mo;
+	y = last_y;
 	if (y < 2000)
 		y += 100;
 
@@ -72,11 +121,5 @@ void rtc_read_datetime(char *buf)
 
 void rtc_read_hms(unsigned int *hour, unsigned int *minute, unsigned int *second)
 {
-	unsigned int n = 0;
-
-	while ((cmos_read(0x0A) & 0x80) && ++n < 10000)
-		;
-	*second = bcd_to_bin(cmos_read(0x00));
-	*minute = bcd_to_bin(cmos_read(0x02));
-	*hour   = bcd_to_bin(cmos_read(0x04));
+	rtc_read_time(hour, minute, second);
 }

@@ -181,4 +181,29 @@ static inline void u_exit(int code)
 		;
 }
 
+static inline int u_rtc_hms(struct sys_time *t)
+{
+	return u_syscall1(SYS_RTC_HMS, (int)t);
+}
+
+static inline int u_gfx_begin(struct sys_gfx_info *info)
+{
+	return u_syscall1(SYS_GFX_BEGIN, (int)info);
+}
+
+static inline int u_gfx_present(void)
+{
+	return u_syscall0(SYS_GFX_PRESENT);
+}
+
+static inline int u_gfx_end(void)
+{
+	return u_syscall0(SYS_GFX_END);
+}
+
+static inline int u_key_poll(void)
+{
+	return u_syscall0(SYS_KEY_POLL);
+}
+
 #endif

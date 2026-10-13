@@ -9,6 +9,7 @@
 #include "paging.h"
 #include "serial.h"
 #include "sys_fs.h"
+#include "sys_gfx.h"
 #include "sys_net.h"
 #include "syscall.h"
 #include "timer.h"
@@ -473,6 +474,7 @@ void schedule(void)
 	for (i = 0; i < proc_cap; i++) {
 		if (procs[i].state == PROC_DEAD && i != current_pid) {
 			sys_net_reap(procs[i].pid);   /* release a held NIC */
+			sys_gfx_reap(procs[i].pid);   /* flag a gfx session dead */
 			if (procs[i].stack_base)
 				mm_free_page(procs[i].stack_base);
 			if (procs[i].cr3 && procs[i].cr3 != paging_current_cr3())

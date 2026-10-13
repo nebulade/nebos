@@ -21,6 +21,10 @@ unsigned int paging_new_directory(void);
 int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
 		    unsigned int flags);
 
+/* Clear one 4 KB page (va) in page directory `cr3` (no-op when the page
+ * table is absent). */
+void paging_unmap_page(unsigned int cr3, unsigned int va);
+
 /* Identity-map an MMIO range (e.g. a GPU register aperture) uncacheable into
  * the current page directory.  Uses 4 MB pages; the range is rounded up to a
  * whole number of 4 MB pages. */

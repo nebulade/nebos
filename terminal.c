@@ -12,8 +12,6 @@
 extern void program_reboot_main(void);
 extern void program_poweroff_main(void);
 extern void program_run_main(const char *filename);
-extern void program_clock_main(void);
-extern void program_colors_main(void);
 extern void program_display_main(void);
 extern void program_serial_loop_main(const char *arg);
 extern void program_serial_recv_main(const char *arg);
@@ -40,8 +38,8 @@ static void term_print_prompt(struct term *t, int first)
  *
  * One table drives command dispatch, `help` and Tab completion.  Most commands
  * are spawned as separate kernel processes; the CK_CUSTOM handlers are the
- * shell builtins, the commands that must run inline (ps/kill/kexec/...) and the
- * ones deliberately unavailable in a windowed terminal. */
+ * shell builtins, the commands that must run inline (ps/kill/kexec/...) and
+ * `run`, the one command still unavailable in a windowed terminal. */
 
 enum cmd_kind {
 	CK_SPAWN = 0,        /* spawn, no arguments */
@@ -72,8 +70,6 @@ static int term_path_spawn(struct term *t, const char *word, const char *args);
 
 static int cmd_cd(struct term *t, const char *args);
 static int cmd_clear(struct term *t, const char *args);
-static int cmd_clock(struct term *t, const char *args);
-static int cmd_colors(struct term *t, const char *args);
 static int cmd_dbg(struct term *t, const char *args);
 static int cmd_format(struct term *t, const char *args);
 static int cmd_help(struct term *t, const char *args);
@@ -98,8 +94,6 @@ static const struct kcmd cmds[] = {
 	{ "prog",       "prog",                          CK_SPAWN, 0, 0, program_run_embedded_main, "prog", 0 },
 	{ "reboot",     "reboot",                        CK_CUSTOM, 0, 0, 0, 0, cmd_reboot },
 	{ "poweroff",   "poweroff",                      CK_CUSTOM, 0, 0, 0, 0, cmd_poweroff },
-	{ "clock",      "clock",                         CK_CUSTOM, 0, 0, 0, 0, cmd_clock },
-	{ "colors",     "colors",                        CK_CUSTOM, 0, 0, 0, 0, cmd_colors },
 	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
 	{ "lsusb",      "lsusb",                         CK_SPAWN, 0, program_lsusb_main, 0, 0, 0 },
 	{ "format",     "format <device>",               CK_CUSTOM, 0, 0, 0, 0, cmd_format },
@@ -241,22 +235,6 @@ static int cmd_clear(struct term *t, const char *args)
 	io_clear_screen();
 	term_print_prompt(t, 1);
 	return 1;   /* prompt already printed */
-}
-
-static int cmd_clock(struct term *t, const char *args)
-{
-	(void)t;
-	(void)args;
-	io_putstr("clock: not available in windowed mode yet\n");
-	return 0;
-}
-
-static int cmd_colors(struct term *t, const char *args)
-{
-	(void)t;
-	(void)args;
-	io_putstr("colors: not available in windowed mode yet\n");
-	return 0;
 }
 
 static int cmd_dbg(struct term *t, const char *args)

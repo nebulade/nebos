@@ -33,4 +33,11 @@ struct window *wm_focused_window(void);
 int  wm_is_focused(const struct window *w);
 void wm_request_redraw(void);
 
+/* The terminal whose screen is `screen`, or NULL (the sys_gfx service uses the
+ * inherited screen pointer to find a command's window). */
+struct term *wm_term_for_screen(struct text_screen *screen);
+
+/* Pixel size of a window's content area (its canvas size).  Returns 0/-1. */
+int wm_content_size(struct term *t, unsigned int *w, unsigned int *h);
+
 #endif

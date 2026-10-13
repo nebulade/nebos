@@ -14,6 +14,7 @@
 #include "payload.h"
 #include "process.h"
 #include "rtc.h"
+#include "sys_gfx.h"
 #include "timer.h"
 #include "version.h"
 #include "vga.h"
@@ -46,6 +47,34 @@ struct window *wm_focused_window(void)
 int wm_is_focused(const struct window *w)
 {
 	return w->focused;
+}
+
+/* The terminal whose screen is `screen`, or NULL: a spawned ring-3 command
+ * inherits its terminal's screen pointer, so this maps it back to the window
+ * (used by the sys_gfx window-canvas service). */
+struct term *wm_term_for_screen(struct text_screen *screen)
+{
+	unsigned int i;
+
+	for (i = 0; i < MAX_WINDOWS; i++)
+		if (windows[i].used && windows[i].term &&
+		    &windows[i].term->screen == screen)
+			return windows[i].term;
+	return 0;
+}
+
+/* Pixel size of a window's content area (the size of its gfx canvas). */
+int wm_content_size(struct term *t, unsigned int *w, unsigned int *h)
+{
+	unsigned int i;
+
+	for (i = 0; i < MAX_WINDOWS; i++)
+		if (windows[i].used && windows[i].term == t) {
+			*w = windows[i].pw - 2;
+			*h = SCREEN_ROWS * 10;
+			return 0;
+		}
+	return -1;
 }
 
 static int wm_point_in_rect(unsigned int px, unsigned int py,
@@ -152,6 +181,7 @@ static void wm_focus_top(void)
 static void wm_close_window(unsigned int idx)
 {
 	struct window *w = &windows[idx];
+	sys_gfx_kill_for_screen(&w->term->screen);   /* stop a running demo */
 	if (w->pid)
 		process_kill(w->pid);
 	w->used = 0;
@@ -251,37 +281,39 @@ static void wm_fill_rect_clip(unsigned int rx, unsigned int ry, unsigned int rw,
 		vga_fill_rect(x0, y0, x1 - x0, y1 - y0, r, g, b);
 }
 
-/* Redraw a rectangular region of the desktop (background + underlying windows,
-   excluding the window being dragged). Restores the exposed sliver. */
-static void wm_redraw_sliver(unsigned int x, unsigned int y, unsigned int w, unsigned int h)
+static void wm_draw_window_clip(struct window *w, unsigned int cx, unsigned int cy,
+				unsigned int cw, unsigned int ch);
+
+/* Repaint the desktop rectangle (x, y, w, h): background, then every
+   intersecting window back-to-front (focused last), then mark it dirty.  The
+   caller handles the mouse cursor.  The rect must lie below the system bar
+   (windows are clamped to y >= WM_BAR_H, so the bar is never overlapped and
+   needs no clip variant). */
+static void wm_redraw_rect(unsigned int x, unsigned int y,
+			   unsigned int w, unsigned int h)
 {
 	unsigned int i;
+
+	if (w == 0 || h == 0)
+		return;
 	vga_fill_rect(x, y, w, h, 32, 32, 48);
 	for (i = 0; i < MAX_WINDOWS; i++) {
 		struct window *w2 = &windows[i];
-		if (!w2->used || (int)i == drag_window)
-			continue;
-		if (!(x < w2->x + w2->pw && x + w > w2->x &&
-		      y < w2->y + w2->ph && y + h > w2->y))
-			continue;
 
-		/* Border. */
-		wm_fill_rect_clip(w2->x, w2->y, w2->pw, w2->ph,
-			x, y, w, h, 200, 200, 200);
-		/* Title bar. */
-		if (w2->focused)
-			wm_fill_rect_clip(w2->x + 1, w2->y + 1, w2->pw - 2, WM_TITLE_H,
-				x, y, w, h, 70, 90, 150);
-		else
-			wm_fill_rect_clip(w2->x + 1, w2->y + 1, w2->pw - 2, WM_TITLE_H,
-				x, y, w, h, 100, 100, 100);
-		/* Content background + cells. */
-		wm_fill_rect_clip(w2->x + 1, w2->y + 1 + WM_TITLE_H,
-			w2->pw - 2, SCREEN_ROWS * 10, x, y, w, h, 0, 0, 0);
-		fbtext_draw_cells_clip(w2->term->screen.cells,
-			w2->term->screen.cols, w2->term->screen.rows,
-			w2->x + 1, w2->y + 1 + WM_TITLE_H, x, y, w, h);
+		if (w2->used && !w2->focused &&
+		    x < w2->x + w2->pw && x + w > w2->x &&
+		    y < w2->y + w2->ph && y + h > w2->y)
+			wm_draw_window_clip(w2, x, y, w, h);
 	}
+	for (i = 0; i < MAX_WINDOWS; i++) {
+		struct window *w2 = &windows[i];
+
+		if (w2->used && w2->focused &&
+		    x < w2->x + w2->pw && x + w > w2->x &&
+		    y < w2->y + w2->ph && y + h > w2->y)
+			wm_draw_window_clip(w2, x, y, w, h);
+	}
+	vga_fb_mark_dirty_rect_xy(y, h, x, x + w);
 }
 
 /* Move a window in the shadow buffer: copy its rect, redraw the exposed
@@ -299,13 +331,13 @@ static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 	wm_shadow_copy(ox, oy, nx, ny, w->pw, w->ph);
 
 	if (dy > 0)
-		wm_redraw_sliver(ox, oy, w->pw, (unsigned int)dy);
+		wm_redraw_rect(ox, oy, w->pw, (unsigned int)dy);
 	else if (dy < 0)
-		wm_redraw_sliver(ox, ny + w->ph, w->pw, (unsigned int)(-dy));
+		wm_redraw_rect(ox, ny + w->ph, w->pw, (unsigned int)(-dy));
 	if (dx > 0)
-		wm_redraw_sliver(ox, oy, (unsigned int)dx, w->ph);
+		wm_redraw_rect(ox, oy, (unsigned int)dx, w->ph);
 	else if (dx < 0)
-		wm_redraw_sliver(nx + w->pw, oy, (unsigned int)(-dx), w->ph);
+		wm_redraw_rect(nx + w->pw, oy, (unsigned int)(-dx), w->ph);
 
 	/* Mark the swept band so the flush copies the moved window + sliver.
 	   Limit the horizontal span to the window's swept x-range so the flush
@@ -408,7 +440,12 @@ static void wm_handle_keyboard(void)
 		kdbg_wm_count++;
 		kdbg_wm_last = (unsigned int)k;
 		handled = 1;
-		term_key_push(fw->term, k);
+		/* A graphics command owns its window's keys (ESC etc.);
+		 * Ctrl+C always reaches the terminal so its foreground kill
+		 * keeps working. */
+		if (k == IO_KEY_CTRL_C ||
+		    !sys_gfx_push_key(&fw->term->screen, k))
+			term_key_push(fw->term, k);
 	}
 	if (handled)
 		kdbg_status();
@@ -449,41 +486,60 @@ static void wm_draw_bar(void)
 	fbtext_draw_rainbow_separator();
 }
 
-static void wm_draw_window(struct window *w)
+/* Draw window w clipped to (cx, cy, cw, ch).  Chrome uses wm_fill_rect_clip,
+ * content the cells/canvas clip variants, so pixels outside the clip are
+ * untouched. */
+static void wm_draw_window_clip(struct window *w, unsigned int cx, unsigned int cy,
+				unsigned int cw, unsigned int ch)
 {
 	struct text_screen *s = &w->term->screen;
-	unsigned int cx = w->x + 1;
-	unsigned int cy = w->y + 1 + WM_TITLE_H;
+	struct gfx_canvas *g = sys_gfx_canvas_for(&w->term->screen);
+	unsigned int bx = w->x + w->pw - 1 - WM_CLOSE_W;
+	unsigned int cony = w->y + 1 + WM_TITLE_H;
 
 	/* Border. */
-	vga_fill_rect(w->x, w->y, w->pw, w->ph, 200, 200, 200);
+	wm_fill_rect_clip(w->x, w->y, w->pw, w->ph, cx, cy, cw, ch, 200, 200, 200);
 
 	/* Title bar. */
 	if (w->focused)
-		vga_fill_rect(cx, w->y + 1, w->pw - 2, WM_TITLE_H, 70, 90, 150);
+		wm_fill_rect_clip(w->x + 1, w->y + 1, w->pw - 2, WM_TITLE_H,
+			cx, cy, cw, ch, 70, 90, 150);
 	else
-		vga_fill_rect(cx, w->y + 1, w->pw - 2, WM_TITLE_H, 100, 100, 100);
+		wm_fill_rect_clip(w->x + 1, w->y + 1, w->pw - 2, WM_TITLE_H,
+			cx, cy, cw, ch, 100, 100, 100);
 
 	/* Title text. */
-	fbtext_draw_string_xy(w->x + 4, w->y + 3, w->title, 255, 255, 255, 1);
+	fbtext_draw_string_xy_clip(w->x + 4, w->y + 3, w->title, 255, 255, 255,
+		cx, cy, cw, ch);
 
 	/* Close button. */
-	{
-		unsigned int bx = w->x + w->pw - 1 - WM_CLOSE_W;
-		vga_fill_rect(bx, w->y + 1, WM_CLOSE_W, WM_TITLE_H, 190, 60, 60);
-		fbtext_draw_string_xy(bx + 3, w->y + 3, "x", 255, 255, 255, 1);
-	}
+	wm_fill_rect_clip(bx, w->y + 1, WM_CLOSE_W, WM_TITLE_H,
+		cx, cy, cw, ch, 190, 60, 60);
+	fbtext_draw_string_xy_clip(bx + 3, w->y + 3, "x", 255, 255, 255,
+		cx, cy, cw, ch);
 
-	/* Content (black background) + cell buffer. */
-	vga_fill_rect(cx, cy, w->pw - 2, SCREEN_ROWS * 10, 0, 0, 0);
-	fbtext_draw_cells(s->cells, s->cols, s->rows, cx, cy);
+	/* Content: text cells or the gfx canvas. */
+	wm_fill_rect_clip(w->x + 1, cony, w->pw - 2, SCREEN_ROWS * 10,
+		cx, cy, cw, ch, 0, 0, 0);
+	if (g)
+		gfx_blit_clip(g, w->x + 1, cony, cx, cy, cw, ch);
+	else
+		fbtext_draw_cells_clip(s->cells, s->cols, s->rows,
+			w->x + 1, cony, cx, cy, cw, ch);
 
-	/* Blinking block cursor for the focused window. */
-	if (w->focused && s->cursor_visible) {
+	/* Blinking block cursor (text windows only). */
+	if (!g && w->focused && s->cursor_visible) {
 		unsigned int col = s->cursor % s->cols;
 		unsigned int row = s->cursor / s->cols;
-		vga_fill_rect(cx + col * 8, cy + row * 10, 2, 10, 255, 255, 255);
+
+		wm_fill_rect_clip(w->x + 1 + col * 8, cony + row * 10, 2, 10,
+			cx, cy, cw, ch, 255, 255, 255);
 	}
+}
+
+static void wm_draw_window(struct window *w)
+{
+	wm_draw_window_clip(w, w->x, w->y, w->pw, w->ph);
 }
 
 static void wm_render_full(void)
@@ -529,41 +585,61 @@ static void wm_redraw_if_needed(void)
 	static unsigned int last_kexec_tick;
 	unsigned int now_ms = get_ticks_ms();
 	unsigned int now_sec = now_ms / 1000;
-	int clock_changed = (now_sec != last_sec);
 	int kexec_changed = kexec_busy && (now_ms - last_kexec_tick >= 100);
-	int need_full = wm_full_redraw;
+	int bar_changed;
 
 	if (kexec_changed)
 		last_kexec_tick = now_ms;
+	bar_changed = (now_sec != last_sec) || kexec_changed;
 
-	/* A background window's content changed -> full redraw (rare). */
-	for (i = 0; i < MAX_WINDOWS; i++)
-		if (windows[i].used && !windows[i].focused && windows[i].term->screen.dirty)
-			need_full = 1;
+	if (wm_full_redraw) {
+		unsigned int seq_before[MAX_WINDOWS];
 
-	if (need_full) {
+		for (i = 0; i < MAX_WINDOWS; i++) {
+			struct gfx_canvas *g = windows[i].used ?
+				sys_gfx_canvas_for(&windows[i].term->screen) : 0;
+
+			seq_before[i] = g ? g->seq : 0;
+		}
 		wm_render_full();
 		for (i = 0; i < MAX_WINDOWS; i++)
-			if (windows[i].used)
+			if (windows[i].used) {
+				struct gfx_canvas *g = sys_gfx_canvas_for(&windows[i].term->screen);
+
 				windows[i].term->screen.dirty = 0;
+				if (g)
+					g->drawn = seq_before[i];   /* keep a frame
+						presented during the render */
+			}
 		wm_full_redraw = 0;
 		last_sec = now_sec;
 		return;
 	}
 
-	if (clock_changed || kexec_changed) {
+	if (bar_changed) {
 		wm_render_bar();
 		last_sec = now_sec;
 	}
 
-	/* Focused window's content changed -> redraw only that window. */
+	/* Any window whose content changed (focused or not): repaint just its
+	   content rect through the damage-rect compositor. */
 	for (i = 0; i < MAX_WINDOWS; i++) {
-		if (windows[i].used && windows[i].focused && windows[i].term->screen.dirty) {
-			mouse_cursor_erase();
-			wm_draw_window(&windows[i]);
-			mouse_redraw_cursor();
-			windows[i].term->screen.dirty = 0;
-		}
+		struct gfx_canvas *g;
+		unsigned int seq;
+
+		if (!windows[i].used)
+			continue;
+		g = sys_gfx_canvas_for(&windows[i].term->screen);
+		if (!windows[i].term->screen.dirty && !(g && g->seq != g->drawn))
+			continue;
+		seq = g ? g->seq : 0;   /* capture before compositing */
+		mouse_cursor_erase();
+		wm_redraw_rect(windows[i].x + 1, windows[i].y + 1 + WM_TITLE_H,
+			windows[i].pw - 2, SCREEN_ROWS * 10);
+		mouse_redraw_cursor();
+		windows[i].term->screen.dirty = 0;
+		if (g)
+			g->drawn = seq;
 	}
 }
 
@@ -589,6 +665,8 @@ static void wm_blink_cursor(void)
 
 	if (!fw || !fw->term)
 		return;
+	if (sys_gfx_canvas_for(&fw->term->screen))
+		return;   /* no text cursor over a graphics command */
 	if (now - last_cursor_tick >= CURSOR_MS) {
 		last_cursor_tick = now;
 		fw->term->screen.cursor_visible = !fw->term->screen.cursor_visible;
@@ -632,6 +710,7 @@ void wm_run(void)
 		wm_blink_cursor();
 		netlog_flush();
 		wm_handle_kexec();
+		sys_gfx_collect();
 		wm_redraw_if_needed();
 		vga_fb_flush_pending_check();
 		cpu_idle();

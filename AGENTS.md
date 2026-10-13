@@ -84,7 +84,20 @@ below the run area), so adding code no longer moves any address.
 - **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
   terminal windows (64×32) with a system bar (banner + purple "+ New" button +
   clock + rainbow). Click-to-focus, drag-by-title-bar, close (×). The "+ New"
-  button and first boot spawn terminals; there is no `term` command.
+  button and first boot spawn terminals; there is no `term` command.  Content is
+  repainted per damage rect (`wm_redraw_rect`: desktop fill + every intersecting
+  window back-to-front, clipped by `wm_draw_window_clip`), not by full redraws.
+- **Window graphics service**: `gfx.c/h` (RGB565 window canvases + bpp-aware
+  blits), `sys_gfx.c/h` — a ring-3 command gets its window's canvas mapped RW at
+  `0x50000000` (`SYS_GFX_BEGIN`; a mapped back buffer) and publishes frames with
+  `SYS_GFX_PRESENT`, which copies it into the composited front buffer (double
+  buffering; the copy runs with interrupts off, so a half-drawn frame can never
+  reach the screen).  Presented frames carry monotonic seq counters, so the WM
+  can never lose one.
+  Keys of a window with a live session go to the session (`SYS_KEY_POLL`; Ctrl+C
+  still reaches the terminal), closing a window kills its session, and
+  `sys_gfx_reap`/`sys_gfx_collect` free the canvas after exit/crash.  `clock`
+  and `colors` are its users.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `gpu.c`, `ati.c`, `nvidia.c`, `nv50.c`,
   `pci.h` — VESA LFB + shadow buffer, 30 Hz dirty-row flush. ATI Mach64 CRTC
   fixup; NVIDIA is VBE-only (never touch the legacy VGA CRTC). `nvidia.c`
@@ -199,8 +212,9 @@ below the run area), so adding code no longer moves any address.
   no readable filesystem can still run them: `run <name>` and the `prog`/
   `space` commands use the embedded copy, `run /<device>/<file>` still loads
   from FAT.  Rebuilds are wired (`space.c` -> `space.bin` -> `space_embed.o` ->
-  `kernel.elf`).  Note: full-screen programs draw over the WM, which keeps
-  repainting its desktop — running them windowed/cleanly is a follow-up.
+  `kernel.elf`).  Note: `run`/`prog`/`space` still draw over the WM (which keeps
+  repainting its desktop); the windowed path for such programs is the ring-3
+  canvas service (see the window graphics bullet, used by `clock`/`colors`).
 - **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld`, `mkpack.c`,
   `ramfs.c/h` — freestanding ELFs linked at `USER_BASE` (`0x40000000`), packed
   by `mkpack` into `cmds.pack` (as `bin/<name>`), embedded in the kernel
@@ -238,7 +252,7 @@ below the run area), so adding code no longer moves any address.
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
-`clock`, `colors`, `display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `format <device>`,
+`display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
@@ -269,7 +283,7 @@ nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`,
-`mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
+`clock`, `colors`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
 `netreset`, `curl` and `hello` are files in `/ramfs/bin` (packed by the
 Makefile), found through the shell's PATH; the rest are kernel commands

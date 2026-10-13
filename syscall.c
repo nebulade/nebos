@@ -3,8 +3,10 @@
 #include "syscall.h"
 #include "io.h"
 #include "process.h"
+#include "rtc.h"
 #include "serial.h"
 #include "sys_fs.h"
+#include "sys_gfx.h"
 #include "sys_info.h"
 #include "sys_net.h"
 #include "timer.h"
@@ -143,6 +145,26 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 	case SYS_SET_CURSOR:
 		io_set_cursor((unsigned int)a1);
 		return 0;
+	case SYS_GFX_BEGIN:
+		return sys_gfx_begin((struct sys_gfx_info *)a1);
+	case SYS_GFX_PRESENT:
+		return sys_gfx_present();
+	case SYS_GFX_END:
+		return sys_gfx_end();
+	case SYS_KEY_POLL:
+		return sys_gfx_key_poll();
+	case SYS_RTC_HMS: {
+		struct sys_time *out = (struct sys_time *)a1;
+		unsigned int h, m, s;
+
+		if (!out)
+			return -1;
+		rtc_read_hms(&h, &m, &s);
+		out->hour = h;
+		out->minute = m;
+		out->second = s;
+		return 0;
+	}
 	default:
 		return -1;
 	}

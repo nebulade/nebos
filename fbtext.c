@@ -328,6 +328,40 @@ void fbtext_draw_string_xy(unsigned int x0, unsigned int y0, const char *str,
 	vga_fb_mark_dirty_rect(y0, FONT_8X8_ROWS);
 }
 
+/* Like fbtext_draw_string_xy, but per-pixel clipped to (cx, cy, cw, ch): only
+ * foreground pixels inside the clip rect are written. */
+void fbtext_draw_string_xy_clip(unsigned int x0, unsigned int y0, const char *str,
+		unsigned int r_fg, unsigned int g_fg, unsigned int b_fg,
+		unsigned int cx, unsigned int cy, unsigned int cw, unsigned int ch)
+{
+	unsigned int i;
+
+	for (i = 0; str[i]; i++) {
+		unsigned int gx = x0 + i * 8;
+		const unsigned char *glyph;
+		unsigned int x, y;
+
+		if (gx + 8 <= cx || gx >= cx + cw ||
+		    y0 + FONT_8X8_ROWS <= cy || y0 >= cy + ch)
+			continue;
+		glyph = &font_8x8[(unsigned int)str[i] * FONT_8X8_ROWS];
+		for (y = 0; y < FONT_8X8_ROWS; y++) {
+			unsigned char bits = glyph[y];
+			unsigned int py = y0 + y;
+			unsigned int xa, xb;
+
+			if (!bits || py < cy || py >= cy + ch)
+				continue;
+			xa = (gx > cx) ? gx : cx;
+			xb = (gx + 8 < cx + cw) ? gx + 8 : cx + cw;
+			for (x = xa; x < xb; x++)
+				if (bits & (0x80u >> (x - gx)))
+					vga_put_pixel_rgb(x, py, r_fg, g_fg, b_fg);
+		}
+	}
+	vga_fb_mark_dirty_rect_xy(cy, ch, cx, cx + cw);
+}
+
 #define RAINBOW_LINE_HEIGHT  2   /* 2-pixel tall line for visibility */
 
 void fbtext_draw_rainbow_separator(void)
