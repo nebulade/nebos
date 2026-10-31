@@ -43,19 +43,20 @@ default_irq_stub:
 	popl  %eax
 	iret
 
-/* CPU exception stubs (vectors 0-31).  The handler never returns,
-   so we don't need to preserve the full frame for iret. */
+/* CPU exception stubs (vectors 0-31).  The handler never returns; it gets a
+ * pointer to a struct exc_state (panic.h): the saved GPRs plus the CPU's
+ * exception frame (vector, error code, EIP, CS, EFLAGS, [user ESP, SS]). */
 
 .macro exc_no_err vec
 exc_stub_\vec:
+	pushl $0               /* the CPU pushes no error code: supply a zero */
 	pushl $\vec
 	jmp   exc_common
 .endm
 
 .macro exc_err vec
 exc_stub_\vec:
-	addl  $4, %esp
-	pushl $\vec
+	pushl $\vec            /* the CPU's error code is already on the stack */
 	jmp   exc_common
 .endm
 
@@ -104,11 +105,11 @@ exc_common:
 	movw  %ax, %gs
 	popl  %eax
 
-	pushl 8(%esp)      /* CS  -> 3rd arg */
-	pushl 4(%esp)      /* vector -> 2nd arg */
-	pushl 12(%esp)     /* faulting EIP -> 1st arg */
-	call  exc_handler  /* exc_handler(eip, vector, cs) */
-	addl  $12, %esp
+	/* Layout at %esp must match struct exc_state (panic.h). */
+	pusha                  /* GPRs exactly as they were at the fault */
+	movl  %esp, %eax
+	pushl %eax             /* exc_handler(struct exc_state *st) */
+	call  exc_handler
 	cli
 1:	hlt
 	jmp   1b

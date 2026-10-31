@@ -3,7 +3,6 @@
 
 #include "io.h"
 #include "dbg.h"
-#include "kdbg.h"
 #include "kexec.h"
 #include "process.h"
 #include "terminal.h"
@@ -1192,9 +1191,6 @@ void term_run(struct term *t)
 		{
 			int k = term_key_pop(t);
 			if (k) {
-				kdbg_term_count++;
-				kdbg_term_last = (unsigned int)k;
-				kdbg_status();
 				if (k == IO_KEY_CTRL_C) {
 					/* Ctrl+C at the prompt: discard the line. */
 					io_putstr("^C\n");

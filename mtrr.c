@@ -22,13 +22,11 @@
  *     version had them inverted, so e.g. a 16 MB request marked the first
  *     4 KB of every 16 MB block as WC instead of the framebuffer range.)
  *
- * The MTRR layout found at boot and the result are dumped to the on-screen
- * debug lines (kdbg) and to serial, so this can be inspected on machines
- * without a serial console.
+ * The MTRR layout found at boot and the result are dumped to serial, so this
+ * can be inspected on machines without a VGA console.
  */
 
 #include "mtrr.h"
-#include "kdbg.h"
 #include "serial.h"
 
 #define MSR_MTRRCAP        0x0FE
@@ -112,14 +110,12 @@ static const char *type_name(unsigned int t)
 	}
 }
 
-/* Dump MTRRdefType and the variable entries to kdbg and serial.  Rows come
- * from the kdbg info pool, so other subsystems keep their own. */
+/* Dump MTRRdefType and the variable entries to serial. */
 static void dump_mtrrs(unsigned int vcnt)
 {
 	char buf[56];
 	char *p;
 	unsigned int i, lo, hi, mlo, mhi;
-	int row;
 
 	rdmsr(MSR_MTRR_DEF_TYPE, &lo, &hi);
 	p = buf;
@@ -128,9 +124,6 @@ static void dump_mtrrs(unsigned int vcnt)
 	p = app(p, " vcnt ");
 	*p++ = (char)('0' + (vcnt > 9 ? 9 : vcnt));
 	*p = '\0';
-	row = kdbg_info_alloc();
-	if (row >= 0)
-		kdbg_info((unsigned int)row, buf);
 	serial_puts(SERIAL_COM1, buf);
 	serial_puts(SERIAL_COM1, "\n");
 
@@ -152,9 +145,6 @@ static void dump_mtrrs(unsigned int vcnt)
 			p = app(p, type_name(lo));
 		}
 		*p = '\0';
-		row = kdbg_info_alloc();
-		if (row >= 0)
-			kdbg_info((unsigned int)row, buf);
 		serial_puts(SERIAL_COM1, buf);
 		serial_puts(SERIAL_COM1, "\n");
 	}
@@ -168,9 +158,6 @@ int mtrr_set_wc(unsigned int base, unsigned int size,
 	unsigned int vcnt;
 	unsigned int i, use = ~0u;
 	unsigned int region_size, align, physmask;
-	int row;
-	char buf[56];
-	char *p;
 
 	if (!cpu_has_mtrr() || size == 0)
 		return 0;
@@ -182,8 +169,8 @@ int mtrr_set_wc(unsigned int base, unsigned int size,
 	if (vcnt == 0)
 		return 0;
 
-	/* Dump the first 8 at most (kdbg info rows are a shared pool); the
-	 * search below still covers every variable range. */
+	/* Dump the first 8 at most; the search below still covers every
+	 * variable range. */
 	dump_mtrrs(vcnt > 8 ? 8 : vcnt);
 
 	/* Round size up to the next power of two (min 4 KB). */
@@ -238,13 +225,7 @@ int mtrr_set_wc(unsigned int base, unsigned int size,
 		}
 	}
 
-	p = buf;
 	if (use == ~0u) {
-		p = app(p, "WC skipped: no free MTRR entry");
-		*p = '\0';
-		row = kdbg_info_alloc();
-		if (row >= 0)
-			kdbg_info((unsigned int)row, buf);
 		serial_puts(SERIAL_COM1, "mtrr: no free variable entry; skipping WC\n");
 		return 0;
 	}
@@ -264,17 +245,6 @@ int mtrr_set_wc(unsigned int base, unsigned int size,
 	wrmsr(MSR_MTRR_PHYSMASK0 + 2 * use, physmask, mtrr_hi_mask());
 
 	wrmsr(MSR_MTRR_DEF_TYPE, def_type, 0);
-
-	p = app(p, "WC=e");
-	*p++ = (char)('0' + (use > 9 ? 9 : use));
-	p = app(p, " b=");
-	p = hex8(p, base);
-	p = app(p, " s=");
-	p = hex8(p, region_size);
-	*p = '\0';
-	row = kdbg_info_alloc();
-	if (row >= 0)
-		kdbg_info((unsigned int)row, buf);
 
 	serial_puts(SERIAL_COM1, "mtrr: LFB WC [");
 	serial_puthex(SERIAL_COM1, base);

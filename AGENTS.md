@@ -151,9 +151,10 @@ below the run area), so adding code no longer moves any address.
   `screen_damage_cell()`/`screen_damage_cursor()`, reset by
   `screen_clear_damage()`), so the WM repaints a keystroke's cell instead of the
   whole window content and the blink only marks the cursor's own cell.
-- **On-screen debug**: `kdbg.c/h` — framebuffer debug overlay (live status rows,
-  heartbeat, boot info rows, exception banner) for machines without serial; see
-  the kdbg section below.
+- **Fatal exception screen**: `panic.c/h`, `timer.S` — on a ring-0 fault,
+  dumps vector/error code, GPRs, CRs, EIP instruction bytes and stack
+  return-address candidates straight into the LFB (and COM1) before halting;
+  see the panic section below.
 - **Shell**: `terminal.c` — history, line editing, and a table-driven command
   registry (`cmds[]`: name, usage, spawn kind/handler) that holds only the
   builtins (`cd`, `path`, `help`, `clear`) and the kernel commands.  Everything
@@ -586,75 +587,41 @@ QEMU gotchas that bit once:
   written while no client is attached, so a late-connecting reader misses the
   boot log (kexec tests that wait for it then mis-report a failed reload).
 
-## On-screen debug overlay (`kdbg`)
+## Fatal exception screen (`panic`)
 
-For machines **without a serial console** (e.g. the ASUS AT3IONT-I), `kdbg.c/h`
-draws a debug overlay straight into the VESA LFB, bypassing the shadow buffer
-and the WM. It stays on screen even when the WM or the scheduler is wedged, so
-a freeze can be diagnosed by reading/photographing the screen. This is how the
-"freeze on first key press" was tracked down: the counters showed that no key
-event ever reached the OS (all zeros) and the heartbeat stopped, i.e. the CPU
-was wedged in firmware/SMM before IRQ1 was delivered.
+The on-screen debug overlay (`kdbg`: live counters, heartbeat, boot info rows)
+has been removed.  The one diagnostic screen left is the fatal exception
+banner: on a ring-0 fault, `exc_handler()` (`kernel.c`) calls
+`panic_report()` (`panic.c/h`), which draws straight into the VESA LFB
+(bypassing the shadow buffer and the WM) and mirrors the same data to COM1,
+then halts.  Faults from ring 3 do not halt: the process is killed (with a
+short message in its terminal and on serial) and the kernel keeps running.
 
-Layout (bottom-left, and a heartbeat square bottom-right):
+What the banner and the COM1 dump contain:
 
-```
-MTRRdef 00000E06 vcnt 8            <- boot info rows (yellow), up to 14
-M0 b=00000000 m=FF000800 WB
-...
-WC=e7 b=FD000000 s=00800000
-IRQ 12  SC 9C  BY 12  OT 0  MK 0   <- live status row 1 (green)
-WM 6  K 000A  TRM 6  K 000A        <- live status row 2 (blue)
-```
+- vector name/number and the CPU error code (`#PF` also decodes P/W/U/RSVD/ID),
+- EIP, CS (ring), EFLAGS, and the faulting ESP (ring 0) or user ESP/SS,
+- EAX..EDI and EBP,
+- CR0, CR2, CR3, CR4,
+- current pid/name and uptime ticks,
+- up to 16 bytes at EIP (read only from mapped RAM and clipped at the page
+  boundary, so the dump cannot fault again),
+- a few stack dwords plus return-address candidates found by scanning the
+  faulting stack page for values in the kernel image (`0x7E00..__bss_end`).
+  `-O2` omits frame pointers, so there is no EBP-chain backtrace; the
+  candidates are hints, not a true trace.
 
-**Live status rows** (bottom two, refreshed on key events and 1×/s):
+COM1 additionally gets 32 stack dwords and every candidate, each with its
+offset from the faulting ESP.  Addresses are raw kernel addresses: resolve
+them with `nm kernel.elf` / `addr2line -e kernel.elf <addr>`.
 
-- `IRQ` — IRQ1 entries; `SC` — last scancode read from port 0x60; `BY` —
-  scancode bytes read (IRQ + polling); `OT` — dropped other/AUX bytes; `MK` —
-  1 if the IRQ1 storm guard tripped (IRQ1 masked; WM falls back to polling).
-- `WM n K xxxx` — keys handed by the WM to the focused terminal; `TRM n K xxxx`
-  — keys consumed by `term_run`; `K` = last key value.
-- **Heartbeat square** (bottom-right) toggles every 500 ticks (~1 Hz) from the
-  PIT IRQ. If it stops, the *CPU* is wedged, not just the UI.
-
-**Info rows** (yellow, above the status rows) are boot-time diagnostics, e.g.
-the MTRR dump from `mtrr.c`: `MTRRdef` = default-type MSR + number of variable
-slots; `M0..M7` = the BIOS's own MTRR entries as found at boot (`-` = free
-slot; `b`/`m` = base/address mask; type `UC`/`WB`/`WC`/`WT`/`WP`); `WC=eN ...`
-= the write-combining entry the kernel added in free slot N for the
-framebuffer (or `WC skipped: no free MTRR entry`). An entry that already
-covers the LFB base (left by a previous kexec boot -- variable MTRRs survive
-a kernel reload) is reused instead of consuming another slot. Never overwrite
-BIOS-populated MTRR entries — chipset/MMIO uncacheability (and the USB-legacy
-SMM) breaks otherwise.
-
-**Exception banner**: `exc_handler()` (`kernel.c`) calls `kdbg_panic()`, which
-draws a red banner with vector name, EIP and CR2 at the top of the screen
-(visible without serial) before the CPU halts.  Faults from ring 3 do not halt:
-the process is killed (with a short message in its terminal and on serial) and
-the kernel keeps running.
-
-API / wiring:
-
-- `kdbg_init()` — cache LFB geometry; call after `vga_shadow_init()`.
-- `kdbg_status()` — redraw the live rows; called from key paths and the PIT.
-- `kdbg_info(row, s)` — set one of 14 info rows (row 0 = lowest, at
-  `fb_h-31`). Text is **copied**, so stack buffers are fine, and it is safe to
-  call before `kdbg_init()` (stored, drawn once the framebuffer is up).
-- `kdbg_info_alloc()` — claim the next free info row (`-1` when full); boot
-  subsystems (MTRR dump, NIC) take rows in init order without colliding.
-- `kdbg_pit_tick()` — called from the PIT stub (`switch.S`); blinks the
-  heartbeat and refreshes the overlay every second.
-- Counters live in `kdbg.c`, bumped from `io.c` (`kbd_irq`,
-  `io_poll_key_with_hw`), `wm.c` (`wm_handle_keyboard`) and `terminal.c`
-  (`term_run`).
-
-Caveats:
-
-- Pixels are written directly to the LFB; WM full redraws overwrite them but
-  the 1 Hz refresh brings them back.
-- Info rows cost ~0.5 KB BSS; keep the kernel under the `0x7F000` boundary
-  (`kernel.ld` ASSERT).
+Wiring: `timer.S` builds a `struct exc_state` (GPRs via `pusha` and the CPU's
+exception frame, including the error code that the old stubs discarded) and
+passes it to `exc_handler()`; `panic.h` documents the layout.  The banner
+caches the LFB geometry lazily, so no boot hook is needed.  The MTRR dump and
+the NIC bring-up trail that used to fill the info rows now go to COM1 only
+(`mtrr.c`, `r8168.c`).  The IRQ1 storm guard still masks a storming keyboard
+and the WM falls back to polling (`io_keyboard_irq_masked()`).
 
 ## Conventions & gotchas
 

@@ -5,14 +5,11 @@
  * TX/RX use 16-byte descriptors the NIC DMAs to/from memory; register and
  * descriptor values mirror the r8169 sequence from Linux.
  *
- * Every wait is time-bounded and each bring-up step writes a kdbg info row
- * (and serial), because the target machine has no serial console: a wedged
- * driver must still be diagnosable from the screen (progress row + PIT
- * heartbeat).
+ * Every wait is time-bounded and each bring-up step goes to serial, because
+ * a wedged driver must still be diagnosable from the log.
  */
 
 #include "io.h"
-#include "kdbg.h"
 #include "mm.h"
 #include "netdev.h"
 #include "paging.h"
@@ -140,14 +137,12 @@ static unsigned char *rx_bufs;
 static unsigned int tx_cur;
 static unsigned int rx_cur;
 
-/* Counters (mirrored into the kdbg status row). */
+/* Counters (also reported by `netregs`). */
 static unsigned int tx_ok, tx_err, rx_ok, rx_err, rx_drop;
 static unsigned int last_tx_status;     /* raw descriptor status after TX */
 static unsigned int isr_last;           /* last IntrStatus value we acked */
 static unsigned int isr_rovw, isr_fov, isr_tdu;
 static unsigned int rx_restarts;
-
-static int kdbg_stat_row = -1;          /* link + counters */
 
 static int timed_out(unsigned int start_ms, unsigned int ms)
 {
@@ -269,33 +264,10 @@ static void put_dec(unsigned int v)
 		io_putchar(b[--i]);
 }
 
-/* ---- debug trail (kdbg rows + serial) ---- */
-
-/* Each step advances to a fresh info row (up to R8168_TRAIL_ROWS) so a photo
- * of the screen shows the bring-up sequence (PCI -> reset -> ... -> link);
- * after that the last row is reused, which keeps the most recent step
- * visible.  The row count is capped because the pool is shared with the MTRR
- * dump (11 rows on the AT3IONT-I). */
-#define R8168_TRAIL_ROWS 2
-
-static int trail_row = -1;
-static int trail_used;
+/* ---- debug trail (serial) ---- */
 
 static void dbg(const char *s)
 {
-	if (trail_row < 0) {
-		trail_row = kdbg_info_alloc();
-		trail_used = 1;
-	} else if (trail_used < R8168_TRAIL_ROWS) {
-		int next = kdbg_info_alloc();
-
-		if (next >= 0) {
-			trail_row = next;
-			trail_used++;
-		}
-	}
-	if (trail_row >= 0)
-		kdbg_info((unsigned int)trail_row, s);
 	serial_puts(SERIAL_COM1, "r8168: ");
 	serial_puts(SERIAL_COM1, s);
 	serial_puts(SERIAL_COM1, "\n");
@@ -348,7 +320,7 @@ static int mdio_read(unsigned int reg)
 	return (int)(r32(REG_PHYAR) & 0xffff);
 }
 
-/* ---- status row ---- */
+/* ---- status ---- */
 
 /* "1000M"/"100M"/"10M"/"?" + duplex letter, into out[6]. */
 static void speed_string(unsigned int st, char *out)
@@ -363,47 +335,6 @@ static void speed_string(unsigned int st, char *out)
 		out[0] = '?'; out[1] = out[2] = out[3] = out[4] = ' ';
 	}
 	out[5] = '\0';
-}
-
-/* "NIC U 1000MF TX 3/0 RX 5/0" into the kdbg status row. */
-static void status_line(void)
-{
-	char buf[40];
-	unsigned int st = r8(REG_PHYstatus);
-	unsigned int i = 0;
-
-	if (kdbg_stat_row < 0)
-		kdbg_stat_row = kdbg_info_alloc();   /* reserve the row up front */
-
-	if (kdbg_stat_row < 0)
-		return;
-
-	i = app(buf, i, "NIC ");
-	buf[i++] = (st & PHYST_LINK) ? 'U' : 'D';
-	buf[i++] = ' ';
-	{
-		char sp[6];
-		unsigned int j;
-
-		speed_string(st, sp);
-		for (j = 0; sp[j]; j++)
-			buf[i++] = sp[j];
-	}
-	buf[i++] = (st & PHYST_FULLDUP) ? 'F' : 'H';
-	i = app(buf, i, " TX ");
-	i = appd(buf, i, tx_ok);
-	buf[i++] = '/';
-	i = appd(buf, i, tx_err);
-	i = app(buf, i, " RX ");
-	i = appd(buf, i, rx_ok);
-	buf[i++] = '/';
-	i = appd(buf, i, rx_err);
-	buf[i] = '\0';
-
-	if (kdbg_stat_row < 0)
-		kdbg_stat_row = kdbg_info_alloc();
-	if (kdbg_stat_row >= 0)
-		kdbg_info((unsigned int)kdbg_stat_row, buf);
 }
 
 /* Re-arm every RX descriptor and restart the RX engine.  The chip can halt
@@ -689,10 +620,6 @@ int r8168_init(void)
 		return present ? 0 : -1;
 	inited = 1;
 
-	/* Reserve the status row before the trail grabs rows. */
-	if (kdbg_stat_row < 0)
-		kdbg_stat_row = kdbg_info_alloc();
-
 	if (probe_pci() != 0) {
 		dbg("no 10ec:8168 found");
 		return -1;
@@ -765,7 +692,6 @@ int r8168_init(void)
 	dbg(buf);
 
 	present = 1;
-	status_line();
 	return 0;
 }
 
@@ -783,7 +709,6 @@ void r8168_reset(void)
 	}
 	read_mac();
 	hw_start();
-	status_line();
 	dbg("netreset done");
 }
 
@@ -827,7 +752,6 @@ int r8168_tx(const unsigned char *buf, unsigned int len)
 	while (d->opts1 & DescOwn) {
 		if (timed_out(t0, 100)) {
 			tx_err++;
-			status_line();
 			return -1;
 		}
 	}
@@ -855,7 +779,6 @@ int r8168_tx(const unsigned char *buf, unsigned int len)
 	while (d->opts1 & DescOwn) {
 		if (timed_out(t0, 100)) {
 			tx_err++;
-			status_line();
 			return -1;
 		}
 	}
@@ -863,8 +786,6 @@ int r8168_tx(const unsigned char *buf, unsigned int len)
 	tx_cur = (entry + 1) % R8168_NTX;
 	last_tx_status = d->opts1;
 	tx_ok++;
-	if ((tx_ok & 63) == 0)
-		status_line();
 	return 0;
 }
 
@@ -916,8 +837,6 @@ int r8168_rx(unsigned char *buf, unsigned int maxlen)
 				for (i = 0; i < len; i++)
 					buf[i] = src[i];
 				rx_ok++;
-				if ((rx_ok & 63) == 0)
-					status_line();
 				rx_arm(entry);
 				rx_cur = (rx_cur + 1) % R8168_NRX;
 				return (int)len;

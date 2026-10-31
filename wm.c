@@ -6,7 +6,6 @@
 #include "fbtext.h"
 #include "idle.h"
 #include "io.h"
-#include "kdbg.h"
 #include "kexec.h"
 #include "mouse.h"
 #include "netkexec.h"
@@ -363,7 +362,6 @@ static void wm_handle_keyboard(void)
 	struct window *fw = wm_focused_window();
 	static unsigned int last_hw_poll;
 	unsigned int now = get_ticks_ms();
-	int handled = 0;
 	int n;
 
 	if (io_keyboard_raw())
@@ -374,7 +372,7 @@ static void wm_handle_keyboard(void)
 
 	for (n = 0; n < 8; n++) {
 		int k = io_poll_key();
-		if (!k && (now - last_hw_poll) >= (kdbg_irq_masked ? 5 : 50)) {
+		if (!k && (now - last_hw_poll) >= (io_keyboard_irq_masked() ? 5 : 50)) {
 			/* Fallback paths: IRQ1 was storm-masked, or no IRQ is
 			 * delivering; sample the controller directly (faster
 			 * when masked, so fast typing isn't dropped). */
@@ -383,9 +381,6 @@ static void wm_handle_keyboard(void)
 		}
 		if (!k)
 			break;
-		kdbg_wm_count++;
-		kdbg_wm_last = (unsigned int)k;
-		handled = 1;
 		/* A graphics command owns its window's keys (ESC etc.);
 		 * Ctrl+C always reaches the terminal so its foreground kill
 		 * keeps working. */
@@ -393,8 +388,6 @@ static void wm_handle_keyboard(void)
 		    !sys_gfx_push_key(&fw->term->screen, k))
 			term_key_push(fw->term, k);
 	}
-	if (handled)
-		kdbg_status();
 }
 
 static void wm_draw_bar(void)

@@ -2,7 +2,7 @@
 
 #include "idle.h"
 #include "io.h"
-#include "kdbg.h"
+#include "panic.h"
 #include "kmalloc.h"
 #include "mm.h"
 #include "mouse.h"
@@ -56,9 +56,10 @@ unsigned int get_ticks_ms(void)
 	return ticks;
 }
 
-void exc_handler(unsigned int eip, unsigned int vector, unsigned int cs);
-void exc_handler(unsigned int eip, unsigned int vector, unsigned int cs)
+void exc_handler(struct exc_state *st);
+void exc_handler(struct exc_state *st)
 {
+	unsigned int vector = st->vector;
 	unsigned int cr2 = 0;
 	static const char * const names[] = {
 		"#DE Divide Error", "#DB Debug", "NMI", "#BP Breakpoint",
@@ -73,46 +74,22 @@ void exc_handler(unsigned int eip, unsigned int vector, unsigned int cs)
 
 	/* A fault from ring 3 is a bug in a user command (or its ELF): kill that
 	 * process and keep the kernel running.  Kernel faults still halt. */
-	if ((cs & 3) == 3) {
+	if ((st->cs & 3) == 3) {
 		serial_puts(SERIAL_COM1, "\n*** user fault vec ");
 		serial_puthex(SERIAL_COM1, vector);
 		serial_puts(SERIAL_COM1, " eip=");
-		serial_puthex(SERIAL_COM1, eip);
+		serial_puthex(SERIAL_COM1, st->eip);
+		serial_puts(SERIAL_COM1, " cr2=");
+		serial_puthex(SERIAL_COM1, cr2);
 		serial_puts(SERIAL_COM1, " -- process killed\n");
 		io_putstr("\n*** fault: ");
 		io_putstr(vector < 20 ? names[vector] : "unknown vector");
 		io_putstr(" -- command killed\n");
 		process_exit();     /* marks us dead and waits to be switched out */
 	}
-	/* Draw the fault info directly into the framebuffer FIRST: with no
-	 * serial console attached, a fault was previously invisible (the text
-	 * went to the current process's screen buffer, which the WM never got
-	 * to render because the CPU halts here). */
-	kdbg_panic(vector < 20 ? names[vector] : "unknown vector", eip, cr2);
-	/* Print the fault to serial, using only minimal/no-stack code, so it
-	 * survives even if the screen buffer or kernel stack is the problem. */
-	serial_puts(SERIAL_COM1, "\n*** EXC vec ");
-	serial_puthex(SERIAL_COM1, vector);
-	serial_puts(SERIAL_COM1, " eip=");
-	serial_puthex(SERIAL_COM1, eip);
-	serial_puts(SERIAL_COM1, " cr2=");
-	serial_puthex(SERIAL_COM1, cr2);
-	serial_puts(SERIAL_COM1, " ");
-	if (vector < 20)
-		serial_puts(SERIAL_COM1, names[vector]);
-	serial_puts(SERIAL_COM1, " ***\n");
-
-	/* Then attempt the screen output (may fault if the screen is broken). */
-	io_putstr("\n*** EXCEPTION: ");
-	if (vector < 20)
-		io_putstr(names[vector]);
-	else {
-		io_putstr("vector ");
-		if (vector >= 10)
-			io_putchar((char)('0' + vector / 10));
-		io_putchar((char)('0' + vector % 10));
-	}
-	io_putstr(" ***\nSystem halted.\n");
+	/* Fatal kernel fault: the banner goes straight into the LFB (no serial
+	 * console needed) and the full state is mirrored to COM1. */
+	panic_report(st, vector < 20 ? names[vector] : "unknown vector");
 	for (;;)
 		__asm__ volatile ("cli; hlt");
 }
@@ -218,8 +195,6 @@ void kernel_main(void)
 	usbhid_init();
 	vga_shadow_init();
 	vga_fb_flush();
-	kdbg_init();
-	kdbg_status();
 	vfs_mount_all();
 	/* The command pack: read-only, mounted at /ramfs (see ramfs.c). */
 	{
