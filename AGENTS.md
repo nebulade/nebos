@@ -108,7 +108,16 @@ below the run area), so adding code no longer moves any address.
   through the `blit` vtable (`blit.c/h`: fill/copy/blend/canvas/present/flip,
   software only today) so an accelerator can replace single ops without
   touching the WM.  `vga_target_damage()` is a no-op while the target is not
-  the screen.  The boot log prints `blit backend: <name>`.  Drawing marks
+  the screen.  `cpu.c` detects SSE2 (CPUID, with the EFLAGS ID-bit probe and
+  the CR4.OSFXSR/OSXMMEXCPT enable, since the kernel is -mno-sse) and the
+  software fill uses an SSE2 row store when it is there -- streaming
+  (`movntdq`, one sfence per fill) for rows that do not fit the cache, which
+  avoids the read-for-ownership traffic that makes big fills DRAM-bound on the
+  Atom.  `gfxbench` times the fill/copy/cell/canvas/flush paths and reports
+  the bytes the presenter really copied (`vga_present_copied`).  The flush trims a shared
+  damage list, so `vga_present_shadow()` refuses to re-enter while another
+  process is mid-flush (a full-screen copy is long enough to be preempted).
+  The boot log prints `blit backend: <name>`.  Drawing marks
   damage rectangles (a small
   list that merges rects when they overlap or touch, so a keystroke's cells
   collapse while unrelated damage stays apart); the main loop copies them to
@@ -116,7 +125,11 @@ below the run area), so adding code no longer moves any address.
   fixed frame rate.  A rect that fits the budget is copied whole, so a window
   repaint never tears; only a bigger one (a full-screen redraw) is chunked, and
   its remaining rows continue after the newer damage.  ATI Mach64 CRTC
-  fixup; NVIDIA is VBE-only (never touch the legacy VGA CRTC). `nvidia.c`
+  fixup; NVIDIA is VBE-only (never touch the legacy VGA CRTC).  The LFB is
+  mapped UC unless the WC MTRR covered the range (`mtrr_set_wc()` returns the
+  covered range and `paging.c` makes only those pages cacheable -- a PCD=1
+  page is UC no matter what the MTRRs say, which held VRAM writes at ~33 MB/s
+  on the ION until it was fixed). `nvidia.c`
   identifies the card, maps BAR0/BAR1/BAR3 and reads the MCP7x stolen-VRAM
   geometry; `nv50.c` probes the nv50-family display engine at boot (read-only,
   serial/netmon). The ION/AT3IONT-I hardware cursor is deliberately not driven:
@@ -272,7 +285,7 @@ below the run area), so adding code no longer moves any address.
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
-`display`, `cpuinfo`, `mouseinfo`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `format <device>`,
+`display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `format <device>`,
 `ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the

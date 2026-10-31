@@ -3,6 +3,10 @@
 #define PAGING_H
 
 void paging_init(void);
+/* Re-apply the framebuffer page types (after GPU BAR mappings that cover it). */
+void paging_lfb_refresh(void);
+/* 1 when the LFB is mapped for write-combining. */
+int paging_lfb_wc(void);
 
 /* Physical address of the bootstrap (current) page directory. */
 unsigned int paging_current_cr3(void);

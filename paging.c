@@ -27,6 +27,50 @@
 #define LFB_MAP_SIZE 0x1000000
 
 static unsigned int *page_dir;
+/* LFB page-type decision, kept so it can be re-applied after other MMIO
+ * mappings (the GPU BARs cover the framebuffer address) have set PCD. */
+static unsigned int lfb_wc_base, lfb_wc_size;
+static int lfb_wc_ok;
+
+/* Write the LFB PDEs: WC-covered pages cacheable (effective type WC), the
+ * rest uncacheable. */
+static void lfb_apply_pages(unsigned int *pd)
+{
+	const volatile struct vga_boot_fb_info *fb = VGA_BOOT_FB;
+	unsigned int base, p0, p1, i;
+
+	__asm__ volatile ("" : "+r"(fb));
+	if (!fb->valid || !fb->lfb_base)
+		return;
+	base = fb->lfb_base;
+	p0 = base >> 22;
+	p1 = (base + LFB_MAP_SIZE) >> 22;
+	for (i = p0; i < p1 && i < 1024; i++) {
+		unsigned int page = i << 22;
+		unsigned int flags = PDE_PS | PDE_WRITABLE | PDE_PRESENT;
+
+		if (!lfb_wc_ok || page < lfb_wc_base ||
+		    page + 0x400000 > lfb_wc_base + lfb_wc_size)
+			flags |= PDE_PCD;
+		pd[i] = page | flags;
+	}
+}
+
+/* Re-apply the framebuffer mapping; call after any MMIO mapping that may have
+ * covered the same addresses (the NVIDIA BAR3 aperture includes the VBE LFB). */
+void paging_lfb_refresh(void)
+{
+	if (!lfb_wc_ok || !page_dir)
+		return;
+	lfb_apply_pages(page_dir);
+	serial_puts(SERIAL_COM1, "paging: LFB write-combining re-applied\n");
+}
+
+/* 1 when the LFB is mapped for write-combining (WC MTRR + cacheable pages). */
+int paging_lfb_wc(void)
+{
+	return lfb_wc_ok;
+}
 
 void paging_init(void)
 {
@@ -53,24 +97,27 @@ void paging_init(void)
 	for (i = 0; i < MM_MAX_PHYS / 0x400000; i++)
 		page_dir[i] = (i << 22) | PDE_PS | PDE_WRITABLE | PDE_PRESENT;
 
-	/* Identity-map the framebuffer (MMIO, uncacheable) so the screen works. */
+	/* Identity-map the framebuffer and make VRAM writes batch.  Use the
+	 * actual framebuffer size (not the whole mapping) so the WC range
+	 * cannot swallow unrelated MMIO, and install the MTRR *before* choosing
+	 * the page type: a PCD=1 page is uncacheable no matter what the MTRRs
+	 * say, which made every VRAM dword a separate PCI write (~30 MB/s).
+	 * Only the pages fully covered by the WC entry become cacheable (their
+	 * effective type is then WC); everything else stays UC. */
 	if (fb->valid && fb->lfb_base) {
-		unsigned int base = fb->lfb_base;
-		unsigned int p0 = base >> 22;
-		unsigned int p1 = (base + LFB_MAP_SIZE) >> 22;
-		for (i = p0; i < p1 && i < 1024; i++)
-			page_dir[i] = (i << 22) | PDE_PS | PDE_PCD |
-				      PDE_WRITABLE | PDE_PRESENT;
-		/* Mark the framebuffer write-combining so VRAM writes batch.
-		 * Use the actual framebuffer size (not the whole mapping) so
-		 * the WC range cannot swallow unrelated MMIO. */
-		{
-			unsigned int wc_size = (unsigned int)fb->pitch *
-					       fb->height;
-			if (wc_size == 0 || wc_size > LFB_MAP_SIZE)
-				wc_size = LFB_MAP_SIZE;
-			mtrr_set_wc(base, wc_size);
-		}
+		unsigned int want = (unsigned int)fb->pitch * fb->height;
+
+		if (want == 0 || want > LFB_MAP_SIZE)
+			want = LFB_MAP_SIZE;
+		lfb_wc_ok = mtrr_set_wc(fb->lfb_base, want,
+					&lfb_wc_base, &lfb_wc_size);
+		lfb_apply_pages(page_dir);
+		/* Tell the truth about VRAM writes: with cacheable pages the WC
+		 * MTRR applies (fast bursts); otherwise every dword is a separate
+		 * uncached write. */
+		serial_puts(SERIAL_COM1, lfb_wc_ok
+			    ? "paging: LFB write-combining\n"
+			    : "paging: LFB uncached (no WC MTRR)\n");
 	}
 
 	/* Load CR3, enable PSE, then PG + WP.  The jump flushes the prefetch

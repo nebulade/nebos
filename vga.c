@@ -5,6 +5,7 @@
 #include "pci.h"
 #include "gpu.h"
 #include "ati.h"
+#include "paging.h"
 #include "process.h"
 #include "serial.h"
 
@@ -405,6 +406,17 @@ void vga_fb_read_rect(unsigned int x, unsigned int y, unsigned int w, unsigned i
 	pitch = vga_shadow_pitch;
 	pb = vga_pixel_bytes();
 	fb = vga_shadow_buf;
+	if (pb == 4) {
+		for (row = 0; row < h; row++) {
+			const unsigned int *src = (const unsigned int *)
+				(fb + (unsigned long)(y + row) * pitch + x * 4);
+			unsigned int *dst = (unsigned int *)
+				(buf + (unsigned long)row * w * 4);
+			for (col = 0; col < w; col++)
+				dst[col] = src[col];
+		}
+		return;
+	}
 	for (row = 0; row < h; row++) {
 		src = fb + (unsigned long)(y + row) * pitch + x * pb;
 		for (col = 0; col < w * pb; col++)
@@ -423,11 +435,23 @@ void vga_fb_write_rect(unsigned int x, unsigned int y, unsigned int w, unsigned 
 		return;
 	pitch = vga_shadow_pitch;
 	pb = vga_pixel_bytes();
+	if (pb == 4) {
+		for (row = 0; row < h; row++) {
+			unsigned int *dst = (unsigned int *)
+				(vga_shadow_buf + (unsigned long)(y + row) * pitch + x * 4);
+			const unsigned int *src = (const unsigned int *)
+				(buf + (unsigned long)row * w * 4);
+			for (col = 0; col < w; col++)
+				dst[col] = src[col];
+		}
+		goto mark;
+	}
 	for (row = 0; row < h; row++) {
 		dst = vga_shadow_buf + (unsigned long)(y + row) * pitch + x * pb;
 		for (col = 0; col < w * pb; col++)
 			dst[col] = buf[row * w * pb + col];
 	}
+mark:
 	{
 		unsigned int xe = x + w;
 		if (xe > vga_fb_w)
@@ -449,14 +473,16 @@ void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
 
 /* ---- Shadow buffer init and flush ---- */
 
-/* Assembly row copy: rep movsl optimized for P5 USWC write-combining to UC memory. */
-extern void vga_fb_copy_row(void *dst, void *src, unsigned int dwords);
-
 void vga_shadow_init(void)
 {
 	vga_cache_boot_fb();
 	if (!vga_fb_lfb || vga_fb_w == 0 || vga_fb_h == 0)
 		return;
+
+	/* The GPU probe (inside vga_cache_boot_fb) maps its BARs -- including the
+	 * NVIDIA VRAM aperture, which covers the VBE LFB -- uncacheable, so the
+	 * framebuffer mapping is re-applied once everything is up. */
+	paging_lfb_refresh();
 
 	vga_shadow_buf = (unsigned char *)VGA_SHADOW_BASE;
 	vga_shadow_pitch = vga_fb_pitch_val;
@@ -536,18 +562,52 @@ static unsigned int shadow_copy_damage(unsigned int max_bytes)
 	return bytes;
 }
 
+/* Set while a process is inside shadow_copy_damage().  The flush walks and
+ * trims a shared damage list, so it must not be entered twice: a process can
+ * be preempted mid-flush (a full-screen copy takes several milliseconds) and
+ * the scheduler may well run another process that flushes too. */
+static int present_busy;
+
+/* Bytes copied by the presenter so far (see vga.h). */
+unsigned int vga_present_copied;
+
+static inline unsigned int irq_save_disable(void)
+{
+	unsigned int flags;
+
+	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
+	return flags;
+}
+
+static inline void irq_restore(unsigned int flags)
+{
+	__asm__ volatile ("pushl %0; popfl" :: "r"(flags));
+}
+
 /* Copy up to `max_bytes` of the pending damage to VRAM.  Called by the main
  * loop on every iteration: small updates (a cursor move is ~1 KB) reach the
  * screen within one loop instead of waiting for a fixed 30 Hz tick, while a
  * full-screen repaint is chunked so it cannot stall input. */
 void vga_present_shadow(unsigned int max_bytes)
 {
+	unsigned int flags;
+
 	vga_cache_boot_fb();
 	if (!vga_shadow_buf || !vga_fb_lfb)
 		return;
 	if (!damage_any())
 		return;
-	shadow_copy_damage(max_bytes);
+	flags = irq_save_disable();
+	if (present_busy) {
+		/* Another process is mid-flush; its remaining damage stays
+		 * queued and is copied by whoever flushes next. */
+		irq_restore(flags);
+		return;
+	}
+	present_busy = 1;
+	irq_restore(flags);
+	vga_present_copied += shadow_copy_damage(max_bytes);
+	present_busy = 0;
 }
 
 /* Make drawn content visible: the backend's present() (the software one copies

@@ -68,6 +68,10 @@ void vga_target_damage(unsigned int x, unsigned int y, unsigned int w,
  * the pending damage rects from the shadow buffer to VRAM. */
 void vga_present_shadow(unsigned int max_bytes);
 
+/* Bytes the presenter has copied in total (lets a benchmark measure the real
+ * work even when the flush is skipped because another process is in one). */
+extern unsigned int vga_present_copied;
+
 void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b);
 void vga_fill_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
 		unsigned int r, unsigned int g, unsigned int b);
@@ -90,6 +94,11 @@ void vga_fb_flush(void);
  * Called by the main loop every iteration: small updates reach the screen
  * within one loop, large ones are chunked so they cannot stall input. */
 void vga_fb_flush_budget(unsigned int max_bytes);
+
+/* Low-level row helpers from vga_copy.S (the blit backend uses the fill). */
+void vga_fb_copy_row(void *dst, const void *src, unsigned int dwords);
+void vga_fb_fill_row_sse2(void *dst, unsigned int value, unsigned int dwords);
+void vga_fb_fill_row_nt(void *dst, unsigned int value, unsigned int dwords);
 
 /* Per-iteration flush budget: large enough that a window-sized repaint
  * (~0.7 MB) is flushed as one frame, small enough that a full-screen repaint

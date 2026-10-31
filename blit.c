@@ -6,6 +6,7 @@
  * for now; a flip/VRAM backend would replace them with GPU operations). */
 
 #include "blit.h"
+#include "cpu.h"
 #include "gfx.h"
 #include "vga.h"
 
@@ -16,6 +17,21 @@ static unsigned int pixel_bytes(unsigned int bpp)
 	if (bpp == 24)
 		return 3;
 	return 4;
+}
+
+/* Fill `dwords` with `value`; SSE2 for anything worth the call. */
+static void fill_dwords(unsigned int *p, unsigned int value, unsigned int dwords)
+{
+	unsigned int i;
+
+	if (dwords == 0)
+		return;
+	if (dwords >= 8 && cpu_has_sse2()) {
+		vga_fb_fill_row_sse2(p, value, dwords);
+		return;
+	}
+	for (i = 0; i < dwords; i++)
+		p[i] = value;
 }
 
 /* Solid fill of the target. */
@@ -42,12 +58,14 @@ static void software_fill(unsigned int x, unsigned int y, unsigned int w,
 	if (t->bpp == 16) {
 		unsigned short val = (unsigned short)(((r >> 3) << 11) |
 					((g >> 2) << 5) | (b >> 3));
+		unsigned int val32 = (unsigned int)val | ((unsigned int)val << 16);
 		for (row = y; row < y1; row++) {
-			unsigned short *p = (unsigned short *)(t->px +
+			unsigned int *p = (unsigned int *)(t->px +
 					(unsigned long)row * t->pitch + x * 2);
-			unsigned int xx;
-			for (xx = x; xx < x1; xx++)
-				*p++ = val;
+			unsigned int px = x1 - x;
+			fill_dwords(p, val32, px / 2);
+			if (px & 1)
+				((unsigned short *)p)[px - 1] = val;
 		}
 	} else if (t->bpp == 24) {
 		for (row = y; row < y1; row++) {
@@ -63,12 +81,23 @@ static void software_fill(unsigned int x, unsigned int y, unsigned int w,
 	} else {
 		unsigned int val = ((unsigned int)t->alpha << 24) |
 				   (r << 16) | (g << 8) | b;
-		for (row = y; row < y1; row++) {
-			unsigned int *p = (unsigned int *)(t->px +
-					(unsigned long)row * t->pitch + x * 4);
-			unsigned int xx;
-			for (xx = x; xx < x1; xx++)
-				*p++ = val;
+		unsigned int dwords = x1 - x;
+
+		/* Long rows are bigger than the cache: normal stores would
+		 * read every line in (RFO) before overwriting it.  Stream
+		 * them instead and order once at the end. */
+		if (dwords >= 32 && cpu_has_sse2()) {
+			for (row = y; row < y1; row++)
+				vga_fb_fill_row_nt((unsigned int *)(t->px +
+					(unsigned long)row * t->pitch + x * 4),
+					val, dwords);
+			__asm__ volatile ("sfence" ::: "memory");
+		} else {
+			for (row = y; row < y1; row++) {
+				unsigned int *p = (unsigned int *)(t->px +
+						(unsigned long)row * t->pitch + x * 4);
+				fill_dwords(p, val, dwords);
+			}
 		}
 	}
 	vga_target_damage(x, y, x1 - x, y1 - y);

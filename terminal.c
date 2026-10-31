@@ -13,6 +13,7 @@ extern void program_reboot_main(void);
 extern void program_poweroff_main(void);
 extern void program_run_main(const char *filename);
 extern void program_display_main(void);
+extern void program_gfxbench_main(void);
 extern void program_serial_loop_main(const char *arg);
 extern void program_serial_recv_main(const char *arg);
 extern void program_run_serial_main(const char *arg);
@@ -95,6 +96,7 @@ static const struct kcmd cmds[] = {
 	{ "reboot",     "reboot",                        CK_CUSTOM, 0, 0, 0, 0, cmd_reboot },
 	{ "poweroff",   "poweroff",                      CK_CUSTOM, 0, 0, 0, 0, cmd_poweroff },
 	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
+	{ "gfxbench",   "gfxbench",                      CK_SPAWN, 0, program_gfxbench_main, 0, 0, 0 },
 	{ "lsusb",      "lsusb",                         CK_SPAWN, 0, program_lsusb_main, 0, 0, 0 },
 	{ "format",     "format <device>",               CK_CUSTOM, 0, 0, 0, 0, cmd_format },
 	{ "lspci",      "lspci [id]",                    CK_SPAWN_ARG, 0, 0, program_lspci_main, 0, 0 },

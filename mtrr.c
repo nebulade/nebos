@@ -1,11 +1,14 @@
 /*
  * MTRR write-combining.
  *
- * The VESA LFB is mapped uncacheable (UC) by paging.c, so every dword the
- * shadow flush writes to VRAM is a separate uncached PCI transaction.
+ * VRAM writes (the shadow flush) used to be separate uncached PCI
+ * transactions: ~33 MB/s on the AT3IONT-I, so a full screen took 150 ms.
  * Marking the LFB range write-combining (WC) via an MTRR lets the CPU batch
- * those writes into burst transfers, which is the single biggest rendering
- * win on real hardware.
+ * those writes into bursts -- but only if the *pages* allow caching too:
+ * paging.c used to map the LFB with PCD=1, which is UC regardless of the
+ * MTRR, so the WC entry alone did nothing.  paging.c now installs the MTRR
+ * first (through mtrr_set_wc(), which reports whether it covered the range)
+ * and maps only the covered pages cacheable, leaving the rest UC.
  *
  * Two hard rules (the first key press froze an ASUS AT3IONT-I; these were
  * the only places where the kernel touched cacheability behind the BIOS's
@@ -157,7 +160,8 @@ static void dump_mtrrs(unsigned int vcnt)
 	}
 }
 
-void mtrr_set_wc(unsigned int base, unsigned int size)
+int mtrr_set_wc(unsigned int base, unsigned int size,
+		unsigned int *wc_base, unsigned int *wc_size)
 {
 	unsigned int lo, hi, mlo;
 	unsigned int def_type;
@@ -169,14 +173,14 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 	char *p;
 
 	if (!cpu_has_mtrr() || size == 0)
-		return;
+		return 0;
 
 	rdmsr(MSR_MTRRCAP, &lo, &hi);
 	vcnt = lo & 0xFF;
 	if (vcnt > 16)
 		vcnt = 16;   /* sanity cap; CPUs ship 8..10 variable ranges */
 	if (vcnt == 0)
-		return;
+		return 0;
 
 	/* Dump the first 8 at most (kdbg info rows are a shared pool); the
 	 * search below still covers every variable range. */
@@ -187,7 +191,7 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 	while (region_size < size) {
 		region_size <<= 1;
 		if (region_size == 0)
-			return;   /* overflow (size > 2 GB) -- give up */
+			return 0;   /* overflow (size > 2 GB) -- give up */
 	}
 
 	/* A variable-range MTRR must be aligned to its own size.  The largest
@@ -199,7 +203,7 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 	if (region_size > align)
 		region_size = align;
 	if (region_size < 0x1000)
-		return;
+		return 0;
 	base &= ~(region_size - 1);
 
 	/* A kernel reload does not reset the MTRRs: reuse the WC entry an
@@ -217,7 +221,11 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 		if (esize < region_size)
 			continue;
 		serial_puts(SERIAL_COM1, "mtrr: LFB already write-combining\n");
-		return;
+		if (wc_base)
+			*wc_base = base;
+		if (wc_size)
+			*wc_size = esize;
+		return 1;
 	}
 
 	/* Only ever use a free variable entry.  BIOS-populated entries may
@@ -238,7 +246,7 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 		if (row >= 0)
 			kdbg_info((unsigned int)row, buf);
 		serial_puts(SERIAL_COM1, "mtrr: no free variable entry; skipping WC\n");
-		return;
+		return 0;
 	}
 
 	/* PhysMask bits [35:12] are compare bits: 1 = the address bit must
@@ -273,4 +281,10 @@ void mtrr_set_wc(unsigned int base, unsigned int size)
 	serial_puts(SERIAL_COM1, " +");
 	serial_puthex(SERIAL_COM1, region_size);
 	serial_puts(SERIAL_COM1, "]\n");
+
+	if (wc_base)
+		*wc_base = base;
+	if (wc_size)
+		*wc_size = region_size;
+	return 1;
 }

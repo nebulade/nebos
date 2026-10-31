@@ -251,16 +251,14 @@ void fbtext_scroll_up_one_line(void)
 	if (height <= CONTENT_TOP + ROW_HEIGHT)
 		return;
 	/* Scroll only the content area (below rainbow); header and rainbow stay fixed. */
-	for (y = CONTENT_TOP; y < height - ROW_HEIGHT; y++) {
-		unsigned int src_off = (y + ROW_HEIGHT) * pitch;
-		unsigned int dst_off = y * pitch;
-		for (i = 0; i < pitch; i++)
-			fb[dst_off + i] = fb[src_off + i];
-	}
+	for (y = CONTENT_TOP; y < height - ROW_HEIGHT; y++)
+		vga_fb_copy_row(fb + (unsigned long)y * pitch,
+				fb + (unsigned long)(y + ROW_HEIGHT) * pitch,
+				pitch / 4);
 	for (y = height - ROW_HEIGHT; y < height; y++) {
-		unsigned int off = y * pitch;
-		for (i = 0; i < pitch; i++)
-			fb[off + i] = 0;
+		unsigned int *p = (unsigned int *)(fb + (unsigned long)y * pitch);
+		for (i = 0; i < pitch / 4; i++)
+			p[i] = 0;
 	}
 	/* Mark scrolled rows dirty so the flush copies them. */
 	vga_fb_mark_dirty_rect(CONTENT_TOP, height - CONTENT_TOP);
