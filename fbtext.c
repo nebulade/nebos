@@ -34,13 +34,21 @@ static void draw_glyph_at_clip(unsigned int x0, unsigned int y0, unsigned char c
 {
 	unsigned int x, y;
 	const unsigned char *glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
-	unsigned char *fb = (unsigned char *)vga_fb_ptr();
-	unsigned int pitch = vga_fb_pitch();
-	unsigned int bpp = vga_fb_bpp();
-	unsigned int fg32 = (r_fg << 16) | (g_fg << 8) | b_fg;
-	unsigned int bg32 = (r_bg << 16) | (g_bg << 8) | b_bg;
-	unsigned short fg16 = (unsigned short)(((r_fg >> 3) << 11) | ((g_fg >> 2) << 5) | (b_fg >> 3));
-	unsigned short bg16 = (unsigned short)(((r_bg >> 3) << 11) | ((g_bg >> 2) << 5) | (b_bg >> 3));
+	struct surface *t = vga_target();
+	unsigned char *fb = t->px;
+	unsigned int pitch = t->pitch;
+	unsigned int bpp = t->bpp;
+	unsigned int fg32, bg32;
+	unsigned short fg16, bg16;
+
+	if (!fb)
+		return;
+	/* Foreground pixels are opaque; the background takes the target's
+	 * alpha so a window layer can composite with a translucent fill. */
+	fg32 = ((r_fg << 16) | (g_fg << 8) | b_fg) | 0xFF000000u;
+	bg32 = ((r_bg << 16) | (g_bg << 8) | b_bg) | ((unsigned int)t->alpha << 24);
+	fg16 = (unsigned short)(((r_fg >> 3) << 11) | ((g_fg >> 2) << 5) | (b_fg >> 3));
+	bg16 = (unsigned short)(((r_bg >> 3) << 11) | ((g_bg >> 2) << 5) | (b_bg >> 3));
 
 	for (y = 0; y < height; y++) {
 		unsigned char row_bits = (y < FONT_8X8_ROWS) ? glyph[y] : 0;
@@ -191,7 +199,7 @@ void fbtext_draw_cells(const unsigned short *cells, unsigned int cols, unsigned 
 				rf, gf, bf, rb, gb, bb, ROW_HEIGHT, 0);
 		}
 	}
-	vga_fb_mark_dirty_rect_xy(y0, rows * ROW_HEIGHT, x0, x0 + cols * 8);
+	vga_target_damage(x0, y0, cols * 8, rows * ROW_HEIGHT);
 }
 
 void fbtext_draw_cells_clip(const unsigned short *cells, unsigned int cols, unsigned int rows,
@@ -224,16 +232,18 @@ void fbtext_draw_cells_clip(const unsigned short *cells, unsigned int cols, unsi
 				cx, cy, cx + cw, cy + ch);
 		}
 	}
-	vga_fb_mark_dirty_rect_xy(y0 + (unsigned int)row0 * ROW_HEIGHT,
-		(unsigned int)(row1 - row0) * ROW_HEIGHT,
-		x0 + (unsigned int)col0 * 8, x0 + (unsigned int)col1 * 8);
+	vga_target_damage(x0 + (unsigned int)col0 * 8,
+		y0 + (unsigned int)row0 * ROW_HEIGHT,
+		(unsigned int)(col1 - col0) * 8,
+		(unsigned int)(row1 - row0) * ROW_HEIGHT);
 }
 
 void fbtext_scroll_up_one_line(void)
 {
 	unsigned int y, i;
-	unsigned int pitch = vga_fb_pitch();
-	unsigned char *fb = (unsigned char *)vga_fb_ptr();
+	struct surface *scr = vga_screen_surface();
+	unsigned int pitch = scr->pitch;
+	unsigned char *fb = scr->px;
 	unsigned int height = vga_fb_height();
 
 	if (!fb)
@@ -347,7 +357,7 @@ void fbtext_draw_string_xy(unsigned int x0, unsigned int y0, const char *str,
 		draw_glyph_at(x0 + i * 8, y0, (unsigned char)str[i], r_fg, g_fg, b_fg, 0, 0, 0, FONT_8X8_ROWS, transparent_bg);
 		i++;
 	}
-	vga_fb_mark_dirty_rect_xy(y0, FONT_8X8_ROWS, x0, x0 + i * 8);
+	vga_target_damage(x0, y0, i * 8, FONT_8X8_ROWS);
 }
 
 /* Like fbtext_draw_string_xy, but per-pixel clipped to (cx, cy, cw, ch): only
@@ -381,7 +391,7 @@ void fbtext_draw_string_xy_clip(unsigned int x0, unsigned int y0, const char *st
 					vga_put_pixel_rgb(x, py, r_fg, g_fg, b_fg);
 		}
 	}
-	vga_fb_mark_dirty_rect_xy(cy, ch, cx, cx + cw);
+	vga_target_damage(cx, cy, cw, ch);
 }
 
 #define RAINBOW_LINE_HEIGHT  2   /* 2-pixel tall line for visibility */

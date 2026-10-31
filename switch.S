@@ -30,7 +30,7 @@
 .equ PCB_CR3,   32
 .equ PCB_KSTACK_TOP, 36
 .equ PCB_CPU_TICKS, 108  /* after cwd[64] */
-.equ PCB_SIZE,  116     /* sizeof(struct process): 44 + cwd[64] + 2*4 */
+.equ PCB_SIZE,  120     /* sizeof(struct process): 44 + cwd[64] + 2*4 + target */
 
 .equ TIMESLICE, 20
 

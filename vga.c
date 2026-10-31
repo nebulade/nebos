@@ -1,9 +1,12 @@
 /* VGA: VESA LFB (from boot) with a shadow buffer and a damage-rect flush. */
 
 #include "vga.h"
+#include "blit.h"
 #include "pci.h"
 #include "gpu.h"
 #include "ati.h"
+#include "process.h"
+#include "serial.h"
 
 /* Cached boot framebuffer info (set once when vga_fb_* first used). */
 static unsigned int vga_fb_w, vga_fb_h, vga_fb_pitch_val, vga_fb_bpp_val;
@@ -284,16 +287,65 @@ int vga_has_vesa(void)
 	return (vga_fb_w != 0 && vga_fb_lfb != 0);
 }
 
-/* 16bpp: RGB 5:6:5.  32bpp: BGRX byte order (standard VBE / QEMU). */
-static void shadow_put_pixel(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
+/* ---- Surfaces and the render target ---- */
+
+/* The screen surface: the shadow buffer (or the LFB when there is none).
+ * Kept in sync by vga_shadow_init() invalidating it. */
+static struct surface screen_surf;
+
+struct surface *vga_screen_surface(void)
 {
-	unsigned int pitch = vga_shadow_pitch;
-	unsigned int bpp = vga_fb_bpp_val;
+	vga_cache_boot_fb();
+	if (!screen_surf.px) {
+		screen_surf.w = vga_fb_w;
+		screen_surf.h = vga_fb_h;
+		screen_surf.pitch = vga_shadow_buf ? vga_shadow_pitch
+						   : vga_fb_pitch_val;
+		screen_surf.bpp = vga_fb_bpp_val;
+		screen_surf.alpha = 255;
+		screen_surf.px = vga_shadow_buf ? vga_shadow_buf
+						: (unsigned char *)vga_fb_lfb;
+	}
+	return &screen_surf;
+}
+
+struct surface *vga_target(void)
+{
+	struct surface *t = process_render_target();
+
+	return t ? t : vga_screen_surface();
+}
+
+void vga_set_target(struct surface *s)
+{
+	process_set_render_target(s);
+}
+
+int vga_target_is_screen(void)
+{
+	return vga_target() == vga_screen_surface();
+}
+
+void vga_target_damage(unsigned int x, unsigned int y, unsigned int w,
+		       unsigned int h)
+{
+	if (w == 0 || h == 0 || !vga_target_is_screen())
+		return;
+	mark_dirty_rect_xy(y, h, x, x + w);
+}
+
+/* 16bpp: RGB 5:6:5.  32bpp: BGRX byte order (standard VBE / QEMU). */
+static void target_put_pixel(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
+{
+	struct surface *t = vga_target();
+	unsigned int pitch, bpp;
 	unsigned char *p;
 
-	if (x >= vga_fb_w || y >= vga_fb_h || !vga_shadow_buf)
+	if (!t->px || x >= t->w || y >= t->h)
 		return;
-	p = vga_shadow_buf + (unsigned long)y * pitch;
+	pitch = t->pitch;
+	bpp = t->bpp;
+	p = t->px + (unsigned long)y * pitch;
 	if (bpp == 16) {
 		unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 		unsigned int off = x * 2;
@@ -309,70 +361,24 @@ static void shadow_put_pixel(unsigned int x, unsigned int y, unsigned int r, uns
 		p[off]     = (unsigned char)b;
 		p[off + 1] = (unsigned char)g;
 		p[off + 2] = (unsigned char)r;
-		p[off + 3] = 0;
+		p[off + 3] = t->alpha;
 	}
-	mark_dirty_rect_xy(y, 1, x, x + 1);
+	vga_target_damage(x, y, 1, 1);
 }
 
 void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
 {
 	vga_cache_boot_fb();
-	if (!vga_shadow_buf)
-		return;
-	shadow_put_pixel(x, y, r, g, b);
+	target_put_pixel(x, y, r, g, b);
 }
 
 void vga_fill_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
 		unsigned int r, unsigned int g, unsigned int b)
 {
-	unsigned int row, x1, y1;
-	unsigned int pitch;
-	unsigned int bpp;
-	unsigned char *fb;
-
 	vga_cache_boot_fb();
-	pitch = vga_shadow_pitch;
-	bpp = vga_fb_bpp_val;
-	fb = vga_shadow_buf;
-
-	if (!fb || w == 0 || h == 0)
+	if (!blit || !blit->fill)
 		return;
-	if (x >= vga_fb_w || y >= vga_fb_h)
-		return;
-	x1 = x + w;
-	y1 = y + h;
-	if (x1 > vga_fb_w) x1 = vga_fb_w;
-	if (y1 > vga_fb_h) y1 = vga_fb_h;
-
-	if (bpp == 16) {
-		unsigned short val = (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-		for (row = y; row < y1; row++) {
-			unsigned short *p = (unsigned short *)(fb + (unsigned long)row * pitch + x * 2);
-			unsigned int xx;
-			for (xx = x; xx < x1; xx++)
-				*p++ = val;
-		}
-	} else if (bpp == 24) {
-		for (row = y; row < y1; row++) {
-			unsigned char *p = fb + (unsigned long)row * pitch + x * 3;
-			unsigned int xx;
-			for (xx = x; xx < x1; xx++) {
-				p[0] = (unsigned char)b;
-				p[1] = (unsigned char)g;
-				p[2] = (unsigned char)r;
-				p += 3;
-			}
-		}
-	} else {
-		unsigned int val = ((unsigned int)r << 16) | ((unsigned int)g << 8) | b;
-		for (row = y; row < y1; row++) {
-			unsigned int *p = (unsigned int *)(fb + (unsigned long)row * pitch + x * 4);
-			unsigned int xx;
-			for (xx = x; xx < x1; xx++)
-				*p++ = val;
-		}
-	}
-	mark_dirty_rect_xy(y, y1 - y, x, x1);
+	blit->fill(x, y, w, h, ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF));
 }
 
 static unsigned int vga_pixel_bytes(void)
@@ -384,6 +390,8 @@ static unsigned int vga_pixel_bytes(void)
 	return 4;
 }
 
+/* The software cursor saves and restores pixels of the *screen*: these two
+ * keep using the shadow buffer directly, never the render target. */
 void vga_fb_read_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
 		unsigned char *buf)
 {
@@ -430,42 +438,13 @@ void vga_fb_write_rect(unsigned int x, unsigned int y, unsigned int w, unsigned 
 
 void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)
 {
-	unsigned int pitch = vga_shadow_pitch;
-	unsigned int bpp = vga_fb_bpp_val;
+	struct surface *t;
 
 	vga_cache_boot_fb();
-	if (!vga_shadow_buf)
+	t = vga_target();
+	if (!t->px)
 		return;
-	if (bpp == 16) {
-		unsigned int rgb16 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
-		unsigned short val = (unsigned short)((rgb16 & 0xFF) | ((rgb16 >> 8) << 8));
-		unsigned short *fb = (unsigned short *)vga_shadow_buf;
-		unsigned int n = (pitch / 2) * vga_fb_h;
-		unsigned int i;
-		for (i = 0; i < n; i++)
-			fb[i] = val;
-	} else if (bpp == 24) {
-		unsigned char *p = vga_shadow_buf;
-		unsigned int row, x;
-		for (row = 0; row < vga_fb_h; row++) {
-			unsigned int row_off = row * pitch;
-			for (x = 0; x < vga_fb_w; x++) {
-				unsigned int off = row_off + x * 3;
-				p[off]     = (unsigned char)b;
-				p[off + 1] = (unsigned char)g;
-				p[off + 2] = (unsigned char)r;
-			}
-		}
-	} else if (bpp == 32) {
-		unsigned int *fb = (unsigned int *)vga_shadow_buf;
-		unsigned int pixel = ((unsigned int)r << 16) | ((unsigned int)g << 8) | b;
-		unsigned int stride = pitch / 4;
-		unsigned int row, x;
-		for (row = 0; row < vga_fb_h; row++)
-			for (x = 0; x < vga_fb_w; x++)
-				fb[row * stride + x] = pixel;
-	}
-	mark_dirty_rect(0, vga_fb_h);
+	vga_fill_rect(0, 0, t->w, t->h, r, g, b);
 }
 
 /* ---- Shadow buffer init and flush ---- */
@@ -482,7 +461,12 @@ void vga_shadow_init(void)
 	vga_shadow_buf = (unsigned char *)VGA_SHADOW_BASE;
 	vga_shadow_pitch = vga_fb_pitch_val;
 	vga_shadow_size = vga_fb_h * vga_shadow_pitch;
+	screen_surf.px = 0;       /* re-derive from the shadow buffer */
 	damage_clear();
+
+	serial_puts(SERIAL_COM1, "blit backend: ");
+	serial_puts(SERIAL_COM1, blit ? blit->name : "none");
+	serial_puts(SERIAL_COM1, "\r\n");
 }
 
 /* Copy damage rects from the shadow to VRAM, at most about `max_bytes` this
@@ -552,11 +536,11 @@ static unsigned int shadow_copy_damage(unsigned int max_bytes)
 	return bytes;
 }
 
-/* Copy up to `max_bytes` of the pending damage to VRAM.  Called from the
- * main loop on every iteration: small updates (a cursor move is ~1 KB) reach
- * the screen within one loop instead of waiting for a fixed 30 Hz tick, while
- * a full-screen repaint is chunked so it cannot stall input. */
-void vga_fb_flush_budget(unsigned int max_bytes)
+/* Copy up to `max_bytes` of the pending damage to VRAM.  Called by the main
+ * loop on every iteration: small updates (a cursor move is ~1 KB) reach the
+ * screen within one loop instead of waiting for a fixed 30 Hz tick, while a
+ * full-screen repaint is chunked so it cannot stall input. */
+void vga_present_shadow(unsigned int max_bytes)
 {
 	vga_cache_boot_fb();
 	if (!vga_shadow_buf || !vga_fb_lfb)
@@ -564,6 +548,16 @@ void vga_fb_flush_budget(unsigned int max_bytes)
 	if (!damage_any())
 		return;
 	shadow_copy_damage(max_bytes);
+}
+
+/* Make drawn content visible: the backend's present() (the software one copies
+ * the pending damage rects to VRAM). */
+void vga_fb_flush_budget(unsigned int max_bytes)
+{
+	vga_cache_boot_fb();
+	if (!blit || !blit->present)
+		return;
+	blit->present(max_bytes);
 }
 
 void vga_fb_flush(void)

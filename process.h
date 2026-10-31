@@ -22,6 +22,7 @@
 
 struct text_screen;  /* forward decl (see screen.h) */
 struct sys_procinfo; /* forward decl (see syscall.h; `top` snapshot) */
+struct surface;      /* forward decl (see vga.h; render target override) */
 
 struct process {
 	unsigned int esp;
@@ -39,6 +40,10 @@ struct process {
 	 * PCB_SIZE there (see the _Static_assert in process.c). */
 	unsigned int cpu_ticks;      /* ticks spent as the running process */
 	unsigned int start_ticks;    /* get_ticks_ms() at creation */
+	/* Render target override: 0 = the screen.  Set while the window manager
+	 * draws into a layer, so another process's drawing can never land in
+	 * it.  Kept last so the PIT hot path offsets stay put. */
+	struct surface *target;
 };
 
 /* User-mode virtual address layout (ring-3 processes). */
@@ -62,6 +67,9 @@ int  process_create_ptr(const char *name, void (*entry)(void *), void *arg);
 int process_create_user(const char *name, const void *image, unsigned int size,
 			const char *arg, const char *cwd);
 void process_set_screen(struct text_screen *screen);
+/* Render target override for the running process (0 = the screen). */
+struct surface *process_render_target(void);
+void process_set_render_target(struct surface *s);
 
 /* Map an MMIO range into the kernel's page directory and every live process
  * copy (and thus every process created later, which clones the kernel map).

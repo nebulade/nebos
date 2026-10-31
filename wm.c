@@ -2,7 +2,7 @@
    Slot 0 runs wm_run(); each terminal window is a separate process. */
 
 #include "wm.h"
-#include "cirrus.h"
+#include "blit.h"
 #include "fbtext.h"
 #include "idle.h"
 #include "io.h"
@@ -230,68 +230,6 @@ static void wm_clamp_window(struct window *w, int nx, int ny)
 	w->y = (unsigned int)ny;
 }
 
-/* Overlap-safe copy.  Moving a window copies most of its area, so take four
-   bytes at a time when both rows are dword aligned (32 bpp rows always are)
-   and fall back to bytes otherwise (24 bpp at an odd x). */
-static void wm_memmove(unsigned char *dst, const unsigned char *src, unsigned int n)
-{
-	if (dst == src || n == 0)
-		return;
-
-	if ((((unsigned int)dst | (unsigned int)src) & 3) == 0) {
-		unsigned int words = n >> 2;
-		unsigned int i;
-		unsigned int *dw = (unsigned int *)dst;
-		const unsigned int *sw = (const unsigned int *)src;
-
-		if (dst < src) {
-			for (i = 0; i < words; i++)
-				dw[i] = sw[i];
-			for (i = words << 2; i < n; i++)
-				dst[i] = src[i];
-		} else {
-			/* Overlapping move down: back to front. */
-			for (i = n; i > (words << 2); i--)
-				dst[i - 1] = src[i - 1];
-			for (i = words; i-- > 0; )
-				dw[i] = sw[i];
-		}
-		return;
-	}
-
-	if (dst < src) {
-		unsigned int i;
-		for (i = 0; i < n; i++)
-			dst[i] = src[i];
-	} else {
-		while (n--)
-			dst[n] = src[n];
-	}
-}
-
-/* Copy a rectangle within the shadow buffer (to mirror a BitBLT'd drag). */
-static void wm_shadow_copy(unsigned int ox, unsigned int oy,
-			   unsigned int nx, unsigned int ny,
-			   unsigned int w, unsigned int h)
-{
-	unsigned char *fb = (unsigned char *)vga_fb_ptr();
-	unsigned int pitch = vga_fb_pitch();
-	unsigned int bpp = vga_fb_bpp();
-	unsigned int pb = (bpp == 16) ? 2 : (bpp == 24) ? 3 : 4;
-	unsigned int row_bytes = w * pb;
-	unsigned int r;
-
-	if (ny > oy || (ny == oy && nx > ox)) {
-		for (r = h; r-- > 0; )
-			wm_memmove(fb + (ny + r) * pitch + nx * pb,
-				   fb + (oy + r) * pitch + ox * pb, row_bytes);
-	} else {
-		for (r = 0; r < h; r++)
-			wm_memmove(fb + (ny + r) * pitch + nx * pb,
-				   fb + (oy + r) * pitch + ox * pb, row_bytes);
-	}
-}
-
 /* Fill the intersection of rect (rx,ry,rw,rh) with clip rect (cx,cy,cw,ch). */
 static void wm_fill_rect_clip(unsigned int rx, unsigned int ry, unsigned int rw, unsigned int rh,
 			      unsigned int cx, unsigned int cy, unsigned int cw, unsigned int ch,
@@ -352,7 +290,7 @@ static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 	int dy = (int)ny - (int)oy;
 
 	mouse_cursor_erase();
-	wm_shadow_copy(ox, oy, nx, ny, w->pw, w->ph);
+	blit->copy(nx, ny, ox, oy, w->pw, w->ph);
 
 	if (dy > 0)
 		wm_redraw_rect(ox, oy, w->pw, (unsigned int)dy);
@@ -370,15 +308,6 @@ static void wm_drag_shadow(struct window *w, unsigned int ox, unsigned int oy,
 	vga_fb_mark_dirty_rect_xy(w->y, w->ph, w->x, w->x + w->pw);
 	mouse_redraw_cursor();
 	vga_fb_flush();
-}
-
-/* Cirrus fast drag: also move the window in VRAM with the BitBLT engine
-   (wm_drag_shadow flushes the mirrored copy in the shadow buffer). */
-static void wm_drag_fast(struct window *w, unsigned int ox, unsigned int oy,
-			 unsigned int nx, unsigned int ny)
-{
-	cirrus_blit(ox, oy, nx, ny, w->pw, w->ph);
-	wm_drag_shadow(w, ox, oy, nx, ny);
 }
 
 static void wm_handle_mouse(void)
@@ -417,12 +346,8 @@ static void wm_handle_mouse(void)
 		if (w->used) {
 			unsigned int ox = w->x, oy = w->y;
 			wm_clamp_window(w, (int)mx - drag_dx, (int)my - drag_dy);
-			if (ox != w->x || oy != w->y) {
-				if (cirrus_available())
-					wm_drag_fast(w, ox, oy, w->x, w->y);
-				else
-					wm_drag_shadow(w, ox, oy, w->x, w->y);
-			}
+			if (ox != w->x || oy != w->y)
+				wm_drag_shadow(w, ox, oy, w->x, w->y);
 		} else {
 			drag_active = 0;
 		}
@@ -543,7 +468,7 @@ static void wm_draw_window_clip(struct window *w, unsigned int cx, unsigned int 
 	wm_fill_rect_clip(w->x + 1, cony, w->pw - 2, SCREEN_ROWS * 10,
 		cx, cy, cw, ch, 0, 0, 0);
 	if (g)
-		gfx_blit_clip(g, w->x + 1, cony, cx, cy, cw, ch);
+		blit->canvas(g, w->x + 1, cony, cx, cy, cw, ch);
 	else
 		fbtext_draw_cells_clip(s->cells, s->cols, s->rows,
 			w->x + 1, cony, cx, cy, cw, ch);

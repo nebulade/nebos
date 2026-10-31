@@ -100,8 +100,16 @@ below the run area), so adding code no longer moves any address.
   still reaches the terminal), closing a window kills its session, and
   `sys_gfx_reap`/`sys_gfx_collect` free the canvas after exit/crash.  `clock`
   and `colors` are its users.
-- **Graphics**: `vga.c/h`, `vga_copy.S`, `gpu.c`, `ati.c`, `nvidia.c`, `nv50.c`,
-  `pci.h` — VESA LFB + shadow buffer.  Drawing marks damage rectangles (a small
+- **Graphics**: `vga.c/h`, `vga_copy.S`, `blit.c/h`, `gpu.c`, `ati.c`, `nvidia.c`,
+  `nv50.c`, `pci.h` — VESA LFB + shadow buffer.  Drawing goes into a
+  `struct surface` render target: `vga_target()` is the screen's shadow buffer
+  unless the running process set an override (`vga_set_target()`, stored in the
+  PCB so a preempted draw can never leak), and the WM's pixel operations go
+  through the `blit` vtable (`blit.c/h`: fill/copy/blend/canvas/present/flip,
+  software only today) so an accelerator can replace single ops without
+  touching the WM.  `vga_target_damage()` is a no-op while the target is not
+  the screen.  The boot log prints `blit backend: <name>`.  Drawing marks
+  damage rectangles (a small
   list that merges rects when they overlap or touch, so a keystroke's cells
   collapse while unrelated damage stays apart); the main loop copies them to
   VRAM on every iteration under a byte budget (`VGA_FLUSH_BUDGET_BYTES`), no
@@ -642,8 +650,9 @@ Caveats:
   `procs[i].cr3` made the boot-time MMIO mapping (`paging_map_mmio_cr3`) fault
   on the board while QEMU was fine.  Anything above `MM_MAX_PHYS` (128 MB) is
   also *unmapped*, so a wild pointer there is an instant #PF.
-- **All drawing goes into the shadow buffer** (`vga_put_pixel_rgb` etc.); the
-  main loop flushes the pending damage rects to VRAM on every iteration (byte
+- **All drawing goes into the current render target** (the shadow buffer by
+  default; `vga_target()`, see the graphics bullet); the main loop flushes the
+  pending damage rects to VRAM on every iteration (byte
   budget, see `VGA_FLUSH_BUDGET_BYTES`) so small updates (cursor, a keystroke)
   reach the screen within a loop instead of waiting for a fixed tick. A window
   drag flushes its rectangles immediately (`wm_drag_shadow`) so each step is

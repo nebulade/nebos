@@ -22,7 +22,8 @@ struct vga_boot_fb_info {
 #define VGA_SHADOW_BASE 0x100000
 
 /* LFB API. RGB 0..255. All drawing goes into the shadow buffer; the main loop
- * flushes dirty areas to VRAM on every iteration (byte-budgeted). */
+ * flushes dirty areas to VRAM on every iteration (byte-budgeted).  These
+ * describe the *screen*, not the current render target (see below). */
 unsigned int vga_fb_width(void);
 unsigned int vga_fb_height(void);
 unsigned int vga_fb_pitch(void);
@@ -33,6 +34,39 @@ void *vga_fb_ptr(void);
 /* Physical address of the linear framebuffer (for off-screen VRAM access). */
 unsigned long vga_fb_lfb_addr(void);
 int vga_has_vesa(void);
+
+/* A drawing surface: the screen's shadow buffer, a window layer or a canvas.
+ * Drawing helpers paint into the *current render target*, which is the screen
+ * unless process_set_render_target() pointed this process at a surface. */
+struct surface {
+	unsigned char *px;
+	unsigned int w, h;
+	unsigned int pitch;
+	unsigned int bpp;             /* 16, 24 or 32 */
+	/* Alpha written into the high byte of 32 bpp pixels.  The screen uses
+	 * 255 (the byte is padding there); a window layer sets what its
+	 * background fill should composite with, while glyph foregrounds are
+	 * always written opaque. */
+	unsigned char alpha;
+};
+
+/* The screen surface (shadow buffer, or the LFB when there is no shadow). */
+struct surface *vga_screen_surface(void);
+
+/* Current render target for this process: the screen by default. */
+struct surface *vga_target(void);
+void vga_set_target(struct surface *s);
+int vga_target_is_screen(void);
+
+/* Mark a rectangle of the screen dirty.  A no-op while the target is not the
+ * screen: drawing into a layer must not touch the screen's damage list, the
+ * compositor marks the rects it copies out. */
+void vga_target_damage(unsigned int x, unsigned int y, unsigned int w,
+		       unsigned int h);
+
+/* The software presenter used by the blit backend: copies up to max_bytes of
+ * the pending damage rects from the shadow buffer to VRAM. */
+void vga_present_shadow(unsigned int max_bytes);
 
 void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b);
 void vga_fill_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,

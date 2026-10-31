@@ -28,7 +28,7 @@ extern char __boot_stack_top[];
 
 /* switch.S addresses the table entries with an immediate PCB_SIZE/PCB_CPU_TICKS
  * and cannot see this struct; keep the two in sync. */
-_Static_assert(sizeof(struct process) == 116,
+_Static_assert(sizeof(struct process) == 120,
 	       "struct process layout changed: update PCB_SIZE/PCB_CPU_TICKS in switch.S");
 
 /* ---- interrupt flag save/restore (for short critical sections) ---- */
@@ -436,6 +436,22 @@ int process_create_user(const char *name, const void *image, unsigned int size,
 void process_set_screen(struct text_screen *screen)
 {
 	procs[current_pid].screen = screen;
+}
+
+/* Render target override for the running process (0 = the screen).  Lives in
+ * the PCB so a preempted layer draw can never leak into another process. */
+struct surface *process_render_target(void)
+{
+	if (!procs || current_pid >= proc_cap)
+		return 0;
+	return procs[current_pid].target;
+}
+
+void process_set_render_target(struct surface *s)
+{
+	if (!procs || current_pid >= proc_cap)
+		return;
+	procs[current_pid].target = s;
 }
 
 void process_map_mmio_all(unsigned int phys_base, unsigned int size)

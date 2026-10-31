@@ -1,6 +1,7 @@
 /* display command: print resolution, color depth, and other graphics info. */
 
 #include "io.h"
+#include "blit.h"
 #include "vga.h"
 #include "gpu.h"
 #include "ati.h"
@@ -57,6 +58,9 @@ void program_display_main(void)
 	io_putstr("color depth ");
 	put_uint(vga_fb_bpp());
 	io_putstr(" bpp\n");
+	io_putstr("blit backend ");
+	io_putstr(blit ? blit->name : "none");
+	io_putstr("\n");
 	io_putstr("pitch ");
 	put_uint(vga_fb_pitch());
 	io_putstr(" bytes/line\n");
