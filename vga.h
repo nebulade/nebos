@@ -68,6 +68,11 @@ void vga_target_damage(unsigned int x, unsigned int y, unsigned int w,
  * the pending damage rects from the shadow buffer to VRAM. */
 void vga_present_shadow(unsigned int max_bytes);
 
+/* 1 when VRAM writes go through a write-combining path (the stolen-VRAM
+ * alias on ION-class hardware, where the PCIe aperture is UC no matter what
+ * the MTRR says). */
+int vga_fb_lfb_wc(void);
+
 /* Bytes the presenter has copied in total (lets a benchmark measure the real
  * work even when the flush is skipped because another process is in one). */
 extern unsigned int vga_present_copied;
@@ -97,6 +102,7 @@ void vga_fb_flush_budget(unsigned int max_bytes);
 
 /* Low-level row helpers from vga_copy.S (the blit backend uses the fill). */
 void vga_fb_copy_row(void *dst, const void *src, unsigned int dwords);
+void vga_fb_copy_row_nt(void *dst, const void *src, unsigned int dwords);
 void vga_fb_fill_row_sse2(void *dst, unsigned int value, unsigned int dwords);
 void vga_fb_fill_row_nt(void *dst, unsigned int value, unsigned int dwords);
 

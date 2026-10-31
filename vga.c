@@ -5,6 +5,9 @@
 #include "pci.h"
 #include "gpu.h"
 #include "ati.h"
+#include "cpu.h"
+#include "mtrr.h"
+#include "nvidia.h"
 #include "paging.h"
 #include "process.h"
 #include "serial.h"
@@ -294,6 +297,9 @@ int vga_has_vesa(void)
  * Kept in sync by vga_shadow_init() invalidating it. */
 static struct surface screen_surf;
 
+/* 1 when the flush writes VRAM through a write-combining alias. */
+static int lfb_is_wc;
+
 struct surface *vga_screen_surface(void)
 {
 	vga_cache_boot_fb();
@@ -484,6 +490,36 @@ void vga_shadow_init(void)
 	 * framebuffer mapping is re-applied once everything is up. */
 	paging_lfb_refresh();
 
+	/* On ION-class hardware the framebuffer is stolen DRAM and the VBE LFB
+	 * is just a BAR3 window into it.  The BIOS leaves a 512 MB uncacheable
+	 * MTRR over the PCIe apertures (and the lowest-numbered matching entry
+	 * wins), so the aperture can never be write-combining: every dword is a
+	 * separate transaction (~33 MB/s).  Write through the DRAM alias
+	 * instead, with a WC MTRR over the stolen range -- and only switch once
+	 * that entry is in place, otherwise the alias would be cached and the
+	 * screen would not update. */
+	if (gpu_vendor() == GPU_VENDOR_NVIDIA) {
+		unsigned int alias = nvidia_lfb_in_vram();
+
+		if (alias) {
+			unsigned int wb, ws;
+
+			if (mtrr_set_wc(nvidia_vram_base(),
+					nvidia_vram_size(), &wb, &ws)) {
+				vga_fb_lfb = (volatile unsigned char *)alias;
+				lfb_is_wc = 1;
+				serial_puts(SERIAL_COM1,
+					"vga: LFB via stolen VRAM (write-combining)\n");
+			} else {
+				serial_puts(SERIAL_COM1,
+					"vga: LFB alias found, no WC entry; staying on BAR3\n");
+			}
+		} else {
+			serial_puts(SERIAL_COM1,
+				"vga: LFB has no stolen-VRAM alias; using BAR3\n");
+		}
+	}
+
 	vga_shadow_buf = (unsigned char *)VGA_SHADOW_BASE;
 	vga_shadow_pitch = vga_fb_pitch_val;
 	vga_shadow_size = vga_fb_h * vga_shadow_pitch;
@@ -504,6 +540,7 @@ void vga_shadow_init(void)
 static unsigned int shadow_copy_damage(unsigned int max_bytes)
 {
 	unsigned int i = 0, bytes = 0;
+	int use_sse2 = cpu_has_sse2();
 	unsigned int pb = vga_pixel_bytes();
 	unsigned int align = (pb == 2) ? 2 : (pb == 3) ? 4 : 1;
 	unsigned char *src = vga_shadow_buf;
@@ -535,7 +572,13 @@ static unsigned int shadow_copy_damage(unsigned int max_bytes)
 			unsigned char *s = src + (unsigned long)y * vga_shadow_pitch + rx0 * pb;
 			unsigned char *t = dst + (unsigned long)y * vga_fb_pitch_val + rx0 * pb;
 
-			vga_fb_copy_row(t, s, dwords);
+			/* Streaming stores: VRAM is WC (or UC on machines where the
+			 * MTRR cannot cover it) and rep movsl does not combine
+			 * there, while movntdq does. */
+			if (use_sse2)
+				vga_fb_copy_row_nt(t, s, dwords);
+			else
+				vga_fb_copy_row(t, s, dwords);
 			if (tail) {
 				unsigned int k;
 				for (k = dwords * 4; k < row_bytes; k++)
@@ -556,6 +599,8 @@ static unsigned int shadow_copy_damage(unsigned int max_bytes)
 			return bytes;
 		}
 		damage_rects[i] = damage_rects[--damage_count];
+		if (use_sse2)
+			__asm__ volatile ("sfence" ::: "memory");
 		if (max_bytes && bytes >= max_bytes)
 			break;
 	}
@@ -623,6 +668,11 @@ void vga_fb_flush_budget(unsigned int max_bytes)
 void vga_fb_flush(void)
 {
 	vga_fb_flush_budget(0);
+}
+
+int vga_fb_lfb_wc(void)
+{
+	return lfb_is_wc;
 }
 
 int vga_shadow_is_active(void)

@@ -13,7 +13,6 @@
 #include "gfx.h"
 #include "io.h"
 #include "mm.h"
-#include "paging.h"
 #include "timer.h"
 #include "vga.h"
 
@@ -92,7 +91,7 @@ void program_gfxbench_main(void)
 	io_putstr("gfxbench (sse2: ");
 	io_putstr(cpu_has_sse2() ? "yes" : "no");
 	io_putstr(", lfb wc: ");
-	io_putstr(paging_lfb_wc() ? "yes" : "no");
+	io_putstr(vga_fb_lfb_wc() ? "yes" : "no");
 	io_putstr(")\n");
 
 	layer_px = alloc_pages(layer_bytes);
@@ -159,7 +158,9 @@ void program_gfxbench_main(void)
 
 	vga_set_target(0);
 
-	/* Flush: shadow -> VRAM (bus bound, not CPU bound).  Report the bytes
+	/* Flush: shadow -> VRAM.  This is the copy the WM runs; it uses
+	 * streaming stores because rep movsl does not combine on the VRAM
+	 * path.  Report the bytes
 	 * the presenter really copied: a long flush can be preempted, and a
 	 * flush started while another process is inside one is skipped. */
 	{

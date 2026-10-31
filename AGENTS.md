@@ -125,11 +125,18 @@ below the run area), so adding code no longer moves any address.
   fixed frame rate.  A rect that fits the budget is copied whole, so a window
   repaint never tears; only a bigger one (a full-screen redraw) is chunked, and
   its remaining rows continue after the newer damage.  ATI Mach64 CRTC
-  fixup; NVIDIA is VBE-only (never touch the legacy VGA CRTC).  The LFB is
-  mapped UC unless the WC MTRR covered the range (`mtrr_set_wc()` returns the
-  covered range and `paging.c` makes only those pages cacheable -- a PCD=1
-  page is UC no matter what the MTRRs say, which held VRAM writes at ~33 MB/s
-  on the ION until it was fixed). `nvidia.c`
+  fixup; NVIDIA is VBE-only (never touch the legacy VGA CRTC).  On the ION the
+  framebuffer is stolen DRAM and the VBE LFB is a BAR3 window into it; the
+  BIOS leaves a 512 MB uncacheable MTRR over the PCIe apertures, and since the
+  lowest-numbered matching entry wins, the aperture can never be
+  write-combining (~33 MB/s of separate PCIe writes).  `nvidia_lfb_in_vram()`
+  therefore locates the framebuffer in the stolen VRAM (marker through the
+  LFB, page-granular scan of a cached mapping) and `vga_shadow_init()` writes
+  through that alias once a WC MTRR covers the stolen range (only then -- a
+  cached framebuffer would stop updating the screen).  Everything else keeps
+  the UC LFB: `paging.c` maps LFB pages cacheable only when `mtrr_set_wc()`
+  says it covered them.  `vga_fb_lfb_wc()` reports the effective path and
+  `gfxbench` prints it. `nvidia.c`
   identifies the card, maps BAR0/BAR1/BAR3 and reads the MCP7x stolen-VRAM
   geometry; `nv50.c` probes the nv50-family display engine at boot (read-only,
   serial/netmon). The ION/AT3IONT-I hardware cursor is deliberately not driven:

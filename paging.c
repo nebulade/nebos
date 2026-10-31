@@ -72,6 +72,18 @@ int paging_lfb_wc(void)
 	return lfb_wc_ok;
 }
 
+void paging_map_ram(unsigned int base, unsigned int size)
+{
+	unsigned int p0 = base >> 22;
+	unsigned int p1 = (base + size + 0x3FFFFFu) >> 22;
+	unsigned int i;
+
+	if (!page_dir)
+		return;
+	for (i = p0; i < p1 && i < 1024; i++)
+		page_dir[i] = (i << 22) | PDE_PS | PDE_WRITABLE | PDE_PRESENT;
+}
+
 void paging_init(void)
 {
 	unsigned int i;

@@ -22,6 +22,8 @@
 #include "pci.h"
 #include "process.h"
 #include "serial.h"
+#include "paging.h"
+#include "vga.h"
 
 #define NV_VENDOR_ID     0x10DE
 #define NV_BAR0_SIZE     0x1000000   /* register aperture (16 MB on nv50+) */
@@ -248,4 +250,61 @@ unsigned int nvidia_vram_base(void)
 unsigned int nvidia_vram_size(void)
 {
 	return nv_vram_size;
+}
+
+/* The VBE LFB is a BAR3 window into the stolen VRAM, which is ordinary DRAM:
+ * writing it through the PCIe aperture costs ~33 MB/s (separate uncached
+ * transactions, see the MTRR notes), while the DRAM alias runs at DRAM
+ * speed.  Find where the framebuffer lives in the stolen VRAM by writing a
+ * marker through the LFB and scanning the VRAM at page granularity (the LFB
+ * and the frame are page-aligned, so the marker can only start on a page). */
+unsigned int nvidia_lfb_in_vram(void)
+{
+	static const unsigned int mark[4] = { 0xA5C3F00Du, 0x5A3C0FF0u,
+					      0xDEADBEEFu, 0x12345678u };
+	unsigned int vram = nv_vram_base, vsize = nv_vram_size;
+	unsigned int lfb = (unsigned int)vga_fb_lfb_addr();
+	unsigned int off, i, hit = 0;
+
+	if (!vram || vsize < 0x01000000u || !nv_bar3 || !nv_bar3_size)
+		return 0;
+	if (lfb < nv_bar3 || lfb > nv_bar3 + nv_bar3_size - 0x1000u)
+		return 0;          /* the VBE LFB is not in the VRAM aperture */
+	if (nv_bar3_size < 0x00801000u)
+		return 0;          /* no room for a marker past the window */
+
+	paging_map_ram(vram, vsize);
+
+	/* Marker at LFB + 8 MB: past any 1280x1024x32 frame. */
+	{
+		volatile unsigned int *p =
+			(volatile unsigned int *)(lfb + 0x00800000u);
+
+		for (i = 0; i < 4; i++)
+			p[i] = mark[i];
+	}
+
+	for (off = 0; off + 0x00800010u <= vsize; off += 0x1000u) {
+		const unsigned int *q = (const unsigned int *)(vram + off);
+
+		if (q[0] == mark[0] && q[1] == mark[1] &&
+		    q[2] == mark[2] && q[3] == mark[3]) {
+			hit = off;
+			break;
+		}
+	}
+
+	/* Clear the marker again (off-screen VRAM). */
+	{
+		volatile unsigned int *p =
+			(volatile unsigned int *)(lfb + 0x00800000u);
+
+		for (i = 0; i < 4; i++)
+			p[i] = 0;
+	}
+
+	if (!hit)
+		return 0;
+	/* The marker was at frame + 8 MB. */
+	return vram + (hit - 0x00800000u);
 }

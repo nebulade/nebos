@@ -36,4 +36,11 @@ unsigned int nvidia_bar3_size(void);
 unsigned int nvidia_vram_base(void);
 unsigned int nvidia_vram_size(void);
 
+/* The VBE LFB is a window into the stolen VRAM, which is ordinary DRAM and
+ * therefore much faster to write than the PCIe aperture.  Locates the
+ * framebuffer in the stolen VRAM by writing a marker through the LFB and
+ * scanning the (now cacheably mapped) VRAM at page granularity.  Returns the
+ * framebuffer's address in the stolen VRAM, or 0 when not applicable. */
+unsigned int nvidia_lfb_in_vram(void);
+
 #endif

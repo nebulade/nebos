@@ -8,6 +8,11 @@ void paging_lfb_refresh(void);
 /* 1 when the LFB is mapped for write-combining. */
 int paging_lfb_wc(void);
 
+/* Map a physical window identity-mapped with caching enabled (4 MB pages).
+ * Used for the stolen-VRAM alias, which is ordinary DRAM; the effective type
+ * is whatever the MTRRs say (write-combining when we added an entry). */
+void paging_map_ram(unsigned int base, unsigned int size);
+
 /* Physical address of the bootstrap (current) page directory. */
 unsigned int paging_current_cr3(void);
 

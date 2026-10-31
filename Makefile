@@ -36,7 +36,7 @@ fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 terminal.o: terminal.c terminal.h screen.h vfs.h fat.h blkdev.h io.h dbg.h kexec.h process.h timer.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 wm.o: wm.c wm.h terminal.h screen.h fbtext.h idle.h io.h mouse.h process.h rtc.h timer.h version.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -51,10 +51,10 @@ poweroff.o: poweroff.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 disk.o: disk.c disk.h io.h timer.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 fat.o: fat.c fat.h blkdev.h io.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 run.o: run.c fat.h io.h fbtext.h run_api.h timer.h vga.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -123,34 +123,34 @@ display.o: display.c io.h vga.h gpu.h ati.h nvidia.h radeon.h mouse.h fbtext.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 uhci.o: uhci.c uhci.h usb_hcd.h pci.h serial.h timer.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 ohci.o: ohci.c ohci.h usb_hcd.h pci.h paging.h mm.h serial.h timer.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 usb.o: usb.c usb.h usb_hcd.h io.h serial.h timer.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 usbhid.o: usbhid.c usbhid.h io.h usb.h usb_hcd.h serial.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 lsusb.o: lsusb.c io.h usb.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 kdbg.o: kdbg.c kdbg.h font_8x8.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 lspci.o: lspci.c io.h pci.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 peek.o: peek.c io.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 ne2000.o: ne2000.c ne2000.h pci.h timer.h io.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 r8168.o: r8168.c r8168.h netdev.h io.h kdbg.h mm.h paging.h pci.h process.h serial.h timer.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 netkexec.o: netkexec.c netkexec.h io.h kexec.h net.h netdev.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -174,7 +174,7 @@ net.o: net.c net.h io.h netdev.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 blkdev.o: blkdev.c blkdev.h ata.h ahci.h disk.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 ata.o: ata.c ata.h pci.h serial.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -183,13 +183,13 @@ ahci.o: ahci.c ahci.h ata.h mm.h paging.h pci.h process.h serial.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 fatdetect.o: fatdetect.c fatdetect.h fat.h blkdev.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 fatformat.o: fatformat.c fatformat.h blkdev.h mm.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 format.o: format.c blkdev.h disk.h fatformat.h io.h vga.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 mouse.o: mouse.c mouse.h cirrus.h radeon.h timer.h usbhid.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -204,10 +204,10 @@ kexec_tramp.o: kexec_tramp.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
 dbg.o: dbg.c dbg.h serial.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 vfs.o: vfs.c vfs.h fat.h fatdetect.h blkdev.h io.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 boot.elf: boot.o
 	$(LD) $(BOOT_LDFLAGS) -o $@ $<
@@ -343,7 +343,7 @@ prog: prog.bin
 # ucmd_<name>.c to UCMDS; the pack is rebuilt automatically.
 UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
         ucmd_meminfo ucmd_mouseinfo ucmd_storage ucmd_top \
-        ucmd_clock ucmd_colors \
+        ucmd_clock ucmd_colors ucmd_edit \
         ucmd_netinfo ucmd_netip ucmd_netdns ucmd_host ucmd_dhcp \
         ucmd_netsend ucmd_netrecv ucmd_ping ucmd_pong ucmd_netlog \
         ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_curl
@@ -357,6 +357,14 @@ ucmd_%.o: ucmd_%.c ucmd_lib.h syscall.h
 
 ucmd_%.elf: ucmd_%.o ucmd.ld
 	$(LD) -T ucmd.ld -nostdlib -m elf_i386 -o $@ $<
+	$(OBJCOPY) --strip-all $@ $@
+
+# edit draws text itself, so it links the kernel's 8x8 font into its ELF.
+ucmd_edit.o: ucmd_edit.c ucmd_lib.h syscall.h font_8x8.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+ucmd_edit.elf: ucmd_edit.o font_8x8.o ucmd.ld
+	$(LD) -T ucmd.ld -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # TLS 1.3 client library (ring-3, linked into ucmd_curl; see tls.h).  The

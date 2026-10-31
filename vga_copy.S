@@ -87,3 +87,46 @@ vga_fb_fill_row_nt:
 	jnz   5b
 9:	popl  %edi
 	ret
+
+/* void vga_fb_copy_row_nt(void *dst, const void *src, unsigned int dwords);
+ *
+ * Same as vga_fb_copy_row, but with streaming (non-temporal) stores: WC
+ * destinations combine them into bursts, which rep movsl does not do here.
+ * The destination is aligned with normal stores first; the caller sfences. */
+.globl vga_fb_copy_row_nt
+vga_fb_copy_row_nt:
+	pushl %esi
+	pushl %edi
+	movl  12(%esp), %edi	/* dst */
+	movl  16(%esp), %esi	/* src */
+	movl  20(%esp), %ecx	/* dword count */
+1:	testl $15, %edi
+	jz    2f
+	testl %ecx, %ecx
+	jz    9f
+	movl  (%esi), %eax
+	movl  %eax, (%edi)
+	addl  $4, %esi
+	addl  $4, %edi
+	decl  %ecx
+	jmp   1b
+2:	movl  %ecx, %edx
+	shrl  $2, %edx
+	jz    4f
+3:	movdqu (%esi), %xmm0
+	movntdq %xmm0, (%edi)
+	addl  $16, %esi
+	addl  $16, %edi
+	decl  %edx
+	jnz   3b
+4:	andl  $3, %ecx
+	jz    9f
+5:	movl  (%esi), %eax
+	movl  %eax, (%edi)
+	addl  $4, %esi
+	addl  $4, %edi
+	decl  %ecx
+	jnz   5b
+9:	popl  %edi
+	popl  %esi
+	ret
