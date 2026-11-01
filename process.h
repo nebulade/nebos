@@ -73,6 +73,12 @@ struct process {
 	struct wait_queue *waiting_on;
 	struct process *zombie_next;    /* reaped by the kworker */
 	unsigned int zombie_queued;
+	/* Kernel-thread entry: set for processes created with
+	 * process_create*(), whose wrapper takes the BKL. */
+	void (*kentry)(void);
+	unsigned int kernel_thread;
+	/* BKL depth saved when the process blocks and must reacquire it. */
+	unsigned int bkl_saved;
 };
 
 /* User-mode virtual address layout (ring-3 processes). */
@@ -89,6 +95,8 @@ struct process {
 extern struct process *procs[PROC_MAX];
 
 void process_init(void);
+/* Prepare an AP idle PCB and stack; returns its kernel stack top, or 0. */
+unsigned int process_init_ap(unsigned int cpu);
 int  process_create(const char *name, void (*entry)(void));
 int  process_create_arg(const char *name, void (*entry)(const char *),
 			const char *arg);
@@ -118,6 +126,8 @@ void process_exit(void);
 /* Called by the kworker: free switched-out dead processes. */
 void process_reap_dead(void);
 unsigned int process_zombie_count(void);
+/* Caller holds sched_lock. */
+unsigned int process_zombie_count_locked(void);
 /* Called from schedule()/kill with interrupts disabled: unpublish a dead PCB
  * and put it on the kworker's zombie list. */
 void process_zombie_add(struct process *p);

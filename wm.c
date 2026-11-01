@@ -1683,6 +1683,11 @@ void wm_run(void)
 		wm_handle_mouse();
 		wm_redraw_if_needed();
 		vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
+		/* This is the kernel-WM fallback, i.e. a kernel thread holding
+		 * the BKL.  Do not sleep on it: release it around the idle wait
+		 * so ring-3 syscalls on the APs can still run. */
+		bkl_pause();
 		cpu_idle();
+		bkl_resume();
 	}
 }

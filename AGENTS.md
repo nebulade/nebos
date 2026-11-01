@@ -11,6 +11,7 @@ Toolchain: `gcc` (32-bit multilib), `as`/`ld`/`objcopy`, `mtools` (`mcopy`/`mkfs
 ```sh
 make all        # floppy.img usb.img final.bin root.img
 make run        # boot floppy.img + root.img in QEMU (fallback: qemu-system-x86_64)
+make run-smp    # same with -smp 4 (BSP + 3 APs, the Atom 330 topology)
 make run-usb    # boot usb.img as an IDE disk
 make run-uhci   # like `make run` but with a UHCI controller + USB mouse
 make run-net    # like `make run` + a PCI NE2000 NIC on QEMU's user network (slirp; DHCP/DNS/NAT)
@@ -33,9 +34,16 @@ make clean
    picks best VBE mode (≥16 bpp, LFB, fits VRAM, ≤1280px), writes mode info to
    `0x600`, enables A20, enters protected mode, jumps to `kernel_entry`
    (`entry.S`, re-points ESP to the current stack top, then `kernel_main`).
-3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → I/O → idle → timer
-   (PIT 1 kHz + IDT) → mouse → processes → VGA shadow buffer → terminal.
+3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → memory/paging →
+   ACPI/MADT → I/O → idle → processes → timer (PIT 1 kHz + IDT) → SMP AP
+   bring-up → mouse → VGA shadow buffer → terminal.
 4. `mbr.S` — MBR (USB/HDD boot); loads partition boot sector at LBA 1.
+
+SMP is ACPI-only: RSDP → RSDT/XSDT → MADT, then `LAPIC` + `INIT-SIPI-SIPI`.
+There is deliberately no Intel MP-table parser.  If ACPI, a usable MADT, the
+CPUID APIC bit or the LAPIC is missing, `cpu_count` stays 1 and the machine
+boots exactly like before (8259 PIC + PIT, no APIC MSR/MMIO access).  This keeps
+a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 
 ## Hardcoded memory map (fragile — keep in sync when editing)
 
@@ -49,6 +57,9 @@ make clean
 | `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`); also the kexec trampoline's private stack top (grows down, below the map) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
 | `0x4000`  | ISA DMA buffer, one sector (`disk.c`) |
+| `0x6000`  | AP real/protected-mode trampoline (`ap_tramp.S`/`ap_tramp.ld`; SIPI vector 0x06, image ends below `0x6C00`) |
+| `0x6C00`  | AP trampoline real-mode stack top (grows down) |
+| `0x6F00`  | AP startup info block (CR3, stack top, C entry, CPU index) |
 | `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs it stays below `0x7F000`) |
 | (in-image) | Bootstrap/protected-mode stack: 8 KB `.stack` NOLOAD section, `__boot_stack_top`/`__boot_stack_bottom` (travels with the kernel) |
 | `0x7FF00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
@@ -68,11 +79,39 @@ below the run area), so adding code no longer moves any address.
   (no polling scans), stable per-PCB objects in a sparse `PROC_MAX` pointer
   table, per-CPU `struct cpu`/GDT/TSS with `%gs`-based `this_cpu()`, and a
   per-CPU `current` (no global `current_pid`).  Idle is not a process slot; a
-  normal `kworker` process does the housekeeping and the zombie reaper.  Ring 0
-  is preemptible at tick boundaries unless `preempt_count` is set (FAT and the
-  shadow flush), and voluntary blocks/yields go through the `int 0x81` gate.
+  normal `kworker` process does the housekeeping and the zombie reaper.
+  `sched_lock` (IRQ-safe spinlock) protects the global run/sleep/wait queues
+  and the process-table state touched by timers; `schedule()` keeps it across
+  the stack switch and `sched_finish_switch()` (called from `switch.S` after
+  loading the new ESP) drops it, so another CPU can never pick a process whose
+  kernel stack this CPU is still unwinding.  Excess wake-up races are handled
+  by skipping a queued process that is still marked running on another CPU.
+  The **big kernel lock** (`bkl_*`) is a sleeping recursive mutex: every
+  ring-3 syscall and every kernel thread takes it, voluntary block/sleep
+  points drop it (`sched_yield`), and long serial/network waits release it via
+  `bkl_pause()`/`bkl_resume()`.  A BKL holder is not timer-preempted, so it can
+  safely be in the middle of kernel data structures.  Kernel threads are pinned
+  to the BSP; user processes may run on any CPU.  The idle fallback uses
+  `bkl_trylock()` (never blocks); the kworker and kernel commands take the BKL
+  normally and release it around their sleeps.
+  APs use their LAPIC timer (vector 0x30); the BSP keeps the 8259 PIC/PIT and
+  is the only global-tick source.  APs do not start taking user work until
+  `smp_enable_sched()`, i.e. after device/FS setup.  LAPIC IPIs (vector 0x31)
+  request a reschedule; they must be EOIed on the target LAPIC.
   `SYS_PROCINFO` exposes weight/state/CPU/ticks for the ring-3 `top` command,
   and `sched`/`renice` plus `SYS_SCHEDINFO` expose the scheduler counters.
+  Ring 0 is preemptible at tick boundaries unless `preempt_count` is set (FAT
+  and the shadow flush) or the BKL is held; voluntary blocks/yields go through
+  the `int 0x81` gate.
+- **SMP / ACPI**: `acpi.c/h` (RSDP → RSDT/XSDT → MADT; CPU/LAPIC list and
+  LAPIC base; 4 MB table page mapping; malformed tables are ignored), `lapic.c/h`
+  (xAPIC MMIO access, BSP/AP init, INIT/SIPI/IPI, calibrated periodic timer),
+  `smp.c/h` (trampoline copy, AP stacks via `process_init_ap`, INIT-SIPI-SIPI
+  with a second SIPI retry, per-CPU `smp_ap_main`, `smp_stop_aps`, lazy
+  `smp_enable_sched`), `ap_tramp.S` + `ap_tramp.ld` (real → protected-mode
+  trampoline at `0x6000`), and `spinlock.h` (the IRQ-safe spinlocks).
+  `cpu_enable_sse()` runs on every AP: an AP starts with firmware CR4, and the
+  SSE2 drawing fast paths #UD until OSFXSR/OSXMMEXCPT are set.
 - **Memory**: `mm.c/h` — INT 15h E820 detection (real-mode in `vesa_stage.S`,
   map at `0x1000`) + a bitmap page-frame allocator (4 KB pages). Reserves low
   1 MB and an 8 MB VGA-shadow region. `kmalloc.c/h` — a power-of-two heap
@@ -233,6 +272,11 @@ below the run area), so adding code no longer moves any address.
   acks every datagram with the next expected offset, verifies the checksum and
   jumps. While idle the same loop answers ARP/ICMP for our IP, so the board is
   reachable (and MAC-resolvable) without running any command.
+  `kexec_jump()` calls `smp_stop_aps()` first: every AP gets an INIT and is
+  parked in the wait-for-SIPI state before the trampoline overwrites the kernel
+  they were executing.  It runs with interrupts off, resets `sched_lock` (an AP
+  may have been inside a scheduler critical section when INIT arrived) and then
+  jumps; the new kernel starts the APs again from scratch.
 - **Mouse**: `mouse.c/h` — cursor move/draw shared by the PS/2 path
   (IntelliMouse, Cirrus/Radeon hardware cursor) and the USB backend;
   `usbhid.c/h` — USB HID boot devices: find + configure a mouse and/or
@@ -354,7 +398,9 @@ Wire protocol (host → target, sent immediately; no handshake):
 `[magic "KXEC"][entry u32 LE][size u32 LE][data][checksum u8]`.
 The command pack has its own frame (`make cmds-dev`), the same layout with a
 `"KXNP"` magic (the entry field is ignored), which replaces /ramfs in place
-(see below).
+(see below).  On SMP the APs are INIT-parked just before the jump, and the
+serial receive drops the BKL while it waits for bytes so the WM and the other
+CPU's syscalls stay responsive during a `make dev`.
 
 **Every iteration:**
 ```sh
@@ -686,3 +732,20 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    offset 0x1000 (the linker's page alignment), so ~4 KB of each ~8 KB blob is
    padding: 25 commands carry ~100 KB of it.  Linking them with
    `-z max-page-size=0x100` would remove most of that.
+10. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
+    board that exposes only MP tables stays UP (deliberate; there is no test
+    hardware).
+11. There is no IOAPIC driver.  The BSP keeps the 8259 PIC in LAPIC ExtINT mode;
+    APs mask LINT0/LINT1 and only use their LAPIC timer/IPIs.  Device IRQs never
+    reach an AP, and `pit_irq_stub` should be treated as BSP-only.
+12. The BKL serializes all kernel execution: a long FAT/disk operation, a
+    non-network driver wait or a big shadow-buffer operation can stall syscalls
+    on the other CPUs for its duration.  `bkl_pause()`/`bkl_resume()` is used
+    for serial/network waits, not yet for disk I/O.
+13. Kernel threads (kworker, kexec/payload, kernel commands, the kernel WM
+    fallback) are pinned to the BSP.  Only ring-3 processes use the APs, so a
+    single CPU-bound kernel driver still limits throughput.
+14. Page-table updates for another CPU's running process (e.g. an MMIO mapping)
+    rely on not-present TLB entries not being cached; there is no cross-CPU
+    TLB shootdown.  No process shares an address space with another, so normal
+    process teardown is unaffected.

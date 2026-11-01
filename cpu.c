@@ -16,6 +16,22 @@ static int cpuid_supported(void)
 	return ((a ^ b) & (1u << 21)) != 0;
 }
 
+void cpu_enable_sse(void)
+{
+	unsigned int eax, ebx, ecx, edx, cr4;
+
+	if (!cpuid_supported())
+		return;
+	eax = 1;
+	__asm__ volatile ("cpuid"
+			  : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+	if (!(edx & (1u << 24)))        /* FXSR */
+		return;
+	__asm__ volatile ("mov %%cr4, %0" : "=r"(cr4));
+	cr4 |= (1u << 9) | (1u << 10);  /* OSFXSR | OSXMMEXCPT */
+	__asm__ volatile ("mov %0, %%cr4" :: "r"(cr4) : "memory");
+}
+
 int cpu_has_sse2(void)
 {
 	unsigned int eax, ebx, ecx, edx;

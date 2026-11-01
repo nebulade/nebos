@@ -9,4 +9,9 @@
 /* 1 when the CPU supports SSE2 (the ION does, the Pentium targets do not). */
 int cpu_has_sse2(void);
 
+/* Enable CR4.OSFXSR/OSXMMEXCPT on the calling CPU when it has FXSR.  The BSP
+ * does this lazily in cpu_has_sse2(); an AP starts with firmware CR4 and must
+ * call this before it can run the SSE2 drawing fast paths. */
+void cpu_enable_sse(void);
+
 #endif

@@ -30,12 +30,17 @@ static struct tcp_conn tcp;
  * safe. */
 static void net_enter(void)
 {
+	/* ARP/DNS/DHCP/TCP waits spin on the PIT and can take seconds.  Give
+	 * the other CPU's syscalls (and the WM) the kernel while we wait; the
+	 * NIC ownership still serializes every stack user. */
+	bkl_pause();
 	__asm__ volatile ("sti");
 }
 
 static void net_exit(void)
 {
 	__asm__ volatile ("cli");
+	bkl_resume();
 }
 
 static unsigned int caller_pid(void)

@@ -335,7 +335,8 @@ void _start(const char *arg)
 		wall = t1 - t0;
 		if (!wall)
 			wall = 1;
-		idle_pm = (s1.idle_ticks - s0.idle_ticks) * 1000u / wall;
+		idle_pm = (s1.idle_ticks - s0.idle_ticks) * 1000u /
+			(wall * (s0.ncpus ? s0.ncpus : 1));
 		if (idle_pm > 1000u)
 			idle_pm = 1000u;
 		uptime_s = t1 / 1000;

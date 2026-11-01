@@ -2,6 +2,7 @@
 #include "serial_ring_buf.h"
 #include "netlog.h"
 #include "pci.h"
+#include "sched.h"
 #include "timer.h"
 
 void serial_init(unsigned int port)
@@ -87,10 +88,19 @@ int serial_ring_getc(void)
 int serial_ring_wait(unsigned int timeout_ms, unsigned char *out)
 {
 	unsigned int start = get_ticks_ms();
+	int got = 0;
+
+	/* A kexec/payload receive can take minutes over 115200 baud.  Do not
+	 * keep the big kernel lock for that: the WM, terminals and the other
+	 * CPU's syscalls must keep running while we wait for bytes. */
+	bkl_pause();
 	while (get_ticks_ms() - start < timeout_ms) {
-		if (serial_ring_pop(out))
-			return 1;
+		if (serial_ring_pop(out)) {
+			got = 1;
+			break;
+		}
 		__asm__ volatile ("hlt");
 	}
-	return 0;
+	bkl_resume();
+	return got;
 }

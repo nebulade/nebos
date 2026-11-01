@@ -159,6 +159,11 @@ unsigned int paging_current_cr3(void)
 	return cr3 & 0xFFFFF000u;
 }
 
+unsigned int paging_kernel_cr3(void)
+{
+	return (unsigned int)page_dir;
+}
+
 unsigned int paging_new_directory(void)
 {
 	unsigned int *pd = (unsigned int *)mm_alloc_page();

@@ -25,6 +25,7 @@
 #include "io.h"
 #include "mm.h"
 #include "serial.h"
+#include "smp.h"
 
 #define KEXEC_MAGIC 0x4345584B /* "KXEC" little-endian */
 
@@ -195,6 +196,11 @@ void program_kexec_main(void)
  * jump to it with the staging/load/size/entry arguments.  Never returns. */
 void kexec_jump(unsigned int entry, unsigned int size)
 {
+	/* Park the APs first: the new kernel image is about to overwrite the
+	 * kernel they are executing.  INIT puts them back in real mode where
+	 * they wait for the new kernel's SIPI. */
+	smp_stop_aps();
+
 	/* Relocate the trampoline to 0x800 so it survives the kernel overwrite. */
 	{
 		const void *s = (const void *)kexec_trampoline;

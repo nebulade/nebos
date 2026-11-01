@@ -17,6 +17,10 @@ void paging_map_ram(unsigned int base, unsigned int size);
  * is per-CPU; on one CPU it is the running process's directory. */
 unsigned int paging_current_cr3(void);
 
+/* Physical address of the bootstrap/kernel page directory that new process
+ * directories clone. */
+unsigned int paging_kernel_cr3(void);
+
 /* Allocate a fresh page directory that clones the kernel identity map and
  * return its physical address (0 on out-of-memory). */
 unsigned int paging_new_directory(void);

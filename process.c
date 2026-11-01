@@ -13,6 +13,7 @@
 #include "mm.h"
 #include "paging.h"
 #include "serial.h"
+#include "smp.h"
 #include "sys_fs.h"
 #include "sys_gfx.h"
 #include "sys_net.h"
@@ -24,7 +25,7 @@
 
 struct process *procs[PROC_MAX];
 
-static struct process idle_proc;
+static struct process idle_procs[MAX_CPUS];
 static unsigned int next_pid_counter = 1; /* monotonic, wraps */
 static unsigned int fallback_stack_next;  /* 0..PROC_FALLBACK_STACK_MAX */
 static struct process *zombie_head, *zombie_tail;
@@ -135,7 +136,8 @@ static struct process *proc_alloc(int *slot_out)
  * disabled and with parent = current_proc() (possibly idle). */
 static void proc_commit(struct process *p, int slot, const char *name,
 			unsigned int esp, int owned, unsigned int stack_base,
-			unsigned int cr3, unsigned int kstack_top)
+			unsigned int cr3, unsigned int kstack_top,
+			void (*kentry)(void), int kernel)
 {
 	struct process *parent = current_proc();
 
@@ -149,7 +151,11 @@ static void proc_commit(struct process *p, int slot, const char *name,
 	p->start_ticks = get_ticks_ms();
 	p->on_cpu = PROC_NO_CPU;
 	p->last_cpu = PROC_NO_CPU;
-	p->affinity = 0xFFFFFFFFu;
+	/* Kernel threads touch global kernel state; keep them on the BSP.
+	 * Ring-3 processes may use every CPU. */
+	p->affinity = kernel ? 1u : 0xFFFFFFFFu;
+	p->kentry = kentry;
+	p->kernel_thread = (unsigned int)kernel;
 	p->weight = 0;
 	p->stride = 0;
 	p->vruntime = 0;
@@ -162,7 +168,9 @@ static void proc_commit(struct process *p, int slot, const char *name,
 		p->cwd[0] = '\0';
 	name_copy(p->name, name);
 	procs[slot] = p;
-	sched_add_ready(p);
+	/* The caller publishes the process as runnable only after applying any
+	 * per-process overrides (cwd/tty): an AP can pick it as soon as it is
+	 * on the run queue. */
 }
 
 void process_init(void)
@@ -175,28 +183,57 @@ void process_init(void)
 	for (i = 0; i < PROC_MAX; i++)
 		procs[i] = 0;
 
-	clear_proc(&idle_proc);
-	idle_proc.state      = PROC_RUNNING;
-	idle_proc.pid        = 0;
-	idle_proc.slot       = PROC_MAX;
-	idle_proc.esp        = 0;
-	idle_proc.screen     = (void *)0;
-	idle_proc.stack_base = 0;  /* bootstrap stack, never freed */
-	idle_proc.cr3        = paging_current_cr3();
-	idle_proc.kstack_top = (unsigned int)__boot_stack_top;
-	idle_proc.cpu_ticks  = 0;
-	idle_proc.start_ticks = 0;
-	idle_proc.on_cpu     = 0;
-	idle_proc.last_cpu   = 0;
-	idle_proc.affinity   = 1;
-	idle_proc.weight     = 0;
-	idle_proc.stride     = 0;
-	idle_proc.vruntime   = 0;
-	idle_proc.on_runq    = 0;
-	name_copy(idle_proc.name, "idle");
+	clear_proc(&idle_procs[0]);
+	idle_procs[0].state      = PROC_RUNNING;
+	idle_procs[0].pid        = 0;
+	idle_procs[0].slot       = PROC_MAX;
+	idle_procs[0].esp        = 0;
+	idle_procs[0].screen     = (void *)0;
+	idle_procs[0].stack_base = 0;  /* bootstrap stack, never freed */
+	idle_procs[0].cr3        = paging_current_cr3();
+	idle_procs[0].kstack_top = (unsigned int)__boot_stack_top;
+	idle_procs[0].cpu_ticks  = 0;
+	idle_procs[0].start_ticks = 0;
+	idle_procs[0].on_cpu     = 0;
+	idle_procs[0].last_cpu   = 0;
+	idle_procs[0].affinity   = 1;
+	idle_procs[0].weight     = 0;
+	idle_procs[0].stride     = 0;
+	idle_procs[0].vruntime   = 0;
+	idle_procs[0].on_runq    = 0;
+	name_copy(idle_procs[0].name, "idle");
 
-	cpus[0].idle = &idle_proc;
-	cpus[0].current = &idle_proc;
+	cpus[0].idle = &idle_procs[0];
+	cpus[0].current = &idle_procs[0];
+}
+
+/* Prepare an AP idle process and its kernel stack.  Called by the BSP before
+ * SIPI; the AP itself publishes cpus[cpu].current in smp_ap_main(). */
+unsigned int process_init_ap(unsigned int cpu)
+{
+	struct process *p;
+	unsigned int base;
+
+	if (cpu == 0 || cpu >= MAX_CPUS)
+		return 0;
+	base = mm_alloc_page();
+	if (!base)
+		return 0;
+	p = &idle_procs[cpu];
+	clear_proc(p);
+	p->state      = PROC_RUNNING;
+	p->pid        = 0;
+	p->slot       = PROC_MAX;
+	p->esp        = 0;
+	p->cr3        = paging_kernel_cr3();
+	p->kstack_top = base + PROC_STACK_SIZE;
+	p->on_cpu     = cpu;
+	p->last_cpu   = cpu;
+	p->affinity   = 1u << cpu;
+	p->start_ticks = 0;
+	name_copy(p->name, "idle");
+	cpus[cpu].idle = p;
+	return p->kstack_top;
 }
 
 /*
@@ -216,8 +253,35 @@ void process_init(void)
  *   EAX  ECX  EDX  EBX  ESP_orig  EBP  ESI  EDI   (pusha frame)
  *   <- saved ESP
  */
+/* Kernel-thread entry wrappers: take the BKL for the thread's lifetime and
+ * hand the real entry point the argument the stack frame supplied. */
+static void process_kernel_start0(void)
+{
+	struct process *p = current_proc();
+	void (*fn)(void) = (void (*)(void))p->kentry;
+
+	bkl_lock();
+	if (fn)
+		fn();
+	bkl_unlock();
+	process_exit();
+}
+
+static void process_kernel_start_arg(const char *arg)
+{
+	struct process *p = current_proc();
+	void (*fn)(const char *) = (void (*)(const char *))p->kentry;
+
+	bkl_lock();
+	if (fn)
+		fn(arg);
+	bkl_unlock();
+	process_exit();
+}
+
 static int setup_process(const char *name, unsigned int entry,
-			 int has_arg, const char *arg)
+			 int has_arg, const char *arg,
+			 void (*kentry)(void), int kernel)
 {
 	int slot, owned, pid;
 	unsigned int base, top, *sp, arg_ptr = 0, cr3;
@@ -280,7 +344,9 @@ static int setup_process(const char *name, unsigned int entry,
 	*--sp = 0;              /* ESI */
 	*--sp = 0;              /* EDI */
 
-	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top);
+	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top,
+		    kentry, kernel);
+	sched_add_ready(p);
 	pid = (int)p->pid;
 	irq_restore(flags);
 	return pid;
@@ -288,13 +354,15 @@ static int setup_process(const char *name, unsigned int entry,
 
 int process_create(const char *name, void (*entry)(void))
 {
-	return setup_process(name, (unsigned int)entry, 0, (void *)0);
+	return setup_process(name, (unsigned int)process_kernel_start0, 0,
+			     (void *)0, entry, 1);
 }
 
 int process_create_arg(const char *name, void (*entry)(const char *),
 		       const char *arg)
 {
-	return setup_process(name, (unsigned int)entry, 1, arg);
+	return setup_process(name, (unsigned int)process_kernel_start_arg, 1,
+			     arg, (void (*)(void))entry, 1);
 }
 
 /* Create a process whose entry takes a raw pointer argument (no string copy). */
@@ -334,11 +402,13 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 	*--sp = (unsigned int)process_exit;/* return address */
 	*--sp = 0x202;                    /* EFLAGS: IF=1 */
 	*--sp = 0x08;                     /* CS */
-	*--sp = (unsigned int)entry;      /* EIP */
+	*--sp = (unsigned int)process_kernel_start_arg; /* EIP */
 	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* EAX ECX EDX EBX */
 	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* ESP EBP ESI EDI */
 
-	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top);
+	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top,
+		    (void (*)(void))entry, 1);
+	sched_add_ready(p);
 	pid = (int)p->pid;
 	irq_restore(flags);
 	return pid;
@@ -448,11 +518,13 @@ int process_create_user_tty(const char *name, const void *image, unsigned int si
 		*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* ESP EBP ESI EDI */
 	}
 
-	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top);
+	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top,
+		    0, 0);
 	if (cwd)
 		cwd_copy(p, cwd);
 	if (tty)
 		p->tty = (int)tty;
+	sched_add_ready(p);
 	pid = (int)p->pid;
 
 	irq_restore(flags);
@@ -499,8 +571,8 @@ void process_map_mmio_all(unsigned int phys_base, unsigned int size)
 	/* Map the kernel directory (the one new process directories clone) and
 	 * every live process copy.  paging_current_cr3() is the *current* process
 	 * directory, which may be one of these; mapping it twice is harmless.
-	 * The reaper frees PCBs, so hold off the PIT while iterating. */
-	flags = irq_save_disable();
+	 * The reaper frees PCBs, so hold the process lock while iterating. */
+	flags = sched_lock_acquire();
 	paging_map_mmio(phys_base, size);
 	for (i = 0; i < PROC_MAX; i++) {
 		struct process *p = procs[i];
@@ -510,15 +582,23 @@ void process_map_mmio_all(unsigned int phys_base, unsigned int size)
 		if (p->cr3)
 			paging_map_mmio_cr3(p->cr3, phys_base, size);
 	}
-	irq_restore(flags);
+	sched_lock_release(flags);
 }
 
-/* Unpublish a dead process and hand it to the kworker.  Called with interrupts
- * disabled (from schedule(), process_kill(), or process_exit()'s path). */
+/* Unpublish a dead process and hand it to the kworker.  Takes sched_lock
+ * itself; callers must have already switched away from its kernel stack (or
+ * never run it), so the reaper cannot free memory still in use. */
 void process_zombie_add(struct process *p)
 {
-	if (!p || p->zombie_queued)
+	unsigned int flags;
+
+	if (!p)
 		return;
+	flags = sched_lock_acquire();
+	if (p->zombie_queued) {
+		sched_lock_release(flags);
+		return;
+	}
 	p->zombie_queued = 1;
 	p->on_cpu = PROC_NO_CPU;
 	if (p->slot < PROC_MAX)
@@ -529,17 +609,26 @@ void process_zombie_add(struct process *p)
 	else
 		zombie_head = p;
 	zombie_tail = p;
+	sched_lock_release(flags);
+}
+
+unsigned int process_zombie_count_locked(void)
+{
+	unsigned int n = 0;
+	struct process *p;
+
+	for (p = zombie_head; p; p = p->zombie_next)
+		n++;
+	return n;
 }
 
 unsigned int process_zombie_count(void)
 {
-	unsigned int flags, n = 0;
-	struct process *p;
+	unsigned int flags, n;
 
-	flags = irq_save_disable();
-	for (p = zombie_head; p; p = p->zombie_next)
-		n++;
-	irq_restore(flags);
+	flags = sched_lock_acquire();
+	n = process_zombie_count_locked();
+	sched_lock_release(flags);
 	return n;
 }
 
@@ -554,10 +643,10 @@ void process_reap_dead(void)
 	struct process *p, *list;
 
 	preempt_disable();
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	list = zombie_head;
 	zombie_head = zombie_tail = 0;
-	irq_restore(flags);
+	sched_lock_release(flags);
 
 	for (p = list; p; ) {
 		struct process *next = p->zombie_next;
@@ -643,12 +732,12 @@ void process_ps(void)
 		unsigned int pid, state, weight, cpu, flags;
 		char name[PROC_NAME_LEN];
 
-		/* The reaper frees PCBs; snapshot this slot with the PIT off and
-		 * print the copy outside the critical section. */
-		flags = irq_save_disable();
+		/* The reaper frees PCBs; snapshot this slot under the process
+		 * lock and print the copy outside the critical section. */
+		flags = sched_lock_acquire();
 		p = procs[i];
 		if (!p || p->state == PROC_DEAD) {
-			irq_restore(flags);
+			sched_lock_release(flags);
 			continue;
 		}
 		pid = p->pid;
@@ -658,7 +747,7 @@ void process_ps(void)
 		for (j = 0; j < sizeof(name) - 1 && p->name[j]; j++)
 			name[j] = p->name[j];
 		name[j] = '\0';
-		irq_restore(flags);
+		sched_lock_release(flags);
 
 		io_putchar(' ');
 		put_dec(pid);
@@ -714,7 +803,7 @@ int process_procinfo(unsigned int index, struct sys_procinfo *out)
 
 	if (!out)
 		return 0;
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	for (i = 0; i < PROC_MAX; i++) {
 		struct process *p = procs[i];
 
@@ -734,21 +823,21 @@ int process_procinfo(unsigned int index, struct sys_procinfo *out)
 		out->weight     = p->weight;
 		out->cpu        = p->on_cpu;
 		name_copy(out->name, p->name);
-		irq_restore(flags);
+		sched_lock_release(flags);
 		return 1;
 	}
-	irq_restore(flags);
+	sched_lock_release(flags);
 	return 0;
 }
 
 int process_kill(unsigned int pid)
 {
 	struct process *target = 0;
-	unsigned int i, flags;
+	unsigned int i, flags, on_cpu;
 
 	if (pid == 0)
 		return -1; /* cannot kill the kernel idle process */
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	for (i = 0; i < PROC_MAX; i++) {
 		struct process *p = procs[i];
 
@@ -758,21 +847,32 @@ int process_kill(unsigned int pid)
 		}
 	}
 	if (!target) {
-		irq_restore(flags);
+		sched_lock_release(flags);
 		return -1;
 	}
 	if (target == current_proc()) {
 		target->state = PROC_DEAD;
+		sched_lock_release(flags);
 		wait_wake_all(&exit_wq);
-		irq_restore(flags);
 		sched_yield();     /* never resumes */
 		return 0;
 	}
-	sched_unlink(target);
+	on_cpu = target->on_cpu;
+	sched_unlink_locked(target);
 	target->state = PROC_DEAD;
-	process_zombie_add(target);
+	sched_lock_release(flags);
+
 	wait_wake_all(&exit_wq);
-	irq_restore(flags);
+
+	if (on_cpu == PROC_NO_CPU) {
+		/* Not running anywhere: its page directory is no longer in any
+		 * CR3, so the reaper may take it now. */
+		process_zombie_add(target);
+	} else {
+		/* The target CPU's next schedule queues the zombie only after it
+		 * has switched away from it. */
+		smp_resched_cpu(on_cpu);
+	}
 	return 0;
 }
 
@@ -785,17 +885,17 @@ int process_set_weight(unsigned int pid, unsigned int weight)
 	if (weight > SCHED_WEIGHT_MAX)
 		weight = SCHED_WEIGHT_MAX;
 
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	for (i = 0; i < PROC_MAX; i++) {
 		struct process *p = procs[i];
 
 		if (p && p->state != PROC_DEAD && p->pid == pid) {
 			sched_set_weight_locked(p, weight);
-			irq_restore(flags);
+			sched_lock_release(flags);
 			return 0;
 		}
 	}
-	irq_restore(flags);
+	sched_lock_release(flags);
 	return -1;
 }
 
@@ -805,17 +905,17 @@ int process_set_affinity(unsigned int pid, unsigned int mask)
 
 	if (!mask)
 		return -1;
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	for (i = 0; i < PROC_MAX; i++) {
 		struct process *p = procs[i];
 
 		if (p && p->state != PROC_DEAD && p->pid == pid) {
 			p->affinity = mask;
-			irq_restore(flags);
+			sched_lock_release(flags);
 			return 0;
 		}
 	}
-	irq_restore(flags);
+	sched_lock_release(flags);
 	return -1;
 }
 
@@ -845,9 +945,9 @@ int process_is_alive(unsigned int pid)
 	unsigned int flags;
 	int alive;
 
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	alive = process_alive_locked(pid);
-	irq_restore(flags);
+	sched_lock_release(flags);
 	return alive;
 }
 
@@ -858,7 +958,7 @@ int process_is_sleeping(unsigned int pid)
 
 	if (pid == 0)
 		return 0;
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	for (i = 0; i < PROC_MAX; i++) {
 		struct process *p = procs[i];
 
@@ -867,7 +967,7 @@ int process_is_sleeping(unsigned int pid)
 			break;
 		}
 	}
-	irq_restore(flags);
+	sched_lock_release(flags);
 	return sleeping;
 }
 
@@ -875,7 +975,7 @@ void process_set_tty(unsigned int pid, int tty)
 {
 	unsigned int i, flags;
 
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	for (i = 0; i < PROC_MAX; i++) {
 		struct process *p = procs[i];
 
@@ -884,7 +984,7 @@ void process_set_tty(unsigned int pid, int tty)
 			break;
 		}
 	}
-	irq_restore(flags);
+	sched_lock_release(flags);
 }
 
 /* Block the current process for `ms` milliseconds.  The sleep list wakes it
@@ -899,14 +999,14 @@ void process_sleep_ms(unsigned int ms)
 void process_wait(unsigned int pid)
 {
 	for (;;) {
-		unsigned int flags = irq_save_disable();
+		unsigned int flags = sched_lock_acquire();
 
 		if (!process_alive_locked(pid)) {
-			irq_restore(flags);
+			sched_lock_release(flags);
 			return;
 		}
 		sched_block_on_locked(&exit_wq);
-		irq_restore(flags);
+		sched_lock_release(flags);
 		sched_yield();
 	}
 }

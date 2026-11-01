@@ -1,7 +1,10 @@
 /* Kernel: entry point at 0x7E00, timer (PIT 1 kHz), process init, terminal. */
 
+#include "acpi.h"
+#include "cpu.h"
 #include "idle.h"
 #include "io.h"
+#include "lapic.h"
 #include "panic.h"
 #include "kmalloc.h"
 #include "mm.h"
@@ -18,6 +21,7 @@
 #include "usbhid.h"
 #include "wm.h"
 #include "serial.h"
+#include "smp.h"
 #include "version.h"
 #include "vga.h"
 #include "vfs.h"
@@ -50,6 +54,9 @@ extern void kbd_irq_stub(void);
 extern void fdc_irq_stub(void);
 extern void default_irq_stub(void);
 extern void resched_stub(void);
+extern void lapic_timer_stub(void);
+extern void lapic_resched_stub(void);
+extern void lapic_spurious_stub(void);
 extern void syscall_stub(void);
 extern unsigned int exc_stub_table[];
 
@@ -147,6 +154,12 @@ static void timer_init(void)
 	set_idt_gate(0x21, (unsigned int)kbd_irq_stub);
 	set_idt_gate(0x26, (unsigned int)fdc_irq_stub);
 
+	/* Local-APIC vectors: the AP timer and reschedule IPI, plus the
+	 * spurious vector the LAPIC can deliver at any time. */
+	set_idt_gate(LAPIC_TIMER_VECTOR, (unsigned int)lapic_timer_stub);
+	set_idt_gate(LAPIC_RESCHED_VECTOR, (unsigned int)lapic_resched_stub);
+	set_idt_gate(LAPIC_SPURIOUS_VECTOR, (unsigned int)lapic_spurious_stub);
+
 	/* Syscall gate (ring-3 can int 0x80). */
 	set_idt_gate_user(0x80, (unsigned int)syscall_stub);
 	/* Kernel-only voluntary reschedule gate (int 0x81). */
@@ -161,6 +174,12 @@ static void timer_init(void)
 	outb(0x40, (unsigned char)((1193 >> 8) & 0xFF));
 
 	__asm__ volatile ("sti");
+}
+
+/* The BSP built the IDT once; APs only need to load the same pointer. */
+void idt_load_ap(void)
+{
+	__asm__ volatile ("lidt %0" : : "m"(idtr));
 }
 
 extern unsigned char __bss_start[], __bss_end[];
@@ -200,8 +219,14 @@ static void kernel_idle_loop(void)
 {
 	for (;;) {
 		if (kworker_pid <= 0 ||
-		    !process_is_alive((unsigned int)kworker_pid))
-			system_housekeeping();
+		    !process_is_alive((unsigned int)kworker_pid)) {
+			/* Idle must never sleep on the BKL: if a user process on
+			 * another CPU owns it, just keep idling and retry. */
+			if (bkl_trylock()) {
+				system_housekeeping();
+				bkl_unlock();
+			}
+		}
 		cpu_idle();
 	}
 }
@@ -229,6 +254,13 @@ void kernel_main(void)
 	mm_dump();
 	kmalloc_init();
 	paging_init();
+	/* paging_init only ORs in PSE; make sure the BSP's SSE state is on
+	 * before any drawing path can select an SSE2 helper. */
+	cpu_enable_sse();
+	/* ACPI needs paging for table access; a missing or unusable MADT simply
+	 * leaves the machine at one CPU. */
+	acpi_init();
+	acpi_dump();
 	io_init();
 	idle_init();
 
@@ -237,6 +269,9 @@ void kernel_main(void)
 	 * the current process, its CR3 and the TSS, so those must be valid. */
 	process_init();
 	timer_init();
+	/* The PIT (and its sti) is live, so the AP bring-up can use it as a
+	 * timeout clock.  APs idle until smp_enable_sched() after boot. */
+	smp_init();
 	mouse_init();
 	/* USB HID backend (mouse + keyboard): controller bring-up + first
 	 * scan; devices plugged in later are picked up by the hotplug
@@ -279,5 +314,8 @@ void kernel_main(void)
 		process_set_weight((unsigned int)kworker_pid, 1);
 		process_set_affinity((unsigned int)kworker_pid, 1);
 	}
+	/* Boot-time device/FS setup is complete; APs may now take user work.
+	 * Kernel threads stay pinned to the BSP and serialize on the BKL. */
+	smp_enable_sched();
 	kernel_idle_loop();
 }

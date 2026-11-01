@@ -9,14 +9,16 @@
  * interactive process is scheduled promptly without accumulating unbounded
  * credit.
  *
- * The run queue is a single global list for now.  That is also the shape an
- * SMP version wants: one queue protected by a lock, with per-CPU current.
+ * The run queue is a single global list protected by sched_lock; per-CPU
+ * current lets every CPU pick the next eligible task from it.
  */
 
 #include "sched.h"
 #include "io.h"
 #include "paging.h"
 #include "process.h"
+#include "smp.h"
+#include "spinlock.h"
 #include "syscall.h"
 #include "timer.h"
 #include "tss.h"
@@ -33,24 +35,47 @@ static struct process *runq_head, *runq_tail;
 static struct process *sleep_head, *sleep_tail;
 static unsigned int wakeups;
 
+/* Protects the global run/sleep/wait queues and the process-table state that
+ * the timer path touches.  This is a spinlock: it is held with interrupts
+ * off for short, non-blocking critical sections only. */
+static spinlock_t sched_lock;
+
+/* Sleeping big kernel lock.  One owner process at a time (recursive); the
+ * owner is never timer-preempted, and every voluntary block drops it so the
+ * other CPU can keep making progress.  See bkl_lock()/bkl_unlock(). */
+static struct {
+	struct process *owner;
+	unsigned int depth;
+	struct wait_queue wait;
+} bkl;
+
+unsigned int sched_lock_acquire(void)
+{
+	unsigned int flags = spin_irq_save_disable();
+
+	spin_lock(&sched_lock);
+	return flags;
+}
+
+void sched_lock_release(unsigned int flags)
+{
+	spin_unlock(&sched_lock);
+	spin_irq_restore(flags);
+}
+
+void sched_lock_reset(void)
+{
+	sched_lock.locked = 0;
+}
+
 /* switch.S reads these two facts directly: current at %gs:0 and esp at
  * offset 0 of the process.  Keep them true. */
 _Static_assert(__builtin_offsetof(struct cpu, current) == 0,
 	       "switch.S reads current from %gs:0");
 _Static_assert(__builtin_offsetof(struct process, esp) == 0,
 	       "switch.S saves the interrupted esp at offset 0");
-
-static inline unsigned int irq_save_disable(void)
-{
-	unsigned int flags;
-	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
-	return flags;
-}
-
-static inline void irq_restore(unsigned int flags)
-{
-	__asm__ volatile ("pushl %0; popfl" : : "r"(flags));
-}
+_Static_assert(__builtin_offsetof(struct cpu, need_resched) == 24,
+	       "switch.S sets need_resched at offset 24");
 
 static inline unsigned long long weight_stride(unsigned int weight)
 {
@@ -212,13 +237,15 @@ static void wake_locked(struct process *p)
 		p->vruntime = min_vruntime_locked();
 	runq_add_locked(p);
 	wakeups++;
-	if (cur && (cur == c->idle ||
-		    p->weight >= cur->weight))
+	if (cur && (p->affinity & (1u << c->id)) &&
+	    (cur == c->idle || p->weight >= cur->weight))
 		c->need_resched = 1;
 }
 
 void sched_add_ready(struct process *p)
 {
+	unsigned int flags = sched_lock_acquire();
+
 	if (!p->weight) {
 		p->weight = SCHED_WEIGHT_DEFAULT;
 		p->stride = weight_stride(p->weight);
@@ -226,15 +253,24 @@ void sched_add_ready(struct process *p)
 	}
 	p->state = PROC_READY;
 	runq_add_locked(p);
+	sched_lock_release(flags);
 }
 
-void sched_unlink(struct process *p)
+void sched_unlink_locked(struct process *p)
 {
 	runq_del_locked(p);
 	if (p->waiting_on)
 		waitq_del_locked(p);
 	if (p->state == PROC_SLEEPING)
 		sleepq_del_locked(p);
+}
+
+void sched_unlink(struct process *p)
+{
+	unsigned int flags = sched_lock_acquire();
+
+	sched_unlink_locked(p);
+	sched_lock_release(flags);
 }
 
 void sched_set_weight_locked(struct process *p, unsigned int weight)
@@ -271,9 +307,9 @@ void sched_block_on(struct wait_queue *wq)
 
 	if (this_cpu()->preempt_count)
 		return;
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	sched_block_on_locked(wq);
-	irq_restore(flags);
+	sched_lock_release(flags);
 	sched_yield();
 }
 
@@ -292,13 +328,13 @@ void sched_block_timeout(struct wait_queue *wq, unsigned int ms)
 	}
 	if (this_cpu()->preempt_count)
 		return;
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	p->wake_ms = get_ticks_ms() + ms;
 	p->state = PROC_SLEEPING;
 	runq_del_locked(p);
 	waitq_add_locked(wq, p);
 	sleepq_add_locked(p);
-	irq_restore(flags);
+	sched_lock_release(flags);
 	sched_yield();
 }
 
@@ -315,19 +351,162 @@ static void wake_one_locked(struct wait_queue *wq)
 
 void wait_wake_one(struct wait_queue *wq)
 {
-	unsigned int flags = irq_save_disable();
+	unsigned int flags = sched_lock_acquire();
 
 	wake_one_locked(wq);
-	irq_restore(flags);
+	sched_lock_release(flags);
 }
 
 void wait_wake_all(struct wait_queue *wq)
 {
-	unsigned int flags = irq_save_disable();
+	unsigned int flags = sched_lock_acquire();
 
 	while (wq->head)
 		wake_one_locked(wq);
-	irq_restore(flags);
+	sched_lock_release(flags);
+}
+
+/* ---- sleeping big kernel lock ---- */
+
+void bkl_init(void)
+{
+	bkl.owner = 0;
+	bkl.depth = 0;
+	wait_queue_init(&bkl.wait);
+}
+
+void bkl_lock(void)
+{
+	struct process *p = current_proc();
+	unsigned int flags;
+
+	if (!p)
+		return;
+	if (bkl.owner == p) {
+		bkl.depth++;
+		return;
+	}
+	for (;;) {
+		flags = sched_lock_acquire();
+		if (!bkl.owner) {
+			bkl.owner = p;
+			bkl.depth = 1;
+			sched_lock_release(flags);
+			return;
+		}
+		sched_block_on_locked(&bkl.wait);
+		sched_lock_release(flags);
+		sched_yield();
+	}
+}
+
+void bkl_unlock(void)
+{
+	struct process *p = current_proc();
+	unsigned int flags;
+
+	if (!p)
+		return;
+	flags = sched_lock_acquire();
+	if (bkl.owner == p) {
+		if (bkl.depth > 1) {
+			bkl.depth--;
+		} else {
+			bkl.owner = 0;
+			bkl.depth = 0;
+			wake_one_locked(&bkl.wait);
+		}
+	}
+	sched_lock_release(flags);
+}
+
+int bkl_trylock(void)
+{
+	struct process *p = current_proc();
+	unsigned int flags;
+
+	if (!p)
+		return 1;
+	if (bkl.owner == p) {
+		bkl.depth++;
+		return 1;
+	}
+	flags = sched_lock_acquire();
+	if (!bkl.owner) {
+		bkl.owner = p;
+		bkl.depth = 1;
+		sched_lock_release(flags);
+		return 1;
+	}
+	sched_lock_release(flags);
+	return 0;
+}
+
+/* Drop the BKL around a voluntary switch and take it back on resume.  The
+ * saved depth lives in the PCB: only the owner can be holding it, and it is
+ * the current process on this CPU. */
+static void bkl_yield_release(void)
+{
+	struct process *p = current_proc();
+	unsigned int flags;
+
+	if (!p)
+		return;
+	flags = sched_lock_acquire();
+	if (bkl.owner == p) {
+		p->bkl_saved = bkl.depth;
+		bkl.owner = 0;
+		bkl.depth = 0;
+		wake_one_locked(&bkl.wait);
+	}
+	/* Not the owner: leave bkl_saved alone.  A nested sleep inside a
+	 * bkl_pause() section must not forget that it still has to resume the
+	 * paused ownership. */
+	sched_lock_release(flags);
+}
+
+static void bkl_yield_reacquire(void)
+{
+	struct process *p = current_proc();
+	unsigned int depth;
+
+	if (!p)
+		return;
+	depth = p->bkl_saved;
+	if (!depth)
+		return;
+	p->bkl_saved = 0;
+	bkl_lock();
+	bkl.depth = depth;
+}
+
+void bkl_pause(void)
+{
+	bkl_yield_release();
+}
+
+void bkl_resume(void)
+{
+	bkl_yield_reacquire();
+}
+
+/* Run once on the new kernel stack: queue the process this CPU just left, so
+ * its stack/page directory cannot be freed while switch.S still uses them. */
+void sched_finish_switch(void)
+{
+	struct cpu *c = this_cpu();
+	struct process *p;
+	unsigned int flags;
+
+	if (!c->deferred_unlock)
+		return;
+	p = c->pending_zombie;
+	c->pending_zombie = 0;
+	flags = c->sched_flags;
+	c->deferred_unlock = 0;
+	sched_lock_release(flags);
+	if (p)
+		process_zombie_add(p);
 }
 
 void sched_init(void)
@@ -338,6 +517,8 @@ void sched_init(void)
 	runq_head = runq_tail = 0;
 	sleep_head = sleep_tail = 0;
 	wakeups = 0;
+	sched_lock.locked = 0;
+	bkl_init();
 
 	for (i = 0; i < MAX_CPUS; i++) {
 		cpus[i].current = 0;
@@ -348,6 +529,8 @@ void sched_init(void)
 		cpus[i].preempt_count = 0;
 		cpus[i].idle_ticks = 0;
 		cpus[i].switches = 0;
+		cpus[i].pending_zombie = 0;
+		cpus[i].deferred_unlock = 0;
 	}
 }
 
@@ -371,10 +554,16 @@ static void sched_switch_to(struct process *next)
 static struct process *pick_locked(void)
 {
 	struct process *p, *best = 0;
-	unsigned int mask = 1u << this_cpu()->id;
+	struct cpu *c = this_cpu();
+	unsigned int mask = 1u << c->id;
 
 	for (p = runq_head; p; p = p->run_next) {
 		if (!(p->affinity & mask))
+			continue;
+		/* A process still marked on another CPU is a wake-up race
+		 * victim: it is about to reach its own CPU's schedule().  Let
+		 * that CPU deal with it instead of running it twice. */
+		if (p->on_cpu != PROC_NO_CPU && p->on_cpu != c->id)
 			continue;
 		if (!best || p->vruntime < best->vruntime ||
 		    (p->vruntime == best->vruntime && p->pid < best->pid))
@@ -406,6 +595,7 @@ void schedule(void)
 	struct cpu *c = this_cpu();
 	struct process *cur = c->current;
 	struct process *next;
+	unsigned int flags = sched_lock_acquire();
 
 	if (cur && cur != c->idle) {
 		if (cur->state == PROC_RUNNING) {
@@ -416,9 +606,10 @@ void schedule(void)
 			/* Woken between setting BLOCKED/SLEEPING and entering
 			 * the gate: already on the run queue. */
 		} else if (cur->state == PROC_DEAD) {
-			/* Keep the PCB alive until the kworker can free it, but
-			 * unpublish it immediately. */
-			process_zombie_add(cur);
+			/* Defer the zombie until switch.S has loaded the new
+			 * stack: its kernel stack and page directory are still
+			 * live until then. */
+			c->pending_zombie = cur;
 		}
 	}
 
@@ -426,6 +617,7 @@ void schedule(void)
 	if (!next) {
 		next = c->idle;
 		if (!next) {
+			sched_lock_release(flags);
 			for (;;)
 				__asm__ volatile ("cli; hlt");
 		}
@@ -444,6 +636,11 @@ void schedule(void)
 	c->current = next;
 	c->need_resched = 0;
 	sched_switch_to(next);
+	/* Keep the lock across the stack switch performed by switch.S; the
+	 * old process must not become runnable on another CPU while this CPU
+	 * is still using its kernel stack. */
+	c->sched_flags = flags;
+	c->deferred_unlock = 1;
 }
 
 void sched_yield(void)
@@ -457,7 +654,12 @@ void sched_yield(void)
 		c->need_resched = 1;
 		return;
 	}
+	/* Release the BKL before switching away and take it back after being
+	 * resumed; a process that never resumes (exit) simply never reacquires
+	 * it.  Blocking helpers therefore need no explicit BKL handling. */
+	bkl_yield_release();
 	__asm__ volatile ("int $0x81" ::: "memory");
+	bkl_yield_reacquire();
 }
 
 void sched_sleep_ms(unsigned int ms)
@@ -473,29 +675,32 @@ void sched_sleep_ms(unsigned int ms)
 	}
 	if (this_cpu()->preempt_count)
 		return;   /* sleeping inside a non-preemptible section is invalid */
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	p->wake_ms = get_ticks_ms() + ms;
 	p->state = PROC_SLEEPING;
 	runq_del_locked(p);
 	sleepq_add_locked(p);
-	irq_restore(flags);
+	sched_lock_release(flags);
 	sched_yield();
 }
 
 /* Called from the PIT after ticks has been incremented.  Returns 1 when the
  * assembly should call schedule(). */
-int sched_tick_bsp(void)
+/* Common tail of the tick path: with the scheduler lock held, decide whether
+ * the assembly stub should call schedule(). */
+static int tick_decide_locked(struct cpu *c, struct process *p, int ap)
 {
-	struct cpu *c = this_cpu();
-	struct process *p = c->current;
-
 	if (p) {
 		p->cpu_ticks++;
 		if (p == c->idle)
 			c->idle_ticks++;
 	}
-
-	wake_sleepers_locked();
+	/* A process inside the kernel holding the big lock must not be
+	 * preempted: the lock is not preemptible, and its owner may be in the
+	 * middle of a kernel data structure update.  Voluntary block points
+	 * release it first. */
+	if (p && bkl.owner == p && p->state == PROC_RUNNING)
+		return 0;
 
 	if (c->preempt_count) {
 		if (p && p != c->idle && p->state == PROC_RUNNING &&
@@ -505,10 +710,14 @@ int sched_tick_bsp(void)
 		return 0;
 	}
 
+	/* APs only start taking work once the BSP has finished booting. */
+	if (ap && !smp_sched_enabled)
+		return 0;
+
 	if (!p)
 		return 0;
 	if (p == c->idle) {
-		if (runq_head) {
+		if (pick_locked()) {
 			c->need_resched = 1;
 			return 1;
 		}
@@ -521,6 +730,36 @@ int sched_tick_bsp(void)
 	if ((unsigned int)(get_ticks_ms() - p->slice_start) >= SCHED_SLICE_TICKS)
 		c->need_resched = 1;
 	return c->need_resched ? 1 : 0;
+}
+
+/* BSP PIT: also wakes the global sleep list (the PIT is the system clock). */
+int sched_tick_bsp(void)
+{
+	struct cpu *c = this_cpu();
+	struct process *p;
+	unsigned int flags = sched_lock_acquire();
+	int r;
+
+	p = c->current;
+	wake_sleepers_locked();
+	r = tick_decide_locked(c, p, 0);
+	sched_lock_release(flags);
+	return r;
+}
+
+/* AP local timer: no global tick counter and no sleeper wake-up (the BSP PIT
+ * owns both); only this CPU's scheduling decision. */
+int sched_tick_ap(void)
+{
+	struct cpu *c = this_cpu();
+	struct process *p;
+	unsigned int flags = sched_lock_acquire();
+	int r;
+
+	p = c->current;
+	r = tick_decide_locked(c, p, 1);
+	sched_lock_release(flags);
+	return r;
 }
 
 void preempt_disable(void)
@@ -543,7 +782,7 @@ int sched_snapshot(struct sys_schedinfo *out)
 
 	if (!out)
 		return -1;
-	flags = irq_save_disable();
+	flags = sched_lock_acquire();
 	out->ncpus = cpu_count;
 	out->runnable = 0;
 	for (p = runq_head; p; p = p->run_next)
@@ -557,12 +796,16 @@ int sched_snapshot(struct sys_schedinfo *out)
 		if (p && p->state == PROC_BLOCKED)
 			out->blocked++;
 	}
-	out->zombies = process_zombie_count();
-	out->switches = cpus[0].switches;
+	out->zombies = process_zombie_count_locked();
+	out->switches = 0;
+	out->idle_ticks = 0;
+	for (i = 0; i < cpu_count && i < MAX_CPUS; i++) {
+		out->switches += cpus[i].switches;
+		out->idle_ticks += cpus[i].idle_ticks;
+	}
 	out->wakeups = wakeups;
-	out->idle_ticks = cpus[0].idle_ticks;
 	out->slice_ticks = SCHED_SLICE_TICKS;
-	irq_restore(flags);
+	sched_lock_release(flags);
 	return 0;
 }
 
@@ -586,22 +829,26 @@ static void sched_put_dec(unsigned int n)
 void sched_print(void)
 {
 	struct sys_schedinfo s;
-	unsigned int uptime, idle_pm, up_s, idle_s, idle_frac;
+	unsigned int uptime, idle_pm, up_s, total_s, idle_s, idle_frac, ncpu;
 
 	if (sched_snapshot(&s) != 0)
 		return;
 	uptime = get_ticks_ms();
+	ncpu = s.ncpus ? s.ncpus : 1;
 
-	/* Avoid 64-bit division: scale to seconds first.  ticks wraps at ~49
-	 * days, so idle_s * 1000 stays within 32 bits for the useful range. */
+	/* Idle is a share of the total CPU capacity, so 4 idle CPUs at 50%
+	 * each report 50%, not 200%.  Avoid 64-bit division: scale to seconds
+	 * first (four CPUs overflow after ~12 days; good enough for the
+	 * display). */
 	up_s = uptime / 1000u;
-	if (up_s == 0) {
-		idle_pm = (s.idle_ticks >= uptime) ? 1000 : 0;
+	total_s = up_s * ncpu;
+	if (total_s == 0) {
+		idle_pm = (s.idle_ticks >= uptime * ncpu) ? 1000 : 0;
 	} else {
 		idle_s = s.idle_ticks / 1000u;
 		idle_frac = s.idle_ticks % 1000u;
-		idle_pm = (idle_s * 1000u) / up_s;
-		idle_pm += (idle_frac * 1000u / up_s) / 1000u;
+		idle_pm = (idle_s * 1000u) / total_s;
+		idle_pm += (idle_frac * 1000u / total_s) / 1000u;
 		if (idle_pm > 1000u)
 			idle_pm = 1000u;
 	}

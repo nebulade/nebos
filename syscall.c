@@ -30,7 +30,7 @@ static int copy_user_string(char *dst, unsigned int max, const char *src)
 	return 0;
 }
 
-int syscall_dispatch(int num, int a1, int a2, int a3)
+static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 {
 	switch (num) {
 	case SYS_PUTSTR:
@@ -337,4 +337,24 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 	default:
 		return -1;
 	}
+}
+
+/* All ring-3 syscalls run under the big kernel lock.  Blocking syscalls drop
+ * it through sched_yield(); the lock is taken back before the dispatcher
+ * resumes, so the rest of the kernel sees one syscall at a time. */
+int syscall_dispatch(int num, int a1, int a2, int a3)
+{
+	struct process *p = current_proc();
+	int r;
+
+	/* A process killed while it was in ring 3 may reach the gate before its
+	 * CPU notices the DEAD state.  Do not let it run one more syscall on
+	 * resources that may already be reused. */
+	if (p && p->state == PROC_DEAD)
+		process_exit();
+
+	bkl_lock();
+	r = syscall_dispatch_locked(num, a1, a2, a3);
+	bkl_unlock();
+	return r;
 }
