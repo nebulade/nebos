@@ -20,6 +20,8 @@
 
 /* Text-node flag: whitespace was preserved (<pre>). */
 #define BR_NODE_PREFORMAT 1
+/* Element flag: the HTML hidden attribute is present. */
+#define BR_NODE_HIDDEN   2
 
 /* Display values in struct br_style. */
 #define BR_DISPLAY_INLINE 0
@@ -91,14 +93,14 @@ struct br_node {
 	unsigned short next;
 	unsigned short text_off;    /* text arena offset (text nodes) */
 	unsigned short text_len;
-	unsigned short href_off;
-	unsigned short class_off;
-	unsigned short id_off;
-	unsigned short style_off;
-	unsigned short src_off;
-	unsigned short alt_off;
-	unsigned short color_off;
-	unsigned short rel_off;
+	unsigned int href_off;
+	unsigned int class_off;
+	unsigned int id_off;
+	unsigned int style_off;
+	unsigned int src_off;
+	unsigned int alt_off;
+	unsigned int color_off;
+	unsigned int rel_off;
 	unsigned short width_attr;
 	unsigned short height_attr;
 	unsigned char width_pct;
@@ -115,7 +117,7 @@ struct br_decl {
 };
 
 struct br_rule {
-	unsigned short sel_off;     /* selector text in the attr arena */
+	unsigned int sel_off;       /* selector text in the attr arena */
 	unsigned char nd;
 	struct br_decl d[BR_DECLS];
 };

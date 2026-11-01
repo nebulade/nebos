@@ -367,8 +367,8 @@ static unsigned int decode_text(const char *s, unsigned int len, char *out,
 
 /* Store an attribute string (entity-decoded) in the attr arena.  0 = no
  * space / empty. */
-static unsigned short store_attr(struct br_doc *d, const char *s,
-				 unsigned int len, unsigned int limit)
+static unsigned int store_attr(struct br_doc *d, const char *s,
+			       unsigned int len, unsigned int limit)
 {
 	unsigned int n;
 
@@ -381,13 +381,13 @@ static unsigned short store_attr(struct br_doc *d, const char *s,
 	if (n == 0)
 		return 0;
 	{
-		unsigned short off = (unsigned short)d->attrs_used;
+		unsigned int off = d->attrs_used;
 		d->attrs_used += n + 1;
 		return off;
 	}
 }
 
-static const char *attr_ptr(struct br_doc *d, unsigned short off)
+static const char *attr_ptr(struct br_doc *d, unsigned int off)
 {
 	return off ? d->attrs + off : "";
 }
@@ -564,7 +564,8 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 		while (i < len && is_space(s[i]))
 			i++;
 		if (i >= len || s[i] != '=') {
-			/* boolean attribute; nothing we use needs it */
+			if (str_eq(name, "hidden"))
+				n->flags |= BR_NODE_HIDDEN;
 			continue;
 		}
 		i++;
@@ -586,6 +587,10 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 		}
 		if (!nl)
 			continue;
+		if (str_eq(name, "hidden")) {
+			n->flags |= BR_NODE_HIDDEN;
+			continue;
+		}
 		if (str_eq(name, "href"))
 			n->href_off = store_attr(d, s + vstart, vlen, 220);
 		else if (str_eq(name, "class"))
@@ -1634,7 +1639,7 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 				off = store_attr(d, sel, k, 79);
 				if (off) {
 					struct br_rule *r = &d->rules[d->nrules++];
-					r->sel_off = (unsigned short)off;
+					r->sel_off = off;
 					r->nd = (unsigned char)nd;
 					for (k = 0; k < nd; k++)
 						r->d[k] = decls[k];
@@ -2060,6 +2065,9 @@ void br_style_for(struct br_doc *d, unsigned int node,
 		for (k = 0; k < nd; k++)
 			cascade_decl(out, &decls[k], 1000, best, best_imp);
 	}
+
+	if (d->nodes[node].flags & BR_NODE_HIDDEN)
+		out->display = BR_DISPLAY_NONE;
 
 	d->nodes[node].style = *out;
 	d->nodes[node].style_valid = 1;
