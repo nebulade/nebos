@@ -62,18 +62,19 @@ int tty_valid(int id)
 
 int tty_create(void)
 {
+	struct process *p = current_proc();
 	unsigned int i;
 
-	if (!tty_init())
+	if (!p || !tty_init())
 		return -1;
 	for (i = 0; i < TTY_MAX; i++) {
 		struct tty *t = tty_slot(i);
 
 		if (!t->used) {
 			t->used = 1;
-			t->owner = procs[current_pid].pid;
+			t->owner = p->pid;
 			t->head = t->tail = 0;
-			procs[current_pid].tty = (int)(i + 1);
+			p->tty = (int)(i + 1);
 			return (int)(i + 1);
 		}
 	}

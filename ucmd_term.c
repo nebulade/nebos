@@ -423,15 +423,23 @@ static void run_line(void)
 		struct sys_procinfo pi;
 		unsigned int i = 0;
 
-		term_puts("PID  STATE  NAME\n");
+		term_puts("PID  STATE  W CPU NAME\n");
 		while (u_syscall2(SYS_PROCINFO, (int)i, (int)&pi) == 1) {
 			print_num(pi.pid);
 			term_puts("  ");
 			if (pi.state == 1) term_puts("ready");
 			else if (pi.state == 2) term_puts("run  ");
 			else if (pi.state == 4) term_puts("sleep");
+			else if (pi.state == 5) term_puts("block");
 			else term_puts("?    ");
 			term_puts("  ");
+			print_num(pi.weight);
+			term_puts("   ");
+			if (pi.cpu != 0xFFFFFFFFu)
+				print_num(pi.cpu);
+			else
+				term_putc('-');
+			term_puts("   ");
 			term_puts(pi.name);
 			term_putc('\n');
 			i++;
@@ -630,7 +638,9 @@ void _start(const char *arg)
 					handle_key(k);
 			}
 		} else {
-			int k = u_key_poll();
+			int k = u_win_key_wait(100);
+			if (k < 0)
+				u_exit(1);
 			while (k) {
 				handle_key(k);
 				got = 1;

@@ -4,12 +4,8 @@
 
 #include "syscall.h"
 
-/* Set while a FAT operation is in progress: the scheduler must not switch
- * away from the running process (see sys_fs.c). */
-extern volatile int sys_fs_busy;
-
-/* Enter/leave the fs-busy section (used by other disk-touching services,
- * e.g. the storage info refresh). */
+/* Enter/leave the fs non-preemptible section (used by other disk-touching
+ * services, e.g. the storage info refresh).  See sys_fs.c. */
 void sys_fs_enter(void);
 void sys_fs_exit(void);
 

@@ -89,9 +89,9 @@ int sys_gfx_begin(struct sys_gfx_info *info)
 
 	if (!info)
 		return -1;
-	if (by_pid(procs[current_pid].pid))
+	if (by_pid(current_proc()->pid))
 		return -1;                       /* one session per process */
-	t = wm_term_for_screen(procs[current_pid].screen);
+	t = wm_term_for_screen(current_proc()->screen);
 	if (!t)
 		return -1;                       /* no window (not spawned by a terminal) */
 	if (by_screen(&t->screen))
@@ -120,12 +120,12 @@ int sys_gfx_begin(struct sys_gfx_info *info)
 		s->back[i] = 0;
 
 	for (i = 0; i < pages; i++) {
-		if (!paging_map_page(procs[current_pid].cr3,
+		if (!paging_map_page(current_proc()->cr3,
 				     GFX_USER_BASE + i * PAGE_SIZE,
 				     (unsigned int)s->back + i * PAGE_SIZE,
 				     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
 			while (i--)
-				paging_unmap_page(procs[current_pid].cr3,
+				paging_unmap_page(current_proc()->cr3,
 						  GFX_USER_BASE + i * PAGE_SIZE);
 			free_back(s);
 			gfx_free(&s->c);
@@ -136,8 +136,8 @@ int sys_gfx_begin(struct sys_gfx_info *info)
 
 	s->used = 1;
 	s->dead = 0;
-	s->pid = procs[current_pid].pid;
-	s->cr3 = procs[current_pid].cr3;
+	s->pid = current_proc()->pid;
+	s->cr3 = current_proc()->cr3;
 	s->term = t;
 	s->key_head = s->key_tail = 0;
 
@@ -151,7 +151,7 @@ int sys_gfx_begin(struct sys_gfx_info *info)
 
 int sys_gfx_present(void)
 {
-	struct gfx_session *s = by_pid(procs[current_pid].pid);
+	struct gfx_session *s = by_pid(current_proc()->pid);
 	const unsigned short *src;   /* the caller's own view of its canvas */
 	unsigned int n, i;
 
@@ -177,7 +177,7 @@ int sys_gfx_present(void)
 
 int sys_gfx_end(void)
 {
-	struct gfx_session *s = by_pid(procs[current_pid].pid);
+	struct gfx_session *s = by_pid(current_proc()->pid);
 
 	if (!s)
 		return -1;
@@ -191,7 +191,7 @@ int sys_gfx_end(void)
 
 int sys_gfx_key_poll(void)
 {
-	struct gfx_session *s = by_pid(procs[current_pid].pid);
+	struct gfx_session *s = by_pid(current_proc()->pid);
 	int k;
 
 	if (!s)

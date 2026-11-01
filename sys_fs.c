@@ -5,8 +5,8 @@
  *   - the FAT driver keeps state in static buffers, so no other process may
  *     run its code concurrently;
  *   - the floppy driver waits for IRQ6, so interrupts must stay enabled.
- * So instead of a lock we set `sys_fs_busy` for the duration: the scheduler
- * (process.c) will not switch away from the running process while it is set.
+ * So instead of a lock we disable preemption for the duration: the scheduler
+ * will not switch away from the running process while the count is set.
  * That keeps each operation atomic (and immune to Ctrl+C killing the process
  * mid-write) at the cost of a brief stall during disk I/O.  Buffers point
  * into the caller's address space, which is also the active one during the
@@ -16,18 +16,16 @@
 #include "process.h"
 #include "vfs.h"
 
-volatile int sys_fs_busy;
-
 void sys_fs_enter(void)
 {
-	sys_fs_busy = 1;
+	preempt_disable();
 	__asm__ volatile ("sti");   /* the disk may need its IRQ */
 }
 
 void sys_fs_exit(void)
 {
 	__asm__ volatile ("cli");
-	sys_fs_busy = 0;
+	preempt_enable();
 }
 
 static int sys_err(int vfs_err)
@@ -53,7 +51,7 @@ static int fs_resolve(const char *path, struct vfs_mount **m,
 	/* Relative paths resolve against the calling process's cwd (inherited
 	 * from the terminal that spawned it); "" means the cwd itself. */
 	if (path[0] != '/') {
-		if (vfs_join_path(procs[current_pid].cwd, path, abs, sizeof(abs)) != 0)
+		if (vfs_join_path(current_proc()->cwd, path, abs, sizeof(abs)) != 0)
 			return SYS_EINVAL;
 		path = abs;
 	}

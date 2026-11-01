@@ -40,7 +40,7 @@ static void net_exit(void)
 
 static unsigned int caller_pid(void)
 {
-	return procs[current_pid].pid;
+	return current_proc()->pid;
 }
 
 /* Called from the scheduler's reap loop for every dead process. */

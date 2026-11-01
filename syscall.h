@@ -112,6 +112,8 @@
 #define SYS_ALIVE          77  /* (pid) -> 1/0 */
 #define SYS_KILL           78  /* (pid) -> 0/-1 */
 #define SYS_CHDIR          79  /* (path) -> 0/-1 */
+#define SYS_WIN_KEY_WAIT   80  /* (timeout_ms) -> key / 0 timeout / -1 */
+#define SYS_SCHEDINFO      81  /* (struct sys_schedinfo *out) -> 0/-1 */
 
 struct sys_spawn {
 	const char *path;
@@ -168,11 +170,26 @@ struct sys_meminfo {
  * are PIT ticks (1 kHz), so lifecycle percentages can be derived. */
 struct sys_procinfo {
 	unsigned int pid;
-	unsigned int state;       /* PROC_*: 1 ready, 2 running, 4 sleeping */
+	unsigned int state;       /* PROC_*: 1 ready, 2 running, 4 sleep, 5 block */
 	unsigned int cpu_ticks;   /* ticks spent as the running process */
 	unsigned int life_ticks;  /* ticks since creation, >= 1 */
 	unsigned int pages;       /* resident 4 KB pages (stack + dir + user) */
+	unsigned int weight;      /* CFS weight, 1..SCHED_WEIGHT_MAX */
+	unsigned int cpu;         /* CPU id, or 0xFFFFFFFF when not running */
 	char name[12];
+};
+
+/* Scheduler counters for `top` and the `sched` command. */
+struct sys_schedinfo {
+	unsigned int ncpus;
+	unsigned int runnable;
+	unsigned int sleeping;
+	unsigned int blocked;
+	unsigned int zombies;
+	unsigned int switches;
+	unsigned int wakeups;
+	unsigned int idle_ticks;
+	unsigned int slice_ticks;
 };
 
 /* Window canvas handed to a ring-3 graphics command (see sys_gfx.c). */

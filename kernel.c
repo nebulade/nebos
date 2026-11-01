@@ -49,6 +49,7 @@ extern void pit_irq_stub(void);
 extern void kbd_irq_stub(void);
 extern void fdc_irq_stub(void);
 extern void default_irq_stub(void);
+extern void resched_stub(void);
 extern void syscall_stub(void);
 extern unsigned int exc_stub_table[];
 
@@ -148,6 +149,8 @@ static void timer_init(void)
 
 	/* Syscall gate (ring-3 can int 0x80). */
 	set_idt_gate_user(0x80, (unsigned int)syscall_stub);
+	/* Kernel-only voluntary reschedule gate (int 0x81). */
+	set_idt_gate(0x81, (unsigned int)resched_stub);
 
 	idtr.limit = (unsigned short)(sizeof(idt) - 1);
 	idtr.base  = (unsigned int)idt;
@@ -162,23 +165,43 @@ static void timer_init(void)
 
 extern unsigned char __bss_start[], __bss_end[];
 
-/* The idle process: keeps the parts of the system that must not depend on
- * the window manager running.  Input routing, cursor blink, kexec recovery,
- * netlog flushing and gfx-session cleanup live here; the WM process only
- * handles window state and drawing. */
+static int kworker_pid = -1;
+
+/* Parts of the system that must keep running independently of the WM:
+ * input routing, cursor blink, kexec recovery, netlog flushing, gfx-session
+ * cleanup and the shadow-buffer flush. */
+static void system_housekeeping(void)
+{
+	process_reap_dead();
+	mouse_poll_update();
+	wm_pump_keyboard();
+	wm_blink_cursor();
+	netlog_flush();
+	wm_handle_kexec();
+	wm_server_supervise();
+	if (wm_server_can_reap())
+		sys_gfx_collect();
+	if (!wm_server_frame_active())
+		vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
+}
+
+static void kworker_main(void)
+{
+	for (;;) {
+		system_housekeeping();
+		process_sleep_ms(5);
+	}
+}
+
+/* Idle is not a normal runnable task: schedule() selects it only when no
+ * READY process exists.  The kworker does the housekeeping; if it dies (or
+ * could not be created), idle takes over as a degraded fallback. */
 static void kernel_idle_loop(void)
 {
 	for (;;) {
-		mouse_poll_update();
-		wm_pump_keyboard();
-		wm_blink_cursor();
-		netlog_flush();
-		wm_handle_kexec();
-		wm_server_supervise();
-		if (wm_server_can_reap())
-			sys_gfx_collect();
-		if (!wm_server_frame_active())
-			vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
+		if (kworker_pid <= 0 ||
+		    !process_is_alive((unsigned int)kworker_pid))
+			system_housekeeping();
 		cpu_idle();
 	}
 }
@@ -196,6 +219,12 @@ void kernel_main(void)
 	 * early boot output until the WM loop starts flushing it. */
 	netlog_init();
 	serial_puts(SERIAL_COM1, "\n" OS_NAME " v" OS_VERSION " booted\n");
+
+	/* GDT/TSS and the per-CPU GS base must exist before anything that can
+	 * use current_proc()/this_cpu().  The BSS is already cleared and the
+	 * GDT/TSS live at identity-mapped addresses. */
+	gdt_tss_init(0);
+
 	mm_init();
 	mm_dump();
 	kmalloc_init();
@@ -203,12 +232,10 @@ void kernel_main(void)
 	io_init();
 	idle_init();
 
-	/* process_init + gdt_tss_init must run BEFORE timer_init: once the PIT is
-	 * started (sti in timer_init) the context-switch stub runs on every tick
-	 * and reads procs[].cr3 / procs[].kstack_top / the TSS, so those have to be
-	 * valid first (otherwise the first switch loads a garbage CR3 and faults). */
+	/* process_init must run before timer_init: once the PIT is started (sti
+	 * in timer_init) the context-switch stub runs on every tick and reads
+	 * the current process, its CR3 and the TSS, so those must be valid. */
 	process_init();
-	gdt_tss_init();
 	timer_init();
 	mouse_init();
 	/* USB HID backend (mouse + keyboard): controller bring-up + first
@@ -239,9 +266,18 @@ void kernel_main(void)
 	/* With a NIC present, try DHCP; on failure the static default stays. */
 	if (netdev_active())
 		dhcp_run(3000);
-	/* Slot 0 is the idle loop; the window server is initialized before the
-	 * ring-3 WM is spawned from /ramfs/bin/wm. */
+	/* The idle process is the kernel_main context; the ring-3 WM is spawned
+	 * from /ramfs/bin/wm.  Housekeeping runs in its own process so it cannot
+	 * be starved by a busy system. */
 	wm_server_init();
 	wm_server_start();
+	kworker_pid = process_create("kworker", kworker_main);
+	if (kworker_pid < 0) {
+		serial_puts(SERIAL_COM1, "kworker: cannot create, using idle fallback\n");
+		kworker_pid = -1;
+	} else {
+		process_set_weight((unsigned int)kworker_pid, 1);
+		process_set_affinity((unsigned int)kworker_pid, 1);
+	}
 	kernel_idle_loop();
 }

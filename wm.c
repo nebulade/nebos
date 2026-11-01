@@ -148,7 +148,7 @@ int wm_content_size(struct term *t, unsigned int *w, unsigned int *h)
 
 int wm_server_is_wm(void)
 {
-	return wm_attached && procs[current_pid].pid == wm_pid;
+	return wm_attached && current_proc()->pid == wm_pid;
 }
 
 int wm_server_frame_active(void)
@@ -259,8 +259,8 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 
 	if (!in || !out)
 		return -1;
-	if (procs[current_pid].pid == 0 ||
-	    wm_window_for_pid(procs[current_pid].pid) >= 0)
+	if (current_proc()->pid == 0 ||
+	    wm_window_for_pid(current_proc()->pid) >= 0)
 		return -1;
 	cw = in->w;
 	ch = in->h;
@@ -287,7 +287,7 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 		back[j] = 0;
 
 	flags = irq_save_disable();
-	base = procs[current_pid].cr3;
+	base = current_proc()->cr3;
 	for (j = 0; j < pages; j++) {
 		if (!paging_map_page(base, USER_GFX_BASE + j * PAGE_SIZE,
 				     (unsigned int)back + j * PAGE_SIZE,
@@ -307,7 +307,7 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	w->used = 1;
 	w->canvas_window = 1;
 	w->term = 0;
-	w->pid = procs[current_pid].pid;
+	w->pid = current_proc()->pid;
 	w->owner_cr3 = base;
 	w->back = back;
 	w->back_pages = pages;
@@ -328,6 +328,7 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	w->mapped_pages = 0;
 	w->mapped_src = 0;
 	w->key_head = w->key_tail = 0;
+	wait_queue_init(&w->key_wq);
 	for (j = 0; j < sizeof(w->title) - 1 && in->title[j]; j++)
 		w->title[j] = in->title[j];
 	w->title[j] = '\0';
@@ -346,7 +347,7 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 
 int wm_server_win_present(void)
 {
-	int idx = wm_window_for_pid(procs[current_pid].pid);
+	int idx = wm_window_for_pid(current_proc()->pid);
 	struct window *w;
 	const unsigned short *src;
 	unsigned int n, i;
@@ -368,7 +369,7 @@ int wm_server_win_present(void)
 
 int wm_server_win_close(void)
 {
-	int idx = wm_window_for_pid(procs[current_pid].pid);
+	int idx = wm_window_for_pid(current_proc()->pid);
 
 	if (idx < 0 || !wm_server_can_reap())
 		return -1;
@@ -385,7 +386,7 @@ int wm_server_win_close(void)
 
 int wm_server_key_poll(void)
 {
-	int idx = wm_window_for_pid(procs[current_pid].pid);
+	int idx = wm_window_for_pid(current_proc()->pid);
 	struct window *w;
 	int k;
 
@@ -397,6 +398,29 @@ int wm_server_key_poll(void)
 	k = w->keys[w->key_tail];
 	w->key_tail = (w->key_tail + 1) % 16;
 	return k;
+}
+
+/* Block until a key arrives for the caller's window, or `timeout_ms` passes
+ * (0 = wait forever).  Returns the key, 0 on timeout/no key, -1 if the caller
+ * has no window. */
+int wm_server_key_wait(unsigned int timeout_ms)
+{
+	int idx = wm_window_for_pid(current_proc()->pid);
+	struct window *w;
+	int k;
+
+	if (idx < 0)
+		return -1;
+	w = &windows[idx];
+
+	k = wm_server_key_poll();
+	if (k)
+		return k;
+	if (timeout_ms)
+		sched_block_timeout(&w->key_wq, timeout_ms);
+	else
+		sched_block_on(&w->key_wq);
+	return wm_server_key_poll();
 }
 
 void wm_content_changed(struct text_screen *screen)
@@ -416,11 +440,11 @@ int wm_server_attach(struct wm_screen_info *out)
 	unsigned int pages, i, bytes;
 
 	if (!out || !wm_expected_pid ||
-	    procs[current_pid].pid != wm_expected_pid || wm_attached) {
+	    current_proc()->pid != wm_expected_pid || wm_attached) {
 		serial_puts(SERIAL_COM1, "wm: attach rejected (expected ");
 		serial_puthex(SERIAL_COM1, wm_expected_pid);
 		serial_puts(SERIAL_COM1, " current ");
-		serial_puthex(SERIAL_COM1, procs[current_pid].pid);
+		serial_puthex(SERIAL_COM1, current_proc()->pid);
 		serial_puts(SERIAL_COM1, ")\n");
 		return -1;
 	}
@@ -434,7 +458,7 @@ int wm_server_attach(struct wm_screen_info *out)
 
 	bytes = s->pitch * s->h;
 	pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
-	wm_cr3 = procs[current_pid].cr3;
+	wm_cr3 = current_proc()->cr3;
 	for (i = 0; i < pages; i++) {
 		unsigned int va = WM_SHADOW_VA + i * PAGE_SIZE;
 
@@ -456,7 +480,7 @@ int wm_server_attach(struct wm_screen_info *out)
 		windows[i].mapped_src = 0;
 	}
 
-	wm_pid = procs[current_pid].pid;
+	wm_pid = current_proc()->pid;
 	wm_attached = 1;
 	wm_frame_active = 0;
 	wm_last_seen = get_ticks_ms();
@@ -803,6 +827,7 @@ void wm_server_start(void)
 		irq_restore(flags);
 		vfs_release_file(m, &f);
 		if (pid > 0) {
+			process_set_weight((unsigned int)pid, 16);
 			serial_puts(SERIAL_COM1, "wm: ring-3 WM started\n");
 			return;
 		}
@@ -817,8 +842,10 @@ void wm_server_start(void)
 	if (pid > 0)
 		wm_expected_pid = (unsigned int)pid;
 	irq_restore(flags);
-	if (pid > 0)
+	if (pid > 0) {
+		process_set_weight((unsigned int)pid, 16);
 		serial_puts(SERIAL_COM1, "wm: kernel WM fallback\n");
+	}
 }
 
 void wm_server_supervise(void)
@@ -931,6 +958,7 @@ int wm_spawn_terminal(void)
 			irq_restore(flags);
 			vfs_release_file(m, &f);
 			if (pid > 0) {
+				process_set_weight((unsigned int)pid, 12);
 				wm_request_redraw();
 				return 0;
 			}
@@ -950,6 +978,7 @@ int wm_spawn_terminal(void)
 	screen_init(&t->screen);
 	t->screen.cursor_visible = 1;
 	t->key_head = t->key_tail = 0;
+	wait_queue_init(&t->key_wq);
 	t->history_count = 0;
 	t->history_next = 0;
 	t->cwd[0] = '/';
@@ -965,6 +994,7 @@ int wm_spawn_terminal(void)
 	w->back_pages = 0;
 	w->owner_cr3 = 0;
 	w->key_head = w->key_tail = 0;
+	wait_queue_init(&w->key_wq);
 	w->pid = 0;
 	w->focused = 0;
 	w->pw = SCREEN_COLS * 8 + 2;
@@ -992,6 +1022,7 @@ int wm_spawn_terminal(void)
 		w->used = 0;
 		return -1;
 	}
+	process_set_weight((unsigned int)pid, 12);
 	w->pid = (unsigned int)pid;
 
 	for (j = 0; j < MAX_WINDOWS; j++)
@@ -1027,6 +1058,11 @@ static void wm_close_window(unsigned int idx)
 {
 	struct window *w = &windows[idx];
 
+	/* A terminal/key reader blocked on this window must not sleep through
+	 * the close; process_kill() also removes it from the queue. */
+	wait_wake_all(&w->key_wq);
+	if (w->term)
+		wait_wake_all(&w->term->key_wq);
 	if (w->term) {
 		sys_gfx_kill_for_screen(&w->term->screen); /* stop a demo */
 		if (w->pid)
@@ -1252,8 +1288,10 @@ void wm_pump_keyboard(void)
 			 * Ctrl+C always reaches the terminal so its foreground
 			 * kill keeps working. */
 			if (k == IO_KEY_CTRL_C ||
-			    !sys_gfx_push_key(&fw->term->screen, k))
+			    !sys_gfx_push_key(&fw->term->screen, k)) {
 				term_key_push(fw->term, k);
+				term_key_wake(fw->term);
+			}
 		} else if (fw->canvas_window) {
 			unsigned int next = (fw->key_head + 1) % 16;
 
@@ -1261,6 +1299,7 @@ void wm_pump_keyboard(void)
 				fw->keys[fw->key_head] = k;
 				fw->key_head = next;
 			}
+			wait_wake_one(&fw->key_wq);
 		}
 	}
 }

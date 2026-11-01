@@ -24,6 +24,7 @@ struct window {
 	unsigned int owner_cr3;
 	int keys[16];
 	unsigned int key_head, key_tail;
+	struct wait_queue key_wq;
 	/* Ring-3 WM content mapping/bookkeeping. */
 	unsigned int content_gen; /* bumped when the content kind/session changes */
 	unsigned int mapped_kind;
@@ -63,6 +64,7 @@ int  wm_server_win_create(const struct win_create *in, struct win_info *out);
 int  wm_server_win_present(void);
 int  wm_server_win_close(void);
 int  wm_server_key_poll(void);
+int  wm_server_key_wait(unsigned int timeout_ms);
 void wm_content_changed(struct text_screen *screen);
 void wm_server_unmap_screen(struct text_screen *screen);
 void wm_server_unmap_canvas(struct text_screen *screen, const void *canvas);

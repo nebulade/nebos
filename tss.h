@@ -1,4 +1,9 @@
-/* TSS + flat GDT (kernel/user segments + TSS descriptor). */
+/* TSS + per-CPU flat GDT.
+ *
+ * Layout: 0x00 null, 0x08 kernel code, 0x10 kernel data, 0x18 user code,
+ * 0x20 user data, 0x28 per-CPU data (GS base), 0x30 + 8*cpu TSS.
+ * Every CPU gets its own GDT because the GS descriptor base differs.
+ */
 #ifndef TSS_H
 #define TSS_H
 
@@ -14,10 +19,9 @@ struct tss {
 	unsigned short trap, iomap_base;
 } __attribute__((packed));
 
-extern struct tss tss;
-
-/* Build the 6-entry GDT (null / kernel code / kernel data / user code / user
- * data / TSS), load it, and load the TSS.  Call once from kernel_main. */
-void gdt_tss_init(void);
+/* Build/load the GDT and TSS for one CPU and point GS at cpus[cpu].
+ * CPU 0 is initialized from kernel_main before paging; AP bring-up will
+ * call the same function with its own index later. */
+void gdt_tss_init(unsigned int cpu);
 
 #endif

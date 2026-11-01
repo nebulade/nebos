@@ -2,6 +2,7 @@
 #ifndef TERMINAL_H
 #define TERMINAL_H
 
+#include "sched.h"
 #include "screen.h"
 #include "vfs.h"
 
@@ -23,10 +24,11 @@ struct term {
 	int fg_pid;                 /* foreground child pid, or -1 when none */
 	char cwd[VFS_PATH_MAX];     /* absolute current working directory */
 	char path[VFS_PATH_MAX];    /* command search path (colon separated) */
-	/* Per-terminal key queue: WM (slot 0) pushes, terminal process pops. */
+	/* Per-terminal key queue: the kworker pushes, the terminal pops. */
 	int keys[KEY_BUF_SIZE];
 	unsigned int key_head;
 	unsigned int key_tail;
+	struct wait_queue key_wq;
 };
 
 /* Entry point for a terminal process (arg = struct term *). */
@@ -55,6 +57,11 @@ static inline int term_key_pop(struct term *t)
 	k = t->keys[t->key_tail];
 	t->key_tail = (t->key_tail + 1) % KEY_BUF_SIZE;
 	return k;
+}
+
+static inline void term_key_wake(struct term *t)
+{
+	wait_wake_one(&t->key_wq);
 }
 
 #endif

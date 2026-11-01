@@ -153,7 +153,10 @@ void paging_init(void)
 
 unsigned int paging_current_cr3(void)
 {
-	return (unsigned int)page_dir;
+	unsigned int cr3;
+
+	__asm__ volatile ("movl %%cr3, %0" : "=r"(cr3));
+	return cr3 & 0xFFFFF000u;
 }
 
 unsigned int paging_new_directory(void)

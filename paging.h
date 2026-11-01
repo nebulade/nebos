@@ -13,7 +13,8 @@ int paging_lfb_wc(void);
  * is whatever the MTRRs say (write-combining when we added an entry). */
 void paging_map_ram(unsigned int base, unsigned int size);
 
-/* Physical address of the bootstrap (current) page directory. */
+/* Physical address of the page directory currently loaded in CR3.  On SMP this
+ * is per-CPU; on one CPU it is the running process's directory. */
 unsigned int paging_current_cr3(void);
 
 /* Allocate a fresh page directory that clones the kernel identity map and

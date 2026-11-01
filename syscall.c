@@ -21,7 +21,7 @@ static int copy_user_string(char *dst, unsigned int max, const char *src)
 	unsigned int i;
 
 	if (!src || !max ||
-	    !paging_user_range_ok(procs[current_pid].cr3, (unsigned int)src,
+	    !paging_user_range_ok(current_proc()->cr3, (unsigned int)src,
 				  max, 0))
 		return -1;
 	for (i = 0; i + 1 < max && src[i]; i++)
@@ -145,7 +145,7 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 	case SYS_NET_CONFIGURED:
 		return sys_net_configured();
 	case SYS_GETCWD: {
-		const char *cwd = procs[current_pid].cwd;
+		const char *cwd = current_proc()->cwd;
 		char *out = (char *)a1;
 		unsigned int i = 0, max = (unsigned int)a2;
 
@@ -190,7 +190,7 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		unsigned int i;
 
 		if ((unsigned int)a2 < sizeof(buf) ||
-		    !paging_user_range_ok(procs[current_pid].cr3,
+		    !paging_user_range_ok(current_proc()->cr3,
 					  (unsigned int)out, sizeof(buf), 1))
 			return -1;
 		rtc_read_datetime(buf);
@@ -232,6 +232,13 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		return sys_win_present();
 	case SYS_WIN_CLOSE:
 		return sys_win_close();
+	case SYS_WIN_KEY_WAIT:
+		return sys_win_key_wait((unsigned int)a1);
+	case SYS_SCHEDINFO:
+		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)a1,
+					  sizeof(struct sys_schedinfo), 1))
+			return -1;
+		return sched_snapshot((struct sys_schedinfo *)a1);
 	case SYS_TTY_CREATE:
 		return tty_create();
 	case SYS_TTY_READ: {
@@ -240,7 +247,7 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		unsigned int max = (unsigned int)a3;
 
 		if (!tty_valid(id) || !buf || !max ||
-		    !paging_user_range_ok(procs[current_pid].cr3,
+		    !paging_user_range_ok(current_proc()->cr3,
 					  (unsigned int)buf, max, 1))
 			return -1;
 		return tty_read(id, buf, max);
@@ -250,9 +257,10 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		struct vfs_file f;
 		struct vfs_mount *m = 0;
 		char path[VFS_PATH_MAX], arg[VFS_PATH_MAX], cwd[VFS_PATH_MAX];
+		const char *name;
 		int pid;
 
-		if (!paging_user_range_ok(procs[current_pid].cr3,
+		if (!paging_user_range_ok(current_proc()->cr3,
 					  (unsigned int)a1, sizeof(in), 0))
 			return -1;
 		{
@@ -271,7 +279,16 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 			return -1;
 		if (vfs_load_file(path, &f, &m) != 0)
 			return -1;
-		pid = process_create_user_tty(path, f.data, f.size, arg, cwd,
+		name = path;
+		{
+			const char *q = path;
+			while (*q) {
+				if (*q == '/')
+					name = q + 1;
+				q++;
+			}
+		}
+		pid = process_create_user_tty(name, f.data, f.size, arg, cwd,
 					      in.tty);
 		vfs_release_file(m, &f);
 		return pid;
@@ -297,16 +314,16 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 
 		if (copy_user_string(arg, sizeof(arg), (const char *)a1) != 0)
 			return -1;
-		if (vfs_join_path(procs[current_pid].cwd, arg[0] ? arg : ".",
+		if (vfs_join_path(current_proc()->cwd, arg[0] ? arg : ".",
 				  abs, sizeof(abs)) != 0)
 			return -1;
 		if (vfs_stat(abs, &size, &is_dir) != 0 || !is_dir)
 			return -1;
 		{
 			unsigned int i;
-			for (i = 0; abs[i] && i + 1 < sizeof(procs[current_pid].cwd); i++)
-				procs[current_pid].cwd[i] = abs[i];
-			procs[current_pid].cwd[i] = '\0';
+			for (i = 0; abs[i] && i + 1 < sizeof(current_proc()->cwd); i++)
+				current_proc()->cwd[i] = abs[i];
+			current_proc()->cwd[i] = '\0';
 		}
 		return 0;
 	}

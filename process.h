@@ -1,6 +1,8 @@
-/* Preemptive round-robin multitasking for i586, ring-0 only. */
+/* Process objects and lifecycle.  Scheduling itself lives in sched.c. */
 #ifndef PROCESS_H
 #define PROCESS_H
+
+#include "sched.h"
 
 #define PROC_STACK_SIZE 0x1000  /* 4 KB per process (= 1 page) */
 
@@ -9,11 +11,19 @@
  * pool in BSS so the system still boots with fewer processes. */
 #define PROC_FALLBACK_STACK_MAX  8
 
+/* Stable process table: slots hold pointers to individually allocated PCBs, so
+ * a process pointer never moves.  Keep the table small; PCBs are heap objects. */
+#define PROC_MAX 64
+
 #define PROC_UNUSED  0
 #define PROC_READY   1
 #define PROC_RUNNING 2
 #define PROC_DEAD    3
 #define PROC_SLEEPING 4
+#define PROC_BLOCKED 5
+
+/* on_cpu when the process is not currently running anywhere. */
+#define PROC_NO_CPU 0xFFFFFFFFu
 
 #define TIMESLICE_TICKS 20 /* context switch every 20 ms (PIT @ 1 kHz) */
 
@@ -25,9 +35,10 @@ struct sys_procinfo; /* forward decl (see syscall.h; `top` snapshot) */
 struct surface;      /* forward decl (see vga.h; render target override) */
 
 struct process {
-	unsigned int esp;
+	unsigned int esp;            /* offset 0: switch.S saves it here */
 	unsigned int state;
 	unsigned int pid;
+	unsigned int slot;           /* index in procs[], PROC_MAX for idle */
 	char         name[PROC_NAME_LEN];
 	struct text_screen *screen;  /* output target for io_putchar & co. */
 	unsigned int stack_base;     /* page to free on exit, or 0 (bootstrap/fallback) */
@@ -35,17 +46,33 @@ struct process {
 	unsigned int kstack_top;     /* ring-0 stack top (for TSS esp0) */
 	unsigned int wake_ms;        /* tick deadline when PROC_SLEEPING */
 	char cwd[PROC_CWD_MAX];      /* working directory (ring-3 commands) */
-	/* CPU accounting for `top`.  switch.S credits the running process on
-	 * every PIT tick, so the layout after cwd must match PCB_CPU_TICKS /
-	 * PCB_SIZE there (see the _Static_assert in process.c). */
+	/* CPU accounting for `top`. */
 	unsigned int cpu_ticks;      /* ticks spent as the running process */
 	unsigned int start_ticks;    /* get_ticks_ms() at creation */
 	/* Render target override: 0 = the screen.  Set while the window manager
 	 * draws into a layer, so another process's drawing can never land in
-	 * it.  Kept before tty so the PIT hot path offsets stay put. */
+	 * it. */
 	struct surface *target;
 	/* TTY output id inherited by children (0 = none, use the old screen). */
 	int tty;
+	/* Per-CPU scaffolding: these are maintained even with one CPU so the
+	 * scheduler can be extended without reshaping the PCB. */
+	unsigned int on_cpu;         /* PROC_NO_CPU when not running */
+	unsigned int last_cpu;
+	unsigned int affinity;       /* CPU bitmask; all CPUs by default */
+	/* CFS-lite scheduling entity.  vruntime/stride are 64-bit; no 64-bit
+	 * division happens on the tick path (stride is computed in set_weight). */
+	unsigned int weight;         /* 1..SCHED_WEIGHT_MAX */
+	unsigned int on_runq;        /* linked in the ready queue */
+	unsigned long long vruntime;
+	unsigned long long stride;
+	unsigned int slice_start;    /* tick when the current slice began */
+	struct process *run_next, *run_prev;
+	struct process *sleep_next, *sleep_prev;
+	struct process *wait_next, *wait_prev;
+	struct wait_queue *waiting_on;
+	struct process *zombie_next;    /* reaped by the kworker */
+	unsigned int zombie_queued;
 };
 
 /* User-mode virtual address layout (ring-3 processes). */
@@ -58,9 +85,8 @@ struct process {
 #define USER_GFX_BASE    0x50000000
 #define USER_GFX_RANGE   0x00400000   /* one 4 MB slot */
 
-/* Dynamically-sized process table (grown on demand; see process.c). */
-extern struct process *procs;
-extern volatile unsigned int current_pid;
+/* Stable, sparse process table (see process.c). */
+extern struct process *procs[PROC_MAX];
 
 void process_init(void);
 int  process_create(const char *name, void (*entry)(void));
@@ -89,7 +115,12 @@ void process_set_render_target(struct surface *s);
  * would only be visible to the kernel bootstrap context. */
 void process_map_mmio_all(unsigned int phys_base, unsigned int size);
 void process_exit(void);
-void schedule(void);
+/* Called by the kworker: free switched-out dead processes. */
+void process_reap_dead(void);
+unsigned int process_zombie_count(void);
+/* Called from schedule()/kill with interrupts disabled: unpublish a dead PCB
+ * and put it on the kworker's zombie list. */
+void process_zombie_add(struct process *p);
 void process_ps(void);
 
 /* Fill *out with a snapshot of the index-th live process (slot order) for
@@ -102,6 +133,10 @@ int  process_is_alive(unsigned int pid);
 int  process_is_sleeping(unsigned int pid);
 void process_set_tty(unsigned int pid, int tty);
 void process_wait(unsigned int pid);
+/* Adjust the CFS weight of a live process (1..SCHED_WEIGHT_MAX). */
+int  process_set_weight(unsigned int pid, unsigned int weight);
+/* Restrict a live process to a CPU bitmask (0 is ignored). */
+int  process_set_affinity(unsigned int pid, unsigned int mask);
 
 /* Block the current process for `ms` milliseconds (yields the CPU). */
 void process_sleep_ms(unsigned int ms);

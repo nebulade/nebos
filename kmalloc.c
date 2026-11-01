@@ -15,6 +15,21 @@ union km_block {
 
 static union km_block *free_lists[KMALLOC_CLASSES];
 
+/* The free lists are shared by every process; the PIT must not switch in the
+ * middle of a list update.  mm_alloc_page()/mm_free_page() have their own
+ * nested IRQ gates. */
+static inline unsigned int irq_save_disable(void)
+{
+	unsigned int flags;
+	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
+	return flags;
+}
+
+static inline void irq_restore(unsigned int flags)
+{
+	__asm__ volatile ("pushl %0; popfl" : : "r"(flags));
+}
+
 static inline unsigned int round_up_pow2(unsigned int n)
 {
 	n--;
@@ -46,7 +61,7 @@ void kmalloc_init(void)
 
 void *kmalloc(unsigned int size)
 {
-	unsigned int total, cls, off;
+	unsigned int total, cls, off, flags;
 	union km_block *b;
 	void *page;
 
@@ -58,13 +73,18 @@ void *kmalloc(unsigned int size)
 	if (total < KMALLOC_MIN)
 		total = KMALLOC_MIN;
 
+	flags = irq_save_disable();
+
 	/* Large allocation: whole contiguous pages. */
 	if (total > PAGE_SIZE) {
 		unsigned int pages = (total + PAGE_SIZE - 1) / PAGE_SIZE;
 		page = (void *)mm_alloc_pages(pages);
-		if (!page)
+		if (!page) {
+			irq_restore(flags);
 			return 0;
+		}
 		((union km_block *)page)->h.size = total;
+		irq_restore(flags);
 		return (void *)((unsigned int)page + sizeof(unsigned int));
 	}
 
@@ -73,8 +93,10 @@ void *kmalloc(unsigned int size)
 	if (!b) {
 		/* Refill this size class from a fresh page. */
 		page = (void *)mm_alloc_page();
-		if (!page)
+		if (!page) {
+			irq_restore(flags);
 			return 0;
+		}
 		for (off = 0; off + total <= PAGE_SIZE; off += total) {
 			union km_block *blk =
 				(union km_block *)((unsigned int)page + off);
@@ -86,13 +108,14 @@ void *kmalloc(unsigned int size)
 
 	free_lists[cls] = b->next;
 	b->h.size = total;
+	irq_restore(flags);
 	return (void *)((unsigned int)b + sizeof(unsigned int));
 }
 
 void kfree(void *ptr)
 {
 	union km_block *b;
-	unsigned int size, cls;
+	unsigned int size, cls, flags;
 
 	if (!ptr)
 		return;
@@ -100,16 +123,20 @@ void kfree(void *ptr)
 	b = (union km_block *)((unsigned int)ptr - sizeof(unsigned int));
 	size = b->h.size;
 
+	flags = irq_save_disable();
+
 	if (size > PAGE_SIZE) {
 		unsigned int pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
 		unsigned int addr = (unsigned int)b;
 		unsigned int i;
 		for (i = 0; i < pages; i++)
 			mm_free_page(addr + i * PAGE_SIZE);
+		irq_restore(flags);
 		return;
 	}
 
 	cls = size_class_of(size);
 	b->next = free_lists[cls];
 	free_lists[cls] = b;
+	irq_restore(flags);
 }

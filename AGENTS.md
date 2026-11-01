@@ -62,25 +62,29 @@ below the run area), so adding code no longer moves any address.
 
 ## Key files
 
-- **Multitasking**: `process.c/h`, `switch.S` — ring-0 preemptive round-robin,
-  dynamically-sized process table (kmalloc'd, grows on demand), 20 ms timeslice,
-  `ps`/`kill`. Context switch happens in the PIT stub. Each process carries a
-  `struct text_screen *screen` output target (child processes inherit it, so
-  command output lands in the owning terminal). Exited processes are reaped and
-  their stacks freed by the scheduler. The PIT stub also credits every tick to
-  the running process (`cpu_ticks`/`start_ticks`; `process_procinfo()`, exposed
-  as `SYS_PROCINFO`), which the ring-3 `top` command turns into a live CPU%.
+- **Multitasking**: `sched.c/h`, `process.c/h`, `tss.c/h`, `switch.S` — CFS-lite
+  weighted fair scheduling (weight 1..16, 64-bit vruntime, 10 ms slice; WM 16,
+  terminals 12, kworker 1, commands 8), a sorted sleep list and wait queues
+  (no polling scans), stable per-PCB objects in a sparse `PROC_MAX` pointer
+  table, per-CPU `struct cpu`/GDT/TSS with `%gs`-based `this_cpu()`, and a
+  per-CPU `current` (no global `current_pid`).  Idle is not a process slot; a
+  normal `kworker` process does the housekeeping and the zombie reaper.  Ring 0
+  is preemptible at tick boundaries unless `preempt_count` is set (FAT and the
+  shadow flush), and voluntary blocks/yields go through the `int 0x81` gate.
+  `SYS_PROCINFO` exposes weight/state/CPU/ticks for the ring-3 `top` command,
+  and `sched`/`renice` plus `SYS_SCHEDINFO` expose the scheduler counters.
 - **Memory**: `mm.c/h` — INT 15h E820 detection (real-mode in `vesa_stage.S`,
   map at `0x1000`) + a bitmap page-frame allocator (4 KB pages). Reserves low
   1 MB and an 8 MB VGA-shadow region. `kmalloc.c/h` — a power-of-two heap
-  allocator on top of the frame allocator (used for the process table). Process
-  stacks (≥ `0x900000`) come from the frame allocator, with an 8-stack fallback
-  pool (a static BSS array; no fixed address).
+  allocator on top of the frame allocator (used for PCBs and command context).
+  Process stacks (≥ `0x900000`) come from the frame allocator, with an 8-stack
+  fallback pool (a static BSS array; no fixed address).
 - **Paging**: `paging.c/h` — identity-maps RAM (4 MB pages via CR4.PSE) + the
-  LFB (uncacheable) and enables CR0.PG/WP. A single shared page directory for
-  now (no per-process address spaces yet). The kexec trampoline
-  (`kexec_tramp.S`) clears CR0.PG before the copy so it can overwrite the old
-  kernel's page tables safely.
+  LFB (uncacheable) and enables CR0.PG/WP. Each process gets a page directory
+  cloned from the kernel identity map (kernel stacks are mapped everywhere, so
+  CR3 can switch on the old stack); `paging_current_cr3()` reads CR3. The kexec
+  trampoline (`kexec_tramp.S`) clears CR0.PG before the copy so it can overwrite
+  the old kernel's page tables safely.
 - **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
   terminal windows (64×32) with a system bar (banner + purple "+ New" button +
   clock + rainbow). Click-to-focus, drag-by-title-bar, close (×). The "+ New"
@@ -293,8 +297,8 @@ below the run area), so adding code no longer moves any address.
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
-`display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `format <device>`,
-`ps`, `kill <pid>`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
+`display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device>`,
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `pong` (responds to ARP/ICMP for our IP for 30 s),
@@ -323,7 +327,7 @@ changed with `cd`; paths may be absolute (`/floppy1/…`) or relative (`.`, `..`
 nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
-`cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`,
+`cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`, `spin`,
 `clock`, `colors`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
 `netreset`, `curl` and `hello` are files in `/ramfs/bin` (packed by the

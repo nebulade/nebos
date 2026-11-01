@@ -25,6 +25,18 @@ extern void program_lspci_main(const char *filter);
 extern void program_peek_main(const char *arg);
 extern void program_poke_main(const char *arg);
 
+static inline unsigned int term_irq_save_disable(void)
+{
+	unsigned int flags;
+	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
+	return flags;
+}
+
+static inline void term_irq_restore(unsigned int flags)
+{
+	__asm__ volatile ("pushl %0; popfl" : : "r"(flags));
+}
+
 /* Print the prompt (with the current directory) and set line_start. */
 static void term_print_prompt(struct term *t, int first)
 {
@@ -80,6 +92,8 @@ static int cmd_kexec(struct term *t, const char *args);
 static int cmd_kill(struct term *t, const char *args);
 static int cmd_poweroff(struct term *t, const char *args);
 static int cmd_ps(struct term *t, const char *args);
+static int cmd_renice(struct term *t, const char *args);
+static int cmd_sched(struct term *t, const char *args);
 static int cmd_reboot(struct term *t, const char *args);
 static int cmd_run(struct term *t, const char *args);
 static int cmd_serial(struct term *t, const char *args);
@@ -104,6 +118,8 @@ static const struct kcmd cmds[] = {
 	{ "peek",       "peek <addr> [len]",             CK_SPAWN_ARG, 0, 0, program_peek_main, 0, 0 },
 	{ "poke",       "poke <addr> <val>",             CK_SPAWN_ARG, CMD_REQARG, 0, program_poke_main, 0, 0 },
 	{ "ps",         "ps",                            CK_CUSTOM, 0, 0, 0, 0, cmd_ps },
+	{ "sched",      "sched",                         CK_CUSTOM, 0, 0, 0, 0, cmd_sched },
+	{ "renice",     "renice <pid> <weight>",         CK_CUSTOM, CMD_REQARG, 0, 0, 0, cmd_renice },
 	{ "kill",       "kill <pid>",                    CK_CUSTOM, 0, 0, 0, 0, cmd_kill },
 	{ "kexec",      "kexec",                         CK_CUSTOM, 0, 0, 0, 0, cmd_kexec },
 	{ "dbg",        "dbg",                           CK_CUSTOM, 0, 0, 0, 0, cmd_dbg },
@@ -461,6 +477,46 @@ static int cmd_ps(struct term *t, const char *args)
 	(void)t;
 	(void)args;
 	process_ps();
+	return 0;
+}
+
+static int cmd_sched(struct term *t, const char *args)
+{
+	(void)t;
+	(void)args;
+	sched_print();
+	return 0;
+}
+
+static int cmd_renice(struct term *t, const char *args)
+{
+	unsigned int pid = 0, weight = 0;
+	int have_pid = 0, have_weight = 0;
+
+	(void)t;
+	while (*args >= '0' && *args <= '9') {
+		pid = pid * 10 + (unsigned int)(*args - '0');
+		args++;
+		have_pid = 1;
+	}
+	while (*args == ' ')
+		args++;
+	while (*args >= '0' && *args <= '9') {
+		weight = weight * 10 + (unsigned int)(*args - '0');
+		args++;
+		have_weight = 1;
+	}
+	while (*args == ' ')
+		args++;
+	if (!have_pid || !have_weight || *args ||
+	    weight < 1 || weight > SCHED_WEIGHT_MAX) {
+		io_putstr("renice: usage renice <pid> <1..16>\n");
+		return 0;
+	}
+	if (process_set_weight(pid, weight) < 0)
+		io_putstr("renice: no such process\n");
+	else
+		io_putstr("weight changed\n");
 	return 0;
 }
 
@@ -1191,9 +1247,18 @@ void term_run(struct term *t)
 			continue;
 		}
 		{
+			unsigned int flags = term_irq_save_disable();
 			int k = term_key_pop(t);
-			if (k) {
-				if (k == IO_KEY_CTRL_C) {
+
+			if (!k) {
+				sched_block_on_locked(&t->key_wq);
+				term_irq_restore(flags);
+				sched_yield();
+				continue;
+			}
+			term_irq_restore(flags);
+
+			if (k == IO_KEY_CTRL_C) {
 					/* Ctrl+C at the prompt: discard the line. */
 					io_putstr("^C\n");
 					t->line_len = 0;
@@ -1286,11 +1351,8 @@ void term_run(struct term *t)
 					redraw_line_from(t->line, t->line_len, t->line_pos, t->line_start, t->line_pos - 1);
 				}
 			}
-		} else {
-			process_sleep_ms(10);
 		}
 	}
-}
 }
 
 struct kcmd_ctx {
@@ -1332,8 +1394,8 @@ static void kcmd_entry(void *arg)
 					p[i] = 0;
 				t->fg_pid = -1;
 				for (i = 0; i + 1 < sizeof(t->cwd) &&
-					    procs[current_pid].cwd[i]; i++)
-					t->cwd[i] = procs[current_pid].cwd[i];
+					    current_proc()->cwd[i]; i++)
+					t->cwd[i] = current_proc()->cwd[i];
 				t->cwd[i] = '\0';
 				{
 					const char *def = "/ramfs/bin";

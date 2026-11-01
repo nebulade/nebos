@@ -2,9 +2,9 @@
  *
  * The kernel credits every PIT tick to the process that was running it
  * (SYS_PROCINFO exposes the counters), so each frame samples the counters
- * twice, one second apart: CPU% is the share of ticks in that window.  The
- * WM slot ("wm") runs the idle loop, so on an idle system it owns nearly
- * every tick -- the footer says as much.
+ * twice, one second apart: CPU% is the share of ticks in that window.  Idle
+ * is not a process slot anymore, so an idle system simply shows little CPU
+ * against the live processes.
  *
  * The frame is repainted in place.  It has a fixed shape (23 rows x 63
  * columns + newlines), so the number of characters written per frame is a
@@ -21,11 +21,13 @@
 #define FRAME_COLS  63            /* terminal screens are 64x32 (kernel screen.h) */
 #define COL_PID     4
 #define COL_STATE   7
+#define COL_W       3
 #define COL_CPU     6
 #define COL_TIME    6
 #define COL_MEM     6
-/* five single-space separators between the six columns */
-#define NAME_W      (FRAME_COLS - COL_PID - COL_STATE - COL_CPU - COL_TIME - COL_MEM - 5)
+/* six single-space separators between the seven columns */
+#define NAME_W      (FRAME_COLS - COL_PID - COL_STATE - COL_W - COL_CPU - \
+		     COL_TIME - COL_MEM - 6)
 #define PRINT_ROWS  20            /* process rows (header + footer excluded) */
 #define MAX_SAMPLE  32            /* processes captured per sample */
 #define FRAME_ROWS  (3 + PRINT_ROWS)
@@ -38,11 +40,14 @@ struct sample {
 };
 
 static struct sample before[MAX_SAMPLE];
-static unsigned int nbefore;
+static struct sample after[MAX_SAMPLE];
+static unsigned int nbefore, nafter;
+static struct sys_procinfo snaps[MAX_SAMPLE];
 
 struct prow {
 	unsigned int pid;
 	unsigned int state;
+	unsigned int weight;
 	unsigned int cpu_pm;     /* CPU per mille over the window */
 	unsigned int cpu_ticks;  /* total ticks spent running */
 	unsigned int pages;      /* resident pages */
@@ -53,6 +58,7 @@ static struct prow rows[PRINT_ROWS];
 static unsigned int nrows, ntotal;
 static unsigned int wall;                 /* sample window, ms */
 static unsigned int uptime_s;
+static unsigned int idle_pm;              /* idle per mille over the window */
 static unsigned int free_kb, total_kb;
 static unsigned int line_chars;           /* chars written into the current row */
 
@@ -154,6 +160,8 @@ static const char *state_name(unsigned int s)
 		return "ready";
 	if (s == 4)
 		return "sleep";
+	if (s == 5)
+		return "block";
 	return "?";
 }
 
@@ -169,42 +177,58 @@ static void end_line(int last)
 	}
 }
 
-/* Take the "after" sample and turn it into rows, CPU% = ticks during the
- * window (a process that appeared during the window shows 0%). */
-static void gather(void)
+/* Snapshot the live process list once.  Both the "before" and "after"
+ * samples go through this helper; no process-info syscall happens after the
+ * window is closed, so CPU% and idle% refer to the same interval. */
+static unsigned int sample_procs(struct sample *dst, struct sys_procinfo *snap)
 {
 	struct sys_procinfo p;
-	unsigned int i, j;
+	unsigned int i, n = 0;
 
-	ntotal = 0;
-	nrows = 0;
-	for (i = 0; ; i++) {
+	for (i = 0; i < MAX_SAMPLE; i++) {
 		if (u_syscall2(SYS_PROCINFO, (int)i, (int)&p) != 1)
 			break;
-		if (ntotal < PRINT_ROWS) {
-			struct prow *r = &rows[ntotal];
-			unsigned int delta = 0, pm = 0;
+		dst[n].pid = p.pid;
+		dst[n].cpu_ticks = p.cpu_ticks;
+		if (snap)
+			snap[n] = p;
+		n++;
+	}
+	return n;
+}
 
-			for (j = 0; j < nbefore; j++)
-				if (before[j].pid == p.pid) {
-					delta = p.cpu_ticks - before[j].cpu_ticks;
-					break;
-				}
-			if (j < nbefore) {
-				pm = delta * 1000u / wall;
-				if (pm > 1000u)
-					pm = 1000u;
+/* Turn the snapshots into rows, CPU% = ticks during the window (a process
+ * that appeared during the window shows 0%). */
+static void gather(void)
+{
+	unsigned int i, j;
+
+	ntotal = nafter;
+	nrows = 0;
+	for (i = 0; i < nafter && i < PRINT_ROWS; i++) {
+		const struct sys_procinfo *p = &snaps[i];
+		struct prow *r = &rows[i];
+		unsigned int delta = 0, pm = 0;
+
+		for (j = 0; j < nbefore; j++)
+			if (before[j].pid == p->pid) {
+				delta = p->cpu_ticks - before[j].cpu_ticks;
+				break;
 			}
-			r->pid = p.pid;
-			r->state = p.state;
-			r->cpu_pm = pm;
-			r->cpu_ticks = p.cpu_ticks;
-			r->pages = p.pages;
-			for (j = 0; j < sizeof(r->name); j++)
-				r->name[j] = p.name[j];
-			nrows++;
+		if (j < nbefore) {
+			pm = delta * 1000u / wall;
+			if (pm > 1000u)
+				pm = 1000u;
 		}
-		ntotal++;
+		r->pid = p->pid;
+		r->state = p->state;
+		r->weight = p->weight;
+		r->cpu_pm = pm;
+		r->cpu_ticks = p->cpu_ticks;
+		r->pages = p->pages;
+		for (j = 0; j < sizeof(r->name); j++)
+			r->name[j] = p->name[j];
+		nrows++;
 	}
 }
 
@@ -232,6 +256,8 @@ static void paint(void)
 	putc_(' ');
 	str_w("STATE", COL_STATE);
 	putc_(' ');
+	str_wr("W", COL_W);
+	putc_(' ');
 	str_wr("CPU%", COL_CPU);
 	putc_(' ');
 	str_wr("TIME", COL_TIME);
@@ -248,6 +274,8 @@ static void paint(void)
 			dec_w(r->pid, COL_PID);
 			putc_(' ');
 			str_w(state_name(r->state), COL_STATE);
+			putc_(' ');
+			dec_w(r->weight, COL_W);
 			putc_(' ');
 			cpu_w(r->cpu_pm);
 			putc_(' ');
@@ -267,7 +295,11 @@ static void paint(void)
 		dec_(ntotal - nrows);
 		puts_(" more  ");
 	}
-	puts_("Ctrl+C to quit - wm = idle loop");
+	puts_("Ctrl+C to quit  idle ");
+	dec_(idle_pm / 10);
+	putc_('.');
+	dec_(idle_pm % 10);
+	putc_('%');
 	end_line(1);
 }
 
@@ -280,8 +312,8 @@ static void frame(void)
 void _start(const char *arg)
 {
 	struct sys_meminfo m;
-	struct sys_procinfo p;
-	unsigned int i, t0, t1;
+	struct sys_schedinfo s0, s1;
+	unsigned int t0, t1;
 
 	(void)arg;
 
@@ -290,21 +322,22 @@ void _start(const char *arg)
 	free_kb = m.free_pages * (m.page_size / 1024);
 
 	for (;;) {
-		/* Sample before the wait, repaint after it. */
-		nbefore = 0;
-		for (i = 0; i < MAX_SAMPLE; i++) {
-			if (u_syscall2(SYS_PROCINFO, (int)i, (int)&p) != 1)
-				break;
-			before[nbefore].pid = p.pid;
-			before[nbefore].cpu_ticks = p.cpu_ticks;
-			nbefore++;
-		}
+		/* Timestamp first: the sampling itself can be preempted, and the
+		 * per-process counters and idle ticks must refer to the same
+		 * window or the two percentages will not add up. */
+		nbefore = sample_procs(before, 0);
 		t0 = u_ticks_ms();
+		u_schedinfo(&s0);
 		u_sleep_ms(1000);
+		nafter = sample_procs(after, snaps);
 		t1 = u_ticks_ms();
+		u_schedinfo(&s1);
 		wall = t1 - t0;
 		if (!wall)
 			wall = 1;
+		idle_pm = (s1.idle_ticks - s0.idle_ticks) * 1000u / wall;
+		if (idle_pm > 1000u)
+			idle_pm = 1000u;
 		uptime_s = t1 / 1000;
 
 		u_puts("\x1b[2J\x1b[H");

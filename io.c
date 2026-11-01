@@ -58,7 +58,8 @@ static struct text_screen io_fallback;
 
 static struct text_screen *io_current_screen(void)
 {
-	struct text_screen *s = procs[current_pid].screen;
+	struct process *p = current_proc();
+	struct text_screen *s = p ? p->screen : 0;
 	return s ? s : &io_fallback;
 }
 
@@ -163,7 +164,8 @@ void io_init(void)
  * the old cell-screen path until the ring-3 terminal is running. */
 static int io_tty(void)
 {
-	int id = procs[current_pid].tty;
+	struct process *p = current_proc();
+	int id = p ? p->tty : 0;
 
 	return tty_valid(id) ? id : 0;
 }

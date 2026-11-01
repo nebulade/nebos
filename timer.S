@@ -14,6 +14,7 @@ kbd_irq_stub:
 	movw  %ax, %ds
 	movw  %ax, %es
 	movw  %ax, %fs
+	movw  $0x28, %ax
 	movw  %ax, %gs
 	call  kbd_irq
 	IRQ_RETURN_DS 36
@@ -27,6 +28,7 @@ fdc_irq_stub:
 	movw  %ax, %ds
 	movw  %ax, %es
 	movw  %ax, %fs
+	movw  $0x28, %ax
 	movw  %ax, %gs
 	call  fdc_irq
 	IRQ_RETURN_DS 36
@@ -102,6 +104,7 @@ exc_common:
 	movw  %ax, %ds
 	movw  %ax, %es
 	movw  %ax, %fs
+	movw  $0x28, %ax
 	movw  %ax, %gs
 	popl  %eax
 

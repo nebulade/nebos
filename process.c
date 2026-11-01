@@ -1,4 +1,9 @@
-/* Process management: create, exit, round-robin schedule, ps, kill. */
+/* Process management: create, exit, reap, ps, kill.
+ *
+ * The scheduler itself lives in sched.c.  This file owns the stable PCB
+ * objects and the lifecycle around them: allocation, initial stack frames,
+ * address-space cleanup, and the user-facing helpers.
+ */
 
 #include "process.h"
 #include "elf.h"
@@ -17,22 +22,16 @@
 #include "vga.h"
 #include "wm_abi.h"
 
-struct process *procs;               /* dynamically-sized process table */
-volatile unsigned int current_pid;
+struct process *procs[PROC_MAX];
 
-static unsigned int proc_cap;            /* current capacity of procs[] */
+static struct process idle_proc;
 static unsigned int next_pid_counter = 1; /* monotonic, wraps */
 static unsigned int fallback_stack_next;  /* 0..PROC_FALLBACK_STACK_MAX */
+static struct process *zombie_head, *zombie_tail;
+static struct wait_queue exit_wq;
 
 /* Top of the in-image bootstrap stack (see kernel.ld). */
 extern char __boot_stack_top[];
-
-#define INITIAL_PROC_CAP 16
-
-/* switch.S addresses the table entries with an immediate PCB_SIZE/PCB_CPU_TICKS
- * and cannot see this struct; keep the two in sync. */
-_Static_assert(sizeof(struct process) == 124,
-	       "struct process layout changed: update PCB_SIZE/PCB_CPU_TICKS in switch.S");
 
 /* ---- interrupt flag save/restore (for short critical sections) ---- */
 static inline unsigned int irq_save_disable(void)
@@ -72,9 +71,8 @@ static unsigned int stack_alloc(int *owned)
 }
 
 /* Clear one control block.  kmalloc memory is not zeroed and QEMU hides that
- * (guest RAM starts cleared), so a fresh slot would otherwise carry garbage in
- * cr3/pid/state; schedule() and process_map_mmio_all() trust those fields and
- * a garbage cr3 made the boot-time MMIO mapping fault on real hardware. */
+ * (guest RAM starts cleared), so a fresh PCB would otherwise carry garbage in
+ * cr3/pid/state; the scheduler and MMIO mapping code trust those fields. */
 static void clear_proc(struct process *p)
 {
 	unsigned char *b = (unsigned char *)p;
@@ -92,77 +90,113 @@ static void name_copy(char *dst, const char *src)
 	dst[i] = '\0';
 }
 
-static void inherit_cwd(struct process *p)
+static void cwd_copy(struct process *p, const char *cwd)
 {
 	unsigned int i;
 
-	for (i = 0; i + 1 < sizeof(p->cwd) && procs[current_pid].cwd[i]; i++)
-		p->cwd[i] = procs[current_pid].cwd[i];
+	for (i = 0; cwd && cwd[i] && i + 1 < sizeof(p->cwd); i++)
+		p->cwd[i] = cwd[i];
 	p->cwd[i] = '\0';
 }
 
-/* Double the process table.  Called with interrupts disabled. */
-static int grow_proc_table(void)
-{
-	unsigned int new_cap = proc_cap * 2;
-	struct process *np =
-		(struct process *)kmalloc(new_cap * sizeof(struct process));
-	unsigned int i;
-
-	if (!np)
-		return 0;
-	for (i = 0; i < proc_cap; i++)
-		np[i] = procs[i];
-	for (i = proc_cap; i < new_cap; i++)
-		clear_proc(&np[i]);
-	kfree(procs);
-	procs = np;
-	proc_cap = new_cap;
-	return 1;
-}
-
-/* Find a free process slot (1..proc_cap-1), growing the table if needed.
- * Slot 0 is the kernel idle process and is never returned.  Called with interrupts
- * disabled.  Returns the slot index, or -1 on failure. */
+/* Find a free slot in the stable pointer table.  Called with interrupts
+ * disabled.  Returns the slot index, or -1 when the table is full. */
 static int alloc_slot(void)
 {
 	unsigned int slot;
-	for (slot = 1; slot < proc_cap; slot++)
-		if (procs[slot].state == PROC_UNUSED)
-			return (int)slot;
-	if (!grow_proc_table())
-		return -1;
-	for (slot = 1; slot < proc_cap; slot++)
-		if (procs[slot].state == PROC_UNUSED)
+
+	for (slot = 0; slot < PROC_MAX; slot++)
+		if (!procs[slot])
 			return (int)slot;
 	return -1;
+}
+
+/* Allocate and clear a PCB, then reserve a table slot (but do not publish it
+ * yet).  Called with interrupts disabled. */
+static struct process *proc_alloc(int *slot_out)
+{
+	struct process *p = (struct process *)kmalloc(sizeof(*p));
+	int slot;
+
+	if (!p)
+		return 0;
+	clear_proc(p);
+	slot = alloc_slot();
+	if (slot < 0) {
+		kfree(p);
+		return 0;
+	}
+	*slot_out = slot;
+	return p;
+}
+
+/* Fill in the common fields and publish the process in its slot.  The caller
+ * has already built the initial kernel stack frame.  Called with interrupts
+ * disabled and with parent = current_proc() (possibly idle). */
+static void proc_commit(struct process *p, int slot, const char *name,
+			unsigned int esp, int owned, unsigned int stack_base,
+			unsigned int cr3, unsigned int kstack_top)
+{
+	struct process *parent = current_proc();
+
+	p->esp = esp;
+	p->pid = next_pid_counter++;
+	p->slot = (unsigned int)slot;
+	p->stack_base = owned ? stack_base : 0;
+	p->cr3 = cr3;
+	p->kstack_top = kstack_top;
+	p->cpu_ticks = 0;
+	p->start_ticks = get_ticks_ms();
+	p->on_cpu = PROC_NO_CPU;
+	p->last_cpu = PROC_NO_CPU;
+	p->affinity = 0xFFFFFFFFu;
+	p->weight = 0;
+	p->stride = 0;
+	p->vruntime = 0;
+	p->slice_start = 0;
+	p->screen = parent ? parent->screen : (void *)0;
+	p->tty = parent ? parent->tty : 0;
+	if (parent)
+		cwd_copy(p, parent->cwd);
+	else
+		p->cwd[0] = '\0';
+	name_copy(p->name, name);
+	procs[slot] = p;
+	sched_add_ready(p);
 }
 
 void process_init(void)
 {
 	unsigned int i;
 
-	procs = (struct process *)kmalloc(INITIAL_PROC_CAP * sizeof(struct process));
-	if (!procs) {
-		serial_puts(SERIAL_COM1, "process_init: out of memory\n");
-		for (;;)
-			__asm__ volatile ("cli; hlt");
-	}
-	proc_cap = INITIAL_PROC_CAP;
-	for (i = 0; i < proc_cap; i++)
-		clear_proc(&procs[i]);
+	sched_init();
+	zombie_head = zombie_tail = 0;
+	wait_queue_init(&exit_wq);
+	for (i = 0; i < PROC_MAX; i++)
+		procs[i] = 0;
 
-	procs[0].state      = PROC_RUNNING;
-	procs[0].pid        = 0;
-	procs[0].esp        = 0;
-	procs[0].screen     = (void *)0;
-	procs[0].stack_base = 0;  /* bootstrap stack, never freed */
-	procs[0].cr3        = paging_current_cr3();
-	procs[0].kstack_top = (unsigned int)__boot_stack_top;
-	procs[0].cpu_ticks  = 0;
-	procs[0].start_ticks = 0;  /* the WM "starts" at boot */
-	name_copy(procs[0].name, "idle");
-	current_pid = 0;
+	clear_proc(&idle_proc);
+	idle_proc.state      = PROC_RUNNING;
+	idle_proc.pid        = 0;
+	idle_proc.slot       = PROC_MAX;
+	idle_proc.esp        = 0;
+	idle_proc.screen     = (void *)0;
+	idle_proc.stack_base = 0;  /* bootstrap stack, never freed */
+	idle_proc.cr3        = paging_current_cr3();
+	idle_proc.kstack_top = (unsigned int)__boot_stack_top;
+	idle_proc.cpu_ticks  = 0;
+	idle_proc.start_ticks = 0;
+	idle_proc.on_cpu     = 0;
+	idle_proc.last_cpu   = 0;
+	idle_proc.affinity   = 1;
+	idle_proc.weight     = 0;
+	idle_proc.stride     = 0;
+	idle_proc.vruntime   = 0;
+	idle_proc.on_runq    = 0;
+	name_copy(idle_proc.name, "idle");
+
+	cpus[0].idle = &idle_proc;
+	cpus[0].current = &idle_proc;
 }
 
 /*
@@ -185,20 +219,22 @@ void process_init(void)
 static int setup_process(const char *name, unsigned int entry,
 			 int has_arg, const char *arg)
 {
-	int slot, owned;
+	int slot, owned, pid;
 	unsigned int base, top, *sp, arg_ptr = 0, cr3;
 	unsigned int flags;
+	struct process *p;
 
 	flags = irq_save_disable();
 
-	slot = alloc_slot();
-	if (slot < 0) {
+	p = proc_alloc(&slot);
+	if (!p) {
 		irq_restore(flags);
 		return -1;
 	}
 
 	cr3 = paging_new_directory();
 	if (!cr3) {
+		kfree(p);
 		irq_restore(flags);
 		return -1;
 	}
@@ -206,6 +242,7 @@ static int setup_process(const char *name, unsigned int entry,
 	base = stack_alloc(&owned);
 	if (!base) {
 		mm_free_page(cr3);
+		kfree(p);
 		irq_restore(flags);
 		return -1;
 	}
@@ -243,23 +280,10 @@ static int setup_process(const char *name, unsigned int entry,
 	*--sp = 0;              /* ESI */
 	*--sp = 0;              /* EDI */
 
-	procs[slot].esp        = (unsigned int)sp;
-	procs[slot].state      = PROC_READY;
-	procs[slot].pid        = next_pid_counter++;
-	procs[slot].stack_base = owned ? base : 0;
-	procs[slot].cr3        = cr3;
-	procs[slot].kstack_top = top;
-	procs[slot].cpu_ticks  = 0;
-	procs[slot].start_ticks = get_ticks_ms();
-	name_copy(procs[slot].name, name);
-	/* Child inherits the parent's output screen/tty (command output lands
-	   in the terminal that spawned it). */
-	procs[slot].screen = procs[current_pid].screen;
-	procs[slot].tty = procs[current_pid].tty;
-	inherit_cwd(&procs[slot]);
-
+	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top);
+	pid = (int)p->pid;
 	irq_restore(flags);
-	return (int)procs[slot].pid;
+	return pid;
 }
 
 int process_create(const char *name, void (*entry)(void))
@@ -276,20 +300,22 @@ int process_create_arg(const char *name, void (*entry)(const char *),
 /* Create a process whose entry takes a raw pointer argument (no string copy). */
 int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 {
-	int slot, owned;
+	int slot, owned, pid;
 	unsigned int base, top, *sp, cr3;
 	unsigned int flags;
+	struct process *p;
 
 	flags = irq_save_disable();
 
-	slot = alloc_slot();
-	if (slot < 0) {
+	p = proc_alloc(&slot);
+	if (!p) {
 		irq_restore(flags);
 		return -1;
 	}
 
 	cr3 = paging_new_directory();
 	if (!cr3) {
+		kfree(p);
 		irq_restore(flags);
 		return -1;
 	}
@@ -297,6 +323,7 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 	base = stack_alloc(&owned);
 	if (!base) {
 		mm_free_page(cr3);
+		kfree(p);
 		irq_restore(flags);
 		return -1;
 	}
@@ -311,41 +338,33 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* EAX ECX EDX EBX */
 	*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* ESP EBP ESI EDI */
 
-	procs[slot].esp        = (unsigned int)sp;
-	procs[slot].state      = PROC_READY;
-	procs[slot].pid        = next_pid_counter++;
-	procs[slot].stack_base = owned ? base : 0;
-	procs[slot].cr3        = cr3;
-	procs[slot].kstack_top = top;
-	procs[slot].cpu_ticks  = 0;
-	procs[slot].start_ticks = get_ticks_ms();
-	name_copy(procs[slot].name, name);
-	procs[slot].screen = procs[current_pid].screen;
-	procs[slot].tty = procs[current_pid].tty;
-	inherit_cwd(&procs[slot]);
+	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top);
+	pid = (int)p->pid;
 	irq_restore(flags);
-	return (int)procs[slot].pid;
+	return pid;
 }
 
 /* Load an ELF image into a fresh address space and run it as a ring-3 process. */
 int process_create_user_tty(const char *name, const void *image, unsigned int size,
 			    const char *arg, const char *cwd, unsigned int tty)
 {
-	int slot, owned;
+	int slot, owned, pid;
 	unsigned int base, top, *sp, cr3, entry;
 	unsigned int flags;
+	struct process *p;
 	int i;
 
 	flags = irq_save_disable();
 
-	slot = alloc_slot();
-	if (slot < 0) {
+	p = proc_alloc(&slot);
+	if (!p) {
 		irq_restore(flags);
 		return -1;
 	}
 
 	cr3 = paging_new_directory();
 	if (!cr3) {
+		kfree(p);
 		irq_restore(flags);
 		return -1;
 	}
@@ -353,6 +372,7 @@ int process_create_user_tty(const char *name, const void *image, unsigned int si
 	entry = elf_load(cr3, image, size);
 	if (!entry) {
 		mm_free_page(cr3);
+		kfree(p);
 		irq_restore(flags);
 		return -2;   /* not a loadable ELF */
 	}
@@ -371,6 +391,7 @@ int process_create_user_tty(const char *name, const void *image, unsigned int si
 			    !paging_map_page(cr3, va, phys,
 					     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
 				mm_free_page(cr3);
+				kfree(p);
 				irq_restore(flags);
 				return -1;
 			}
@@ -397,6 +418,7 @@ int process_create_user_tty(const char *name, const void *image, unsigned int si
 			va = (va_top - (len + 1)) & ~15u;
 			if (va - 8 < USER_STACK_TOP - USER_STACK_PAGES * 0x1000) {
 				mm_free_page(cr3);
+				kfree(p);
 				irq_restore(flags);
 				return -1;   /* argument does not fit the stack */
 			}
@@ -411,6 +433,7 @@ int process_create_user_tty(const char *name, const void *image, unsigned int si
 		base = stack_alloc(&owned);
 		if (!base) {
 			mm_free_page(cr3);
+			kfree(p);
 			irq_restore(flags);
 			return -1;
 		}
@@ -425,27 +448,15 @@ int process_create_user_tty(const char *name, const void *image, unsigned int si
 		*--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;  /* ESP EBP ESI EDI */
 	}
 
-	procs[slot].esp        = (unsigned int)sp;
-	procs[slot].state      = PROC_READY;
-	procs[slot].pid        = next_pid_counter++;
-	procs[slot].stack_base = owned ? base : 0;
-	procs[slot].cr3        = cr3;
-	procs[slot].kstack_top = top;
-	procs[slot].cpu_ticks  = 0;
-	procs[slot].start_ticks = get_ticks_ms();
-	name_copy(procs[slot].name, name);
-	procs[slot].screen = procs[current_pid].screen;
-	procs[slot].tty = tty ? (int)tty : procs[current_pid].tty;
-	{
-		unsigned int k;
-
-		for (k = 0; cwd && cwd[k] && k + 1 < sizeof(procs[slot].cwd); k++)
-			procs[slot].cwd[k] = cwd[k];
-		procs[slot].cwd[k] = '\0';
-	}
+	proc_commit(p, slot, name, (unsigned int)sp, owned, base, cr3, top);
+	if (cwd)
+		cwd_copy(p, cwd);
+	if (tty)
+		p->tty = (int)tty;
+	pid = (int)p->pid;
 
 	irq_restore(flags);
-	return (int)procs[slot].pid;
+	return pid;
 }
 
 int process_create_user(const char *name, const void *image, unsigned int size,
@@ -458,133 +469,140 @@ int process_create_user(const char *name, const void *image, unsigned int size,
    at startup to bind itself to its own screen). */
 void process_set_screen(struct text_screen *screen)
 {
-	procs[current_pid].screen = screen;
+	struct process *p = current_proc();
+
+	if (p)
+		p->screen = screen;
 }
 
 /* Render target override for the running process (0 = the screen).  Lives in
  * the PCB so a preempted layer draw can never leak into another process. */
 struct surface *process_render_target(void)
 {
-	if (!procs || current_pid >= proc_cap)
-		return 0;
-	return procs[current_pid].target;
+	struct process *p = current_proc();
+
+	return p ? p->target : 0;
 }
 
 void process_set_render_target(struct surface *s)
 {
-	if (!procs || current_pid >= proc_cap)
-		return;
-	procs[current_pid].target = s;
+	struct process *p = current_proc();
+
+	if (p)
+		p->target = s;
 }
 
 void process_map_mmio_all(unsigned int phys_base, unsigned int size)
 {
-	unsigned int i, kernel_cr3 = paging_current_cr3();
+	unsigned int i, flags;
 
+	/* Map the kernel directory (the one new process directories clone) and
+	 * every live process copy.  paging_current_cr3() is the *current* process
+	 * directory, which may be one of these; mapping it twice is harmless.
+	 * The reaper frees PCBs, so hold off the PIT while iterating. */
+	flags = irq_save_disable();
 	paging_map_mmio(phys_base, size);
-	for (i = 0; i < proc_cap; i++) {
-		if (procs[i].state == PROC_UNUSED || procs[i].state == PROC_DEAD)
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p = procs[i];
+
+		if (!p || p->state == PROC_DEAD)
 			continue;
-		if (procs[i].cr3 && procs[i].cr3 != kernel_cr3)
-			paging_map_mmio_cr3(procs[i].cr3, phys_base, size);
+		if (p->cr3)
+			paging_map_mmio_cr3(p->cr3, phys_base, size);
 	}
+	irq_restore(flags);
+}
+
+/* Unpublish a dead process and hand it to the kworker.  Called with interrupts
+ * disabled (from schedule(), process_kill(), or process_exit()'s path). */
+void process_zombie_add(struct process *p)
+{
+	if (!p || p->zombie_queued)
+		return;
+	p->zombie_queued = 1;
+	p->on_cpu = PROC_NO_CPU;
+	if (p->slot < PROC_MAX)
+		procs[p->slot] = 0;
+	p->zombie_next = 0;
+	if (zombie_tail)
+		zombie_tail->zombie_next = p;
+	else
+		zombie_head = p;
+	zombie_tail = p;
+}
+
+unsigned int process_zombie_count(void)
+{
+	unsigned int flags, n = 0;
+	struct process *p;
+
+	flags = irq_save_disable();
+	for (p = zombie_head; p; p = p->zombie_next)
+		n++;
+	irq_restore(flags);
+	return n;
+}
+
+/* Free switched-out dead processes.  Runs in the kworker (or the idle
+ * fallback), not in the PIT handler.  Preemption is disabled while the
+ * resources are torn down: sys_gfx_reap()/tty_reap()/the page-table walk are
+ * not re-entrant, matching the old IRQ-context reaper. */
+void process_reap_dead(void)
+{
+	unsigned int cur_cr3 = paging_current_cr3();
+	unsigned int flags;
+	struct process *p, *list;
+
+	preempt_disable();
+	flags = irq_save_disable();
+	list = zombie_head;
+	zombie_head = zombie_tail = 0;
+	irq_restore(flags);
+
+	for (p = list; p; ) {
+		struct process *next = p->zombie_next;
+
+		sys_net_reap(p->pid);   /* release a held NIC */
+		sys_gfx_reap(p->pid);   /* flag a gfx session dead */
+		tty_reap(p->pid);       /* drop its terminal queue */
+		if (p->stack_base)
+			mm_free_page(p->stack_base);
+		if (p->cr3 && p->cr3 != cur_cr3) {
+			/* User code/stack pages belong to the process.  The gfx
+			 * canvas mapping is only a window into pages owned by
+			 * the session: release the PTEs and page tables, not
+			 * the pages. */
+			paging_release_user_range(p->cr3,
+				USER_BASE, USER_STACK_TOP - USER_BASE, 1);
+			paging_release_user_range(p->cr3,
+				USER_GFX_BASE, USER_GFX_RANGE, 0);
+			/* WM surface mappings: page tables only; the shadow/
+			 * terminal/canvas pages belong to the window server. */
+			paging_release_user_range(p->cr3,
+				WM_SHADOW_VA, 0x00800000, 0);
+			paging_release_user_range(p->cr3,
+				WM_CONTENT_VA_BASE,
+				WM_CONTENT_SLOT * WM_MAX_WINDOWS, 0);
+			mm_free_page(p->cr3);
+		}
+		p->stack_base = 0;
+		p->cr3 = 0;
+		kfree(p);
+		p = next;
+	}
+	preempt_enable();
 }
 
 void process_exit(void)
 {
-	procs[current_pid].state = PROC_DEAD;
-	__asm__ volatile ("sti");  /* re-enable IRQs so the PIT can switch us out */
+	struct process *p = current_proc();
+
+	if (p)
+		p->state = PROC_DEAD;
+	wait_wake_all(&exit_wq);
+	sched_yield();          /* switch away immediately via int 0x81 */
 	for (;;)
-		__asm__ volatile ("hlt");
-}
-
-/*
- * Round-robin scheduler.  Called from the PIT IRQ stub with interrupts
- * disabled.  Picks the next runnable process and updates current_pid.
- * The caller (switch.S) takes care of actually switching ESP.
- */
-void schedule(void)
-{
-	unsigned int i, next;
-
-	/* Reap dead processes, freeing their stacks.  Skip the current slot: we
-	 * may be running on its stack right now (it just called process_exit),
-	 * so it is reaped on a later schedule() from another process's context. */
-	for (i = 0; i < proc_cap; i++) {
-		if (procs[i].state == PROC_DEAD && i != current_pid) {
-			sys_net_reap(procs[i].pid);   /* release a held NIC */
-			sys_gfx_reap(procs[i].pid);   /* flag a gfx session dead */
-			tty_reap(procs[i].pid);       /* drop its terminal queue */
-			if (procs[i].stack_base)
-				mm_free_page(procs[i].stack_base);
-			if (procs[i].cr3 &&
-			    procs[i].cr3 != paging_current_cr3()) {
-				/* User code/stack pages belong to the process.
-				 * The gfx canvas mapping is only a window into
-				 * pages owned by the session: release the PTEs
-				 * and page tables, not the pages. */
-				paging_release_user_range(procs[i].cr3,
-					USER_BASE, USER_STACK_TOP - USER_BASE, 1);
-				paging_release_user_range(procs[i].cr3,
-					USER_GFX_BASE, USER_GFX_RANGE, 0);
-				/* WM surface mappings: page tables only; the
-				 * shadow/terminal/canvas pages belong to the
-				 * window server. */
-				paging_release_user_range(procs[i].cr3,
-					WM_SHADOW_VA, 0x00800000, 0);
-				paging_release_user_range(procs[i].cr3,
-					WM_CONTENT_VA_BASE,
-					WM_CONTENT_SLOT * WM_MAX_WINDOWS, 0);
-				mm_free_page(procs[i].cr3);
-			}
-			procs[i].stack_base = 0;
-			procs[i].cr3 = 0;
-			procs[i].state = PROC_UNUSED;
-		}
-	}
-
-	/* A file syscall or a shadow-buffer flush is in progress: stay on the
-	 * current process.  The FAT driver has static state, and the flush walks
-	 * and trims a shared damage list (and must not be abandoned halfway
-	 * through by a context switch).  Interrupts stay enabled, so IRQs are
-	 * still serviced. */
-	if (sys_fs_busy || vga_present_busy()) {
-		if (procs[current_pid].state == PROC_READY)
-			procs[current_pid].state = PROC_RUNNING;
-		return;
-	}
-
-	/* Wake sleeping processes whose deadline has passed. */
-	for (i = 0; i < proc_cap; i++) {
-		if (procs[i].state == PROC_SLEEPING &&
-		    (int)(procs[i].wake_ms - get_ticks_ms()) <= 0)
-			procs[i].state = PROC_READY;
-	}
-
-	/* Mark current as READY (it was RUNNING). */
-	if (procs[current_pid].state == PROC_RUNNING)
-		procs[current_pid].state = PROC_READY;
-
-	/* Find next runnable slot. */
-	next = current_pid;
-	for (i = 0; i < proc_cap; i++) {
-		next = (next + 1) % proc_cap;
-		if (procs[next].state == PROC_READY) {
-			procs[next].state = PROC_RUNNING;
-			current_pid = next;
-			return;
-		}
-	}
-
-	/* Nothing else runnable -- stay on current if still alive. */
-	if (procs[current_pid].state == PROC_READY) {
-		procs[current_pid].state = PROC_RUNNING;
-		return;
-	}
-
-	/* Everything dead: fall back to slot 0 (kernel idle). */
-	procs[0].state = PROC_RUNNING;
-	current_pid = 0;
+		__asm__ volatile ("hlt");  /* the scheduler never resumes us */
 }
 
 /* ---- user-facing helpers ---- */
@@ -592,9 +610,11 @@ void schedule(void)
 static const char *state_str(unsigned int s)
 {
 	switch (s) {
-	case PROC_RUNNING: return "run  ";
-	case PROC_READY:   return "ready";
-	default:           return "?    ";
+	case PROC_RUNNING:  return "run  ";
+	case PROC_READY:    return "ready";
+	case PROC_SLEEPING: return "sleep";
+	case PROC_BLOCKED:  return "block";
+	default:            return "?    ";
 	}
 }
 
@@ -616,17 +636,43 @@ static void put_dec(unsigned int n)
 
 void process_ps(void)
 {
-	unsigned int i;
-	io_putstr("PID  STATE  NAME\n");
-	for (i = 0; i < proc_cap; i++) {
-		if (procs[i].state == PROC_UNUSED || procs[i].state == PROC_DEAD)
+	unsigned int i, j;
+	io_putstr("PID  STATE  W CPU NAME\n");
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p;
+		unsigned int pid, state, weight, cpu, flags;
+		char name[PROC_NAME_LEN];
+
+		/* The reaper frees PCBs; snapshot this slot with the PIT off and
+		 * print the copy outside the critical section. */
+		flags = irq_save_disable();
+		p = procs[i];
+		if (!p || p->state == PROC_DEAD) {
+			irq_restore(flags);
 			continue;
+		}
+		pid = p->pid;
+		state = p->state;
+		weight = p->weight;
+		cpu = p->on_cpu;
+		for (j = 0; j < sizeof(name) - 1 && p->name[j]; j++)
+			name[j] = p->name[j];
+		name[j] = '\0';
+		irq_restore(flags);
+
 		io_putchar(' ');
-		put_dec(procs[i].pid);
+		put_dec(pid);
 		io_putstr("  ");
-		io_putstr(state_str(procs[i].state));
+		io_putstr(state_str(state));
 		io_putstr("  ");
-		io_putstr(procs[i].name);
+		put_dec(weight);
+		io_putstr("   ");
+		if (cpu != PROC_NO_CPU)
+			put_dec(cpu);
+		else
+			io_putchar('-');
+		io_putstr("   ");
+		io_putstr(name);
 		io_putchar('\n');
 	}
 }
@@ -634,8 +680,7 @@ void process_ps(void)
 /* Count the 4 KB user pages mapped between USER_BASE and USER_STACK_TOP.
  * A read-only page-directory walk (paging keeps everything identity-mapped,
  * so the tables are directly addressable).  Used by `top` for the memory
- * hint; ring-3 processes currently leak these pages on reap (known issue),
- * but ex-processes are gone from the table by then anyway. */
+ * hint. */
 static unsigned int count_user_pages(unsigned int cr3)
 {
 	const unsigned int *pd;
@@ -665,91 +710,203 @@ static unsigned int count_user_pages(unsigned int cr3)
  * live processes in slot order, so callers iterate 0, 1, ... until 0. */
 int process_procinfo(unsigned int index, struct sys_procinfo *out)
 {
-	unsigned int i, seen = 0, life;
+	unsigned int i, seen = 0, life, flags;
 
 	if (!out)
 		return 0;
-	for (i = 0; i < proc_cap; i++) {
-		if (procs[i].state == PROC_UNUSED || procs[i].state == PROC_DEAD)
+	flags = irq_save_disable();
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p = procs[i];
+
+		if (!p || p->state == PROC_DEAD)
 			continue;
 		if (seen++ != index)
 			continue;
 
-		life = get_ticks_ms() - procs[i].start_ticks;
-		out->pid        = procs[i].pid;
-		out->state      = procs[i].state;
-		out->cpu_ticks  = procs[i].cpu_ticks;
+		life = get_ticks_ms() - p->start_ticks;
+		out->pid        = p->pid;
+		out->state      = p->state;
+		out->cpu_ticks  = p->cpu_ticks;
 		out->life_ticks = life ? life : 1;
 		/* Kernel stack page + page directory + user pages (the WM shares
 		 * the kernel directory; counting one is close enough). */
-		out->pages      = 2 + count_user_pages(procs[i].cr3);
-		name_copy(out->name, procs[i].name);
+		out->pages      = 2 + count_user_pages(p->cr3);
+		out->weight     = p->weight;
+		out->cpu        = p->on_cpu;
+		name_copy(out->name, p->name);
+		irq_restore(flags);
 		return 1;
 	}
+	irq_restore(flags);
 	return 0;
 }
 
 int process_kill(unsigned int pid)
 {
-	unsigned int i;
+	struct process *target = 0;
+	unsigned int i, flags;
+
 	if (pid == 0)
 		return -1; /* cannot kill the kernel idle process */
-	for (i = 1; i < proc_cap; i++) {
-		if (procs[i].state != PROC_UNUSED && procs[i].state != PROC_DEAD &&
-		    procs[i].pid == pid) {
-			procs[i].state = PROC_DEAD;
+	flags = irq_save_disable();
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p = procs[i];
+
+		if (p && p->state != PROC_DEAD && p->pid == pid) {
+			target = p;
+			break;
+		}
+	}
+	if (!target) {
+		irq_restore(flags);
+		return -1;
+	}
+	if (target == current_proc()) {
+		target->state = PROC_DEAD;
+		wait_wake_all(&exit_wq);
+		irq_restore(flags);
+		sched_yield();     /* never resumes */
+		return 0;
+	}
+	sched_unlink(target);
+	target->state = PROC_DEAD;
+	process_zombie_add(target);
+	wait_wake_all(&exit_wq);
+	irq_restore(flags);
+	return 0;
+}
+
+int process_set_weight(unsigned int pid, unsigned int weight)
+{
+	unsigned int i, flags;
+
+	if (weight < 1)
+		weight = 1;
+	if (weight > SCHED_WEIGHT_MAX)
+		weight = SCHED_WEIGHT_MAX;
+
+	flags = irq_save_disable();
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p = procs[i];
+
+		if (p && p->state != PROC_DEAD && p->pid == pid) {
+			sched_set_weight_locked(p, weight);
+			irq_restore(flags);
 			return 0;
 		}
 	}
+	irq_restore(flags);
 	return -1;
 }
 
-/* Return 1 if a process with `pid` is still alive (READY/RUNNING/SLEEPING). */
-int process_is_alive(unsigned int pid)
+int process_set_affinity(unsigned int pid, unsigned int mask)
+{
+	unsigned int i, flags;
+
+	if (!mask)
+		return -1;
+	flags = irq_save_disable();
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p = procs[i];
+
+		if (p && p->state != PROC_DEAD && p->pid == pid) {
+			p->affinity = mask;
+			irq_restore(flags);
+			return 0;
+		}
+	}
+	irq_restore(flags);
+	return -1;
+}
+
+/* Interrupts off. */
+static int process_alive_locked(unsigned int pid)
 {
 	unsigned int i;
-	for (i = 0; i < proc_cap; i++)
-		if (procs[i].pid == pid &&
-		    (procs[i].state == PROC_READY ||
-		     procs[i].state == PROC_RUNNING ||
-		     procs[i].state == PROC_SLEEPING))
+
+	if (pid == 0)
+		return 1;   /* idle is not in the table but always exists */
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p = procs[i];
+
+		if (p && p->pid == pid &&
+		    (p->state == PROC_READY ||
+		     p->state == PROC_RUNNING ||
+		     p->state == PROC_SLEEPING ||
+		     p->state == PROC_BLOCKED))
 			return 1;
+	}
 	return 0;
+}
+
+/* Return 1 if a process with `pid` is still alive. */
+int process_is_alive(unsigned int pid)
+{
+	unsigned int flags;
+	int alive;
+
+	flags = irq_save_disable();
+	alive = process_alive_locked(pid);
+	irq_restore(flags);
+	return alive;
 }
 
 int process_is_sleeping(unsigned int pid)
 {
-	unsigned int i;
-	for (i = 0; i < proc_cap; i++)
-		if (procs[i].pid == pid)
-			return procs[i].state == PROC_SLEEPING;
-	return 0;
+	unsigned int i, flags;
+	int sleeping = 0;
+
+	if (pid == 0)
+		return 0;
+	flags = irq_save_disable();
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p = procs[i];
+
+		if (p && p->pid == pid) {
+			sleeping = (p->state == PROC_SLEEPING);
+			break;
+		}
+	}
+	irq_restore(flags);
+	return sleeping;
 }
 
 void process_set_tty(unsigned int pid, int tty)
 {
-	unsigned int i;
-	for (i = 0; i < proc_cap; i++)
-		if (procs[i].pid == pid && procs[i].state != PROC_UNUSED) {
-			procs[i].tty = tty;
-			return;
+	unsigned int i, flags;
+
+	flags = irq_save_disable();
+	for (i = 0; i < PROC_MAX; i++) {
+		struct process *p = procs[i];
+
+		if (p && p->pid == pid && p->state != PROC_DEAD) {
+			p->tty = tty;
+			break;
 		}
+	}
+	irq_restore(flags);
 }
 
-/* Block the current process for `ms` milliseconds.  Marks it sleeping and
- * yields to the scheduler; it is woken when its deadline passes. */
+/* Block the current process for `ms` milliseconds.  The sleep list wakes it
+ * from the PIT; no polling loop is needed. */
 void process_sleep_ms(unsigned int ms)
 {
-	procs[current_pid].wake_ms = get_ticks_ms() + ms;
-	procs[current_pid].state = PROC_SLEEPING;
-	__asm__ volatile ("sti");  /* re-enable IRQs so the PIT can switch us out */
-	while (procs[current_pid].state == PROC_SLEEPING)
-		cpu_idle();
+	sched_sleep_ms(ms);
 }
 
-/* Wait (yield) until the process with `pid` has exited. */
+/* Wait until the process with `pid` has exited.  The exit path wakes the
+ * queue, so this is event-driven rather than a 10 ms poll. */
 void process_wait(unsigned int pid)
 {
-	while (process_is_alive(pid))
-		process_sleep_ms(10);
+	for (;;) {
+		unsigned int flags = irq_save_disable();
+
+		if (!process_alive_locked(pid)) {
+			irq_restore(flags);
+			return;
+		}
+		sched_block_on_locked(&exit_wq);
+		irq_restore(flags);
+		sched_yield();
+	}
 }

@@ -165,6 +165,7 @@ void panic_report(const struct exc_state *st, const char *name)
 	unsigned char code[16];
 	unsigned int cand_val[12], cand_off[12];
 	unsigned int cand_n = 0;
+	struct process *cur = current_proc();
 	int stack_ok, user = (st->cs & 3) == 3;
 
 	__asm__ volatile ("mov %%cr0, %0" : "=r"(cr0));
@@ -281,11 +282,11 @@ void panic_report(const struct exc_state *st, const char *name)
 	/* Current process and uptime. */
 	i = 0;
 	i = app_str(buf, i, "pid ");
-	i = app_dec(buf, i, current_pid);
-	if (procs) {
+	i = app_dec(buf, i, cur ? cur->pid : 0);
+	if (cur) {
 		i = app_str(buf, i, " (");
-		for (n = 0; n < PROC_NAME_LEN && procs[current_pid].name[n]; n++)
-			buf[i++] = procs[current_pid].name[n];
+		for (n = 0; n < PROC_NAME_LEN && cur->name[n]; n++)
+			buf[i++] = cur->name[n];
 		buf[i++] = ')';
 	}
 	i = app_str(buf, i, "  ticks ");
@@ -294,12 +295,12 @@ void panic_report(const struct exc_state *st, const char *name)
 	emit(buf);
 
 	/* Kernel stack bounds: an ESP below the base means stack overflow. */
-	if (procs) {
+	if (cur) {
 		i = 0;
 		i = app_str(buf, i, "kstack base ");
-		i = app_ptr(buf, i, procs[current_pid].stack_base);
+		i = app_ptr(buf, i, cur->stack_base);
 		i = app_str(buf, i, "  top ");
-		i = app_ptr(buf, i, procs[current_pid].kstack_top);
+		i = app_ptr(buf, i, cur->kstack_top);
 		buf[i] = '\0';
 		emit(buf);
 	}

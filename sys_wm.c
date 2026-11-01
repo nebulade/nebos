@@ -9,7 +9,7 @@
 
 static int user_ok(const void *p, unsigned int size, int write)
 {
-	return paging_user_range_ok(procs[current_pid].cr3,
+	return paging_user_range_ok(current_proc()->cr3,
 				    (unsigned int)p, size, write);
 }
 
@@ -167,4 +167,9 @@ int sys_win_present(void)
 int sys_win_close(void)
 {
 	return wm_server_win_close();
+}
+
+int sys_win_key_wait(unsigned int timeout_ms)
+{
+	return wm_server_key_wait(timeout_ms);
 }

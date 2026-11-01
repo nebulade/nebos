@@ -16,14 +16,16 @@ syscall_stub:
 	 * re-enable interrupts themselves. */
 	cli
 
-	/* Load the kernel data segment into DS/ES/FS/GS.  int 0x80 only switches
-	 * CS and SS; IRET reset DS (etc.) to null when it returned to ring-3, so
-	 * DS is null here and the C dispatcher's data accesses would #GP. */
+	/* Load the kernel selectors: DS/ES/FS = 0x10, GS = 0x28 (the per-CPU
+	 * data selector used by this_cpu()).  int 0x80 only switches CS and SS;
+	 * IRET reset DS (etc.) to null when it returned to ring-3, so DS is null
+	 * here and the C dispatcher's data accesses would #GP. */
 	pushl %eax
 	movw  $0x10, %ax
 	movw  %ax, %ds
 	movw  %ax, %es
 	movw  %ax, %fs
+	movw  $0x28, %ax
 	movw  %ax, %gs
 	popl  %eax
 

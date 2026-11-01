@@ -647,11 +647,6 @@ static unsigned int shadow_copy_damage(unsigned int max_bytes)
 /* Bytes copied by the presenter so far (see vga.h). */
 unsigned int vga_present_copied;
 
-int vga_present_busy(void)
-{
-	return present_busy;
-}
-
 /* Copy up to `max_bytes` of the pending damage to VRAM.  Called by the main
  * loop on every iteration: small updates (a cursor move is ~1 KB) reach the
  * screen within one loop instead of waiting for a fixed 30 Hz tick, while a
@@ -673,6 +668,7 @@ void vga_present_shadow(unsigned int max_bytes)
 		return;
 	}
 	present_busy = 1;
+	preempt_disable();
 	irq_restore(flags);
 	vga_present_copied += shadow_copy_damage(max_bytes);
 	flags = irq_save_disable();
@@ -681,6 +677,7 @@ void vga_present_shadow(unsigned int max_bytes)
 		damage_deferred = 0;
 		damage_add_locked(0, 0, vga_fb_w, vga_fb_h);
 	}
+	preempt_enable();
 	irq_restore(flags);
 }
 

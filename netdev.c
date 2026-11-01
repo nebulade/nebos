@@ -28,8 +28,8 @@ unsigned char *netdev_rx_scratch(void)
 
 void netdev_acquire(void)
 {
-	if (busy == 0 && procs)
-		owner_pid = procs[current_pid].pid;
+	if (busy == 0 && current_proc())
+		owner_pid = current_proc()->pid;
 	busy++;
 }
 
