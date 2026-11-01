@@ -4,6 +4,7 @@
 
 #include "tty.h"
 #include "mm.h"
+#include "netlog.h"
 #include "process.h"
 
 #define TTY_STRIDE (2 * PAGE_SIZE)
@@ -109,6 +110,10 @@ int tty_write(int id, const char *buf, unsigned int len)
 		}
 		t->buf[t->head] = (unsigned char)buf[i++];
 		t->head = next;
+		/* Mirror command output (including ring-3 terminal commands) to
+		 * the network console, like screen_putchar does for the kernel
+		 * terminal. */
+		netlog_char(buf[i - 1]);
 	}
 	return 0;
 }

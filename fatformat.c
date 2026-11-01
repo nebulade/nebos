@@ -17,18 +17,33 @@ volatile int format_busy;
 volatile unsigned int format_owner_pid;
 
 static unsigned int fmt_total, fmt_done, fmt_last_pct;
+static const char *fmt_stage = "?";
+static int fmt_error_printed;
+
+/* Format output goes through the tty, which the netlog mirror captures. */
+static void format_puts(const char *s)
+{
+	io_putstr(s);
+}
+
+void format_putdec(unsigned int v)
+{
+	char b[11];
+	unsigned int n = sizeof(b) - 1;
+
+	b[n] = '\0';
+	do {
+		b[--n] = (char)('0' + v % 10);
+		v /= 10;
+	} while (v);
+	io_putstr(&b[n]);
+}
 
 static void format_pct(unsigned int pct)
 {
-	char b[4];
-	unsigned int n = 0;
-
-	b[n++] = (char)('0' + pct / 100);
-	b[n++] = (char)('0' + (pct / 10) % 10);
-	b[n++] = (char)('0' + pct % 10);
-	io_putstr("format: ");
-	{ unsigned int i; for (i = 0; i < n; i++) io_putchar(b[i]); }
-	io_putstr("%\n");
+	format_puts("format: ");
+	format_putdec(pct);
+	format_puts("%\n");
 }
 
 static void format_progress(unsigned int sectors)
@@ -56,6 +71,16 @@ static int format_write(blk_dev_t *d, unsigned int lba, const void *buf,
 	bkl_pause();
 	r = blk_write(d, lba, buf, count);
 	bkl_resume();
+	if (r != 0 && !fmt_error_printed) {
+		fmt_error_printed = 1;
+		format_puts("format: write failed at stage ");
+		format_puts(fmt_stage);
+		format_puts(": lba ");
+		format_putdec(lba);
+		format_puts(" count ");
+		format_putdec(count);
+		format_puts(" sectors\n");
+	}
 	return r;
 }
 
@@ -214,7 +239,7 @@ static void build_fsinfo_sector(unsigned char *s)
 	put32(s + 0x1FC, 0xAA550000u);   /* TrailSig */
 }
 
-int fat_format(blk_dev_t *d)
+int fat_format_limited(blk_dev_t *d, unsigned int limit_sectors)
 {
 	static unsigned char sec[SEC_SIZE];
 	static unsigned char fat_sec[SEC_SIZE];
@@ -226,21 +251,54 @@ int fat_format(blk_dev_t *d)
 	unsigned int reserved, num_fats = 2, sec_per_fat, root_dir_sectors;
 	unsigned int clusters, fat_start, root_start, data_start;
 	unsigned int media;
-	int is_floppy = (d->kind == BLK_FLOPPY);
+	int is_floppy;
 	unsigned int i;
+	int rc = -1;
 
-	if (!d)
+	fmt_stage = "layout";
+	fmt_error_printed = 0;
+
+	if (!d) {
+		format_puts("format: no device\n");
 		return -1;
+	}
+	is_floppy = (d->kind == BLK_FLOPPY);
 
 	if (is_floppy) {
+		if (limit_sectors) {
+			format_puts("format: a floppy is always the full 1440 KiB\n");
+			return -1;
+		}
 		fs_sectors = 2880;
 		part_start = 0;
 		media = 0xF0;
 	} else {
-		if (d->total_sectors < (2048 + 64))
-			return -1;   /* too small to partition */
+		unsigned int avail;
+
+		if (d->total_sectors < (2048 + 64)) {
+			format_puts("format: disk too small (");
+			format_putdec(d->total_sectors);
+			format_puts(" sectors)\n");
+			return -1;
+		}
 		part_start = 2048;
-		fs_sectors = d->total_sectors - part_start;
+		avail = d->total_sectors - part_start;
+		fs_sectors = avail;
+		if (limit_sectors) {
+			if (limit_sectors > avail) {
+				format_puts("format: size exceeds device (");
+				format_putdec(avail / 2048);
+				format_puts(" MiB available)\n");
+				return -1;
+			}
+			fs_sectors = limit_sectors;
+		}
+		if (fs_sectors < 64) {
+			format_puts("format: partition too small (");
+			format_putdec(fs_sectors);
+			format_puts(" sectors)\n");
+			return -1;
+		}
 		media = 0xF8;
 	}
 
@@ -268,6 +326,32 @@ int fat_format(blk_dev_t *d)
 	fmt_done = 0;
 	fmt_last_pct = 0;
 
+	format_puts("format: ");
+	format_puts(d->name);
+	format_puts(": ");
+	format_putdec(d->total_sectors);
+	format_puts(" sectors");
+	if (is_floppy) {
+		format_puts(" (1440 KiB)");
+	} else if (d->total_sectors >= 2048) {
+		format_puts(" (");
+		format_putdec(d->total_sectors / 2048);
+		format_puts(" MiB)");
+	}
+	format_puts(", FAT");
+	format_putdec(type);
+	format_puts(", partition ");
+	format_putdec(part_start);
+	format_puts("+");
+	format_putdec(fs_sectors);
+	format_puts(", cluster ");
+	format_putdec(spc);
+	format_puts(", ");
+	format_putdec(num_fats);
+	format_puts(" x ");
+	format_putdec(sec_per_fat);
+	format_puts(" FAT sectors\n");
+
 	zero_sector(zero);
 
 	/* Bulk zero buffer (a 1 TB FAT32 has ~2 M FAT sectors; single-sector
@@ -293,6 +377,7 @@ int fat_format(blk_dev_t *d)
 	/* 1. MBR (IDE/SATA only). */
 	if (!is_floppy) {
 		unsigned char *e;
+		fmt_stage = "mbr";
 		zero_sector(sec);
 		e = sec + 0x1BE;
 		e[0] = 0x80;                            /* bootable */
@@ -304,22 +389,26 @@ int fat_format(blk_dev_t *d)
 		sec[510] = 0x55;
 		sec[511] = 0xAA;
 		if (format_write(d, 0, sec, 1) != 0)
-			return -1;
+			goto out;
 	}
 
 	/* 2. Reserved area + boot sector (+ FSInfo/backup for FAT32). */
+	fmt_stage = "reserved";
 	build_boot_sector(sec, type, spc, reserved, num_fats, root_entries,
 			  sec_per_fat, fs_sectors, part_start, media);
 	if (write_zeros(d, part_start, reserved, zbuf, zchunk) != 0)
-		return -1;
+		goto out;
+	fmt_stage = "boot sector";
 	if (format_write(d, part_start, sec, 1) != 0)
-		return -1;
+		goto out;
 	if (type == 32) {
-		if (format_write(d, part_start + 6, sec, 1) != 0)   /* backup boot */
-			return -1;
+		fmt_stage = "backup boot";
+		if (format_write(d, part_start + 6, sec, 1) != 0)
+			goto out;
+		fmt_stage = "fsinfo";
 		build_fsinfo_sector(sec);
-		if (format_write(d, part_start + 1, sec, 1) != 0)   /* FSInfo */
-			return -1;
+		if (format_write(d, part_start + 1, sec, 1) != 0)
+			goto out;
 	}
 
 	/* 3. FATs (two copies).  The first sector carries the media byte and
@@ -327,28 +416,38 @@ int fat_format(blk_dev_t *d)
 	build_fat_first_sector(fat_sec, type, media);
 	for (i = 0; i < num_fats; i++) {
 		unsigned int base = part_start + fat_start + i * sec_per_fat;
+		fmt_stage = (i == 0) ? "fat 1" : "fat 2";
 		if (format_write(d, base, fat_sec, 1) != 0)
-			return -1;
+			goto out;
+		format_progress(1);
 		if (sec_per_fat > 1 &&
 		    write_zeros(d, base + 1, sec_per_fat - 1, zbuf, zchunk) != 0)
-			return -1;
+			goto out;
 	}
 
 	/* 4. Root directory (FAT12/16) or root cluster (FAT32). */
+	fmt_stage = "root directory";
 	if (type == 32) {
 		if (write_zeros(d, part_start + data_start, spc, zbuf, zchunk) != 0)
-			return -1;
+			goto out;
 	} else {
 		if (write_zeros(d, part_start + root_start, root_dir_sectors,
 				zbuf, zchunk) != 0)
-			return -1;
+			goto out;
 	}
 
+	rc = 0;
+
+out:
 	if (zpages) {
 		unsigned int k;
 		for (k = 0; k < zpages; k++)
 			mm_free_page((unsigned int)zbuf + k * PAGE_SIZE);
 	}
+	return rc;
+}
 
-	return 0;
+int fat_format(blk_dev_t *d)
+{
+	return fat_format_limited(d, 0);
 }

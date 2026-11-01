@@ -140,3 +140,14 @@ int blk_write(blk_dev_t *d, unsigned int lba, const void *buf, unsigned int coun
 		return ahci_write_sectors(d->unit, lba, buf, count);
 	return ata_write_sectors(d->bus, d->unit, lba, buf, count);
 }
+
+int blk_flush(blk_dev_t *d)
+{
+	if (!d)
+		return -1;
+	if (d->kind == BLK_FLOPPY)
+		return 0;
+	if (d->kind == BLK_SATA)
+		return ahci_flush(d->unit);
+	return ata_flush(d->bus, d->unit);
+}

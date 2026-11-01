@@ -313,7 +313,7 @@ static int ahci_issue(unsigned int port, const unsigned char fis[20], int write,
 {
 	unsigned int *hdr = (unsigned int *)ahci.cl;
 	unsigned char *ct = (unsigned char *)ahci.ct;
-	unsigned int t0, i;
+	unsigned int t0, i, prdtl = bytes ? 1u : 0u;
 
 	/* Wait for the port to be idle (previous command finished). */
 	t0 = get_ticks_ms();
@@ -328,14 +328,16 @@ static int ahci_issue(unsigned int port, const unsigned char fis[20], int write,
 		ct[i] = 0;
 	for (i = 0; i < 20; i++)
 		ct[i] = fis[i];
-	/* PRDT entry 0: data buffer + byte count. */
-	((unsigned int *)(ct + 0x80))[0] = dma_addr;
-	((unsigned int *)(ct + 0x80))[1] = 0;
-	((unsigned int *)(ct + 0x80))[2] = 0;
-	((unsigned int *)(ct + 0x80))[3] = ((bytes - 1) & 0x3FFFFFu) | 0x80000000u;
+	/* PRDT entry 0: data buffer + byte count (no data: PRDTL = 0). */
+	if (prdtl) {
+		((unsigned int *)(ct + 0x80))[0] = dma_addr;
+		((unsigned int *)(ct + 0x80))[1] = 0;
+		((unsigned int *)(ct + 0x80))[2] = 0;
+		((unsigned int *)(ct + 0x80))[3] = ((bytes - 1) & 0x3FFFFFu) | 0x80000000u;
+	}
 
-	/* Command header: CFL=5 dwords, W (write), PRDTL=1. */
-	hdr[0] = 5u | (write ? (1u << 6) : 0) | (1u << 16);
+	/* Command header: CFL=5 dwords, W (write), PRDTL. */
+	hdr[0] = 5u | (write ? (1u << 6) : 0) | (prdtl << 16);
 	hdr[1] = 0;
 	hdr[2] = ahci.ct;
 	hdr[3] = 0;
@@ -426,8 +428,22 @@ static int ahci_xfer(unsigned int port, unsigned int lba, void *buf,
 
 		if (write)
 			mem_copy(bounce, p + done * 512u, chunk * 512u);
-		if (ahci_issue(port, fis, write, ahci.bounce, chunk * 512u) != 0)
+		if (ahci_issue(port, fis, write, ahci.bounce, chunk * 512u) != 0) {
+			serial_puts(SERIAL_COM1, "ahci: ");
+			serial_puts(SERIAL_COM1, write ? "write" : "read");
+			serial_puts(SERIAL_COM1, " failed port ");
+			serial_putdec(SERIAL_COM1, port);
+			serial_puts(SERIAL_COM1, " lba ");
+			serial_putdec(SERIAL_COM1, cur);
+			serial_puts(SERIAL_COM1, " count ");
+			serial_putdec(SERIAL_COM1, chunk);
+			serial_puts(SERIAL_COM1, " tfd ");
+			serial_puthex(SERIAL_COM1, prd(port, P_TFD));
+			serial_puts(SERIAL_COM1, " is ");
+			serial_puthex(SERIAL_COM1, prd(port, P_IS));
+			serial_putc(SERIAL_COM1, '\n');
 			return -1;
+		}
 		if (!write)
 			mem_copy(p + done * 512u, bounce, chunk * 512u);
 		done += chunk;
@@ -444,6 +460,21 @@ int ahci_write_sectors(unsigned int port, unsigned int lba, const void *buf,
 		       unsigned int count)
 {
 	return ahci_xfer(port, lba, (void *)buf, count, 1);
+}
+
+int ahci_flush(unsigned int port)
+{
+	unsigned char fis[20];
+	unsigned int i;
+
+	if (!ahci.ok || port >= ahci.nports)
+		return -1;
+	for (i = 0; i < 20; i++)
+		fis[i] = 0;
+	fis[0] = FIS_H2D;
+	fis[1] = FIS_C;
+	fis[2] = 0xEA;                 /* FLUSH CACHE EXT */
+	return ahci_issue(port, fis, 0, 0, 0);
 }
 
 unsigned int ahci_scan(struct ahci_disk *out, unsigned int max)

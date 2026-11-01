@@ -28,4 +28,7 @@ unsigned int ahci_scan(struct ahci_disk *out, unsigned int max);
 int ahci_read_sectors(unsigned int port, unsigned int lba, void *buf, unsigned int count);
 int ahci_write_sectors(unsigned int port, unsigned int lba, const void *buf, unsigned int count);
 
+/* Flush the port's write cache (FLUSH CACHE EXT). */
+int ahci_flush(unsigned int port);
+
 #endif

@@ -30,4 +30,7 @@ blk_dev_t *blk_find(const char *name);
 int blk_read(blk_dev_t *d, unsigned int lba, void *buf, unsigned int count);
 int blk_write(blk_dev_t *d, unsigned int lba, const void *buf, unsigned int count);
 
+/* Flush the device's write cache.  Floppies have none and return 0. */
+int blk_flush(blk_dev_t *d);
+
 #endif

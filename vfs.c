@@ -565,6 +565,16 @@ void vfs_mount_all(void)
 	vfs_mount_ramfs();
 }
 
+static int device_is_mounted(const char *dev)
+{
+	unsigned int i;
+
+	for (i = 0; i < vfs_mount_count; i++)
+		if (mount_belongs_to(vfs_mounts[i].name, dev))
+			return 1;
+	return 0;
+}
+
 void vfs_remount_device(blk_dev_t *d)
 {
 	unsigned char buf[512];
@@ -573,6 +583,11 @@ void vfs_remount_device(blk_dev_t *d)
 		return;
 	unmount_device(d->name);
 	mount_device(d, buf);
+	if (!device_is_mounted(d->name)) {
+		io_putstr("vfs: remount of ");
+		io_putstr(d->name);
+		io_putstr(" found no filesystem\n");
+	}
 }
 
 vfs_mount_t *vfs_find(const char *name)

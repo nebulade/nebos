@@ -113,7 +113,7 @@ static const struct kcmd cmds[] = {
 	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
 	{ "gfxbench",   "gfxbench",                      CK_SPAWN, 0, program_gfxbench_main, 0, 0, 0 },
 	{ "lsusb",      "lsusb",                         CK_SPAWN, 0, program_lsusb_main, 0, 0, 0 },
-	{ "format",     "format <device>",               CK_CUSTOM, 0, 0, 0, 0, cmd_format },
+	{ "format",     "format <device> [size]",        CK_CUSTOM, 0, 0, 0, 0, cmd_format },
 	{ "lspci",      "lspci [id]",                    CK_SPAWN_ARG, 0, 0, program_lspci_main, 0, 0 },
 	{ "peek",       "peek <addr> [len]",             CK_SPAWN_ARG, 0, 0, program_peek_main, 0, 0 },
 	{ "poke",       "poke <addr> <val>",             CK_SPAWN_ARG, CMD_REQARG, 0, program_poke_main, 0, 0 },
@@ -266,22 +266,8 @@ static int cmd_dbg(struct term *t, const char *args)
 
 static int cmd_format(struct term *t, const char *args)
 {
-	char dev[16];
-	unsigned int n = 0;
-	const char *p;
-
 	(void)t;
-	while (args[n] && args[n] != ' ' && n + 1 < sizeof(dev))
-		dev[n] = args[n], n++;
-	dev[n] = '\0';
-	p = args + n;
-	while (*p == ' ')
-		p++;
-	if (n == 0 || *p) {
-		io_putstr("format: usage format <device>\n");
-		return 0;
-	}
-	program_format_main(dev);
+	program_format_main(args);
 	return 0;
 }
 

@@ -21,4 +21,8 @@ int ata_identify_parse(const unsigned short *id, unsigned int *total_sectors, ch
 int ata_read_sectors(int bus, int unit, unsigned int lba, void *buf, unsigned int count);
 int ata_write_sectors(int bus, int unit, unsigned int lba, const void *buf, unsigned int count);
 
+/* Flush the drive's write cache (FLUSH CACHE).  Formatting calls this before
+ * it remounts the fresh filesystem. */
+int ata_flush(int bus, int unit);
+
 #endif
