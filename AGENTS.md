@@ -194,7 +194,9 @@ run area), so adding code no longer moves any address.
   builds on those: clipped RGB565 primitives, buttons, text input, procedural
   icons and scrolling panes.  `files` (`ucmd_files.c`) is its first user;
   `gallery` (`gallery.c`) is the live showcase of every control and primitive
-  the toolkit exports.
+  the toolkit exports.  Buttons fire on the release edge and keep `active`
+  until `ui->released`: inferring release from the sampled `ui->buttons`
+  races the WM event queue and drops clicks.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `blit.c/h`, `gpu.c`, `ati.c`, `nvidia.c`,
   `nv50.c`, `pci.h` — VESA LFB + shadow buffer.  Drawing goes into a
   `struct surface` render target: `vga_target()` is the screen's shadow buffer
