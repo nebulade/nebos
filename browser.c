@@ -167,7 +167,6 @@ static unsigned short block_h[BR_MAX_NODES];
 static char li_marker[BR_MAX_NODES][6];
 
 /* one connection object; the browser fetches one resource at a time */
-static struct uhttp http;
 
 /* ---- tiny strings ---- */
 
@@ -660,6 +659,20 @@ static int trunc_write(void *ctx, const unsigned char *data, unsigned int len)
 	return 0;
 }
 
+static void worker_wait_ui(void);
+
+static void inflate_ui_pump(void *ctx)
+{
+	static unsigned int last;
+	unsigned int now = u_ticks_ms();
+
+	(void)ctx;
+	if ((int)(now - last) >= 50) {
+		last = now;
+		worker_wait_ui();
+	}
+}
+
 static int inflate_trunc(const unsigned char *src, unsigned int len,
 			 unsigned char *dst, unsigned int cap,
 			 unsigned int *outlen, int gzip, int *truncated)
@@ -681,6 +694,8 @@ static int inflate_trunc(const unsigned char *src, unsigned int len,
 	sink.write = trunc_write;
 	sink.ctx = &m;
 	inflate_init(&image_inflate_ws, &in, &sink);
+	image_inflate_ws.progress = inflate_ui_pump;
+	image_inflate_ws.progress_ctx = 0;
 	r = gzip ? inflate_gzip(&image_inflate_ws, &got) :
 		   inflate_zlib(&image_inflate_ws, &got);
 	*outlen = m.pos;
@@ -690,6 +705,189 @@ static int inflate_trunc(const unsigned char *src, unsigned int len,
 	return 0;
 }
 
+/* ---- headless fetch helper ------------------------------------------- *
+ *
+ * Network I/O runs in a separate ring-3 process (`curl __fetch`): it writes
+ * the raw response and a small metadata file under /share.  While it works,
+ * the browser keeps drawing and scrolling its own window, so a slow DNS/TLS
+ * handshake or a multi-megabyte body never freezes the UI.
+ */
+
+#define FETCH_REQ  "/share/bfreq"
+#define FETCH_BODY "/share/bfbody"
+#define FETCH_META "/share/bfmeta"
+
+struct fetch_meta {
+	int status;
+	int error;
+	int trunc;
+	unsigned int len;
+	char encoding[16];
+	char ctype[64];
+	char final[BR_URL_MAX];
+};
+
+static void draw(unsigned int *action);
+static int fetch_helper_tty = -2;
+static struct fetch_meta fetch_meta;
+
+static unsigned int meta_uint(char **pp)
+{
+	char *p = *pp;
+	unsigned int v = 0;
+
+	while (*p >= '0' && *p <= '9') {
+		v = v * 10 + (unsigned int)(*p - '0');
+		p++;
+	}
+	while (*p && *p != '\n')
+		p++;
+	if (*p == '\n')
+		p++;
+	*pp = p;
+	return v;
+}
+
+static void meta_str(char **pp, char *out, unsigned int cap)
+{
+	char *p = *pp;
+	unsigned int n = 0;
+
+	while (*p && *p != '\n' && n + 1 < cap)
+		out[n++] = *p++;
+	out[n] = '\0';
+	while (*p && *p != '\n')
+		p++;
+	if (*p == '\n')
+		p++;
+	*pp = p;
+}
+
+static void worker_wait_ui(void)
+{
+	unsigned int action = 0;
+
+	if (!ngui_begin(&ui))
+		return;
+	draw(&action);
+	if (!ngui_focus(&ui) && ngui_scroll_keys(&ui, &page_scroll))
+		ngui_invalidate(&ui);
+	ngui_end(&ui);
+}
+
+static int worker_fetch(const char *url, unsigned int cap,
+			struct fetch_meta *m, char *err, unsigned int errcap)
+{
+	static char req[512], meta[1024];
+	char *p;
+	unsigned int n = 0, deadline;
+	int rn, pid;
+	struct sys_stat st;
+
+	if (u_stat("/share", &st) != 0 || !st.is_dir ||
+	    u_stat("/ramfs/bin/curl", &st) != 0) {
+		s_copy(err, "network helper unavailable", errcap);
+		return -1;
+	}
+	s_append_dec(req, &n, cap, sizeof(req));
+	s_append(req, &n, " ", sizeof(req));
+	s_append(req, &n, url, sizeof(req));
+	s_append(req, &n, "\n", sizeof(req));
+	u_syscall1(SYS_UNLINK, (int)FETCH_META);
+	if (u_syscall3(SYS_WRITE_FILE, (int)FETCH_REQ, (int)req, (int)n) < 0) {
+		s_copy(err, "cannot queue network request", errcap);
+		return -1;
+	}
+	if (fetch_helper_tty == -2) {
+		int t = u_tty_create();
+
+		fetch_helper_tty = t > 0 ? t : 0;
+	}
+	pid = u_spawn("/ramfs/bin/curl", "__fetch", fetch_helper_tty, "/");
+	if (pid <= 0) {
+		s_copy(err, "cannot start network helper", errcap);
+		return -1;
+	}
+	deadline = u_ticks_ms() + UHTTP_TOTAL_TIMEOUT_MS + 5000;
+	while (u_alive(pid)) {
+		worker_wait_ui();
+		if ((int)(u_ticks_ms() - deadline) >= 0) {
+			u_kill(pid);
+			s_copy(err, "network request timed out", errcap);
+			return -1;
+		}
+		u_sleep_ms(20);
+	}
+	rn = u_syscall3(SYS_READ_FILE, (int)FETCH_META, (int)meta,
+			(int)(sizeof(meta) - 1));
+	if (rn <= 0) {
+		s_copy(err, "network helper failed", errcap);
+		return -1;
+	}
+	meta[rn] = '\0';
+	p = meta;
+	m->status = (int)meta_uint(&p);
+	m->error = (int)meta_uint(&p);
+	m->trunc = (int)meta_uint(&p);
+	meta_str(&p, m->encoding, sizeof(m->encoding));
+	meta_str(&p, m->ctype, sizeof(m->ctype));
+	meta_str(&p, m->final, sizeof(m->final));
+	m->len = meta_uint(&p);
+	if (m->error) {
+		s_copy(err, uhttp_error_string(m->error), errcap);
+		return -1;
+	}
+	return 0;
+}
+
+static int fetch_remote(const char *url, unsigned int cap,
+			unsigned char *plain, unsigned int plaincap,
+			unsigned char *comp, unsigned int compcap,
+			struct fetch_meta *m, int *truncated,
+			char *err, unsigned int errcap)
+{
+	int rv, zr, was_trunc;
+
+	if (worker_fetch(url, cap, m, err, errcap) != 0)
+		return -1;
+	if (contains_ci(m->encoding, "gzip") ||
+	    contains_ci(m->encoding, "deflate")) {
+		unsigned int comp_len = 0, plen = 0;
+
+		rv = u_syscall3(SYS_READ_FILE, (int)FETCH_BODY, (int)comp,
+				(int)compcap);
+		if (rv < 0) {
+			s_copy(err, "empty response", errcap);
+			return -1;
+		}
+		comp_len = (unsigned int)rv;
+		if (comp_len < m->len) {
+			s_copy(err, "compressed response is too large", errcap);
+			return -1;
+		}
+		if (contains_ci(m->encoding, "deflate"))
+			zr = inflate_trunc(comp, comp_len, plain, plaincap,
+					   &plen, 0, &was_trunc);
+		else
+			zr = inflate_trunc(comp, comp_len, plain, plaincap,
+					   &plen, 1, &was_trunc);
+		if (zr != 0) {
+			s_copy(err, "compressed response is corrupt", errcap);
+			return -1;
+		}
+		*truncated = m->trunc || was_trunc;
+		return (int)plen;
+	}
+	rv = u_syscall3(SYS_READ_FILE, (int)FETCH_BODY, (int)plain,
+			(int)plaincap);
+	if (rv < 0) {
+		s_copy(err, "empty response", errcap);
+		return -1;
+	}
+	*truncated = m->trunc || ((unsigned int)rv < m->len);
+	return rv;
+}
+
 /* ---- HTTP / file fetch ---- */
 
 static int read_url(const char *url, unsigned int cap, unsigned char **out,
@@ -697,8 +895,9 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 		    unsigned int ctcap, char *final, unsigned int finalcap,
 		    char *err, unsigned int errcap, int *truncated)
 {
-	unsigned char *buf = 0;
-	unsigned int total = 0;
+	unsigned char *buf;
+	unsigned int len;
+	int tr = 0;
 	int rv;
 
 	*out = 0;
@@ -732,102 +931,28 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 		return 0;
 	}
 
-	http.user_agent = "nebos-browser/0.1";
-	rv = uhttp_open(&http, url, UHTTP_GZIP, 0);
-	if (rv != 0) {
-		s_copy(err, uhttp_error_string(rv), errcap);
-		return -1;
-	}
-	if (ctype)
-		s_copy(ctype, http.resp.content_type, ctcap);
-	if (final && http.resp.final_url[0])
-		s_copy(final, http.resp.final_url, finalcap);
-	*is_local = 0;
-
-	if (http.resp.gzip ||
-	    contains_ci(http.resp.content_encoding, "gzip") ||
-	    contains_ci(http.resp.content_encoding, "deflate")) {
-		unsigned char *comp = image_io_buf;
-		unsigned int climit = cap;
-		unsigned char *plain;
-		unsigned int plen = 0;
-		int zr, was_trunc;
-
-		if (climit > BR_PAGE_COMP_MAX)
-			climit = BR_PAGE_COMP_MAX;
-		total = 0;
-		for (;;) {
-			rv = uhttp_read(&http, comp + total, climit - total,
-					UHTTP_IDLE_TIMEOUT_MS);
-			if (rv > 0) {
-				total += (unsigned int)rv;
-				if (total >= climit) {
-					*truncated = 1;
-					break;
-				}
-				continue;
-			}
-			if (rv < 0) {
-				s_copy(err, uhttp_error_string(rv), errcap);
-				uhttp_close(&http);
-				return -1;
-			}
-			break;
-		}
-		uhttp_close(&http);
-		plain = (unsigned char *)heap_alloc(cap, 16);
-		if (!plain) {
-			s_copy(err, "out of memory", errcap);
-			return -1;
-		}
-		if (contains_ci(http.resp.content_encoding, "deflate"))
-			zr = inflate_trunc(comp, total, plain, cap, &plen, 0,
-					   &was_trunc);
-		else
-			zr = inflate_trunc(comp, total, plain, cap, &plen, 1,
-					   &was_trunc);
-		if (zr != 0) {
-			s_copy(err, "compressed page is corrupt", errcap);
-			return -1;
-		}
-		if (was_trunc)
-			*truncated = 1;
-		*out = plain;
-		*outlen = plen;
-		return 0;
-	}
-
 	buf = (unsigned char *)heap_alloc(cap, 16);
 	if (!buf) {
 		s_copy(err, "out of memory", errcap);
-		uhttp_close(&http);
 		return -1;
 	}
-	for (;;) {
-		rv = uhttp_read(&http, buf + total, cap - total,
-				UHTTP_IDLE_TIMEOUT_MS);
-		if (rv > 0) {
-			total += (unsigned int)rv;
-			if (total >= cap) {
-				*truncated = 1;
-				break;
-			}
-			continue;
-		}
-		if (rv < 0) {
-			s_copy(err, uhttp_error_string(rv), errcap);
-			uhttp_close(&http);
-			return -1;
-		}
-		break;
-	}
-	uhttp_close(&http);
-	if (total == 0) {
+	len = (unsigned int)fetch_remote(url, cap, buf, cap,
+					 image_io_buf, BR_PAGE_COMP_MAX,
+					 &fetch_meta, &tr, err, errcap);
+	if ((int)len < 0)
+		return -1;
+	if (len == 0) {
 		s_copy(err, "empty response", errcap);
 		return -1;
 	}
+	if (ctype)
+		s_copy(ctype, fetch_meta.ctype, ctcap);
+	if (final && fetch_meta.final[0])
+		s_copy(final, fetch_meta.final, finalcap);
+	*is_local = 0;
 	*out = buf;
-	*outlen = total;
+	*outlen = len;
+	*truncated = tr;
 	return 0;
 }
 
@@ -838,7 +963,8 @@ static int fetch_image(const char *url, unsigned int cap,
 		       unsigned char **out, unsigned int *outlen,
 		       char *err, unsigned int errcap)
 {
-	unsigned int total = 0;
+	unsigned int len;
+	int tr = 0;
 	int rv;
 
 	*out = 0;
@@ -856,84 +982,20 @@ static int fetch_image(const char *url, unsigned int cap,
 		*outlen = (unsigned int)rv;
 		return 0;
 	}
-
-	http.user_agent = "nebos-browser/0.1";
-	rv = uhttp_open(&http, url, UHTTP_GZIP, 0);
-	if (rv != 0) {
-		s_copy(err, uhttp_error_string(rv), errcap);
+	len = (unsigned int)fetch_remote(url, cap, image_file_buf, cap,
+					 image_comp_buf, BR_IMG_FILE_MAX,
+					 &fetch_meta, &tr, err, errcap);
+	if ((int)len < 0)
 		return -1;
-	}
-	if (http.resp.gzip ||
-	    contains_ci(http.resp.content_encoding, "gzip") ||
-	    contains_ci(http.resp.content_encoding, "deflate")) {
-		unsigned int plen = 0;
-		int zr;
-
-		total = 0;
-		for (;;) {
-			rv = uhttp_read(&http, image_comp_buf + total,
-					BR_IMG_FILE_MAX - total,
-					UHTTP_IDLE_TIMEOUT_MS);
-			if (rv > 0) {
-				total += (unsigned int)rv;
-				if (total >= BR_IMG_FILE_MAX)
-					break;
-				continue;
-			}
-			if (rv < 0) {
-				s_copy(err, uhttp_error_string(rv), errcap);
-				uhttp_close(&http);
-				return -1;
-			}
-			break;
-		}
-		uhttp_close(&http);
-		if (!total) {
-			s_copy(err, "empty image", errcap);
-			return -1;
-		}
-		if (contains_ci(http.resp.content_encoding, "deflate"))
-			zr = inflate_zlib_mem(image_comp_buf, total,
-					      image_file_buf, cap, &plen,
-					      &image_inflate_ws);
-		else
-			zr = inflate_gzip_mem(image_comp_buf, total,
-					      image_file_buf, cap, &plen,
-					      &image_inflate_ws);
-		if (zr != 0) {
-			s_copy(err, "compressed image is corrupt", errcap);
-			return -1;
-		}
-		*out = image_file_buf;
-		*outlen = plen;
-		return 0;
-	}
-
-	for (;;) {
-		rv = uhttp_read(&http, image_file_buf + total, cap - total,
-				UHTTP_IDLE_TIMEOUT_MS);
-		if (rv > 0) {
-			total += (unsigned int)rv;
-			if (total >= cap)
-				break;
-			continue;
-		}
-		if (rv < 0) {
-			s_copy(err, uhttp_error_string(rv), errcap);
-			uhttp_close(&http);
-			return -1;
-		}
-		break;
-	}
-	uhttp_close(&http);
-	if (!total) {
+	if (len == 0) {
 		s_copy(err, "empty image", errcap);
 		return -1;
 	}
 	*out = image_file_buf;
-	*outlen = total;
+	*outlen = len;
 	return 0;
 }
+
 
 /* Read one stylesheet into the shared static buffer.  CSS is parsed
  * immediately, so it does not need the page heap; this leaves the heap for
@@ -941,7 +1003,8 @@ static int fetch_image(const char *url, unsigned int cap,
 static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
 		     char *err, unsigned int errcap)
 {
-	unsigned int total = 0;
+	unsigned int len;
+	int tr = 0;
 	int rv;
 
 	*out = 0;
@@ -957,98 +1020,21 @@ static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
 		*outlen = (unsigned int)rv;
 		return 0;
 	}
-
-	http.user_agent = "nebos-browser/0.1";
-	rv = uhttp_open(&http, url, UHTTP_GZIP, 0);
-	if (rv != 0) {
-		s_copy(err, uhttp_error_string(rv), errcap);
+	len = (unsigned int)fetch_remote(url, BR_CSS_MAX, image_io_buf,
+					 BR_CSS_MAX,
+					 image_io_buf + BR_CSS_MAX,
+					 BR_CSS_COMP_MAX, &fetch_meta, &tr, err,
+					 errcap);
+	if ((int)len < 0)
 		return -1;
-	}
-	if (http.resp.gzip ||
-	    contains_ci(http.resp.content_encoding, "gzip") ||
-	    contains_ci(http.resp.content_encoding, "deflate")) {
-		unsigned char *comp = image_io_buf + BR_CSS_MAX;
-		unsigned int plen = 0;
-		int zr, was_trunc;
-
-		total = 0;
-		for (;;) {
-			rv = uhttp_read(&http, comp + total,
-					BR_CSS_COMP_MAX - total,
-					UHTTP_IDLE_TIMEOUT_MS);
-			if (rv > 0) {
-				total += (unsigned int)rv;
-				if (total >= BR_CSS_COMP_MAX)
-					break;
-				continue;
-			}
-			if (rv < 0) {
-				s_copy(err, uhttp_error_string(rv), errcap);
-				uhttp_close(&http);
-				return -1;
-			}
-			break;
-		}
-		uhttp_close(&http);
-		if (!total) {
-			s_copy(err, "empty stylesheet", errcap);
-			return -1;
-		}
-		if (contains_ci(http.resp.content_encoding, "deflate"))
-			zr = inflate_trunc(comp, total, image_io_buf,
-					   BR_CSS_MAX, &plen, 0, &was_trunc);
-		else
-			zr = inflate_trunc(comp, total, image_io_buf,
-					   BR_CSS_MAX, &plen, 1, &was_trunc);
-		if (zr != 0) {
-			s_copy(err, "stylesheet is corrupt", errcap);
-			return -1;
-		}
-		*out = image_io_buf;
-		*outlen = plen;
-		return 0;
-	}
-
-	for (;;) {
-		rv = uhttp_read(&http, image_io_buf + total,
-				BR_CSS_MAX - total, UHTTP_IDLE_TIMEOUT_MS);
-		if (rv > 0) {
-			total += (unsigned int)rv;
-			if (total >= BR_CSS_MAX)
-				break;
-			continue;
-		}
-		if (rv < 0) {
-			s_copy(err, uhttp_error_string(rv), errcap);
-			uhttp_close(&http);
-			return -1;
-		}
-		break;
-	}
-	uhttp_close(&http);
-	if (!total) {
+	if (len == 0) {
 		s_copy(err, "empty stylesheet", errcap);
 		return -1;
 	}
 	*out = image_io_buf;
-	*outlen = total;
+	*outlen = len;
 	return 0;
 }
-
-static void browser_net_open(void)
-{
-	http.keepalive = 0;
-	uhttp_close(&http);
-	http.keepalive = 1;
-}
-
-static void browser_net_close(void)
-{
-	http.keepalive = 0;
-	uhttp_close(&http);
-}
-
-/* ---- page loading ---- */
 
 static void redraw_now(void);
 
@@ -1198,7 +1184,6 @@ static void preload_step(void)
 			preload_active = 0;
 			preload_pending = 1;
 			preload_scroll = page_scroll.offset;
-			browser_net_close();
 			set_status(post_status_text, post_status_error,
 				   post_status_ttl);
 			ngui_invalidate(&ui);
@@ -1229,7 +1214,6 @@ static void preload_step(void)
 
 	preload_active = 0;
 	preload_pending = 0;
-	browser_net_close();
 	set_status(post_status_text, post_status_error, post_status_ttl);
 	ngui_invalidate(&ui);
 }
@@ -1269,7 +1253,6 @@ static void load_page(const char *url, int local, int push)
 
 	final[0] = '\0';
 
-	browser_net_open();
 	heap_clear();
 	image_reset();
 	page_scroll.offset = 0;
@@ -1349,7 +1332,6 @@ static void load_page(const char *url, int local, int push)
 
 static void load_home(int push)
 {
-	browser_net_close();
 	heap_clear();
 	image_reset();
 	page_scroll.offset = 0;
@@ -2551,8 +2533,6 @@ void _start(const char *arg)
 	br_set_theme(ui.theme.text, ui.theme.bg, ui.theme.panel,
 		     ui.theme.accent);
 	br_set_viewport(BR_VIEWPORT_W);
-	uhttp_init(&http);
-	http.user_agent = "nebos-browser/0.1";
 	if (u_getcwd(cwd, sizeof(cwd)) != 0 || !cwd[0])
 		s_copy(cwd, "/", sizeof(cwd));
 	heap_clear();
@@ -2578,7 +2558,6 @@ void _start(const char *arg)
 			preload_scroll = page_scroll.offset;
 			preload_pending = 0;
 			preload_active = 1;
-			browser_net_open();
 		}
 		click_url[0] = '\0';
 		now = u_ticks_ms();
@@ -2630,7 +2609,6 @@ void _start(const char *arg)
 			break;
 		u_sleep_ms(10);
 	}
-	browser_net_close();
 	u_win_close();
 	u_exit(0);
 }

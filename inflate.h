@@ -34,6 +34,8 @@ struct inflate_huff {
 struct inflate {
 	struct inflate_src src;
 	struct inflate_sink sink;
+	void (*progress)(void *ctx);    /* optional UI/service pump */
+	void *progress_ctx;
 
 	unsigned int bitbuf;
 	int bitcnt;

@@ -119,6 +119,8 @@ static int flush_out(struct inflate *z)
 	if (r)
 		return -1;
 	z->pending = 0;
+	if (z->progress)
+		z->progress(z->progress_ctx);
 	return 0;
 }
 

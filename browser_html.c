@@ -222,7 +222,10 @@ static void decode_entity(const char *s, unsigned int len, unsigned int *pos,
 	while (i < len && s[i] != ';' && i - start < 12)
 		i++;
 	if (i >= len || s[i] != ';') {
+		/* Not an entity: emit the '&' and advance past it.  Leaving
+		 * *pos unchanged here used to spin forever on bare '&'. */
 		emit(out, cap, n, '&');
+		*pos = start;
 		return;
 	}
 	if (s[start] == '#') {

@@ -454,9 +454,13 @@ run area), so adding code no longer moves any address.
   inline `<img>` decoding.  Images are fetched one per main-loop iteration
   (so text and scrolling stay responsive) and only when their measured
   position is within the viewport plus 160 px; deferred images are loaded as
-  the page scrolls.  `uhttp` keep-alive reuses one TCP/TLS connection across a
-  batch of images and reconnects/retries once if the server drops it.  Page
-  and image buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
+  the page scrolls.  Network work runs in a headless `curl __fetch` helper
+  process (`ucmd_curl.c`): it writes the raw body and a small metadata file
+  under `/share`, while the browser keeps drawing and scrolling its own
+  window.  The helper asks for identity encoding because inflating multi-MB
+  pages in the browser process stalled the UI; if a server still sends gzip,
+  the browser's inflate has a progress hook that pumps the UI.  Page and
+  image buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
   arenas (2560 nodes, 128 KB attributes, 1792 rules), and page bodies are
   capped at 2 MB with CSS sheets up to 832 KB (six sheets).  Images are
   decoded once into a shared 24 MB arena and copied to a display bitmap at
@@ -997,10 +1001,17 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     the cached bitmap on every repaint.  Lazy image loading uses the last
     measured positions; adding an image can reflow the content above it, and
     images below the viewport stay as `[image]` until scrolled into range.
-    Video/audio elements are placeholders, and pages that depend on
-    `display:grid`/flex or CSS variables (tagesschau's player and ad slots,
-    for example) can show empty bordered boxes or miss colours.  Because the
-    default canvas is dark, a
+    Each network fetch starts a one-shot helper process and opens a fresh
+    TCP/TLS connection (the `uhttp` keep-alive path exists but the browser
+    does not use it across helper jobs), so many tiny resources have extra
+    process/connection overhead.  The helper deliberately requests identity
+    encoding, so a page that is only small when compressed can exceed the
+    2 MB page/832 KB CSS caps.  Video/audio elements are placeholders, and
+    pages that depend on `display:grid`/flex or CSS variables
+    (tagesschau's player and ad slots, for example) can show empty bordered
+    boxes or miss colours.  Bare `&` characters are now consumed by the
+    entity decoder instead of looping forever.  Because the default canvas is
+    dark, a
     page that sets dark text but relies on the browser's default white
     background can be hard to read; pages with their own full background and
     colour rules are unaffected.  TLS is phase A (no certificate
