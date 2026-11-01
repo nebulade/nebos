@@ -442,15 +442,20 @@ run area), so adding code no longer moves any address.
   inline `<style>` last), tag/class/id and descendant/child selectors,
   colours/`rgba()`, backgrounds, font size (`px`/`%`/`em`/`rem`), numeric
   weights, `!important`, line-height, alignment, margins, padding, borders,
-  `list-style: none`, `text-transform: uppercase`, `display`, and percentage
-  `width`/`height`/`max-width`; selectors with `:`/`[`/`+`/`~` are skipped
-  individually, and `@media`/`@font-face`/`@import` blocks are ignored.
-  `browser.c` owns the layout/render, URL bar, history, status bar and inline
-  `<img>` decoding.  Page and image buffers come from `SYS_MEM_ALLOC`; the DOM
-  uses fixed static arenas.  Images are decoded once into a shared 24 MB
-  arena and copied to a display bitmap at most 1000 px wide (up to 16 images,
-  512 KB files / 8 MP decodes), so 4K screenshots fit the 32 MB heap.  There
-  is no JavaScript, forms, floats, flex/grid or standalone image viewer mode.
+  `list-style: none`, `text-transform: uppercase`, `display`, percentage
+  `width`/`height`/`max-width`, and basic `float: left/right` columns.
+  `@media (min-width/max-width)` blocks are evaluated against a fixed 1000 px
+  desktop viewport; `@font-face`/`@import`/`@keyframes` are skipped.  Inline
+  `<svg>` subtrees and closed `<details>` are skipped (not renderable), and
+  `<video>` gets a placeholder box.  `browser.c` owns a 960x640 window, the
+  layout/render, URL bar, history, status bar and inline `<img>` decoding.
+  Page and image buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
+  arenas (2560 nodes, 128 KB attributes, 1792 rules), and page bodies are
+  capped at 2 MB with CSS sheets up to 832 KB (six sheets).  Images are
+  decoded once into a shared 24 MB arena and copied to a display bitmap at
+  most 1000 px wide (up to 16 images, 512 KB files / 8 MP decodes), so 4K
+  screenshots fit the 32 MB heap.  There is no JavaScript, forms, flex/grid,
+  CSS variables, absolute/fixed positioning or standalone image viewer mode.
   `SYS_SPAWN` loads FAT ELFs through `kmalloc` now (the old 16 KB
   `fat_load_buf` is gone) and wraps the load in `sys_fs_enter/exit`, since the
   floppy needs IRQ 6.
@@ -967,18 +972,25 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     within roughly 30 KB of the `0x7F000` wall.  Adding more kernel buffers
     or commands should be paired with reclaiming space elsewhere.
 
-23. Browser limits: no JavaScript, forms, floats, flex/grid, tables with
-    column widths, absolute/fixed positioning, inline-block sizing or
-    standalone image documents.  `@media`/`@font-face`/`@import` are ignored,
-    so only the base CSS applies on a narrow window, and pseudo-classes are
-    never matched (`:hover` styles only via their non-pseudo siblings).
-    `font-size` maps to 1x/2x only, `em`/`rem` both use a 16 px root, and
-    block `width`/`max-width` are not used for centring.  Images are decoded
-    eagerly into a 24 MB shared arena and downscaled to a 1000 px display
-    bitmap (16 images, 512 KB files / 8 MP decodes); a large image-heavy page
-    can still exhaust the 32 MB heap, and the first `<img>` after a big
-    screenshot can transiently need a new heap growth.  `img_draw` rescales
-    the cached bitmap on every repaint.  TLS is phase A (no certificate
+23. Browser limits: no JavaScript, forms, flex/grid, CSS custom properties
+    (`var(--...)`), tables with column widths, absolute/fixed positioning,
+    inline-block sizing or standalone image documents.  Float support is the
+    basic Bootstrap-grid case: consecutive floated blocks are laid side by
+    side with percentage/px widths, `float:right` is treated like left, there
+    is no `clear`, percentage margins are approximated as pixels, and a float
+    without a width uses a text-width estimate.  `@media` blocks are evaluated
+    against a fixed 1000 px desktop viewport (so narrow/adaptive pages get the
+    desktop rules, not their mobile layout), and pseudo-classes are never
+    matched.  `font-size` maps to 1x/2x only, `em`/`rem` both use a 16 px
+    root, and block `width`/`max-width` are not used for centring.  Images
+    are decoded eagerly into a 24 MB shared arena and downscaled to a 1000 px
+    display bitmap (16 images, 512 KB files / 8 MP decodes); a large
+    image-heavy page can still exhaust the 32 MB heap, and the first `<img>`
+    after a big screenshot can transiently need a new heap growth.  `img_draw`
+    rescales the cached bitmap on every repaint.  Video/audio elements are
+    placeholders, and pages that depend on `display:grid`/flex or CSS
+    variables (tagesschau's player and ad slots, for example) can show empty
+    bordered boxes or miss colours.  TLS is phase A (no certificate
     verification); `https` is shown as unverified.  The disk app is loaded
     from FAT at spawn time, so a cold floppy start takes a few seconds; the
     8 KB user stack means the layout state is deliberately static.

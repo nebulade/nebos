@@ -1,10 +1,10 @@
 /* browser: a small HTML/CSS browser built on ngui, the image library and the
  * shared uhttp client.
  *
- * No JavaScript, no forms, no external CSS; images are decoded with img.c and
- * drawn inline.  Large buffers (page body, compressed body, image files and
- * decode arenas) live in the per-process SYS_MEM_ALLOC heap; the DOM itself
- * uses the fixed arenas in browser_html.c.
+ * No JavaScript and no forms; external CSS is loaded over uhttp, and images
+ * are decoded with img.c and drawn inline.  Large buffers (page body and the
+ * image decode arena) live in the per-process SYS_MEM_ALLOC heap; the DOM and
+ * the image/CSS I/O scratch use fixed static arenas.
  */
 
 #include "ucmd_lib.h"
@@ -14,20 +14,23 @@
 #include "img.h"
 #include "inflate.h"
 
-#define BR_W            720
-#define BR_H            520
+#define BR_W            960
+#define BR_H            640
+/* CSS media queries are evaluated as a desktop browser. */
+#define BR_VIEWPORT_W   1000
 #define BR_TOOLBAR_H    30
 #define BR_STATUS_H     18
 
 #define BR_HEAP_INIT    (6u * 1024u * 1024u)
 #define BR_HEAP_MAX     (32u * 1024u * 1024u)
-#define BR_PAGE_MAX     (512u * 1024u)
+#define BR_PAGE_MAX     (2u * 1024u * 1024u)
 #define BR_IMG_FILE_MAX (512u * 1024u)
 #define BR_IMG_PIX_MAX  (8u * 1024u * 1024u)
 #define BR_MAX_IMAGES   16
 #define BR_IMG_ARENA    (24u * 1024u * 1024u)
 #define BR_IMG_LAYOUT_W 1000
-#define BR_CSS_MAX      (128u * 1024u)
+#define BR_CSS_MAX      (832u * 1024u)
+#define BR_CSS_COMP_MAX (192u * 1024u)
 #define BR_MAX_SHEETS   6
 #define BR_HISTORY      16
 #define BR_URL_MAX      320
@@ -75,14 +78,22 @@ static unsigned char *heap;
 static unsigned int heap_size = 0;
 static unsigned int heap_used = 0;
 
-/* One reusable file buffer and one shared decode arena: decoded pixels are
+/* One reusable I/O buffer and one shared decode arena: decoded pixels are
  * scaled down to a display bitmap, then the arena is reused for the next
- * image.  This keeps 4K screenshots inside the 32 MB heap. */
-static unsigned char image_file_buf[BR_IMG_FILE_MAX];
-static unsigned char image_comp_buf[BR_IMG_FILE_MAX];
+ * image.  This keeps 4K screenshots inside the 32 MB heap.  The two halves
+ * double as the gzip input scratch for page/CSS fetches, where the heap has
+ * no room for another multi-megabyte body. */
+static unsigned char image_io_buf[2u * BR_IMG_FILE_MAX];
+#define image_file_buf (image_io_buf)
+#define image_comp_buf (image_io_buf + BR_IMG_FILE_MAX)
+#define BR_PAGE_COMP_MAX (2u * BR_IMG_FILE_MAX)
 static struct inflate image_inflate_ws;
 static unsigned char *image_arena;
 static unsigned int image_arena_size;
+
+#if BR_CSS_MAX + BR_CSS_COMP_MAX > 2u * BR_IMG_FILE_MAX
+#error "CSS scratch must fit in image_io_buf"
+#endif
 
 static char page_url[BR_URL_MAX];
 static char page_title[BR_TITLE_MAX];
@@ -592,6 +603,74 @@ static int resolve_link(const char *base, const char *href, char *out,
 	return normalize_abs(joined, out, cap) == 0 ? 0 : -1;
 }
 
+/* Best-effort decompression: keep the first `cap` bytes and discard the
+ * rest instead of failing when a page or stylesheet is larger than the
+ * buffer.  The stream is still walked to the end, so a normal page is
+ * verified; a truncated compressed input still returns whatever was decoded
+ * so far. */
+struct trunc_buf {
+	unsigned char *dst;
+	unsigned int cap, pos;
+	int full;
+};
+
+static int trunc_write(void *ctx, const unsigned char *data, unsigned int len)
+{
+	struct trunc_buf *m = (struct trunc_buf *)ctx;
+
+	if (len > m->cap - m->pos) {
+		unsigned int room = m->cap - m->pos;
+
+		if (room) {
+			unsigned int i;
+
+			for (i = 0; i < room; i++)
+				m->dst[m->pos + i] = data[i];
+			m->pos += room;
+		}
+		m->full = 1;
+		return 0;
+	}
+	{
+		unsigned int i;
+
+		for (i = 0; i < len; i++)
+			m->dst[m->pos + i] = data[i];
+	}
+	m->pos += len;
+	return 0;
+}
+
+static int inflate_trunc(const unsigned char *src, unsigned int len,
+			 unsigned char *dst, unsigned int cap,
+			 unsigned int *outlen, int gzip, int *truncated)
+{
+	struct inflate_src in;
+	struct inflate_sink sink;
+	struct trunc_buf m;
+	unsigned int got = 0;
+	int r;
+
+	in.p = src;
+	in.len = len;
+	in.more = 0;
+	in.ctx = 0;
+	m.dst = dst;
+	m.cap = cap;
+	m.pos = 0;
+	m.full = 0;
+	sink.write = trunc_write;
+	sink.ctx = &m;
+	inflate_init(&image_inflate_ws, &in, &sink);
+	r = gzip ? inflate_gzip(&image_inflate_ws, &got) :
+		   inflate_zlib(&image_inflate_ws, &got);
+	*outlen = m.pos;
+	*truncated = m.full || r != 0;
+	if (r != 0 && m.pos == 0)
+		return -1;
+	return 0;
+}
+
 /* ---- HTTP / file fetch ---- */
 
 static int read_url(const char *url, unsigned int cap, unsigned char **out,
@@ -650,20 +729,14 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 	if (http.resp.gzip ||
 	    contains_ci(http.resp.content_encoding, "gzip") ||
 	    contains_ci(http.resp.content_encoding, "deflate")) {
-		unsigned char *comp = (unsigned char *)heap_alloc(cap, 16);
-		unsigned int climit = cap * 2;
+		unsigned char *comp = image_io_buf;
+		unsigned int climit = cap;
 		unsigned char *plain;
-		struct inflate *ws;
 		unsigned int plen = 0;
-		int zr;
+		int zr, was_trunc;
 
-		if (climit > 4u * 1024u * 1024u)
-			climit = 4u * 1024u * 1024u;
-		if (!comp) {
-			s_copy(err, "out of memory", errcap);
-			uhttp_close(&http);
-			return -1;
-		}
+		if (climit > BR_PAGE_COMP_MAX)
+			climit = BR_PAGE_COMP_MAX;
 		total = 0;
 		for (;;) {
 			rv = uhttp_read(&http, comp + total, climit - total,
@@ -685,19 +758,22 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 		}
 		uhttp_close(&http);
 		plain = (unsigned char *)heap_alloc(cap, 16);
-		ws = (struct inflate *)heap_alloc(sizeof(struct inflate), 16);
-		if (!plain || !ws) {
+		if (!plain) {
 			s_copy(err, "out of memory", errcap);
 			return -1;
 		}
 		if (contains_ci(http.resp.content_encoding, "deflate"))
-			zr = inflate_zlib_mem(comp, total, plain, cap, &plen, ws);
+			zr = inflate_trunc(comp, total, plain, cap, &plen, 0,
+					   &was_trunc);
 		else
-			zr = inflate_gzip_mem(comp, total, plain, cap, &plen, ws);
+			zr = inflate_trunc(comp, total, plain, cap, &plen, 1,
+					   &was_trunc);
 		if (zr != 0) {
 			s_copy(err, "compressed page is corrupt", errcap);
 			return -1;
 		}
+		if (was_trunc)
+			*truncated = 1;
 		*out = plain;
 		*outlen = plen;
 		return 0;
@@ -842,6 +918,107 @@ static int fetch_image(const char *url, unsigned int cap,
 	return 0;
 }
 
+/* Read one stylesheet into the shared static buffer.  CSS is parsed
+ * immediately, so it does not need the page heap; this leaves the heap for
+ * the 2 MB page body, the decode arena and the scaled image bitmaps. */
+static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
+		     char *err, unsigned int errcap)
+{
+	unsigned int total = 0;
+	int rv;
+
+	*out = 0;
+	*outlen = 0;
+	if (url[0] == '/') {
+		rv = u_syscall3(SYS_READ_FILE, (int)url, (int)image_io_buf,
+				(int)BR_CSS_MAX);
+		if (rv < 0) {
+			s_copy(err, "stylesheet not found", errcap);
+			return -1;
+		}
+		*out = image_io_buf;
+		*outlen = (unsigned int)rv;
+		return 0;
+	}
+
+	uhttp_init(&http);
+	http.user_agent = "nebos-browser/0.1";
+	rv = uhttp_open(&http, url, UHTTP_GZIP, 0);
+	if (rv != 0) {
+		s_copy(err, uhttp_error_string(rv), errcap);
+		return -1;
+	}
+	if (http.resp.gzip ||
+	    contains_ci(http.resp.content_encoding, "gzip") ||
+	    contains_ci(http.resp.content_encoding, "deflate")) {
+		unsigned char *comp = image_io_buf + BR_CSS_MAX;
+		unsigned int plen = 0;
+		int zr, was_trunc;
+
+		total = 0;
+		for (;;) {
+			rv = uhttp_read(&http, comp + total,
+					BR_CSS_COMP_MAX - total,
+					UHTTP_IDLE_TIMEOUT_MS);
+			if (rv > 0) {
+				total += (unsigned int)rv;
+				if (total >= BR_CSS_COMP_MAX)
+					break;
+				continue;
+			}
+			if (rv < 0) {
+				s_copy(err, uhttp_error_string(rv), errcap);
+				uhttp_close(&http);
+				return -1;
+			}
+			break;
+		}
+		uhttp_close(&http);
+		if (!total) {
+			s_copy(err, "empty stylesheet", errcap);
+			return -1;
+		}
+		if (contains_ci(http.resp.content_encoding, "deflate"))
+			zr = inflate_trunc(comp, total, image_io_buf,
+					   BR_CSS_MAX, &plen, 0, &was_trunc);
+		else
+			zr = inflate_trunc(comp, total, image_io_buf,
+					   BR_CSS_MAX, &plen, 1, &was_trunc);
+		if (zr != 0) {
+			s_copy(err, "stylesheet is corrupt", errcap);
+			return -1;
+		}
+		*out = image_io_buf;
+		*outlen = plen;
+		return 0;
+	}
+
+	for (;;) {
+		rv = uhttp_read(&http, image_io_buf + total,
+				BR_CSS_MAX - total, UHTTP_IDLE_TIMEOUT_MS);
+		if (rv > 0) {
+			total += (unsigned int)rv;
+			if (total >= BR_CSS_MAX)
+				break;
+			continue;
+		}
+		if (rv < 0) {
+			s_copy(err, uhttp_error_string(rv), errcap);
+			uhttp_close(&http);
+			return -1;
+		}
+		break;
+	}
+	uhttp_close(&http);
+	if (!total) {
+		s_copy(err, "empty stylesheet", errcap);
+		return -1;
+	}
+	*out = image_io_buf;
+	*outlen = total;
+	return 0;
+}
+
 /* ---- page loading ---- */
 
 static void redraw_now(void);
@@ -912,9 +1089,6 @@ static void load_stylesheets(void)
 		char url[BR_URL_MAX];
 		unsigned char *data;
 		unsigned int len;
-		int local, trunc;
-		char ctype[64];
-		char final[BR_URL_MAX];
 		char err[64];
 
 		if (nd->type != BR_NODE_ELEM || nd->tag != BR_TAG_LINK)
@@ -927,9 +1101,7 @@ static void load_stylesheets(void)
 			continue;
 		if (resolve_link(page_url, href, url, sizeof(url)) != 0)
 			continue;
-		if (read_url(url, BR_CSS_MAX, &data, &len, &local, ctype,
-			     sizeof(ctype), final, sizeof(final), err,
-			     sizeof(err), &trunc) != 0)
+		if (fetch_css(url, &data, &len, err, sizeof(err)) != 0)
 			continue;
 		if (len)
 			br_parse_css_text(&doc, (const char *)data, len);
@@ -1673,6 +1845,32 @@ static void layout_block(struct lay *l, unsigned int node,
 			ngui_fill_rect(l->ui, (struct ngui_rect){l->left,
 				 l->y + 2, l->right - l->left, 1}, BR_GRAY);
 		l->y += 8;
+	} else if (doc.nodes[node].tag == BR_TAG_VIDEO) {
+		int vw = l->right - l->left;
+		int vh;
+
+		if (doc.nodes[node].width_pct)
+			vw = vw * doc.nodes[node].width_attr / 100;
+		else if (doc.nodes[node].width_attr)
+			vw = doc.nodes[node].width_attr;
+		if (vw > l->right - l->left)
+			vw = l->right - l->left;
+		if (vw < 8)
+			vw = 8;
+		vh = vw * 9 / 16;
+		if (vh > 240)
+			vh = 240;
+		if (vh < 80)
+			vh = 80;
+		if (l->draw) {
+			ngui_fill_rect(l->ui, (struct ngui_rect){l->left, l->y,
+							 vw, vh}, 0xD69A);
+			ngui_frame(l->ui, (struct ngui_rect){l->left, l->y,
+							 vw, vh}, 0x8410);
+			ngui_text(l->ui, l->left + 8, l->y + 8, "[video]",
+				  0x4208);
+		}
+		l->y += vh + 4;
 	} else {
 		if (doc.nodes[node].tag == BR_TAG_LI && !st->no_bullet) {
 			char *m = li_marker[node];
@@ -1712,6 +1910,154 @@ static void layout_block(struct lay *l, unsigned int node,
 	}
 }
 
+
+static int text_node_blank(const struct br_node *nd)
+{
+	const char *t = doc.text + nd->text_off;
+	unsigned int i;
+
+	for (i = 0; i < nd->text_len; i++)
+		if (t[i] != ' ' && t[i] != '\t' && t[i] != '\n' &&
+		    t[i] != '\r')
+			return 0;
+	return 1;
+}
+
+/* Rough shrink-to-fit width for a float without an explicit width: sum the
+ * text/image widths in the subtree, plus padding and margins.  This keeps
+ * Bootstrap's floated nav items on one line instead of giving each the whole
+ * row. */
+static int intrinsic_width(unsigned int node, const struct br_style *pst,
+			   int depth)
+{
+	unsigned int c;
+	int w = 0;
+
+	if (depth > 12)
+		return 0;
+	for (c = doc.nodes[node].first; c; c = doc.nodes[c].next) {
+		struct br_node *nd = &doc.nodes[c];
+		struct br_style cs;
+
+		if (nd->type == BR_NODE_TEXT) {
+			w += (int)nd->text_len * (8 * pst->scale) +
+			     (pst->bold ? 1 : 0);
+			continue;
+		}
+		br_style_for(&doc, c, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE)
+			continue;
+		if (cs.float_left)
+			w += 8;
+		if (nd->tag == BR_TAG_BR) {
+			w += 8;
+			continue;
+		}
+		if (nd->tag == BR_TAG_IMG) {
+			int idx = nd->img_index;
+
+			if (idx >= 0 && idx < image_count &&
+			    images[idx].state == 1)
+				w += (int)images[idx].img.w;
+			else if (nd->width_attr)
+				w += nd->width_attr;
+			else
+				w += 64;
+			continue;
+		}
+		w += cs.pl + cs.pr + cs.ml + cs.mr;
+		w += intrinsic_width(c, &cs, depth + 1);
+		if (w > 4096)
+			break;
+	}
+	return w;
+}
+
+/* Lay consecutive floated block children side by side.  Bootstrap's grid is
+ * the main user: .row > .col-md-* with float:left and a percentage width.
+ * Each column is laid out with its own left/right edge and the row advances
+ * to the tallest column.  Returns the first child not consumed. */
+static unsigned int layout_float_group(struct lay *l, unsigned int first,
+				       const struct br_style *pst, int depth,
+				       unsigned short link)
+{
+	unsigned int n = first;
+	int row_left = l->left, row_right = l->right;
+	int row_top, row_bottom, x, any = 0;
+
+	flush_line(l);
+	row_top = l->y;
+	row_bottom = l->y;
+	x = row_left;
+	while (n) {
+		struct br_node *nd = &doc.nodes[n];
+		struct br_style cs;
+		int colw;
+
+		if (nd->type == BR_NODE_TEXT) {
+			if (text_node_blank(nd)) {
+				n = nd->next;
+				continue;
+			}
+			break;
+		}
+		br_style_for(&doc, n, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE) {
+			n = nd->next;
+			continue;
+		}
+		if (!cs.float_left)
+			break;
+		if (cs.width_kind == 2)
+			colw = (row_right - row_left) * (int)cs.width / 100;
+		else if (cs.width_kind == 1)
+			colw = (int)cs.width;
+		else {
+			colw = intrinsic_width(n, &cs, 0) +
+			       cs.pl + cs.pr + cs.ml + cs.mr + 8;
+			if (colw < 8)
+				colw = 8;
+		}
+		if (colw < 8)
+			colw = 8;
+		if (colw > row_right - row_left)
+			colw = row_right - row_left;
+		if (any && x + colw > row_right) {
+			row_top = row_bottom;
+			row_bottom = row_top;
+			x = row_left;
+		}
+		l->left = x;
+		l->right = x + colw;
+		if (l->right < l->left + 8)
+			l->right = l->left + 8;
+		l->y = row_top;
+		l->line_x = l->left;
+		l->run_x = l->left;
+		l->line_y = l->y;
+		l->line_h = 0;
+		l->nruns = 0;
+		l->space_pending = 0;
+		l->align = cs.align;
+		layout_block(l, n, &cs, depth + 1, link);
+		if (l->y > row_bottom)
+			row_bottom = l->y;
+		x += colw;
+		any++;
+		n = nd->next;
+	}
+	l->left = row_left;
+	l->right = row_right;
+	l->y = row_bottom;
+	l->line_x = l->left;
+	l->run_x = l->left;
+	l->line_y = l->y;
+	l->line_h = 0;
+	l->nruns = 0;
+	l->space_pending = 0;
+	return n;
+}
+
 static void layout_children(struct lay *l, unsigned int parent,
 			    const struct br_style *pst, int depth,
 			    unsigned short link)
@@ -1720,7 +2066,8 @@ static void layout_children(struct lay *l, unsigned int parent,
 
 	if (depth > 24)
 		return;
-	for (n = doc.nodes[parent].first; n; n = doc.nodes[n].next) {
+	n = doc.nodes[parent].first;
+	while (n) {
 		struct br_node *nd = &doc.nodes[n];
 		struct br_style cs;
 		unsigned short lk = link;
@@ -1728,15 +2075,19 @@ static void layout_children(struct lay *l, unsigned int parent,
 		if (nd->type == BR_NODE_TEXT) {
 			emit_text(l, doc.text + nd->text_off, nd->text_len, pst,
 				  link, (nd->flags & BR_NODE_PREFORMAT) != 0);
+			n = nd->next;
 			continue;
 		}
 		br_style_for(&doc, n, pst, &cs);
-		if (cs.display == BR_DISPLAY_NONE)
+		if (cs.display == BR_DISPLAY_NONE) {
+			n = nd->next;
 			continue;
+		}
 		if (nd->tag == BR_TAG_A && nd->href_off)
 			lk = (unsigned short)n;
 		if (nd->tag == BR_TAG_BR) {
 			flush_line(l);
+			n = nd->next;
 			continue;
 		}
 		if (nd->tag == BR_TAG_HR) {
@@ -1746,19 +2097,31 @@ static void layout_children(struct lay *l, unsigned int parent,
 					(struct ngui_rect){l->left, l->y + 2,
 					l->right - l->left, 1}, BR_GRAY);
 			l->y += 8;
+			n = nd->next;
 			continue;
 		}
 		if (nd->tag == BR_TAG_IMG) {
 			add_image_run(l, n, &cs, lk);
+			n = nd->next;
 			continue;
 		}
-		if (cs.display == BR_DISPLAY_BLOCK || br_tag_is_block(nd->tag)) {
+		if (nd->tag == BR_TAG_VIDEO) {
 			layout_block(l, n, &cs, depth + 1, lk);
-		} else {
+			n = nd->next;
+			continue;
+		}
+		if (cs.float_left) {
+			n = layout_float_group(l, n, pst, depth, link);
+			continue;
+		}
+		if (cs.display == BR_DISPLAY_BLOCK || br_tag_is_block(nd->tag))
+			layout_block(l, n, &cs, depth + 1, lk);
+		else {
 			layout_children(l, n, &cs, depth + 1, lk);
 			if (nd->tag == BR_TAG_TD || nd->tag == BR_TAG_TH)
 				l->space_pending = 1;
 		}
+		n = nd->next;
 	}
 }
 
@@ -2070,6 +2433,7 @@ void _start(const char *arg)
 	ngui_init(&ui, (unsigned short *)wi.fb, (int)wi.width, (int)wi.height);
 	url_in.placeholder = "http://...";
 	br_doc_init(&doc);
+	br_set_viewport(BR_VIEWPORT_W);
 	if (u_getcwd(cwd, sizeof(cwd)) != 0 || !cwd[0])
 		s_copy(cwd, "/", sizeof(cwd));
 	heap_clear();

@@ -629,6 +629,7 @@ enum {
 	PROP_BORDER_W, PROP_BORDER_COLOR, PROP_LIST_NONE,
 	PROP_WIDTH, PROP_WIDTH_KIND, PROP_MAXW, PROP_MAXW_KIND,
 	PROP_HEIGHT, PROP_HEIGHT_KIND, PROP_LH_PCT, PROP_LH_PX, PROP_UPPER,
+	PROP_FLOAT,
 	PROP_COUNT
 };
 
@@ -1225,6 +1226,16 @@ static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
 			decl_add(out, nout, PROP_DISPLAY,
 				 parse_display(s + vstart, vend - vstart),
 				 important);
+		} else if (str_eq(prop, "float")) {
+			int f = 0;
+
+			if (vend - vstart >= 4 &&
+			    ci_eq_n(s + vstart, "left", 4))
+				f = 1;
+			else if (vend - vstart >= 5 &&
+				 ci_eq_n(s + vstart, "right", 5))
+				f = 2;
+			decl_add(out, nout, PROP_FLOAT, f, important);
 		} else if (str_eq(prop, "width") ||
 			   str_eq(prop, "max-width") ||
 			   str_eq(prop, "height")) {
@@ -1380,6 +1391,124 @@ static unsigned int skip_at_rule(const char *s, unsigned int len,
 	return j;
 }
 
+static unsigned int viewport_w = 1024;
+
+void br_set_viewport(unsigned int width)
+{
+	viewport_w = width ? width : 1024;
+}
+
+static unsigned int media_len_px(const char *s, unsigned int len)
+{
+	unsigned int i = 0, whole = 0, frac = 0, scale = 1, v;
+	int em = 0;
+
+	while (i < len && is_space(s[i]))
+		i++;
+	while (i < len && s[i] >= '0' && s[i] <= '9') {
+		whole = whole * 10 + (unsigned int)(s[i] - '0');
+		i++;
+	}
+	if (i < len && s[i] == '.') {
+		i++;
+		while (i < len && s[i] >= '0' && s[i] <= '9' && scale < 1000) {
+			frac = frac * 10 + (unsigned int)(s[i] - '0');
+			scale *= 10;
+			i++;
+		}
+	}
+	while (i < len && is_space(s[i]))
+		i++;
+	if (i + 2 <= len && ci_eq_n(s + i, "em", 2)) {
+		em = 1;
+		i += 2;
+	} else if (i + 3 <= len && ci_eq_n(s + i, "rem", 3)) {
+		em = 1;
+		i += 3;
+	} else if (i + 2 <= len && ci_eq_n(s + i, "px", 2)) {
+		i += 2;
+	}
+	v = whole * 100 + (scale > 1 ? frac * 100 / scale : 0);
+	if (em)
+		return v * 16 / 100;
+	return v / 100;
+}
+
+/* One parenthesised media feature: min-width/max-width and the modern
+ * (width <= 600px) form.  Unknown features are treated as true. */
+static int media_feature_matches(const char *s, unsigned int len)
+{
+	unsigned int i;
+
+	while (len && is_space(*s)) { s++; len--; }
+	while (len && is_space(s[len - 1])) len--;
+	if (len >= 9 && ci_eq_n(s, "min-width", 9)) {
+		for (i = 9; i < len && s[i] != ':'; i++)
+			;
+		if (i < len)
+			return viewport_w >= media_len_px(s + i + 1,
+							  len - i - 1);
+		return 1;
+	}
+	if (len >= 9 && ci_eq_n(s, "max-width", 9)) {
+		for (i = 9; i < len && s[i] != ':'; i++)
+			;
+		if (i < len)
+			return viewport_w <= media_len_px(s + i + 1,
+							  len - i - 1);
+		return 1;
+	}
+	for (i = 0; i < len; i++) {
+		if (s[i] == '<' || s[i] == '>') {
+			int max = s[i] == '<';
+			unsigned int v = media_len_px(s + i + 1, len - i - 1);
+
+			if (i + 1 < len && s[i + 1] == '=')
+				v = media_len_px(s + i + 2, len - i - 2);
+			return max ? viewport_w <= v : viewport_w >= v;
+		}
+	}
+	return 1;
+}
+
+static int media_query_matches(const char *s, unsigned int len)
+{
+	unsigned int i;
+
+	if (contains_ci_len(s, len, "print") &&
+	    !contains_ci_len(s, len, "screen"))
+		return 0;
+	if (contains_ci_len(s, len, "not "))
+		return 0;
+	for (i = 0; i < len; i++) {
+		if (s[i] == '(') {
+			unsigned int st = ++i;
+
+			while (i < len && s[i] != ')')
+				i++;
+			if (!media_feature_matches(s + st, i - st))
+				return 0;
+		}
+	}
+	return 1;
+}
+
+static int media_list_matches(const char *s, unsigned int len)
+{
+	unsigned int i = 0;
+
+	while (i < len) {
+		unsigned int st = i;
+
+		while (i < len && s[i] != ',')
+			i++;
+		if (media_query_matches(s + st, i - st))
+			return 1;
+		i++;
+	}
+	return 0;
+}
+
 static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 {
 	unsigned int i = 0;
@@ -1401,6 +1530,33 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 		if (i >= len || s[i] == '}')
 			break;
 		if (s[i] == '@') {
+			if (i + 6 <= len && ci_eq_n(s + i, "@media", 6)) {
+				unsigned int q = i + 6;
+
+				while (q < len && s[q] != '{')
+					q++;
+				if (q < len &&
+				    media_list_matches(s + i + 6,
+						       q - (i + 6))) {
+					unsigned int b = q + 1, e = b;
+					int depth = 1;
+
+					while (e < len && depth) {
+						if (s[e] == '{')
+							depth++;
+						else if (s[e] == '}')
+							depth--;
+						e++;
+					}
+					if (depth == 0)
+						parse_css(d, s + b,
+							 (e - 1) - b);
+					i = e;
+				} else {
+					i = skip_at_rule(s, len, i);
+				}
+				continue;
+			}
 			i = skip_at_rule(s, len, i);
 			continue;
 		}
@@ -1741,6 +1897,9 @@ static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 	case PROP_UPPER:
 		st->uppercase = (unsigned char)(dcl->val != 0);
 		break;
+	case PROP_FLOAT:
+		st->float_left = (unsigned char)dcl->val;
+		break;
 	default:
 		break;
 	}
@@ -1778,6 +1937,7 @@ void br_style_for(struct br_doc *d, unsigned int node,
 
 	*out = *parent;
 	out->has_bg = 0;
+	out->float_left = 0;
 	out->border_w = 0;
 	out->border_color = 0;
 	out->width = out->max_width = out->height = 0;
@@ -1928,6 +2088,21 @@ static void implicit_close(struct br_doc *d, unsigned short *stack,
 	}
 }
 
+static int has_attr_token(const char *s, unsigned int len, const char *name)
+{
+	unsigned int i, n = s_len(name);
+
+	for (i = 0; i + n <= len; i++) {
+		if (i && !is_space(s[i - 1]) && s[i - 1] != '/')
+			continue;
+		if (!ci_eq_n(s + i, name, n))
+			continue;
+		if (i + n == len || is_space(s[i + n]) || s[i + n] == '=')
+			return 1;
+	}
+	return 0;
+}
+
 int br_parse(struct br_doc *d, const char *html, unsigned int len)
 {
 	unsigned short stack[64];
@@ -2064,6 +2239,24 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 					i++;
 				if (i < len)
 					i++;
+				continue;
+			}
+			if (tag == BR_TAG_SVG && !selfclose) {
+				/* Inline SVG is not rendered; skip its subtree so
+				 * logos and icon sprites do not consume the node
+				 * arena. */
+				int p = find_ci(html, len, "</svg>", 6, i);
+				i = p >= 0 ? (unsigned int)p + 6 : len;
+				continue;
+			}
+			if (tag == BR_TAG_DETAILS && !selfclose &&
+			    !has_attr_token(html + attr_start,
+					    attr_end - attr_start, "open")) {
+				/* Closed <details> is collapsed (and this browser has
+				 * no script to open it); skipping the subtree keeps
+				 * mobile mega-menus out of the node arena. */
+				int p = find_ci(html, len, "</details>", 10, i);
+				i = p >= 0 ? (unsigned int)p + 10 : len;
 				continue;
 			}
 			if (tag == BR_TAG_STYLE) {

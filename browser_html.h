@@ -6,11 +6,11 @@
 #ifndef BROWSER_HTML_H
 #define BROWSER_HTML_H
 
-#define BR_MAX_NODES     1536
-#define BR_TEXT_SIZE     24576
-#define BR_ATTR_SIZE     64000
+#define BR_MAX_NODES     2560
+#define BR_TEXT_SIZE     32768
+#define BR_ATTR_SIZE     131072
 #define BR_CSS_SIZE      12288
-#define BR_MAX_RULES     1536
+#define BR_MAX_RULES     1792
 #define BR_DECLS         16
 #define BR_TITLE_MAX     96
 
@@ -64,6 +64,7 @@ struct br_style {
 	unsigned char underline;
 	unsigned char align;        /* BR_ALIGN_* */
 	unsigned char display;      /* BR_DISPLAY_* */
+	unsigned char float_left;   /* float: left/right */
 	unsigned char no_bullet;    /* list-style: none (inherited) */
 	unsigned char uppercase;    /* text-transform: uppercase (inherited) */
 	unsigned char border_w;
@@ -142,6 +143,7 @@ unsigned int br_parse_image_doc(struct br_doc *d, const char *src);
 
 /* External CSS is parsed by the browser after br_parse(); parse the inline
  * <style> blocks last so the cascade order matches the document. */
+void br_set_viewport(unsigned int width);
 void br_parse_css_text(struct br_doc *d, const char *css, unsigned int len);
 void br_parse_inline_css(struct br_doc *d);
 void br_reset_styles(struct br_doc *d);
