@@ -56,6 +56,9 @@ enum {
 #define ACT_HOME     (1u << 4)
 #define ACT_CLOSE    (1u << 5)
 
+#define ACT_WAIT_NAV (ACT_NAV | ACT_BACK | ACT_FORWARD | ACT_RELOAD | \
+		      ACT_HOME | ACT_CLOSE)
+
 struct br_image {
 	int state;                  /* 0 empty, 1 ready */
 	struct img_image img;       /* scaled bitmap at <= BR_IMG_LAYOUT_W */
@@ -125,8 +128,9 @@ static char history[BR_HISTORY][BR_URL_MAX];
 static int hist_len, hist_pos;
 
 static char click_url[BR_URL_MAX];
-static char wait_click_url[BR_URL_MAX];
-static int wait_nav;
+static char pending_url[BR_URL_MAX];
+static unsigned int pending_action;
+static int cancel_fetch;
 static int quit;
 
 static struct ngui_rect page_rect;
@@ -726,6 +730,7 @@ static int inflate_trunc(const unsigned char *src, unsigned int len,
 #define FETCH_REQ  "/share/bfreq"
 #define FETCH_BODY "/share/bfbody"
 #define FETCH_META "/share/bfmeta"
+#define FETCH_ABORT (-2)
 
 struct fetch_meta {
 	int status;
@@ -738,6 +743,7 @@ struct fetch_meta {
 };
 
 static void draw(unsigned int *action);
+static void handle_keys(unsigned int *action);
 static void handle_page_click(unsigned int *action);
 static int fetch_helper_tty = -2;
 static struct fetch_meta fetch_meta;
@@ -781,11 +787,14 @@ static void worker_wait_ui(void)
 	if (!ngui_begin(&ui))
 		return;
 	draw(&action);
+	handle_keys(&action);
 	handle_page_click(&action);
-	if ((action & ACT_NAV) && click_url[0]) {
-		s_copy(wait_click_url, click_url, sizeof(wait_click_url));
-		wait_nav = 1;
+	if (action & ACT_WAIT_NAV) {
+		pending_action |= action & ACT_WAIT_NAV;
+		if ((action & ACT_NAV) && click_url[0])
+			s_copy(pending_url, click_url, sizeof(pending_url));
 		click_url[0] = '\0';
+		cancel_fetch = 1;
 	}
 	if (!ngui_focus(&ui) && ngui_scroll_keys(&ui, &page_scroll))
 		ngui_invalidate(&ui);
@@ -797,10 +806,12 @@ static int worker_fetch(const char *url, unsigned int cap,
 {
 	static char req[512], meta[1024];
 	char *p;
-	unsigned int n = 0, deadline;
+	unsigned int n = 0, deadline, i;
 	int rn, pid;
 	struct sys_stat st;
 
+	if (cancel_fetch || pending_action)
+		return FETCH_ABORT;
 	if (u_stat("/share", &st) != 0 || !st.is_dir ||
 	    u_stat("/ramfs/bin/curl", &st) != 0) {
 		s_copy(err, "network helper unavailable", errcap);
@@ -828,6 +839,15 @@ static int worker_fetch(const char *url, unsigned int cap,
 	deadline = u_ticks_ms() + UHTTP_TOTAL_TIMEOUT_MS + 5000;
 	while (u_alive(pid)) {
 		worker_wait_ui();
+		if (cancel_fetch || pending_action) {
+			u_kill(pid);
+			for (i = 0; i < 40 && u_alive(pid); i++)
+				u_sleep_ms(5);
+			/* The reaper releases a dead helper's NIC ownership;
+			 * give it a scheduling chance before the next request. */
+			u_sleep_ms(10);
+			return FETCH_ABORT;
+		}
 		if ((int)(u_ticks_ms() - deadline) >= 0) {
 			u_kill(pid);
 			s_copy(err, "network request timed out", errcap);
@@ -835,6 +855,8 @@ static int worker_fetch(const char *url, unsigned int cap,
 		}
 		u_sleep_ms(20);
 	}
+	if (cancel_fetch || pending_action)
+		return FETCH_ABORT;
 	rn = u_syscall3(SYS_READ_FILE, (int)FETCH_META, (int)meta,
 			(int)(sizeof(meta) - 1));
 	if (rn <= 0) {
@@ -865,7 +887,10 @@ static int fetch_remote(const char *url, unsigned int cap,
 {
 	int rv, zr, was_trunc;
 
-	if (worker_fetch(url, cap, m, err, errcap) != 0)
+	rv = worker_fetch(url, cap, m, err, errcap);
+	if (rv == FETCH_ABORT)
+		return FETCH_ABORT;
+	if (rv != 0)
 		return -1;
 	if (contains_ci(m->encoding, "gzip") ||
 	    contains_ci(m->encoding, "deflate")) {
@@ -893,7 +918,8 @@ static int fetch_remote(const char *url, unsigned int cap,
 			return -1;
 		}
 		*truncated = m->trunc || was_trunc;
-		return (int)plen;
+		return (cancel_fetch || pending_action) ? FETCH_ABORT :
+			(int)plen;
 	}
 	rv = u_syscall3(SYS_READ_FILE, (int)FETCH_BODY, (int)plain,
 			(int)plaincap);
@@ -902,7 +928,7 @@ static int fetch_remote(const char *url, unsigned int cap,
 		return -1;
 	}
 	*truncated = m->trunc || ((unsigned int)rv < m->len);
-	return rv;
+	return (cancel_fetch || pending_action) ? FETCH_ABORT : rv;
 }
 
 /* ---- HTTP / file fetch ---- */
@@ -953,11 +979,13 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 		s_copy(err, "out of memory", errcap);
 		return -1;
 	}
-	len = (unsigned int)fetch_remote(url, cap, buf, cap,
-					 image_io_buf, BR_PAGE_COMP_MAX,
-					 &fetch_meta, &tr, err, errcap);
-	if ((int)len < 0)
+	rv = fetch_remote(url, cap, buf, cap, image_io_buf, BR_PAGE_COMP_MAX,
+			  &fetch_meta, &tr, err, errcap);
+	if (rv == FETCH_ABORT)
+		return FETCH_ABORT;
+	if (rv < 0)
 		return -1;
+	len = (unsigned int)rv;
 	if (len == 0) {
 		s_copy(err, "empty response", errcap);
 		return -1;
@@ -999,11 +1027,13 @@ static int fetch_image(const char *url, unsigned int cap,
 		*outlen = (unsigned int)rv;
 		return 0;
 	}
-	len = (unsigned int)fetch_remote(url, cap, image_file_buf, cap,
-					 image_comp_buf, BR_IMG_FILE_MAX,
-					 &fetch_meta, &tr, err, errcap);
-	if ((int)len < 0)
+	rv = fetch_remote(url, cap, image_file_buf, cap, image_comp_buf,
+			  BR_IMG_FILE_MAX, &fetch_meta, &tr, err, errcap);
+	if (rv == FETCH_ABORT)
+		return FETCH_ABORT;
+	if (rv < 0)
 		return -1;
+	len = (unsigned int)rv;
 	if (len == 0) {
 		s_copy(err, "empty image", errcap);
 		return -1;
@@ -1037,13 +1067,14 @@ static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
 		*outlen = (unsigned int)rv;
 		return 0;
 	}
-	len = (unsigned int)fetch_remote(url, BR_CSS_MAX, image_io_buf,
-					 BR_CSS_MAX,
-					 image_io_buf + BR_CSS_MAX,
-					 BR_CSS_COMP_MAX, &fetch_meta, &tr, err,
-					 errcap);
-	if ((int)len < 0)
+	rv = fetch_remote(url, BR_CSS_MAX, image_io_buf, BR_CSS_MAX,
+			  image_io_buf + BR_CSS_MAX, BR_CSS_COMP_MAX,
+			  &fetch_meta, &tr, err, errcap);
+	if (rv == FETCH_ABORT)
+		return FETCH_ABORT;
+	if (rv < 0)
 		return -1;
+	len = (unsigned int)rv;
 	if (len == 0) {
 		s_copy(err, "empty stylesheet", errcap);
 		return -1;
@@ -1114,7 +1145,7 @@ static int ancestor_is(unsigned int node, unsigned int tag)
 	return 0;
 }
 
-static void load_stylesheets(void)
+static int load_stylesheets(void)
 {
 	unsigned int i, sheets = 0;
 
@@ -1125,6 +1156,7 @@ static void load_stylesheets(void)
 		unsigned char *data;
 		unsigned int len;
 		char err[64];
+		int rv;
 
 		if (nd->type != BR_NODE_ELEM || nd->tag != BR_TAG_LINK)
 			continue;
@@ -1136,7 +1168,10 @@ static void load_stylesheets(void)
 			continue;
 		if (resolve_link(page_url, href, url, sizeof(url)) != 0)
 			continue;
-		if (fetch_css(url, &data, &len, err, sizeof(err)) != 0)
+		rv = fetch_css(url, &data, &len, err, sizeof(err));
+		if (rv == FETCH_ABORT)
+			return FETCH_ABORT;
+		if (rv != 0)
 			continue;
 		if (len)
 			br_parse_css_text(&doc, (const char *)data, len);
@@ -1144,6 +1179,7 @@ static void load_stylesheets(void)
 	}
 	br_parse_inline_css(&doc);
 	br_reset_styles(&doc);
+	return 0;
 }
 
 static void preload_begin(void)
@@ -1219,6 +1255,11 @@ static void preload_step(void)
 		len = 0;
 		rv = fetch_image(url, BR_IMG_FILE_MAX, &data, &len, err,
 				 sizeof(err));
+		if (rv == FETCH_ABORT) {
+			preload_active = 0;
+			preload_pending = 0;
+			return;
+		}
 		if (rv == 0 &&
 		    decode_image_data(data, len, &images[image_count]) == 0) {
 			nd->img_index = (short)image_count;
@@ -1267,8 +1308,12 @@ static void load_page(const char *url, int local, int push)
 	char final[BR_URL_MAX];
 	char err[80];
 	const char *detail = 0;
+	int rv;
 
 	final[0] = '\0';
+	cancel_fetch = 0;
+	preload_active = 0;
+	preload_pending = 0;
 
 	heap_clear();
 	image_reset();
@@ -1279,20 +1324,29 @@ static void load_page(const char *url, int local, int push)
 	page_loading = 1;
 	page_is_local = local;
 	s_copy(page_url, url, sizeof(page_url));
+	s_copy(url_in.text, page_url, NGUI_INPUT_MAX);
+	url_in.len = s_len(url_in.text);
+	url_in.cursor = url_in.len;
+	url_in.scroll = 0;
+	ngui_set_focus(&ui, 0);
 	if (final[0])
 		final[0] = '\0';
 	if (push)
 		history_push(url);
 	set_status("Loading...", 0, 0);
+	ngui_invalidate(&ui);
 	redraw_now();
 
 	if (heap_start() != 0) {
 		show_error("Out of memory", "Cannot allocate the page buffer");
 		return;
 	}
-	if (read_url(url, BR_PAGE_MAX, &body, &len, &local, ctype,
+	rv = read_url(url, BR_PAGE_MAX, &body, &len, &local, ctype,
 		     sizeof(ctype), final, sizeof(final), err, sizeof(err),
-		     &truncated) != 0) {
+		     &truncated);
+	if (rv == FETCH_ABORT)
+		return;
+	if (rv != 0) {
 		detail = err;
 		show_error("Cannot load this page", detail);
 		s_copy(url_in.text, page_url, NGUI_INPUT_MAX);
@@ -1302,8 +1356,13 @@ static void load_page(const char *url, int local, int push)
 		return;
 	}
 	page_is_local = local;
-	if (final[0])
+	if (final[0]) {
 		s_copy(page_url, final, sizeof(page_url));
+		s_copy(url_in.text, page_url, NGUI_INPUT_MAX);
+		url_in.len = s_len(url_in.text);
+		url_in.cursor = url_in.len;
+		url_in.scroll = 0;
+	}
 
 	if (contains_ci(ctype, "text/plain")) {
 		br_parse_plain(&doc, (const char *)body, len);
@@ -1319,7 +1378,10 @@ static void load_page(const char *url, int local, int push)
 		br_parse(&doc, (const char *)body, len);
 		s_copy(page_title, doc.title[0] ? doc.title : page_url,
 		       sizeof(page_title));
-		load_stylesheets();
+		if (load_stylesheets() == FETCH_ABORT)
+			return;
+		if (pending_action)
+			return;
 	}
 	post_status_text[0] = '\0';
 	post_status_error = 0;
@@ -1349,6 +1411,9 @@ static void load_page(const char *url, int local, int push)
 
 static void load_home(int push)
 {
+	cancel_fetch = 0;
+	preload_active = 0;
+	preload_pending = 0;
 	heap_clear();
 	image_reset();
 	page_scroll.offset = 0;
@@ -1357,8 +1422,14 @@ static void load_home(int push)
 	page_loading = 1;
 	page_is_local = 0;
 	s_copy(page_url, "about:home", sizeof(page_url));
+	s_copy(url_in.text, page_url, NGUI_INPUT_MAX);
+	url_in.len = s_len(url_in.text);
+	url_in.cursor = url_in.len;
+	url_in.scroll = 0;
+	ngui_set_focus(&ui, 0);
 	if (push)
 		history_push(page_url);
+	ngui_invalidate(&ui);
 	redraw_now();
 	if (heap_start() != 0) {
 		show_error("Out of memory", "Cannot allocate the browser heap");
@@ -2566,7 +2637,14 @@ void _start(const char *arg)
 		unsigned int now;
 
 		click_url[0] = '\0';
-		if (preload_active) {
+		if (pending_action) {
+			action |= pending_action & ACT_WAIT_NAV;
+			if (pending_url[0])
+				s_copy(click_url, pending_url, sizeof(click_url));
+			pending_action = 0;
+			pending_url[0] = '\0';
+			cancel_fetch = 0;
+		} else if (preload_active) {
 			if (preload_wait)
 				preload_wait = 0;
 			else
@@ -2577,11 +2655,6 @@ void _start(const char *arg)
 			preload_pending = 0;
 			preload_active = 1;
 		}
-		if (wait_nav) {
-			s_copy(click_url, wait_click_url, sizeof(click_url));
-			action |= ACT_NAV;
-			wait_nav = 0;
-		}
 		now = u_ticks_ms();
 		if (status_until && (int)(now - status_until) >= 0) {
 			status_text[0] = '\0';
@@ -2590,13 +2663,19 @@ void _start(const char *arg)
 			ngui_invalidate(&ui);
 		}
 		if (!ngui_begin(&ui)) {
-			u_sleep_ms(10);
-			continue;
+			/* A queued navigation (e.g. Enter in the URL bar during
+			 * a slow fetch) must be handled even when this frame
+			 * needs no redraw. */
+			if (!action) {
+				u_sleep_ms(10);
+				continue;
+			}
+		} else {
+			draw(&action);
+			handle_keys(&action);
+			handle_page_click(&action);
+			ngui_end(&ui);
 		}
-		draw(&action);
-		handle_keys(&action);
-		handle_page_click(&action);
-		ngui_end(&ui);
 		if (action & ACT_NAV) {
 			if (click_url[0]) {
 				navigate(click_url, 1);
@@ -2629,6 +2708,8 @@ void _start(const char *arg)
 			quit = 1;
 		if (quit)
 			break;
+		if (pending_action)
+			continue;
 		u_sleep_ms(10);
 	}
 	u_win_close();

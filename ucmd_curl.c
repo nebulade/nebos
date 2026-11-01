@@ -155,6 +155,17 @@ static void fetch_once(void)
 	uhttp_init(&h);
 	h.user_agent = "nebos-browser-fetch/0.1";
 	rv = uhttp_open(&h, req + i, 0, 0);
+	/* The browser cancels a page load by killing our predecessor.  It can
+	 * still own the single NIC receiver for a tick or two, so a fresh
+	 * helper waits briefly instead of failing the new page outright. */
+	if (rv == UHTTP_ERR_BUSY) {
+		int tries;
+
+		for (tries = 0; tries < 50 && rv == UHTTP_ERR_BUSY; tries++) {
+			u_sleep_ms(20);
+			rv = uhttp_open(&h, req + i, 0, 0);
+		}
+	}
 	if (rv != 0) {
 		err = rv;
 		fetch_fail(0, err, h.resp.content_type,
