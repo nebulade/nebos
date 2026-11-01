@@ -21,6 +21,9 @@ struct window {
 	struct gfx_canvas canvas;
 	unsigned short *back;
 	unsigned int back_pages;
+	unsigned short *pending_back;   /* new canvas waiting for the app ACK */
+	unsigned int pending_pages;
+	int resize_pending;
 	unsigned int owner_cr3;
 	int keys[16];
 	unsigned int key_head, key_tail;
@@ -63,6 +66,9 @@ int  wm_server_sync(void);
 int  wm_server_win_create(const struct win_create *in, struct win_info *out);
 int  wm_server_win_present(void);
 int  wm_server_win_close(void);
+int  wm_server_win_info(struct win_info *out);
+int  wm_server_win_ack_resize(void);
+int  wm_server_resize(unsigned int index, unsigned int cw, unsigned int ch);
 int  wm_server_key_poll(void);
 int  wm_server_key_wait(unsigned int timeout_ms);
 void wm_content_changed(struct text_screen *screen);

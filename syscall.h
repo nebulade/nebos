@@ -103,6 +103,9 @@
 #define SYS_WIN_CREATE     70  /* (struct win_create *in, struct win_info *out) */
 #define SYS_WIN_PRESENT    71  /* () -> 0/-1; publish the back canvas */
 #define SYS_WIN_CLOSE      72  /* () -> 0/-1; close the caller's window */
+#define SYS_WM_RESIZE      83  /* (index, struct wm_size *content) -> 0/-1 */
+#define SYS_WIN_INFO       84  /* (struct win_info *out) -> 0/-1 */
+#define SYS_WIN_ACK_RESIZE 85  /* () -> 0/-1; swap in the pending canvas */
 
 /* Terminal / process services used by the ring-3 shell. */
 #define SYS_TTY_CREATE     73  /* () -> tty id 1..TTY_MAX / -1 */

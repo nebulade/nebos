@@ -7,8 +7,8 @@
 #include "io.h"
 #include "vfs.h"
 
-#define COLS 64
-#define ROWS 32
+#define MAX_COLS 128
+#define MAX_ROWS 64
 #define BUF_MAX 256
 #define LINE_MAX 128
 #define HIST_MAX 16
@@ -16,7 +16,8 @@
 static struct win_info wi;
 static struct usurf surf;
 static int tty;
-static unsigned short cells[COLS * ROWS];
+static unsigned short cells[MAX_COLS * MAX_ROWS];
+static unsigned int cols = 64, rows = 32;
 static unsigned int cx, cy;
 static char line[LINE_MAX];
 static unsigned int line_len;
@@ -33,7 +34,7 @@ static unsigned int last_blink;
 
 static unsigned short *cell_at(unsigned int x, unsigned int y)
 {
-	return &cells[y * COLS + x];
+	return &cells[y * cols + x];
 }
 
 static void cell_put(unsigned int x, unsigned int y, char ch)
@@ -45,9 +46,9 @@ static void scroll_up(void)
 {
 	unsigned int i;
 
-	for (i = 0; i < (ROWS - 1) * COLS; i++)
-		cells[i] = cells[i + COLS];
-	for (; i < ROWS * COLS; i++)
+	for (i = 0; i < (rows - 1) * cols; i++)
+		cells[i] = cells[i + cols];
+	for (; i < rows * cols; i++)
 		cells[i] = 0x0A20;
 }
 
@@ -55,9 +56,9 @@ static void term_newline(void)
 {
 	cx = 0;
 	cy++;
-	if (cy >= ROWS) {
+	if (cy >= rows) {
 		scroll_up();
-		cy = ROWS - 1;
+		cy = rows - 1;
 	}
 	dirty = 1;
 }
@@ -90,7 +91,7 @@ static void term_putc(char c)
 		return;
 	cell_put(cx, cy, c);
 	cx++;
-	if (cx >= COLS)
+	if (cx >= cols)
 		term_newline();
 	dirty = 1;
 }
@@ -105,7 +106,7 @@ static void term_clear(void)
 {
 	unsigned int i;
 
-	for (i = 0; i < COLS * ROWS; i++)
+	for (i = 0; i < cols * rows; i++)
 		cells[i] = 0x0A20;
 	cx = cy = 0;
 	dirty = 1;
@@ -113,8 +114,8 @@ static void term_clear(void)
 
 static void cursor_set(unsigned int row, unsigned int col)
 {
-	if (row >= ROWS) row = ROWS - 1;
-	if (col >= COLS) col = COLS - 1;
+	if (row >= rows) row = rows - 1;
+	if (col >= cols) col = cols - 1;
 	cy = row;
 	cx = col;
 	dirty = 1;
@@ -201,8 +202,8 @@ static void render(void)
 	if (!dirty)
 		return;
 	usurf_fill(&surf, 0, 0, wi.width, wi.height, 0x000000u);
-	usurf_cells(&surf, cells, COLS, ROWS, 0, 0, 0, 0, wi.width, wi.height);
-	if (cursor_on && cx < COLS && cy < ROWS)
+	usurf_cells(&surf, cells, cols, rows, 0, 0, 0, 0, wi.width, wi.height);
+	if (cursor_on && cx < cols && cy < rows)
 		usurf_fill(&surf, (int)cx * 8, (int)cy * 16, 2, 16, 0xFFFFFFu);
 	u_win_present();
 	dirty = 0;
@@ -216,7 +217,7 @@ static void line_show(void)
 	cx = line_col;
 	for (i = 0; i < line_len; i++)
 		term_putc(line[i]);
-	for (x = cx; x < COLS; x++)
+	for (x = cx; x < cols; x++)
 		cell_put(x, cy, ' ');
 	dirty = 1;
 }
@@ -741,6 +742,10 @@ void _start(const char *arg)
 	if (u_win_create(512, 512, "term", &wi) != 0)
 		u_exit(1);
 	usurf_init(&surf, wi.fb, wi.width, wi.height, wi.width * 2, 16);
+	cols = wi.width / 8;
+	rows = wi.height / 16;
+	if (cols > MAX_COLS) cols = MAX_COLS;
+	if (rows > MAX_ROWS) rows = MAX_ROWS;
 	term_clear();
 	u_getcwd(cwd, sizeof(cwd));
 	{
@@ -754,8 +759,29 @@ void _start(const char *arg)
 	render();
 
 	for (;;) {
+		struct win_info cur;
 		int got = 0;
 
+		if (u_win_info(&cur) == 0 &&
+		    (cur.width != wi.width || cur.height != wi.height)) {
+			if (u_win_ack_resize() == 0) {
+				wi = cur;
+				usurf_init(&surf, wi.fb, wi.width, wi.height,
+					   wi.width * 2, 16);
+				cols = wi.width / 8;
+				rows = wi.height / 16;
+				if (cols > MAX_COLS) cols = MAX_COLS;
+				if (rows > MAX_ROWS) rows = MAX_ROWS;
+				term_clear();
+				if (fg_pid < 0)
+					prompt();
+				else {
+					cx = cy = 0;
+					line_row = line_col = 0;
+				}
+				dirty = 1;
+			}
+		}
 		drain_tty();
 		if (fg_pid > 0) {
 			if (!u_alive((unsigned int)fg_pid)) {

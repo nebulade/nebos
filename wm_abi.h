@@ -91,6 +91,10 @@ struct wm_geom {
 	int x, y;
 };
 
+struct wm_size {
+	unsigned int w, h;
+};
+
 /* Generic canvas-window client API (gfx commands own their own window). */
 struct win_create {
 	unsigned int w, h;

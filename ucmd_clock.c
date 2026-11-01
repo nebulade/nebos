@@ -47,6 +47,21 @@ static unsigned short *fb;
 static unsigned int cw, ch;
 static unsigned int cx, cy, radius, rad_hour, rad_min, rad_sec, tick_len;
 
+static void clock_geometry(void)
+{
+	cx = cw / 2;
+	cy = ch / 2;
+	radius = (cw < ch) ? cw / 2 : ch / 2;
+	if (radius > 200)
+		radius = 200;
+	rad_hour = radius / 2;
+	rad_min = radius * 7 / 10;
+	rad_sec = radius * 9 / 10;
+	tick_len = radius / 13;
+	if (tick_len < 2)
+		tick_len = 2;
+}
+
 static unsigned short rgb565(unsigned int r, unsigned int g, unsigned int b)
 {
 	return (unsigned short)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
@@ -170,20 +185,22 @@ void _start(const char *arg)
 	cw = info.width;
 	ch = info.height;
 
-	cx = cw / 2;
-	cy = ch / 2;
-	radius = (cw < ch) ? cw / 2 : ch / 2;
-	if (radius > 200)
-		radius = 200;
-	rad_hour = radius / 2;
-	rad_min = radius * 7 / 10;
-	rad_sec = radius * 9 / 10;
-	tick_len = radius / 13;
-	if (tick_len < 2)
-		tick_len = 2;
+	clock_geometry();
 
 	for (;;) {
+		struct win_info cur;
 		int k = u_key_poll();
+
+		if (u_win_info(&cur) == 0 &&
+		    (cur.width != cw || cur.height != ch)) {
+			if (u_win_ack_resize() == 0) {
+				fb = (unsigned short *)cur.fb;
+				cw = cur.width;
+				ch = cur.height;
+				clock_geometry();
+				last_sec = 99;
+			}
+		}
 
 		if (k == 0x1B || k == 0x03)
 			break;

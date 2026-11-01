@@ -245,6 +245,13 @@ static void wm_free_canvas_window(unsigned int idx)
 		w->back = 0;
 	}
 	w->back_pages = 0;
+	if (w->pending_back) {
+		for (i = 0; i < w->pending_pages; i++)
+			mm_free_page((unsigned int)w->pending_back + i * PAGE_SIZE);
+		w->pending_back = 0;
+	}
+	w->pending_pages = 0;
+	w->resize_pending = 0;
 	gfx_free(&w->canvas);
 	w->canvas_window = 0;
 }
@@ -313,6 +320,9 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	w->back_pages = pages;
 	w->canvas.seq = 1;
 	w->canvas.drawn = 0;
+	w->pending_back = 0;
+	w->pending_pages = 0;
+	w->resize_pending = 0;
 	w->pw = cw + 2;
 	w->ph = ch + WM_TITLE_H + 2;
 	w->x = 24 + i * 32;
@@ -355,7 +365,8 @@ int wm_server_win_present(void)
 	if (idx < 0)
 		return -1;
 	w = &windows[idx];
-	if (!w->canvas_window || !w->back || !w->canvas.px)
+	if (!w->canvas_window || !w->back || !w->canvas.px ||
+	    w->resize_pending)
 		return -1;
 	src = (const unsigned short *)USER_GFX_BASE;
 	n = w->canvas.w * w->canvas.h;
@@ -381,6 +392,118 @@ int wm_server_win_close(void)
 	windows[idx].content_gen++;
 	wm_focus_top();
 	wm_request_redraw();
+	return 0;
+}
+
+int wm_server_win_info(struct win_info *out)
+{
+	int idx = wm_window_for_pid(current_proc()->pid);
+	struct window *w;
+
+	if (!out || idx < 0)
+		return -1;
+	w = &windows[idx];
+	if (!w->canvas_window)
+		return -1;
+	out->fb = (void *)USER_GFX_BASE;
+	out->width = w->canvas.w;
+	out->height = w->canvas.h;
+	out->id = (unsigned int)idx;
+	return 0;
+}
+
+int wm_server_win_ack_resize(void)
+{
+	int idx = wm_window_for_pid(current_proc()->pid);
+	struct window *w;
+	unsigned int i, old_pages;
+
+	if (idx < 0)
+		return -1;
+	w = &windows[idx];
+	if (!w->canvas_window || !w->resize_pending || !w->pending_back)
+		return -1;
+
+	old_pages = w->back_pages;
+	if (w->owner_cr3)
+		paging_release_user_range(w->owner_cr3, USER_GFX_BASE,
+					  old_pages * PAGE_SIZE, 0);
+	for (i = 0; i < w->pending_pages; i++) {
+		if (!paging_map_page(current_proc()->cr3,
+				     USER_GFX_BASE + i * PAGE_SIZE,
+				     (unsigned int)w->pending_back + i * PAGE_SIZE,
+				     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
+			/* Put the old mapping back; this is a last-resort path. */
+			paging_release_user_range(current_proc()->cr3,
+						  USER_GFX_BASE,
+						  i * PAGE_SIZE, 0);
+			for (i = 0; i < old_pages; i++)
+				paging_map_page(current_proc()->cr3,
+					USER_GFX_BASE + i * PAGE_SIZE,
+					(unsigned int)w->back + i * PAGE_SIZE,
+					PTE_USER | PTE_WRITABLE | PTE_PRESENT);
+			for (i = 0; i < w->pending_pages; i++)
+				mm_free_page((unsigned int)w->pending_back +
+					     i * PAGE_SIZE);
+			w->pending_back = 0;
+			w->pending_pages = 0;
+			w->resize_pending = 0;
+			return -1;
+		}
+		invlpg_va(USER_GFX_BASE + i * PAGE_SIZE);
+	}
+	for (i = 0; i < old_pages; i++)
+		mm_free_page((unsigned int)w->back + i * PAGE_SIZE);
+	w->back = w->pending_back;
+	w->back_pages = w->pending_pages;
+	w->pending_back = 0;
+	w->pending_pages = 0;
+	w->resize_pending = 0;
+	return 0;
+}
+
+int wm_server_resize(unsigned int index, unsigned int cw, unsigned int ch)
+{
+	struct window *w;
+	struct gfx_canvas nf;
+	unsigned short *nb;
+	unsigned int i, pages;
+
+	if (!wm_server_is_wm() || index >= MAX_WINDOWS || !windows[index].used)
+		return -1;
+	w = &windows[index];
+	if (!w->canvas_window || !process_is_alive(w->pid))
+		return -1;
+	if (cw < 160 || ch < 80 || cw > 1024 || ch > 1024)
+		return -1;
+	if (cw + 2 > vga_fb_width() || ch + WM_TITLE_H + 2 > vga_fb_height())
+		return -1;
+	if (gfx_alloc(&nf, cw, ch) != 0)
+		return -1;
+	pages = (cw * ch * 2 + PAGE_SIZE - 1) / PAGE_SIZE;
+	nb = (unsigned short *)mm_alloc_pages(pages);
+	if (!nb) {
+		gfx_free(&nf);
+		return -1;
+	}
+	for (i = 0; i < cw * ch; i++)
+		nb[i] = 0;
+
+	wm_server_unmap_index(index);
+	gfx_free(&w->canvas);
+	if (w->pending_back) {
+		for (i = 0; i < w->pending_pages; i++)
+			mm_free_page((unsigned int)w->pending_back + i * PAGE_SIZE);
+	}
+	w->canvas = nf;
+	w->canvas.seq = 1;
+	w->canvas.drawn = 0;
+	w->pending_back = nb;
+	w->pending_pages = pages;
+	w->resize_pending = 1;
+	w->pw = cw + 2;
+	w->ph = ch + WM_TITLE_H + 2;
+	w->content_gen++;
 	return 0;
 }
 

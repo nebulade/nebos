@@ -285,6 +285,26 @@ static inline int u_win_close(void)
 	return u_syscall0(SYS_WIN_CLOSE);
 }
 
+static inline int u_win_info(struct win_info *out)
+{
+	return u_syscall1(SYS_WIN_INFO, (int)out);
+}
+
+static inline int u_win_ack_resize(void)
+{
+	return u_syscall0(SYS_WIN_ACK_RESIZE);
+}
+
+static inline int u_wm_resize(unsigned int index, unsigned int cw,
+			      unsigned int ch)
+{
+	struct wm_size s;
+
+	s.w = cw;
+	s.h = ch;
+	return u_syscall2(SYS_WM_RESIZE, (int)index, (int)&s);
+}
+
 static inline int u_win_key_wait(unsigned int timeout_ms)
 {
 	return u_syscall1(SYS_WIN_KEY_WAIT, (int)timeout_ms);

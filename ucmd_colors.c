@@ -154,8 +154,17 @@ void _start(const char *arg)
 	last_fps = u_ticks_ms();
 
 	for (;;) {
+		struct win_info cur;
 		unsigned int frame_start, elapsed;
 
+		if (u_win_info(&cur) == 0 &&
+		    (cur.width != w || cur.height != h)) {
+			if (u_win_ack_resize() == 0) {
+				px = (unsigned short *)cur.fb;
+				w = cur.width;
+				h = cur.height;
+			}
+		}
 		{
 			int k = u_key_poll();
 			if (k == 0x1B || k == 0x03)

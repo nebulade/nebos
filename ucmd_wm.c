@@ -27,6 +27,8 @@ static struct uwin wins[WM_MAX_WINDOWS];
 static unsigned int fbw, fbh;
 static int drag_id = -1;
 static int drag_dx, drag_dy;
+static int resize_id = -1;
+static unsigned int resize_mx, resize_my, resize_ow, resize_oh;
 static unsigned int prev_buttons;
 static int full_redraw = 1;
 static unsigned int bar_kexec_busy, bar_kexec_progress, bar_kexec_total;
@@ -160,6 +162,20 @@ static void draw_window_clip(unsigned int idx, int cx, int cy,
 
 		fill_clip((int)px, (int)py, 2, 10, COL_WHITE,
 			  cx, cy, cw, ch);
+	}
+
+	/* Resize grip (bottom-right corner). */
+	if (w->focused) {
+		unsigned int i;
+
+		for (i = 0; i < 10; i++) {
+			fill_clip(x + (int)pw - 3 - (int)i,
+				  y + (int)ph - 4, 1, 1, 0xD2D2D2u,
+				  cx, cy, cw, ch);
+			fill_clip(x + (int)pw - 4,
+				  y + (int)ph - 3 - (int)i, 1, 1, 0xD2D2D2u,
+				  cx, cy, cw, ch);
+		}
 	}
 }
 
@@ -422,12 +438,67 @@ static void handle_mouse(struct wm_status *st)
 				    my < (unsigned int)(u->info.y + 1 + WM_TITLE_H)) {
 					u_wm_close((unsigned int)idx);
 					full_redraw = 1;
+				} else if (mx >= (unsigned int)(u->info.x + (int)u->info.w - 16) &&
+					   my >= (unsigned int)(u->info.y + (int)u->info.h - 16)) {
+					resize_id = idx;
+					resize_mx = mx;
+					resize_my = my;
+					resize_ow = u->info.w;
+					resize_oh = u->info.h;
 				} else if (my < (unsigned int)(u->info.y + WM_TITLE_H)) {
 					drag_id = idx;
 					drag_dx = (int)mx - u->info.x;
 					drag_dy = (int)my - u->info.y;
 				}
 			}
+		}
+	} else if (down && was && resize_id >= 0) {
+		struct uwin *u = &wins[resize_id];
+
+		if (u->info.used) {
+			unsigned int oldw = u->info.w, oldh = u->info.h;
+			int nw = (int)resize_ow + (int)mx - (int)resize_mx;
+			int nh = (int)resize_oh + (int)my - (int)resize_my;
+			int maxw = (int)fbw - u->info.x;
+			int maxh = (int)fbh - u->info.y;
+
+			if (nw < 200) nw = 200;
+			if (nh < 140) nh = 140;
+			if (nw > maxw) nw = maxw;
+			if (nh > maxh) nh = maxh;
+			if (nw != (int)u->info.w || nh != (int)u->info.h) {
+				struct wm_window_info ni;
+				struct wm_map_info nm;
+				struct wm_present_info present;
+				unsigned int i;
+
+				if (u_wm_resize((unsigned int)resize_id,
+						(unsigned int)(nw - 2),
+						(unsigned int)(nh - WM_TITLE_H - 2)) == 0) {
+					if (u_wm_info((unsigned int)resize_id, &ni) == 1)
+						u->info = ni;
+					u->mapped = 0;
+					if (u_wm_map((unsigned int)resize_id, &nm) == 0) {
+						u->map = nm;
+						u->mapped = 1;
+					}
+					present.count = 0;
+					present.immediate = 1;
+					add_rect(&present, u->info.x, u->info.y, oldw, oldh);
+					add_rect(&present, u->info.x, u->info.y,
+						 u->info.w, u->info.h);
+					if (u_wm_begin() == 0) {
+						for (i = 0; i < present.count; i++)
+							draw_rect(present.rect[i].x,
+								  present.rect[i].y,
+								  present.rect[i].w,
+								  present.rect[i].h);
+						u_wm_present(&present);
+					}
+				}
+			}
+		} else {
+			resize_id = -1;
 		}
 	} else if (down && was && drag_id >= 0) {
 		struct uwin *u = &wins[drag_id];
@@ -463,6 +534,7 @@ static void handle_mouse(struct wm_status *st)
 		}
 	} else if (!down && was) {
 		drag_id = -1;
+		resize_id = -1;
 	}
 	prev_buttons = buttons;
 }

@@ -169,6 +169,35 @@ int sys_win_close(void)
 	return wm_server_win_close();
 }
 
+int sys_win_info(struct win_info *out)
+{
+	struct win_info info;
+	int r;
+
+	if (!user_ok(out, sizeof(info), 1))
+		return -1;
+	zero_struct(&info, sizeof(info));
+	r = wm_server_win_info(&info);
+	if (r == 0)
+		copy_to_user(out, &info, sizeof(info));
+	return r;
+}
+
+int sys_win_ack_resize(void)
+{
+	return wm_server_win_ack_resize();
+}
+
+int sys_wm_resize(unsigned int index, const struct wm_size *in)
+{
+	struct wm_size s;
+
+	if (!user_ok(in, sizeof(s), 0))
+		return -1;
+	copy_from_user(&s, in, sizeof(s));
+	return wm_server_resize(index, s.w, s.h);
+}
+
 int sys_win_key_wait(unsigned int timeout_ms)
 {
 	return wm_server_key_wait(timeout_ms);

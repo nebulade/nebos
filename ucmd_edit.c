@@ -615,9 +615,22 @@ void _start(const char *arg)
 
 	redraw();
 	for (;;) {
+		struct win_info cur;
 		int quit = 0, got = 0, k;
 		unsigned int now;
 
+		if (u_win_info(&cur) == 0 &&
+		    (cur.width != fb_w || cur.height != fb_h)) {
+			if (u_win_ack_resize() == 0) {
+				fb = (unsigned short *)cur.fb;
+				fb_w = cur.width;
+				fb_h = cur.height;
+				cols = fb_w / CELL_W;
+				rows = fb_h / CELL_H;
+				text_rows = (rows > 2) ? rows - 2 : 1;
+				got = 1;
+			}
+		}
 		while ((k = u_key_poll()) != 0) {
 			got = 1;
 			if (handle_key(k)) {

@@ -232,6 +232,13 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		return sys_win_present();
 	case SYS_WIN_CLOSE:
 		return sys_win_close();
+	case SYS_WM_RESIZE:
+		return sys_wm_resize((unsigned int)a1,
+				     (const struct wm_size *)a2);
+	case SYS_WIN_INFO:
+		return sys_win_info((struct win_info *)a1);
+	case SYS_WIN_ACK_RESIZE:
+		return sys_win_ack_resize();
 	case SYS_WIN_KEY_WAIT:
 		return sys_win_key_wait((unsigned int)a1);
 	case SYS_SCHEDINFO:
