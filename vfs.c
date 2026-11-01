@@ -5,6 +5,7 @@
 #include "vfs.h"
 #include "fatdetect.h"
 #include "io.h"
+#include "kmalloc.h"
 #include "ramfs.h"
 #include "share.h"
 
@@ -89,10 +90,6 @@ static void copy_bounded(char *dst, const char *src, unsigned int size)
 
 static void fat_cache_clear(void);
 
-/* One load buffer for the shell: only one command is loaded at a time and the
- * ELF loader has copied the segments out before we return. */
-static unsigned char fat_load_buf[VFS_FILE_MAX];
-
 static int fat_op_read_file(struct vfs_mount *m, const char *path,
 			    void *buf, unsigned int max)
 {
@@ -129,16 +126,24 @@ static int fat_op_load_file(struct vfs_mount *m, const char *path,
 {
 	unsigned int size = 0;
 	int is_dir = 0, r;
+	void *buf;
 
 	r = fat_op_stat(m, path, &size, &is_dir);
 	if (r != 0)
 		return r;
-	if (is_dir || size == 0 || size > sizeof(fat_load_buf))
+	if (is_dir || size == 0 || size > VFS_FILE_MAX)
 		return VFS_EINVAL;
-	r = fat_op_read_file(m, path, fat_load_buf, sizeof(fat_load_buf));
-	if (r < 0)
+	/* One command is loaded at a time; the ELF loader has copied the
+	 * segments out before release_file() runs, so a heap buffer is safe. */
+	buf = kmalloc(size);
+	if (!buf)
+		return VFS_EINVAL;
+	r = fat_op_read_file(m, path, buf, size);
+	if (r < 0) {
+		kfree(buf);
 		return r;
-	out->data = fat_load_buf;
+	}
+	out->data = buf;
 	out->size = (unsigned int)r;
 	return 0;
 }
@@ -146,7 +151,9 @@ static int fat_op_load_file(struct vfs_mount *m, const char *path,
 static void fat_op_release_file(struct vfs_mount *m, struct vfs_file *f)
 {
 	(void)m;
-	(void)f;
+	kfree((void *)f->data);
+	f->data = 0;
+	f->size = 0;
 }
 
 static int fat_op_write_file(struct vfs_mount *m, const char *path,

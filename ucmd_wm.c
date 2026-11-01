@@ -135,9 +135,11 @@ static void draw_bar(void)
 		   WM_BTN_FILES_H, "Files");
 	bar_button(WM_BTN_MINES_X, WM_BTN_MINES_Y, WM_BTN_MINES_W,
 		   WM_BTN_MINES_H, "Mines");
+	bar_button(WM_BTN_WEB_X, WM_BTN_WEB_Y, WM_BTN_WEB_W,
+		   WM_BTN_WEB_H, "Web");
 	if (bar_msg_until &&
 	    (int)(u_ticks_ms() - bar_msg_until) < 0)
-		usurf_text(&screen, (int)(WM_BTN_MINES_X + WM_BTN_MINES_W + 8),
+		usurf_text(&screen, (int)(WM_BTN_WEB_X + WM_BTN_WEB_W + 8),
 			   5, bar_msg, 0xFFD250u, 0, 0, fbw, WM_BAR_H);
 
 	/* Rainbow separator (same y as the kernel's old bar). */
@@ -590,6 +592,10 @@ static void handle_mouse(struct wm_status *st)
 			   mx < WM_BTN_MINES_X + WM_BTN_MINES_W &&
 			   my < WM_BTN_MINES_Y + WM_BTN_MINES_H) {
 			spawn_app_checked("/ramfs/bin/mines");
+		} else if (mx >= WM_BTN_WEB_X && my >= WM_BTN_WEB_Y &&
+			   mx < WM_BTN_WEB_X + WM_BTN_WEB_W &&
+			   my < WM_BTN_WEB_Y + WM_BTN_WEB_H) {
+			spawn_app_checked("/ramfs/bin/browser");
 		} else {
 			int idx = window_at(mx, my);
 

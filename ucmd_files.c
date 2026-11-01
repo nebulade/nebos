@@ -182,6 +182,12 @@ static int is_image_name(const char *name)
 	       ext_is(name, ".cur") || ext_is(name, ".pam");
 }
 
+static int is_html_name(const char *name)
+{
+	return ext_is(name, ".htm") || ext_is(name, ".html") ||
+	       ext_is(name, ".xhtml");
+}
+
 static void path_join(const char *dir, const char *name, char *out,
 		      unsigned int cap)
 {
@@ -502,6 +508,15 @@ static void open_selected(void)
 		else
 			path_join(cwd, e->name, path, sizeof(path));
 		load_path(path);
+		return;
+	}
+	if (is_html_name(e->name)) {
+		path_join(cwd, e->name, path, sizeof(path));
+		pid = u_spawn("/ramfs/bin/browser", path, 0, cwd);
+		if (pid <= 0)
+			set_status("Cannot launch the browser", 1);
+		else
+			set_status("Opened in the browser", 0);
 		return;
 	}
 	if (is_image_name(e->name)) {

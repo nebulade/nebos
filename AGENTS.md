@@ -23,8 +23,9 @@ make clean
 
 - Build flags (in `Makefile`): `-m32 -march=i586 -ffreestanding -fno-pie -nostdlib
   -fno-stack-protector -mno-sse -mno-sse2 -mno-mmx -O2`.
-- `root.img` is a second FAT12 floppy holding user binaries (`PROG.BIN`, `SPACE.BIN`)
-  and test files; it requires `mtools` to build.
+- `root.img` is a second FAT12 floppy holding user binaries (`PROG.BIN`, `SPACE.BIN`),
+  the external browser (`BROWSER`) and its `DEMO.HTM`/`PIC.BMP` test page, plus
+  a few test files; it requires `mtools` to build.
 - `make send PROGRAM=prog` transfers a binary to a real machine over serial.
 
 ## Boot chain
@@ -381,9 +382,29 @@ below the run area), so adding code no longer moves any address.
   `_start(const char *arg)` needs no crt0.  `ngui.c/h` is the shared userland
   GUI toolkit linked into `ucmd_files.c` (buttons, text fields, icons, layout
   cuts and scroll panes); `files` opens the selected text file through
-  `/ramfs/bin/edit` and image files through `/ramfs/bin/view`.  `ngui_end_ex()`
+  `/ramfs/bin/edit`, image files through `/ramfs/bin/view`, and `.htm`/`.html`
+  files through `/ramfs/bin/browser`.  `ngui_end_ex()`
   is the variant that runs the bookkeeping without publishing the canvas, for
   apps that poll input without redrawing.
+- **Browser**: `ucmd_browser.c` is a tiny `bin/browser` launcher; the real
+  browser is the external `BROWSER` on `root.img` (also looked up in `/share`
+  and on IDE/SATA FAT mounts) because it links ngui, the full image library,
+  inflate, TLS and uhttp and would not fit the compressed command pack.  The
+  launcher forwards its argument and cwd; `make run`/`run-net` attach
+  `root.img`, and a netbooted board can upload `browser.elf` to `/share`
+  (`make browser-dev` uses the board's `websrv`; stop `websrv` before browsing
+  HTTP, because it owns the NIC).
+  `uhttp.c/h` is the shared ring-3 HTTP client extracted from curl: URL
+  parsing/resolution, redirects, chunked decoding, timeouts and TLS; curl and
+  the browser both use it.  `browser_html.c/h` is a tolerant HTML tree + the
+  CSS subset (tag/class/id selectors, colours, backgrounds, font size/weight,
+  alignment, margins, padding, display); `browser.c` owns the layout/render,
+  URL bar, history, status bar and inline `<img>` decoding.  Page and image
+  buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static arenas.
+  There is no JavaScript, forms, external CSS or standalone image viewer
+  mode.  `SYS_SPAWN` loads FAT ELFs through `kmalloc` now (the old 16 KB
+  `fat_load_buf` is gone) and wraps the load in `sys_fs_enter/exit`, since the
+  floppy needs IRQ 6.
 - **Image library + viewer**: `img.h`, `img.c`, `img_mem.c`, `img_blit.c`,
   `img_png.c`, `img_bmp.c`, `img_gif.c`, `img_jpeg.c`, `img_tga.c`,
   `img_pnm.c`, `img_file.c/h` — freestanding RGB565 decoders with an optional
@@ -448,7 +469,7 @@ below the run area), so adding code no longer moves any address.
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
 `display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
-`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [hlt|c2|c3|c2ap|c3ap]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, and `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM).
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [hlt|c2|c3|c2ap|c3ap]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `pong` (responds to ARP/ICMP for our IP for 30 s),
@@ -894,5 +915,14 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
 
 22. The TCP backlog's early-request buffers cost 8 KB of kernel BSS
     (8 slots x 1 KB), and the FAT listing cache another 5 KB; `_end` is
-    within roughly 20 KB of the `0x7F000` wall.  Adding more kernel buffers
+    within roughly 30 KB of the `0x7F000` wall.  Adding more kernel buffers
     or commands should be paired with reclaiming space elsewhere.
+
+23. Browser limits: no JavaScript, forms, external stylesheets, floats,
+    flex/grid, tables with column widths or standalone image documents.  CSS
+    `font-size` maps to 1x/2x only, `vh`/`vw`/`em` units are approximated as
+    pixels, and images are decoded eagerly (up to 6, 4 MB/4 MP each) and
+    redrawn by `img_draw` on every repaint.  TLS is phase A (no certificate
+    verification); `https` is shown as unverified.  The disk app is loaded
+    from FAT at spawn time, so a cold floppy start takes a few seconds; the
+    8 KB user stack means the layout state is deliberately static.

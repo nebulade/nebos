@@ -303,6 +303,7 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 		char path[VFS_PATH_MAX], arg[VFS_PATH_MAX], cwd[VFS_PATH_MAX];
 		const char *name;
 		int pid;
+		int lr;
 
 		if (!paging_user_range_ok(current_proc()->cr3,
 					  (unsigned int)a1, sizeof(in), 0))
@@ -321,7 +322,14 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 		    copy_user_string(arg, sizeof(arg), in.arg) != 0 ||
 		    copy_user_string(cwd, sizeof(cwd), in.cwd) != 0)
 			return -1;
-		if (vfs_load_file(path, &f, &m) != 0)
+
+		/* A FAT load reads the floppy through IRQ 6, so open the
+		 * syscall's interrupts-off section for the duration (the same
+		 * window SYS_READ_FILE uses). */
+		sys_fs_enter();
+		lr = vfs_load_file(path, &f, &m);
+		sys_fs_exit();
+		if (lr != 0)
 			return -1;
 		name = path;
 		{

@@ -7,8 +7,10 @@
 #include "blkdev.h"
 #include "fat.h"
 
-/* Largest file the shell will load from a filesystem into a kernel buffer. */
-#define VFS_FILE_MAX (16 * 1024)
+/* Largest file the shell will load from a filesystem into a kernel buffer.
+ * The buffer is allocated from the kernel heap (not a static BSS array), so a
+ * large ELF on a FAT mount can be spawned without moving the low-memory wall. */
+#define VFS_FILE_MAX (2u * 1024u * 1024u)
 
 struct vfs_mount;
 struct fs_ops;

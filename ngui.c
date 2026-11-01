@@ -442,19 +442,34 @@ void ngui_line(struct ngui *ui, int x0, int y0, int x1, int y1,
 }
 
 static void ngui_glyph(struct ngui *ui, int x, int y, unsigned char c,
-		       unsigned short color)
+		       unsigned short color, int scale, int bold)
 {
 	const unsigned char *g = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
-	int row, col;
+	int row, col, sx, sy;
 
+	if (scale < 1)
+		scale = 1;
 	for (row = 0; row < FONT_8X16_ROWS; row++) {
 		unsigned char bits = g[row];
 
 		if (!bits)
 			continue;
-		for (col = 0; col < 8; col++)
-			if (bits & (0x80u >> col))
-				ngui_pixel(ui, x + col, y + row, color);
+		for (col = 0; col < 8; col++) {
+			if (!(bits & (0x80u >> col)))
+				continue;
+			for (sy = 0; sy < scale; sy++) {
+				for (sx = 0; sx < scale; sx++) {
+					ngui_pixel(ui,
+						   x + col * scale + sx +
+							(bold && scale == 1 ? 1 : 0),
+						   y + row * scale + sy,
+						   color);
+				}
+			}
+			if (bold && scale > 1)
+				ngui_pixel(ui, x + col * scale + scale,
+					   y + row * scale, color);
+		}
 	}
 }
 
@@ -463,13 +478,41 @@ unsigned int ngui_text_width(const char *s)
 	return slen(s) * 8;
 }
 
+unsigned int ngui_text_width_n(const char *s, unsigned int n, int scale)
+{
+	unsigned int i = 0;
+
+	(void)s;
+	if (scale < 1)
+		scale = 1;
+	return n * 8u * (unsigned int)scale;
+}
+
+void ngui_text_n(struct ngui *ui, int x, int y, const char *s, unsigned int n,
+		 unsigned short color)
+{
+	unsigned int i;
+
+	for (i = 0; i < n && s && s[i]; i++)
+		ngui_glyph(ui, x + (int)i * 8, y, (unsigned char)s[i], color, 1, 0);
+}
+
 void ngui_text(struct ngui *ui, int x, int y, const char *s,
 	       unsigned short color)
 {
-	int i;
+	ngui_text_n(ui, x, y, s, slen(s), color);
+}
 
-	for (i = 0; s && s[i]; i++)
-		ngui_glyph(ui, x + i * 8, y, (unsigned char)s[i], color);
+void ngui_text_styled(struct ngui *ui, int x, int y, const char *s,
+		      unsigned int n, unsigned short color, int scale, int bold)
+{
+	unsigned int i;
+
+	if (scale < 1)
+		scale = 1;
+	for (i = 0; i < n && s && s[i]; i++)
+		ngui_glyph(ui, x + (int)i * 8 * scale, y, (unsigned char)s[i],
+			   color, scale, bold);
 }
 
 void ngui_text_ellipsis(struct ngui *ui, struct ngui_rect r, int x, int y,
@@ -484,14 +527,14 @@ void ngui_text_ellipsis(struct ngui *ui, struct ngui_rect r, int x, int y,
 	if (n <= (unsigned int)max || max < 4) {
 		for (i = 0; i < n && (int)i < max; i++)
 			ngui_glyph(ui, x + (int)i * 8, y,
-				   (unsigned char)s[i], color);
+				   (unsigned char)s[i], color, 1, 0);
 		return;
 	}
 	for (i = 0; i < (unsigned int)(max - 3); i++)
-		ngui_glyph(ui, x + (int)i * 8, y, (unsigned char)s[i], color);
-	ngui_glyph(ui, x + (max - 3) * 8, y, '.', color);
-	ngui_glyph(ui, x + (max - 2) * 8, y, '.', color);
-	ngui_glyph(ui, x + (max - 1) * 8, y, '.', color);
+		ngui_glyph(ui, x + (int)i * 8, y, (unsigned char)s[i], color, 1, 0);
+	ngui_glyph(ui, x + (max - 3) * 8, y, '.', color, 1, 0);
+	ngui_glyph(ui, x + (max - 2) * 8, y, '.', color, 1, 0);
+	ngui_glyph(ui, x + (max - 1) * 8, y, '.', color, 1, 0);
 }
 
 void ngui_icon(struct ngui *ui, struct ngui_rect r, enum ngui_icon icon,

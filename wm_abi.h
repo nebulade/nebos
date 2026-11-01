@@ -30,6 +30,10 @@
 #define WM_BTN_MINES_Y WM_BTN_Y
 #define WM_BTN_MINES_W 56
 #define WM_BTN_MINES_H WM_BTN_H
+#define WM_BTN_WEB_X (WM_BTN_MINES_X + WM_BTN_MINES_W + WM_BTN_GAP)
+#define WM_BTN_WEB_Y WM_BTN_Y
+#define WM_BTN_WEB_W 56
+#define WM_BTN_WEB_H WM_BTN_H
 #define WM_TITLE_H 22
 #define WM_CLOSE_W 16
 

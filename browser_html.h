@@ -1,0 +1,137 @@
+/* browser_html: a small tolerant HTML tree + CSS cascade for the browser.
+ *
+ * Freestanding and independent of ngui: it parses a byte buffer into a static
+ * node/string arena and resolves the subset of CSS the browser understands.
+ * One document is live at a time (the browser is single-threaded). */
+#ifndef BROWSER_HTML_H
+#define BROWSER_HTML_H
+
+#define BR_MAX_NODES     1536
+#define BR_TEXT_SIZE     24576
+#define BR_ATTR_SIZE     16384
+#define BR_CSS_SIZE      12288
+#define BR_MAX_RULES     96
+#define BR_TITLE_MAX     96
+
+/* Node types. */
+#define BR_NODE_TEXT     0
+#define BR_NODE_ELEM     1
+
+/* Text-node flag: whitespace was preserved (<pre>). */
+#define BR_NODE_PREFORMAT 1
+
+/* Display values in struct br_style. */
+#define BR_DISPLAY_INLINE 0
+#define BR_DISPLAY_BLOCK  1
+#define BR_DISPLAY_NONE   2
+
+/* Text alignment. */
+#define BR_ALIGN_LEFT   0
+#define BR_ALIGN_CENTER 1
+#define BR_ALIGN_RIGHT  2
+
+enum br_tag {
+	BR_TAG_UNKNOWN = 0,
+	BR_TAG_HTML, BR_TAG_HEAD, BR_TAG_BODY, BR_TAG_TITLE, BR_TAG_STYLE,
+	BR_TAG_SCRIPT, BR_TAG_META, BR_TAG_LINK, BR_TAG_BASE, BR_TAG_NOSCRIPT,
+	BR_TAG_P, BR_TAG_DIV, BR_TAG_SPAN, BR_TAG_A, BR_TAG_B, BR_TAG_STRONG,
+	BR_TAG_I, BR_TAG_EM, BR_TAG_U, BR_TAG_CODE, BR_TAG_FONT, BR_TAG_SMALL,
+	BR_TAG_BIG, BR_TAG_BR, BR_TAG_HR, BR_TAG_IMG,
+	BR_TAG_H1, BR_TAG_H2, BR_TAG_H3, BR_TAG_H4, BR_TAG_H5, BR_TAG_H6,
+	BR_TAG_UL, BR_TAG_OL, BR_TAG_LI, BR_TAG_BLOCKQUOTE, BR_TAG_PRE,
+	BR_TAG_CENTER, BR_TAG_TABLE, BR_TAG_THEAD, BR_TAG_TBODY, BR_TAG_TFOOT,
+	BR_TAG_TR, BR_TAG_TD, BR_TAG_TH, BR_TAG_CAPTION,
+	BR_TAG_FORM, BR_TAG_INPUT, BR_TAG_BUTTON, BR_TAG_LABEL, BR_TAG_SELECT,
+	BR_TAG_OPTION, BR_TAG_TEXTAREA, BR_TAG_IFRAME, BR_TAG_SVG,
+	BR_TAG_VIDEO, BR_TAG_AUDIO, BR_TAG_CANVAS, BR_TAG_OBJECT,
+	BR_TAG_MAIN, BR_TAG_HEADER, BR_TAG_FOOTER, BR_TAG_NAV, BR_TAG_SECTION,
+	BR_TAG_ARTICLE, BR_TAG_ASIDE, BR_TAG_FIGURE, BR_TAG_FIGCAPTION,
+	BR_TAG_DETAILS, BR_TAG_SUMMARY, BR_TAG_DL, BR_TAG_DT, BR_TAG_DD,
+	BR_TAG_ADDRESS, BR_TAG_MARK, BR_TAG_TIME, BR_TAG_ABBR, BR_TAG_CITE,
+	BR_TAG_Q, BR_TAG_S, BR_TAG_STRIKE, BR_TAG_SUB, BR_TAG_SUP,
+	BR_TAG_BGSOUND, BR_TAG_EMBED, BR_TAG_PARAM, BR_TAG_SOURCE,
+	BR_TAG_TRACK, BR_TAG_WBR, BR_TAG_AREA, BR_TAG_COL, BR_TAG_COLGROUP
+};
+
+struct br_style {
+	unsigned short color;
+	unsigned short bg;
+	unsigned char has_bg;
+	unsigned char scale;        /* 1 or 2 */
+	unsigned char bold;
+	unsigned char underline;
+	unsigned char align;        /* BR_ALIGN_* */
+	unsigned char display;      /* BR_DISPLAY_* */
+	signed short mt, mb, ml, mr;
+	signed short pt, pb, pl, pr;
+};
+
+struct br_node {
+	unsigned char type;
+	unsigned char tag;
+	unsigned char flags;
+	unsigned char spare;
+	unsigned short parent;
+	unsigned short first;
+	unsigned short last;
+	unsigned short next;
+	unsigned short text_off;    /* text arena offset (text nodes) */
+	unsigned short text_len;
+	unsigned short href_off;
+	unsigned short class_off;
+	unsigned short id_off;
+	unsigned short style_off;
+	unsigned short src_off;
+	unsigned short alt_off;
+	unsigned short color_off;
+	unsigned short width_attr;
+	unsigned short height_attr;
+	short img_index;            /* -1 until the image is loaded */
+};
+
+struct br_decl {
+	unsigned char prop;
+	short val;
+};
+
+struct br_rule {
+	unsigned short sel_off;     /* selector text in the attr arena */
+	unsigned char nd;
+	struct br_decl d[8];
+};
+
+struct br_doc {
+	struct br_node *nodes;
+	unsigned int nnode;
+	unsigned int root;
+	char *text;
+	unsigned int text_used;
+	char *attrs;
+	unsigned int attrs_used;
+	struct br_rule *rules;
+	unsigned int nrules;
+	char title[BR_TITLE_MAX];
+	int truncated;
+	int plain;                  /* text/plain: one preformatted text node */
+};
+
+void br_doc_init(struct br_doc *d);
+int  br_parse(struct br_doc *d, const char *html, unsigned int len);
+int  br_parse_plain(struct br_doc *d, const char *text, unsigned int len);
+unsigned int br_parse_image_doc(struct br_doc *d, const char *src);
+
+/* A node's style: parent inherited values, UA defaults, matching rules, then
+ * the inline style attribute. */
+void br_style_for(struct br_doc *d, unsigned int node,
+		  const struct br_style *parent, struct br_style *out);
+
+int  br_tag_is_block(unsigned int tag);
+int  br_tag_is_void(unsigned int tag);
+const char *br_tag_name(unsigned int tag);
+unsigned int br_tag_from_name(const char *name);
+
+const char *br_href(struct br_doc *d, unsigned int node);
+const char *br_src(struct br_doc *d, unsigned int node);
+const char *br_alt(struct br_doc *d, unsigned int node);
+
+#endif

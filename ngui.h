@@ -151,9 +151,14 @@ void ngui_line(struct ngui *ui, int x0, int y0, int x1, int y1,
 	       unsigned short color);
 void ngui_text(struct ngui *ui, int x, int y, const char *s,
 	       unsigned short color);
+void ngui_text_n(struct ngui *ui, int x, int y, const char *s,
+		 unsigned int n, unsigned short color);
+void ngui_text_styled(struct ngui *ui, int x, int y, const char *s,
+		      unsigned int n, unsigned short color, int scale, int bold);
 void ngui_text_ellipsis(struct ngui *ui, struct ngui_rect r, int x, int y,
 			const char *s, unsigned short color);
 unsigned int ngui_text_width(const char *s);
+unsigned int ngui_text_width_n(const char *s, unsigned int n, int scale);
 void ngui_icon(struct ngui *ui, struct ngui_rect r, enum ngui_icon icon,
 	       unsigned short color);
 
