@@ -39,6 +39,28 @@ int usb_control_in(unsigned int ctrl, unsigned int addr, unsigned int mps,
 int usb_control_out(unsigned int ctrl, unsigned int addr, unsigned int mps,
 		    int low_speed, unsigned char rt, unsigned char req,
 		    unsigned short value, unsigned short index);
+int usb_control_out_data(unsigned int ctrl, unsigned int addr,
+			 unsigned int mps, int low_speed, unsigned char rt,
+			 unsigned char req, unsigned short value,
+			 unsigned short index, const unsigned char *buf,
+			 unsigned int len);
+
+/* Bulk transfers: bulk_in is start-or-poll (see usb_hcd.h). */
+int usb_bulk_out(unsigned int ctrl, unsigned int addr, unsigned int ep,
+		 unsigned int mps, const unsigned char *buf,
+		 unsigned int len);
+int usb_bulk_in(unsigned int ctrl, unsigned int addr, unsigned int ep,
+		unsigned int mps, unsigned char *buf, unsigned int len);
+
+/* Device-level probe for drivers that do not use HID interfaces (the
+ * USB Ethernet driver parses the whole configuration itself).  Return 1
+ * when the device was claimed.  Called for every non-hub device during a
+ * scan, before the per-interface HID probe. */
+typedef int (*usb_device_probe_fn)(unsigned int ctrl, unsigned int addr,
+				   unsigned int mps, int low_speed,
+				   unsigned int port, unsigned int vendor,
+				   unsigned int product);
+void usb_register_device_probe(usb_device_probe_fn fn);
 
 /* Interrupt-IN endpoints (slots 0..USB_HCD_INT_SLOTS-1; usbhid assigns
    one per HID interface it claims). */

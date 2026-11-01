@@ -24,7 +24,7 @@ EFI_LDFLAGS = -nostdlib -Wl,--subsystem,10 -Wl,-e,efi_main \
               -Wl,--image-base,0x0 -Wl,--dynamicbase \
               -Wl,--enable-reloc-section -Wl,--no-insert-timestamp
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev netmon monitor test-crypto test-images test-images-asan
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev netmon monitor test-crypto test-images test-images-asan
 
 all: floppy.img usb.img final.bin root.img
 
@@ -152,6 +152,12 @@ uhci.o: uhci.c uhci.h usb_hcd.h pci.h serial.h timer.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
 ohci.o: ohci.c ohci.h usb_hcd.h pci.h paging.h mm.h serial.h timer.h
+	$(CC) $(CFLAGS) -Os -o $@ $<
+
+xhci.o: xhci.c xhci.h usb_hcd.h pci.h paging.h mm.h serial.h timer.h spinlock.h
+	$(CC) $(CFLAGS) -Os -o $@ $<
+
+asix.o: asix.c asix.h netdev.h usb.h io.h serial.h timer.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
 usb.o: usb.c usb.h usb_hcd.h io.h serial.h timer.h
@@ -319,7 +325,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h pr
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o cmds_pack.o ramfs.o share.o payload.o
+kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o cmds_pack.o ramfs.o share.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -737,6 +743,20 @@ run-uhci: floppy.img root.img
 	qemu-system-i386 -M pc -device piix3-usb-uhci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
 	qemu-system-x86_64 -M pc -device piix3-usb-uhci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
+# xHCI variant (Braswell/Intel PCH and other USB 3.0-only machines).
+run-xhci: floppy.img root.img
+	qemu-system-i386 -M pc -device qemu-xhci -device usb-mouse -device usb-kbd -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -device qemu-xhci -device usb-mouse -device usb-kbd -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+
+# Passthrough of the real ASIX AX88772 dongle (requires the host's asix
+# driver to be unbound and permission on /dev/bus/usb/...; typically run with
+# sudo).  `-nic none` keeps the QEMU e1000 out of the way so the USB NIC is
+# the only netdev.
+ASIX_HOST ?= vendorid=0x0b95,productid=0x7720
+run-xhci-asix: floppy.img root.img
+	qemu-system-i386 -M pc -nic none -device qemu-xhci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -nic none -device qemu-xhci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+
 # Network variant: a PCI NE2000 (RTL8029, the driver's QEMU match) on QEMU's
 # user-mode network (slirp).  DHCP/DNS come from slirp, the host is 10.0.2.2
 # (e.g. `python3 -m http.server` + `curl http://10.0.2.2:8000/` in a window).
@@ -784,8 +804,10 @@ test-usb: floppy.img root.img
 	python3 tools/qmp_cursor_test.py --uhci
 	python3 tools/qmp_cursor_test.py --uhci72
 	python3 tools/qmp_cursor_test.py --hotplug
+	python3 tools/qmp_cursor_test.py --xhci
 	python3 tools/qmp_keyboard_test.py
 	python3 tools/qmp_keyboard_test.py --hotplug
+	python3 tools/qmp_keyboard_test.py --xhci
 
 scp-final: final.bin
 	scp final.bin root@192.168.0.136:
@@ -871,4 +893,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h

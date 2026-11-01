@@ -1,6 +1,7 @@
 /* Kernel: entry point at 0x7E00, timer (PIT 1 kHz), process init, terminal. */
 
 #include "acpi.h"
+#include "asix.h"
 #include "bootcon.h"
 #include "cpu.h"
 #include "idle.h"
@@ -390,6 +391,7 @@ void kernel_main(void)
 	/* USB HID backend (mouse + keyboard): controller bring-up + first
 	 * scan; devices plugged in later are picked up by the hotplug
 	 * watcher in the WM loop. */
+	asix_register();
 	usbhid_init();
 	boot_trace("usb");
 	vga_shadow_init();

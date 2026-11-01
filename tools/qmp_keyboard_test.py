@@ -60,6 +60,7 @@ def read_ppm(path):
 
 def main():
     hotplug = "--hotplug" in sys.argv
+    xhci = "--xhci" in sys.argv
     keys = ["h", "e", "l", "p", "ret"]
     if "--keys" in sys.argv:
         keys = sys.argv[sys.argv.index("--keys") + 1].split(",")
@@ -74,8 +75,12 @@ def main():
     ppm = os.path.join(workdir, "screen.ppm")
 
     kbddev = [] if hotplug else ["-device", "usb-kbd"]
-    qemu = ["qemu-system-i386", "-M", "pc",
-            "-device", "pci-ohci", "-device", "usb-mouse"] + kbddev + [
+    qemu = ["qemu-system-i386", "-M", "pc"]
+    if xhci:
+        qemu += ["-device", "qemu-xhci", "-device", "usb-mouse"]
+    else:
+        qemu += ["-device", "pci-ohci", "-device", "usb-mouse"]
+    qemu += kbddev + [
         "-drive", "file=floppy.img,format=raw,if=floppy",
         "-drive", "file=root.img,format=raw,if=floppy",
         "-display", "none",

@@ -89,6 +89,7 @@ static const struct usb_hcd_ops *hcd;
 static unsigned int generation;
 static unsigned int next_addr[USB_HCD_MAX_CTRL];
 static usb_probe_fn current_probe;
+static usb_device_probe_fn device_probe;
 static int print_devices;
 static int scan_busy;
 
@@ -206,6 +207,28 @@ int usb_control_out(unsigned int ctrl, unsigned int addr, unsigned int mps,
 	setup[6] = 0;
 	setup[7] = 0;
 	return hcd->control_transfer(ctrl, addr, mps, low_speed, setup, 0, 0, 0);
+}
+
+int usb_control_out_data(unsigned int ctrl, unsigned int addr,
+			 unsigned int mps, int low_speed, unsigned char rt,
+			 unsigned char req, unsigned short value,
+			 unsigned short index, const unsigned char *buf,
+			 unsigned int len)
+{
+	unsigned char setup[8];
+
+	if (!hcd)
+		return -1;
+	setup[0] = rt;
+	setup[1] = req;
+	setup[2] = (unsigned char)(value & 0xFF);
+	setup[3] = (unsigned char)((value >> 8) & 0xFF);
+	setup[4] = (unsigned char)(index & 0xFF);
+	setup[5] = (unsigned char)((index >> 8) & 0xFF);
+	setup[6] = (unsigned char)(len & 0xFF);
+	setup[7] = (unsigned char)((len >> 8) & 0xFF);
+	return hcd->control_transfer(ctrl, addr, mps, low_speed, setup,
+				     (unsigned char *)buf, len, 0);
 }
 
 /* Read the configuration descriptor and hand every interface with an
@@ -350,6 +373,9 @@ static void enumerate_device(unsigned int ctrl, unsigned int addr,
 	subcls  = dev_desc[5];
 	proto   = dev_desc[6];
 
+	if (device_probe)
+		device_probe(ctrl, addr, mps, low, port, vendor, product);
+
 	if (print_devices) {
 		indent(depth);
 		io_putstr("Bus ");
@@ -462,7 +488,7 @@ static void enumerate_new_device(unsigned int ctrl, unsigned int port, int low,
 		mps = 8;
 
 	/* Assign an address. */
-	if (usb_control_out(ctrl, 0, 8, low, RT_HOST2DEV_STD,
+	if (usb_control_out(ctrl, 0, mps, low, RT_HOST2DEV_STD,
 			    REQ_SET_ADDRESS, (unsigned short)addr, 0) < 0) {
 		dbg("usb:   SET_ADDRESS failed\n");
 		if (print_devices) {
@@ -488,6 +514,10 @@ int usb_hcd_init(void)
 	}
 	if (usb_ohci_ops.init() > 0) {
 		hcd = &usb_ohci_ops;
+		return 0;
+	}
+	if (usb_xhci_ops.init() > 0) {
+		hcd = &usb_xhci_ops;
 		return 0;
 	}
 	return -1;
@@ -529,6 +559,28 @@ void usb_int_in_stop(unsigned int slot)
 {
 	if (hcd && slot < USB_HCD_INT_SLOTS)
 		hcd->int_in_stop(slot);
+}
+
+void usb_register_device_probe(usb_device_probe_fn fn)
+{
+	device_probe = fn;
+}
+
+int usb_bulk_out(unsigned int ctrl, unsigned int addr, unsigned int ep,
+		 unsigned int mps, const unsigned char *buf,
+		 unsigned int len)
+{
+	if (!hcd || !hcd->bulk_out)
+		return -1;
+	return hcd->bulk_out(ctrl, addr, ep, mps, buf, len);
+}
+
+int usb_bulk_in(unsigned int ctrl, unsigned int addr, unsigned int ep,
+		unsigned int mps, unsigned char *buf, unsigned int len)
+{
+	if (!hcd || !hcd->bulk_in)
+		return -1;
+	return hcd->bulk_in(ctrl, addr, ep, mps, buf, len);
 }
 
 int usb_scan(usb_probe_fn probe)

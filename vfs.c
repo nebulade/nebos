@@ -247,7 +247,7 @@ static int fat_op_rmdir(struct vfs_mount *m, const char *path)
  * the WebDAV server asks for 0..N-1 in one PROPFIND.  Cache the first 64
  * entries of the last directory so a listing is one directory walk; a write
  * invalidates it.  Larger directories fall back to the old walk past 64. */
-#define FAT_LIST_CACHE 64
+#define FAT_LIST_CACHE 32
 
 static struct vfs_dirent fat_cache[FAT_LIST_CACHE];
 static unsigned int fat_cache_count;

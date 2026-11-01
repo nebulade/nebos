@@ -1,6 +1,7 @@
 /* NIC driver registry: see netdev.h. */
 
 #include "netdev.h"
+#include "asix.h"
 #include "e1000e.h"
 #include "ne2000.h"
 #include "process.h"
@@ -11,6 +12,7 @@ static const struct netdev *const netdev_drivers[] = {
 	&e1000e_netdev,
 	&r8168_netdev,
 	&ne2000_netdev,
+	&asix_netdev,
 };
 
 static const struct netdev *active;

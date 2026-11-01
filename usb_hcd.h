@@ -75,9 +75,22 @@ struct usb_hcd_ops {
 	int (*int_in_poll)(unsigned int slot, unsigned char *buf,
 			   unsigned int len);
 	void (*int_in_stop)(unsigned int slot);
+
+	/* Bulk transfers (USB Ethernet / mass storage).  bulk_in is
+	 * start-or-poll: the first call arms the transfer and returns 0,
+	 * later calls return the frame length, 0 while NAKed, or -1.  A
+	 * delivered chunk stays in the caller's buffer until the next call,
+	 * which re-arms the transfer.  May be NULL. */
+	int (*bulk_out)(unsigned int ctrl, unsigned int addr,
+			unsigned int ep, unsigned int mps,
+			const unsigned char *buf, unsigned int len);
+	int (*bulk_in)(unsigned int ctrl, unsigned int addr,
+		       unsigned int ep, unsigned int mps,
+		       unsigned char *buf, unsigned int len);
 };
 
 extern const struct usb_hcd_ops usb_uhci_ops;
 extern const struct usb_hcd_ops usb_ohci_ops;
+extern const struct usb_hcd_ops usb_xhci_ops;
 
 #endif

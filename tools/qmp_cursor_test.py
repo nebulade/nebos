@@ -118,7 +118,7 @@ def move(s, dx, dy):
 
 def main():
     mode = "ohci"
-    for m in ("uhci", "uhci72", "multi", "hotplug"):
+    for m in ("uhci", "uhci72", "multi", "hotplug", "xhci"):
         if "--" + m in sys.argv:
             mode = m
 
@@ -141,6 +141,8 @@ def main():
                  "-device", "pci-ohci,id=o2", "-device", "usb-mouse,bus=o2.0"]
     elif mode == "hotplug":
         qemu += ["-device", "pci-ohci"]
+    elif mode == "xhci":
+        qemu += ["-device", "qemu-xhci", "-device", "usb-mouse"]
     else:
         qemu += ["-device", "pci-ohci", "-device", "usb-mouse"]
     qemu += ["-drive", "file=floppy.img,format=raw,if=floppy",

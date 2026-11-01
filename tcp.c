@@ -503,7 +503,7 @@ void tcp_close(struct tcp_conn *c)
  * is absorbed instead of answered with RST (libsoup treats a reset after a
  * complete response as an error). */
 
-#define TCP_SRV_SLOTS      8          /* 1 active + 7 backlog/closing */
+#define TCP_SRV_SLOTS      4          /* 1 active + 3 backlog/closing */
 #define TCP_SRV_CLOSE_MS   2000
 #define TCP_SRV_BACKLOG_MS 30000
 

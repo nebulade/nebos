@@ -543,4 +543,6 @@ const struct usb_hcd_ops usb_uhci_ops = {
 	uhci_int_in_start,
 	uhci_int_in_poll,
 	uhci_int_in_stop,
+	0,
+	0,
 };
