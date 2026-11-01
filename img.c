@@ -69,6 +69,9 @@ int img_sniff(const void *data, unsigned int len, struct img_info *out)
 	out->format = IMG_FMT_UNKNOWN;
 	out->width = out->height = 0;
 	out->has_alpha = 0;
+	out->progressive = 0;
+	out->components = 1;
+	out->max_h = out->max_v = 1;
 	if (!d || len == 0)
 		return IMG_ERR_EMPTY;
 
@@ -81,9 +84,18 @@ int img_sniff(const void *data, unsigned int len, struct img_info *out)
 		fmt = img_sniff_gif(d, len, out);
 	else if (len >= 2 && d[0] == 'B' && d[1] == 'M')
 		fmt = img_sniff_bmp(d, len, out);
+	else if (len >= 2 && d[0] == 'P' && d[1] == '7')
+		fmt = img_sniff_pam(d, len, out);
 	else if (len >= 2 && d[0] == 'P' && d[1] >= '1' && d[1] <= '6')
 		fmt = img_sniff_pnm(d, len, out);
-	else
+	else if (len >= 4 && d[0] == 0 && d[1] == 0 && d[3] == 0 &&
+		 (d[2] == 1 || d[2] == 2)) {
+		/* TGA type 2 also starts with 00 00 02 00.  Only accept the
+		 * ICO interpretation when its directory is valid. */
+		fmt = img_sniff_ico(d, len, out);
+		if (fmt == IMG_FMT_UNKNOWN)
+			fmt = img_sniff_tga(d, len, out);
+	} else
 		fmt = img_sniff_tga(d, len, out);   /* no magic: strict parse */
 
 	if (fmt == IMG_FMT_UNKNOWN)
@@ -129,6 +141,12 @@ int img_decode(const void *data, unsigned int len,
 	case IMG_FMT_PNM:
 		r = img_decode_pnm(d, len, opt, m, out);
 		break;
+	case IMG_FMT_ICO:
+		r = img_decode_ico(d, len, opt, m, out);
+		break;
+	case IMG_FMT_PAM:
+		r = img_decode_pam(d, len, opt, m, out);
+		break;
 	default:
 		r = IMG_ERR_UNSUPPORTED;
 		break;
@@ -149,8 +167,33 @@ unsigned int img_estimate(const struct img_info *info)
 	bytes = px * 2;                       /* RGB565 output */
 	if (info->has_alpha)
 		bytes += px;                  /* alpha plane */
-	if (info->format == IMG_FMT_JPEG)
-		bytes += px * 3;              /* worst case: 4:4:4 planes */
+	if (info->format == IMG_FMT_JPEG) {
+		/* Component pixel count relative to luma.  Keep this in 32-bit
+		 * for the target (no 64-bit division in ring 3). */
+		unsigned int samp = info->max_h * info->max_v;
+		unsigned int comp_px;
+		unsigned int p;
+
+		if (px > 0xFFFFFFFFull)
+			return 0xFFFFFFFFu;
+		p = (unsigned int)px;
+
+		if (samp == 0)
+			samp = 1;
+		if (info->components == 3) {
+			/* p + 2*p/samp, using only 32-bit division. */
+			comp_px = p + (p / samp) * 2 + 2;
+			if (comp_px < p)
+				return 0xFFFFFFFFu;
+		} else {
+			comp_px = p;
+		}
+		if (info->progressive)
+			bytes += (unsigned long long)comp_px * 3; /* coef+plane */
+		else
+			bytes += comp_px;        /* planes */
+	}
+
 	bytes += 2u * 1024u * 1024u;          /* inflate/row/Huffman scratch */
 	if (bytes > 0xFFFFFFFFull)
 		return 0xFFFFFFFFu;
@@ -167,6 +210,7 @@ const char *img_format_name(unsigned int format)
 	case IMG_FMT_TGA:  return "TGA";
 	case IMG_FMT_PNM:  return "PNM";
 	case IMG_FMT_ICO:  return "ICO";
+	case IMG_FMT_PAM:  return "PAM";
 	default:           return "image";
 	}
 }

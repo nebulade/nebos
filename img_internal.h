@@ -59,6 +59,12 @@ int img_decode_tga(const unsigned char *d, unsigned int n,
 int img_decode_pnm(const unsigned char *d, unsigned int n,
 		   const struct img_options *opt, struct img_mem *m,
 		   struct img_image *out);
+int img_decode_ico(const unsigned char *d, unsigned int n,
+		   const struct img_options *opt, struct img_mem *m,
+		   struct img_image *out);
+int img_decode_pam(const unsigned char *d, unsigned int n,
+		   const struct img_options *opt, struct img_mem *m,
+		   struct img_image *out);
 
 /* Header-only probes used by img_sniff().  Return IMG_FMT_* or UNKNOWN. */
 int img_sniff_png(const unsigned char *d, unsigned int n, struct img_info *out);
@@ -67,6 +73,8 @@ int img_sniff_gif(const unsigned char *d, unsigned int n, struct img_info *out);
 int img_sniff_bmp(const unsigned char *d, unsigned int n, struct img_info *out);
 int img_sniff_tga(const unsigned char *d, unsigned int n, struct img_info *out);
 int img_sniff_pnm(const unsigned char *d, unsigned int n, struct img_info *out);
+int img_sniff_ico(const unsigned char *d, unsigned int n, struct img_info *out);
+int img_sniff_pam(const unsigned char *d, unsigned int n, struct img_info *out);
 
 /* True when an image of w*h pixels is acceptable for the given options. */
 int img_size_ok(unsigned int w, unsigned int h,

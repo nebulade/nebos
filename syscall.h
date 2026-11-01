@@ -113,7 +113,7 @@
  * USER_HEAP_BASE (0x60000000), at most USER_HEAP_MAX (32 MB), freed when the
  * process exits.  SYS_MEM_ALLOC returns the base address, or <0. */
 #define SYS_MEM_ALLOC      88  /* (unsigned bytes) -> VA or <0 */
-#define SYS_MEM_GROW       89  /* (unsigned total_bytes) -> 0/-1 */
+#define SYS_MEM_GROW       89  /* (unsigned total_bytes) -> 0/-1; new pages not zeroed */
 #define SYS_MEM_FREE       90  /* () -> 0/-1 */
 
 /* CPU temperature (see thermal.c): the hottest core's DTS reading. */

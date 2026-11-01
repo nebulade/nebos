@@ -356,9 +356,12 @@ below the run area), so adding code no longer moves any address.
   `USER_BASE` (`0x40000000`)..`USER_STACK_TOP` (`0x40200000`) window, which is
   too small for a full-frame image.  `SYS_MEM_ALLOC`/`SYS_MEM_GROW`/`SYS_MEM_FREE`
   (`sys_mem.c/h`) map/grow/delete a single anonymous arena at
-  `USER_HEAP_BASE` (`0x60000000`), capped at 32 MB; the reaper frees it with
-  the rest of the process and `top` counts its pages.  The canvas mapping at
-  `USER_GFX_BASE` (`0x50000000`) and the WM mappings are separate.
+  `USER_HEAP_BASE` (`0x60000000`), capped at 32 MB; the initial allocation is
+  zeroed but pages appended by `SYS_MEM_GROW` are not (decoders initialize
+  what they use), which keeps large image arenas fast to map.  The reaper
+  frees it with the rest of the process and `top` counts its pages.  The
+  canvas mapping at `USER_GFX_BASE` (`0x50000000`) and the WM mappings are
+  separate.
 - **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld`, `mkpack.c`,
   `ramfs.c/h` — freestanding ELFs linked at `USER_BASE` (`0x40000000`), packed
   by `mkpack` into `cmds.pack` (as `bin/<name>`), embedded in the kernel
@@ -390,12 +393,14 @@ below the run area), so adding code no longer moves any address.
   zlib, gzip, CRC32/Adler32) is shared with the boot pack.  `img_sniff()` is a
   cheap header probe; `img_decode()` returns `struct img_image`; `img_draw()`
   is a clipped, scaled (box-filter down, bilinear up) RGB565 blit with alpha
-  over a checkerboard or over the destination (for a browser).  The viewer,
-  `ucmd_view.c`, owns a canvas window and reads its file through
-  `SYS_READ_FILE`; it uses fit/1:1/zoom/pan, shows format/dimensions/size and
-  a clear error for unsupported variants.  Host tests: `make test-images`
-  (`img_test.c`, corpus in `testdata/images/`, generator
-  `tools/gen_img_tests.py`).
+  over a checkerboard or over the destination (for a browser).  Progressive
+  JPEG (successive approximation), EXIF orientation, ICO/CUR, PAM and
+  animated GIF frames are supported as well; arithmetic JPEG/CMYK are not.
+  The viewer, `ucmd_view.c`, owns a canvas window and reads its file through
+  `SYS_READ_FILE`; it uses fit/1:1/zoom/pan, shows format/dimensions/size,
+  animates GIFs, and gives a clear error for unsupported variants.  Host
+  tests: `make test-images` (`img_test.c`, corpus in `testdata/images/`,
+  generator `tools/gen_img_tests.py`).
 - **Network service**: `sys_net.c/h` — the NIC and the stack stay in the
   kernel; ring-3 commands get `SYS_NET_INFO`/config, the DNS and DHCP clients
   and the raw frame paths (`NET_TX/RX/DECODE/REPLY/LOOPBACK/REGS/RESET`), so
@@ -443,7 +448,7 @@ below the run area), so adding code no longer moves any address.
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
 `display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
-`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [hlt|c2|c3|c2ap|c3ap]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, and `view <file>` (image viewer; PNG, baseline JPEG, GIF first frame, BMP, TGA, PNM).
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [hlt|c2|c3|c2ap|c3ap]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, and `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `pong` (responds to ARP/ICMP for our IP for 30 s),
@@ -855,17 +860,20 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     rely on not-present TLB entries not being cached; there is no cross-CPU
     TLB shootdown.  No process shares an address space with another, so normal
     process teardown is unaffected.
-15. Image library limits: progressive/arithmetic JPEG and CMYK are rejected;
-    GIF shows only the first frame; EXIF orientation and ICC/gamma are ignored;
-    the whole file is read into memory (4 MB cap in the viewer); decoding uses
-    a 32 MB arena, so very large photos need DCT-scaled/streamed decode before
-    they fit.  Arithmetic-coded JPEGs are not supported.
+15. Image library limits: arithmetic JPEG and CMYK are rejected; EXIF
+    orientation is applied but ICC/gamma is ignored; animated GIF frames are
+    composited (the viewer plays them), but APNG/WebP remain unsupported.  The
+    whole file is read into memory (4 MB cap in the viewer) and very large
+    photos still need DCT-scaled/streamed decode before they fit the 32 MB
+    arena.
 16. `img_draw()`'s box-filter downscale runs on the CPU.  It is fine for the
     viewer's static frames, but a browser showing many large inline images
     should cache a scaled bitmap (or use decode-at-display-scale) instead of
     rescaling on every repaint.
-17. `files` recognises images by file extension only; a magic-based fallback
-    would also open extensionless files in the viewer.
+17. `files` recognises images by file extension only (`.png .jpg .jpeg .gif
+    .bmp .tga .ppm .pgm .pbm .ico .cur .pam`); a magic-based fallback would
+    also open extensionless files in the viewer.  Automatic decode-at-scale
+    for oversized images is still missing.
 
 18. WebDAV limits: one request at a time (one active connection plus 7
     queued; the queue holds each connection's first 1 KB with a zero window),

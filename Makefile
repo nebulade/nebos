@@ -453,7 +453,7 @@ ucmd_mines.elf: ucmd_mines.o ngui.o font_8x16.o ucmd.ld
 # Image library: pure freestanding decoders + RGB565 compositing.  Only the
 # viewer links them today; a browser can link the same objects later.
 IMGLIB_OBJS = img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o \
-              img_jpeg.o img_tga.o img_pnm.o img_file.o
+              img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o
 
 $(IMGLIB_OBJS): %.o: %.c img.h img_internal.h inflate.h ucmd_lib.h syscall.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -503,7 +503,7 @@ test-crypto: tls_test
 # Host image-library tests (no kernel needed).  The corpus and expected hashes
 # are committed; tools/gen_img_tests.py regenerates them.
 IMGTEST_SRCS = img_test.c img.c img_mem.c img_blit.c img_png.c img_bmp.c \
-               img_gif.c img_jpeg.c img_tga.c img_pnm.c inflate.c
+               img_gif.c img_gif_anim.c img_jpeg.c img_tga.c img_pnm.c img_ico.c img_pam.c inflate.c
 IMGTEST_DEPS = img.h img_internal.h inflate.h testdata/images/expected.h
 
 img_test: $(IMGTEST_SRCS) $(IMGTEST_DEPS)
@@ -729,4 +729,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_file.o img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

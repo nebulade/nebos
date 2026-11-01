@@ -1,17 +1,12 @@
-/* JPEG: baseline and extended-sequential 8-bit Huffman JPEG.
+/* JPEG: baseline, extended-sequential and progressive 8-bit Huffman JPEG.
  *
- * Progressive/arithmetic JPEG and CMYK are rejected with IMG_ERR_UNSUPPORTED.
- * Decoding uses full component planes (Y full size, chroma subsampled), which
- * keeps the code simple and still fits the viewer's arena for normal photos. */
+ * Arithmetic-coded JPEG and CMYK are rejected with IMG_ERR_UNSUPPORTED.
+ * Baseline scans decode straight into component planes; progressive scans
+ * keep quantized coefficients until all scans have arrived, then dequantize
+ * and IDCT into the same planes.  EXIF orientation is applied while writing
+ * the RGB565 output. */
 
 #include "img_internal.h"
-
-#ifdef IMG_HOST_DEBUG
-#include <stdio.h>
-#define DBG(...) fprintf(stderr, __VA_ARGS__)
-#else
-#define DBG(...) do { } while (0)
-#endif
 
 static const unsigned char zigzag[64] = {
 	0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5,
@@ -204,30 +199,32 @@ struct jpeg_huff {
 struct jpeg_comp {
 	unsigned char id, h, v, tq;
 	int td, ta;
+	unsigned int bw, bh;      /* padded block grid (8x8 blocks) */
+	unsigned int sw, sh;      /* actual block grid in a scan */
+	unsigned int pw, ph;      /* padded plane size in pixels */
+	short *coef;              /* progressive coefficients, zigzag order */
 	unsigned char *plane;
-	unsigned int pw, ph;
 	int dc;
 };
 
 struct jpeg {
 	const unsigned char *d;
 	unsigned int n, pos;
-	unsigned int w, h;
+	unsigned int w, h;        /* raw dimensions */
+	unsigned int out_w, out_h;/* after EXIF orientation */
 	unsigned int ncomp;
 	struct jpeg_comp comp[3];
 	unsigned int max_h, max_v;
 	unsigned int mcus_x, mcus_y;
-	unsigned char qt[4][64];       /* zigzag order */
+	unsigned char qt[4][64];  /* zigzag order */
 	struct jpeg_huff dc[4], ac[4];
 	unsigned int restart;
 	unsigned int rst_next;
 	unsigned int bitbuf;
 	int bitcnt;
 	unsigned int marker;
-	int eof;
-#ifdef IMG_HOST_DEBUG
-	unsigned int dbg;
-#endif
+	int progressive;
+	unsigned int orientation;
 };
 
 static int jpeg_u8(struct jpeg *j, unsigned int *v)
@@ -264,11 +261,11 @@ static int huff_build(struct jpeg_huff *h, const unsigned int *counts,
 {
 	int code = 0, k = 0, l, total = 0;
 
+	h->total = 0;
 	for (l = 1; l <= 16; l++) {
 		h->bits[l] = (unsigned char)counts[l - 1];
 		total += (int)counts[l - 1];
 	}
-	h->total = 0;
 	if (total > 256)
 		return -1;
 	for (l = 0; l < total; l++)
@@ -309,7 +306,6 @@ static int huff_decode(struct jpeg *j, const struct jpeg_huff *h)
 
 	if (h->total <= 0)
 		return -1;
-
 	for (l = 1; l <= 16; l++) {
 		int b;
 
@@ -327,6 +323,7 @@ static int huff_decode(struct jpeg *j, const struct jpeg_huff *h)
 				v2 = j->d[j->pos++];
 				if (v2 != 0x00) {
 					j->marker = 0xFF00 | v2;
+					j->pos -= 2;
 					return -1;
 				}
 				v = 0xFF;
@@ -370,6 +367,7 @@ static int jpeg_bits(struct jpeg *j, int n)
 				x2 = j->d[j->pos++];
 				if (x2 != 0x00) {
 					j->marker = 0xFF00 | x2;
+					j->pos -= 2;
 					return -1;
 				}
 				x = 0xFF;
@@ -410,8 +408,32 @@ static int jpeg_restart(struct jpeg *j)
 	return -1;
 }
 
-/* Bilinear chroma sample at a fixed-point position (16.16) in the component
- * plane.  The half-sample offset keeps the chroma centred on its luma block. */
+/* Skip to the next real marker after the entropy-coded scan. */
+static void jpeg_scan_end(struct jpeg *j)
+{
+	j->bitcnt = 0;
+	while (j->pos + 1 < j->n) {
+		unsigned int b = j->d[j->pos];
+		unsigned int m;
+
+		if (b != 0xFF) {
+			j->pos++;
+			continue;
+		}
+		m = j->d[j->pos + 1];
+		if (m == 0x00) {
+			j->pos += 2;
+			continue;
+		}
+		if (m >= 0xD0 && m <= 0xD7) {
+			j->pos += 2;
+			continue;
+		}
+		return;
+	}
+}
+
+/* Bilinear chroma sample at a fixed-point position (16.16). */
 static int jpeg_chroma(const struct jpeg_comp *c, int posx, int posy)
 {
 	int x0, y0, x1, y1, fx, fy;
@@ -456,6 +478,7 @@ static int jpeg_chroma(const struct jpeg_comp *c, int posx, int posy)
 	       ((v01 * (65536 - fx) + v11 * fx) >> 16) * fy / 65536;
 }
 
+/* Baseline sequential block: dequantize directly in natural order. */
 static int jpeg_block(struct jpeg *j, struct jpeg_comp *c, int *blk)
 {
 	const unsigned char *q = j->qt[c->tq];
@@ -465,12 +488,6 @@ static int jpeg_block(struct jpeg *j, struct jpeg_comp *c, int *blk)
 		blk[k] = 0;
 
 	t = huff_decode(j, &j->dc[c->td]);
-#ifdef IMG_HOST_DEBUG
-	if (j->dbg < 4)
-		DBG("jpeg block comp %u dc t=%d pos=%u bitcnt=%d\n",
-		    c->id, t, j->pos, j->bitcnt);
-	j->dbg++;
-#endif
 	if (t < 0 || t > 15)
 		return -1;
 	if (t) {
@@ -512,26 +529,278 @@ static int jpeg_block(struct jpeg *j, struct jpeg_comp *c, int *blk)
 	return 0;
 }
 
-static int jpeg_sof(struct jpeg *j, unsigned int marker)
+static int jpeg_refine_bit(struct jpeg *j, short *v, int Al)
+{
+	int bit = jpeg_bits(j, 1);
+	int p1 = 1 << Al;
+
+	if (bit < 0)
+		return -1;
+	if (bit && ((*v & p1) == 0)) {
+		if (*v >= 0)
+			*v = (short)(*v + p1);
+		else
+			*v = (short)(*v - p1);
+	}
+	return 0;
+}
+
+/* One 8x8 block of a progressive scan.  Coefficients are kept in zigzag
+ * order; the first scan may use a nonzero Al bit position. */
+static int jpeg_prog_block(struct jpeg *j, struct jpeg_comp *c, short *blk,
+			   int Ss, int Se, int Ah, int Al, int *eobrun)
+{
+	int k, rs, r, s;
+
+	if (Ss == 0) {
+		if (Ah == 0) {
+			int t = huff_decode(j, &j->dc[c->td]);
+			int diff = 0;
+
+			if (t < 0 || t > 15)
+				return -1;
+			if (t) {
+				int v = jpeg_bits(j, t);
+
+				if (v < 0)
+					return -1;
+				diff = jpeg_extend(v, t);
+			}
+			c->dc += diff;
+			blk[0] = (short)(c->dc << Al);
+		} else {
+			int bit = jpeg_bits(j, 1);
+
+			if (bit < 0)
+				return -1;
+			blk[0] = (short)(blk[0] | (bit << Al));
+		}
+		return 0;
+	}
+
+	if (Ah == 0) {
+		if (*eobrun > 0) {
+			(*eobrun)--;
+			return 0;
+		}
+		k = Ss;
+		while (k <= Se) {
+			rs = huff_decode(j, &j->ac[c->ta]);
+			if (rs < 0)
+				return -1;
+			r = rs >> 4;
+			s = rs & 15;
+			if (s == 0) {
+				if (r == 15) {
+					k += 16;
+					continue;
+				}
+				*eobrun = (1 << r) - 1;
+				if (r) {
+					int v = jpeg_bits(j, r);
+
+					if (v < 0)
+						return -1;
+					*eobrun += v;
+				}
+				break;
+			}
+			k += r;
+			if (k > Se)
+				return -1;
+			{
+				int v = jpeg_bits(j, s);
+
+				if (v < 0)
+					return -1;
+				blk[k] = (short)(jpeg_extend(v, s) << Al);
+			}
+			k++;
+		}
+		return 0;
+	}
+
+	/* AC successive-approximation refinement. */
+	k = Ss;
+	if (*eobrun == 0) {
+		for (; k <= Se; k++) {
+			int newval = 0;
+			int p1 = 1 << Al;
+
+			rs = huff_decode(j, &j->ac[c->ta]);
+			if (rs < 0)
+				return -1;
+			r = rs >> 4;
+			s = rs & 15;
+			if (s) {
+				int bit;
+
+				if (s != 1)
+					return -1;
+				bit = jpeg_bits(j, 1);
+				if (bit < 0)
+					return -1;
+				newval = bit ? p1 : -p1;
+			} else {
+				if (r != 15) {
+					*eobrun = 1 << r;
+					if (r) {
+						int v = jpeg_bits(j, r);
+
+						if (v < 0)
+							return -1;
+						*eobrun += v;
+					}
+					break;
+				}
+			}
+			do {
+				if (blk[k]) {
+					if (jpeg_refine_bit(j, &blk[k], Al))
+						return -1;
+				} else {
+					if (--r < 0)
+						break;
+				}
+				k++;
+			} while (k <= Se);
+			if (newval) {
+				if (k > Se)
+					return -1;
+				blk[k] = (short)newval;
+			}
+		}
+	}
+	if (*eobrun > 0) {
+		for (; k <= Se; k++)
+			if (blk[k])
+				if (jpeg_refine_bit(j, &blk[k], Al))
+					return -1;
+		(*eobrun)--;
+	}
+
+	return 0;
+}
+
+/* Decode one SOS scan into planes (baseline) or coefficients (progressive). */
+static int jpeg_scan(struct jpeg *j, unsigned int ns, const unsigned int *sc,
+		     int Ss, int Se, int Ah, int Al)
+{
+	unsigned int k, mcu = 0, total;
+	int eobrun = 0;
+	int interleaved = (ns > 1) || !j->progressive;
+
+	for (k = 0; k < ns; k++)
+		j->comp[sc[k]].dc = 0;
+	j->rst_next = 0;
+
+	if (interleaved) {
+		unsigned int mx, my;
+
+		total = j->mcus_x * j->mcus_y;
+		for (my = 0; my < j->mcus_y; my++) {
+			for (mx = 0; mx < j->mcus_x; mx++) {
+				for (k = 0; k < ns; k++) {
+					struct jpeg_comp *c = &j->comp[sc[k]];
+					unsigned int by, bx;
+
+					for (by = 0; by < c->v; by++) {
+						for (bx = 0; bx < c->h; bx++) {
+							unsigned int index =
+								(my * c->v + by) * c->bw +
+								(mx * c->h + bx);
+							if (j->progressive) {
+								if (jpeg_prog_block(j, c,
+								    c->coef + index * 64,
+								    Ss, Se, Ah, Al,
+								    &eobrun))
+									return -1;
+							} else {
+								int blk[64];
+								unsigned char p[64];
+								unsigned int xx, yy;
+
+								if (jpeg_block(j, c, blk))
+									return -1;
+								idct_block(blk, p);
+								for (yy = 0; yy < 8; yy++)
+									for (xx = 0; xx < 8; xx++) {
+										unsigned int px = mx * c->h * 8 + bx * 8 + xx;
+										unsigned int py = my * c->v * 8 + by * 8 + yy;
+
+										c->plane[py * c->pw + px] =
+											p[yy * 8 + xx];
+									}
+							}
+						}
+					}
+				}
+				mcu++;
+				if (j->restart && (mcu % j->restart) == 0 &&
+				    mcu < total) {
+					for (k = 0; k < ns; k++)
+						j->comp[sc[k]].dc = 0;
+					eobrun = 0;
+					if (jpeg_restart(j))
+						return -1;
+				}
+			}
+		}
+	} else {
+		struct jpeg_comp *c = &j->comp[sc[0]];
+		unsigned int bx, by;
+
+		total = c->sw * c->sh;
+		for (by = 0; by < c->sh; by++) {
+			for (bx = 0; bx < c->sw; bx++) {
+				unsigned int index = by * c->bw + bx;
+
+				if (jpeg_prog_block(j, c, c->coef + index * 64,
+						    Ss, Se, Ah, Al, &eobrun))
+					return -1;
+				mcu++;
+				if (j->restart && (mcu % j->restart) == 0 &&
+				    mcu < total) {
+					c->dc = 0;
+					eobrun = 0;
+					if (jpeg_restart(j))
+						return -1;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+static int jpeg_sof(struct jpeg *j, unsigned int marker, int *error)
 {
 	unsigned int len, prec, i;
 
+	*error = IMG_ERR_CORRUPT;
 	if (jpeg_u16(j, &len) || len < 8)
 		return -1;
-	if (jpeg_u8(j, &prec) || prec != 8)
-		return IMG_ERR_UNSUPPORTED;
+	if (jpeg_u8(j, &prec) || prec != 8) {
+		*error = IMG_ERR_UNSUPPORTED;
+		return -1;
+	}
 	if (jpeg_u16(j, &j->h) || jpeg_u16(j, &j->w))
 		return -1;
-	if (j->w == 0 || j->h == 0 || j->w > 32768 || j->h > 32768)
-		return IMG_ERR_TOOBIG;
+	if (j->w == 0 || j->h == 0 || j->w > 32768 || j->h > 32768) {
+		*error = IMG_ERR_TOOBIG;
+		return -1;
+	}
 	if (jpeg_u8(j, &j->ncomp) ||
-	    (j->ncomp != 1 && j->ncomp != 3))
-		return IMG_ERR_UNSUPPORTED;
+	    (j->ncomp != 1 && j->ncomp != 3)) {
+		*error = IMG_ERR_UNSUPPORTED;
+		return -1;
+	}
 	if (len < 8 + j->ncomp * 3)
 		return -1;
-	if (marker == 0xC2 || marker == 0xC6 || marker == 0xCA ||
-	    marker == 0xCE)
-		return IMG_ERR_UNSUPPORTED;
+	if (marker != 0xC0 && marker != 0xC1 && marker != 0xC2) {
+		*error = IMG_ERR_UNSUPPORTED;
+		return -1;
+	}
+	j->progressive = (marker == 0xC2);
 	j->max_h = j->max_v = 1;
 	for (i = 0; i < j->ncomp; i++) {
 		unsigned int id, hv, tq;
@@ -543,8 +812,10 @@ static int jpeg_sof(struct jpeg *j, unsigned int marker)
 		j->comp[i].v = (unsigned char)(hv & 15);
 		j->comp[i].tq = (unsigned char)tq;
 		if (j->comp[i].h == 0 || j->comp[i].v == 0 ||
-		    j->comp[i].h > 4 || j->comp[i].v > 4 || tq > 3)
-			return IMG_ERR_UNSUPPORTED;
+		    j->comp[i].h > 4 || j->comp[i].v > 4 || tq > 3) {
+			*error = IMG_ERR_UNSUPPORTED;
+			return -1;
+		}
 		if (j->comp[i].h > j->max_h)
 			j->max_h = j->comp[i].h;
 		if (j->comp[i].v > j->max_v)
@@ -552,12 +823,241 @@ static int jpeg_sof(struct jpeg *j, unsigned int marker)
 	}
 	j->mcus_x = (j->w + 8 * j->max_h - 1) / (8 * j->max_h);
 	j->mcus_y = (j->h + 8 * j->max_v - 1) / (8 * j->max_v);
+	for (i = 0; i < j->ncomp; i++) {
+		j->comp[i].bw = j->mcus_x * j->comp[i].h;
+		j->comp[i].bh = j->mcus_y * j->comp[i].v;
+		j->comp[i].sw = (j->w * j->comp[i].h + 8 * j->max_h - 1) /
+				(8 * j->max_h);
+		j->comp[i].sh = (j->h * j->comp[i].v + 8 * j->max_v - 1) /
+				(8 * j->max_v);
+		j->comp[i].pw = j->comp[i].bw * 8;
+		j->comp[i].ph = j->comp[i].bh * 8;
+	}
+	j->out_w = j->w;
+	j->out_h = j->h;
+	if (j->orientation >= 5) {
+		j->out_w = j->h;
+		j->out_h = j->w;
+	}
 	return 0;
+}
+
+static int jpeg_setup(struct jpeg *j, struct img_mem *m,
+		      struct img_image *out, unsigned int *image_end)
+{
+	unsigned int i;
+	int r;
+
+	r = img_alloc(m, j->out_w, j->out_h, IMG_FMT_JPEG, 0, out);
+	if (r)
+		return r;
+	*image_end = img_mem_mark(m);
+	for (i = 0; i < j->ncomp; i++) {
+		struct jpeg_comp *c = &j->comp[i];
+		unsigned int n;
+
+		c->plane = (unsigned char *)img_mem_alloc(m, c->pw * c->ph, 16);
+		if (!c->plane)
+			return IMG_ERR_NOMEM;
+		if (j->progressive) {
+			n = c->bw * c->bh * 64;
+			c->coef = (short *)img_mem_alloc(m, n * sizeof(short), 16);
+			if (!c->coef)
+				return IMG_ERR_NOMEM;
+			for (n = 0; n < c->bw * c->bh * 64; n++)
+				c->coef[n] = 0;
+		}
+		c->dc = 0;
+	}
+	return 0;
+}
+
+static void jpeg_reconstruct(struct jpeg *j)
+{
+	unsigned int ci, bx, by, k;
+
+	for (ci = 0; ci < j->ncomp; ci++) {
+		struct jpeg_comp *c = &j->comp[ci];
+		const unsigned char *q = j->qt[c->tq];
+
+		for (by = 0; by < c->bh; by++) {
+			for (bx = 0; bx < c->bw; bx++) {
+				short *coef = c->coef + (by * c->bw + bx) * 64;
+				int blk[64];
+				unsigned char p[64];
+				unsigned int xx, yy;
+
+				for (k = 0; k < 64; k++)
+					blk[zigzag[k]] = (int)coef[k] * q[k];
+				idct_block(blk, p);
+				for (yy = 0; yy < 8; yy++)
+					for (xx = 0; xx < 8; xx++)
+						c->plane[(by * 8 + yy) * c->pw +
+							 bx * 8 + xx] =
+							p[yy * 8 + xx];
+			}
+		}
+	}
+}
+
+static void jpeg_map_pixel(unsigned int o, unsigned int u, unsigned int v,
+			   unsigned int rw, unsigned int rh,
+			   unsigned int *x, unsigned int *y)
+{
+	switch (o) {
+	case 2: *x = rw - 1 - u; *y = v; break;
+	case 3: *x = rw - 1 - u; *y = rh - 1 - v; break;
+	case 4: *x = u; *y = rh - 1 - v; break;
+	case 5: *x = v; *y = u; break;
+	case 6: *x = v; *y = rh - 1 - u; break;
+	case 7: *x = rw - 1 - v; *y = rh - 1 - u; break;
+	case 8: *x = rw - 1 - v; *y = u; break;
+	default: *x = u; *y = v; break;
+	}
+}
+
+static void jpeg_output(struct jpeg *j, struct img_image *out)
+{
+	unsigned int oy, ox;
+
+	for (oy = 0; oy < j->out_h; oy++) {
+		for (ox = 0; ox < j->out_w; ox++) {
+			unsigned int x, y, yy, r, g, b;
+
+			jpeg_map_pixel(j->orientation, ox, oy, j->w, j->h,
+				       &x, &y);
+			yy = j->comp[0].plane[y * j->comp[0].pw + x];
+			if (j->ncomp == 1) {
+				r = g = b = yy;
+			} else {
+				struct jpeg_comp *cb = &j->comp[1];
+				struct jpeg_comp *cr = &j->comp[2];
+				unsigned int cstep_x, cstep_y, crstep_x, crstep_y;
+				int cpos_x, cpos_y, crpos_x, crpos_y;
+				int cbv, crv, yv;
+				int rr, gg, bb;
+
+				cstep_x = ((unsigned int)cb->h << 16) / j->max_h;
+				cstep_y = ((unsigned int)cb->v << 16) / j->max_v;
+				crstep_x = ((unsigned int)cr->h << 16) / j->max_h;
+				crstep_y = ((unsigned int)cr->v << 16) / j->max_v;
+				cpos_x = (int)(x * cstep_x) +
+					(int)(((unsigned int)cb->h * 32768u) / j->max_h) -
+					32768;
+				cpos_y = (int)(y * cstep_y) +
+					(int)(((unsigned int)cb->v * 32768u) / j->max_v) -
+					32768;
+				crpos_x = (int)(x * crstep_x) +
+					(int)(((unsigned int)cr->h * 32768u) / j->max_h) -
+					32768;
+				crpos_y = (int)(y * crstep_y) +
+					(int)(((unsigned int)cr->v * 32768u) / j->max_v) -
+					32768;
+				cbv = jpeg_chroma(cb, cpos_x, cpos_y) - 128;
+				crv = jpeg_chroma(cr, crpos_x, crpos_y) - 128;
+				yv = (int)yy;
+				rr = yv + ((91881 * crv) >> 16);
+				gg = yv - ((22554 * cbv + 46802 * crv) >> 16);
+				bb = yv + ((116130 * cbv) >> 16);
+				if (rr < 0) rr = 0;
+				if (gg < 0) gg = 0;
+				if (bb < 0) bb = 0;
+				if (rr > 255) rr = 255;
+				if (gg > 255) gg = 255;
+				if (bb > 255) bb = 255;
+				r = (unsigned int)rr;
+				g = (unsigned int)gg;
+				b = (unsigned int)bb;
+			}
+			out->px[oy * j->out_w + ox] = img_rgb565(r, g, b);
+		}
+	}
+}
+
+/* EXIF orientation tag (IFD0, tag 0x0112); 1 = normal. */
+static unsigned int jpeg_exif_orientation(const unsigned char *d, unsigned int n)
+{
+	unsigned int pos = 2;
+
+	while (pos + 4 <= n) {
+		unsigned int m;
+
+		if (d[pos] != 0xFF) {
+			pos++;
+			continue;
+		}
+		while (pos < n && d[pos] == 0xFF)
+			pos++;
+		if (pos >= n)
+			break;
+		m = d[pos++];
+		if (m == 0xD8 || m == 0xD9 || (m >= 0xD0 && m <= 0xD7))
+			continue;
+		if (pos + 2 > n)
+			break;
+		{
+			unsigned int len = img_be16(d + pos);
+
+			if (len < 2 || pos + len > n)
+				break;
+			if (m == 0xE1 && len >= 8 && pos + 8 <= n &&
+			    d[pos + 2] == 'E' && d[pos + 3] == 'x' &&
+			    d[pos + 4] == 'i' && d[pos + 5] == 'f' &&
+			    d[pos + 6] == 0 && d[pos + 7] == 0) {
+				const unsigned char *t = d + pos + 8;
+				unsigned int avail = len - 8;
+				int le;
+				unsigned int magic, ifd;
+
+				if (avail < 8)
+					return 1;
+				le = (t[0] == 'I' && t[1] == 'I');
+				magic = le ? (t[2] | (t[3] << 8)) :
+					     ((t[2] << 8) | t[3]);
+				if (magic != 42)
+					return 1;
+				ifd = le ? img_le32(t + 4) : img_be32(t + 4);
+				if (ifd + 2 > avail)
+					return 1;
+				{
+					const unsigned char *p = t + ifd;
+					unsigned int cnt = le ? img_le16(p) :
+							      img_be16(p);
+					unsigned int i;
+
+					p += 2;
+					for (i = 0; i < cnt; i++) {
+						unsigned int tag, type, count, v;
+
+						if ((unsigned int)(p - t) + 12 > avail)
+							break;
+						tag = le ? img_le16(p) : img_be16(p);
+						type = le ? img_le16(p + 2) :
+							    img_be16(p + 2);
+						count = le ? img_le32(p + 4) :
+							     img_be32(p + 4);
+						if (tag == 0x0112 && type == 3 &&
+						    count == 1) {
+							v = le ? img_le16(p + 8) :
+								 img_be16(p + 8);
+							if (v >= 1 && v <= 8)
+								return v;
+						}
+						p += 12;
+					}
+				}
+				return 1;
+			}
+			pos += len;
+		}
+	}
+	return 1;
 }
 
 int img_sniff_jpeg(const unsigned char *d, unsigned int n, struct img_info *out)
 {
 	unsigned int pos = 2;
+	unsigned int orientation = jpeg_exif_orientation(d, n);
 
 	if (n < 4 || d[0] != 0xFF || d[1] != 0xD8)
 		return IMG_FMT_UNKNOWN;
@@ -584,10 +1084,26 @@ int img_sniff_jpeg(const unsigned char *d, unsigned int n, struct img_info *out)
 				break;
 			if ((m >= 0xC0 && m <= 0xCF) && m != 0xC4 &&
 			    m != 0xC8 && m != 0xCC) {
+				unsigned int h = img_be16(d + pos + 3);
+				unsigned int w = img_be16(d + pos + 5);
+				unsigned int nc = d[pos + 7];
+				unsigned int mh = 1, mv = 1, ci;
+
+				if (nc <= 4 && pos + 8 + 3 * nc <= pos + len) {
+					for (ci = 0; ci < nc; ci++) {
+						unsigned int hv = d[pos + 9 + ci * 3];
+						if ((hv >> 4) > mh) mh = hv >> 4;
+						if ((hv & 15) > mv) mv = hv & 15;
+					}
+					out->components = nc;
+					out->max_h = mh ? mh : 1;
+					out->max_v = mv ? mv : 1;
+				}
 				out->format = IMG_FMT_JPEG;
-				out->height = img_be16(d + pos + 3);
-				out->width = img_be16(d + pos + 5);
+				out->height = (orientation >= 5) ? w : h;
+				out->width = (orientation >= 5) ? h : w;
 				out->has_alpha = 0;
+				out->progressive = (m == 0xC2);
 				return IMG_FMT_JPEG;
 			}
 			pos += len;
@@ -601,8 +1117,8 @@ int img_decode_jpeg(const unsigned char *d, unsigned int n,
 		    struct img_image *out)
 {
 	struct jpeg *j;
-	unsigned int mark, image_end, i;
-	int rcode, sos = 0;
+	unsigned int mark, image_end = 0, i;
+	int rcode, setup = 0, scans = 0;
 
 	mark = img_mem_mark(m);
 	j = (struct jpeg *)img_mem_alloc(m, sizeof(*j), 16);
@@ -614,24 +1130,26 @@ int img_decode_jpeg(const unsigned char *d, unsigned int n,
 	j->n = n;
 	j->pos = 2;
 	j->rst_next = 0;
+	j->orientation = jpeg_exif_orientation(d, n);
 
 	while (j->pos < n) {
 		int mk = jpeg_marker(j);
 
-		DBG("jpeg: marker %02X at %u ncomp %u\n", mk, j->pos, j->ncomp);
-		if (mk < 0) {
-			img_mem_rewind(m, mark);
-			return IMG_ERR_CORRUPT;
-		}
+		if (mk < 0)
+			goto bad;
 		if (mk == 0xD9)
 			break;
 		if (mk == 0xDA) {
-			unsigned int len, ns, k;
+			unsigned int len, ns, ss, se, ahal, k;
+			unsigned int sc[3], td[3], ta[3];
+			unsigned int ah, al;
 
 			if (jpeg_u16(j, &len) || len < 6)
 				goto bad;
-			if (jpeg_u8(j, &ns) || ns != j->ncomp)
-				goto unsupported;
+			if (jpeg_u8(j, &ns) || ns < 1 || ns > j->ncomp)
+				goto bad;
+			if (len < 6 + 2 * ns)
+				goto bad;
 			for (k = 0; k < ns; k++) {
 				unsigned int id, tabs, c;
 
@@ -644,23 +1162,65 @@ int img_decode_jpeg(const unsigned char *d, unsigned int n,
 						break;
 				if (c == j->ncomp)
 					goto bad;
-				j->comp[c].td = (int)(tabs >> 4);
-				j->comp[c].ta = (int)(tabs & 15);
+				sc[k] = c;
+				td[k] = tabs >> 4;
+				ta[k] = tabs & 15;
 			}
-			/* Ss, Se, Ah/Al follow the component list. */
-			j->pos += 3;
-			sos = 1;
-			break;
-		}
-		if (mk == 0xC0 || mk == 0xC1) {
-			rcode = jpeg_sof(j, (unsigned int)mk);
-			if (rcode)
-				goto fail;
-			if (!img_size_ok(j->w, j->h, opt))
-				goto too_big;
+			if (jpeg_u8(j, &ss) || jpeg_u8(j, &se) ||
+			    jpeg_u8(j, &ahal))
+				goto bad;
+			ah = ahal >> 4;
+			al = ahal & 15;
+			if (len > 6 + 2 * ns)
+				j->pos += len - (6 + 2 * ns);
+			if (!j->progressive) {
+				if (ns != j->ncomp || ss != 0 || se != 63 ||
+				    ah != 0 || al != 0)
+					goto unsupported;
+			} else {
+				if (ss == 0) {
+					if (se != 0)
+						goto bad;
+				} else if (ns != 1 || ss > se || se > 63) {
+					goto bad;
+				}
+				if (ah > 13 || al > 13)
+					goto bad;
+			}
+			if (!setup)
+				goto bad;
+			for (k = 0; k < ns; k++) {
+				j->comp[sc[k]].td = (int)td[k];
+				j->comp[sc[k]].ta = (int)ta[k];
+			}
+			if (jpeg_scan(j, ns, sc, (int)ss, (int)se,
+				      (int)ah, (int)al))
+				goto entropy_bad;
+			scans++;
+			if (!j->progressive)
+				break;
+			jpeg_scan_end(j);
 			continue;
 		}
-		if (mk == 0xC2 || mk == 0xC6 || mk == 0xCA || mk == 0xCE) {
+		if (mk == 0xC0 || mk == 0xC1 || mk == 0xC2) {
+			int err = IMG_ERR_CORRUPT;
+
+			if (setup)
+				goto bad;
+			if (jpeg_sof(j, (unsigned int)mk, &err)) {
+				rcode = err;
+				goto fail;
+			}
+			if (!img_size_ok(j->w, j->h, opt))
+				goto too_big;
+			rcode = jpeg_setup(j, m, out, &image_end);
+			if (rcode)
+				goto fail;
+			setup = 1;
+			continue;
+		}
+		if (mk >= 0xC0 && mk <= 0xCF && mk != 0xC4 &&
+		    mk != 0xC8 && mk != 0xCC) {
 			rcode = IMG_ERR_UNSUPPORTED;
 			goto fail;
 		}
@@ -716,10 +1276,6 @@ int img_decode_jpeg(const unsigned char *d, unsigned int n,
 						counts[k] = v;
 						total += v;
 					}
-					DBG("jpeg: dht tc=%u th=%u total=%u c=%u,%u,%u,%u pos=%u end=%u\n",
-					    tc, th, total, counts[0], counts[1],
-					    counts[2], counts[3], j->pos, end);
-
 					{
 						unsigned char vals[256];
 
@@ -736,18 +1292,6 @@ int img_decode_jpeg(const unsigned char *d, unsigned int n,
 							huff_build(&j->ac[th], counts, vals);
 						else
 							huff_build(&j->dc[th], counts, vals);
-#ifdef IMG_HOST_DEBUG
-						if (tc == 0 && th == 0) {
-							int ll;
-
-							for (ll = 1; ll <= 10; ll++)
-								if (j->dc[0].bits[ll])
-									DBG("  dc0 l=%d min=%d max=%d valptr=%d\n",
-									    ll, j->dc[0].mincode[ll],
-									    j->dc[0].maxcode[ll],
-									    j->dc[0].valptr[ll]);
-						}
-#endif
 					}
 				}
 			} else if (mk == 0xDD) {  /* DRI */
@@ -759,128 +1303,11 @@ int img_decode_jpeg(const unsigned char *d, unsigned int n,
 			}
 		}
 	}
-	if (!sos)
+	if (!setup || scans == 0)
 		goto bad;
-	if (!img_size_ok(j->w, j->h, opt))
-		goto too_big;
-
-	rcode = img_alloc(m, j->w, j->h, IMG_FMT_JPEG, 0, out);
-	if (rcode)
-		goto fail;
-	image_end = img_mem_mark(m);
-
-	/* Allocate padded component planes. */
-	for (i = 0; i < j->ncomp; i++) {
-		struct jpeg_comp *c = &j->comp[i];
-
-		c->pw = j->mcus_x * c->h * 8;
-		c->ph = j->mcus_y * c->v * 8;
-		c->plane = (unsigned char *)img_mem_alloc(m, c->pw * c->ph, 16);
-		if (!c->plane) {
-			rcode = IMG_ERR_NOMEM;
-			img_mem_rewind(m, mark);
-			goto fail;
-		}
-		c->dc = 0;
-	}
-
-	/* Entropy-coded scan. */
-	{
-		unsigned int mx, my, mcu = 0;
-
-		for (my = 0; my < j->mcus_y; my++) {
-			for (mx = 0; mx < j->mcus_x; mx++) {
-				unsigned int ci;
-
-				for (ci = 0; ci < j->ncomp; ci++) {
-					struct jpeg_comp *c = &j->comp[ci];
-					unsigned int by, bx;
-
-					for (by = 0; by < c->v; by++) {
-						for (bx = 0; bx < c->h; bx++) {
-							int blk[64];
-							unsigned char p[64];
-							unsigned int xx, yy;
-
-							if (jpeg_block(j, c, blk))
-								goto entropy_bad;
-							idct_block(blk, p);
-							for (yy = 0; yy < 8; yy++)
-								for (xx = 0; xx < 8; xx++) {
-									unsigned int px = mx * c->h * 8 + bx * 8 + xx;
-									unsigned int py = my * c->v * 8 + by * 8 + yy;
-
-									c->plane[py * c->pw + px] = p[yy * 8 + xx];
-								}
-						}
-					}
-				}
-				mcu++;
-				if (j->restart && (mcu % j->restart) == 0 &&
-				    mcu < j->mcus_x * j->mcus_y) {
-					for (ci = 0; ci < j->ncomp; ci++)
-						j->comp[ci].dc = 0;
-					if (jpeg_restart(j))
-						goto entropy_bad;
-				}
-			}
-		}
-	}
-
-	/* Convert planes to RGB565. */
-	for (i = 0; i < j->h; i++) {
-		unsigned int x;
-
-		for (x = 0; x < j->w; x++) {
-			struct jpeg_comp *y = &j->comp[0];
-			unsigned int yy = y->plane[i * y->pw + x];
-			unsigned int r, g, b;
-
-			if (j->ncomp == 1) {
-				r = g = b = yy;
-			} else {
-				struct jpeg_comp *cb = &j->comp[1];
-				struct jpeg_comp *cr = &j->comp[2];
-				unsigned int cstep_x, cstep_y, crstep_x, crstep_y;
-				int cpos_x, cpos_y, crpos_x, crpos_y;
-				int cbv, crv, yv;
-
-				cstep_x = ((unsigned int)cb->h << 16) / j->max_h;
-				cstep_y = ((unsigned int)cb->v << 16) / j->max_v;
-				crstep_x = ((unsigned int)cr->h << 16) / j->max_h;
-				crstep_y = ((unsigned int)cr->v << 16) / j->max_v;
-				cpos_x = (int)(x * cstep_x) +
-					(int)(((unsigned int)cb->h * 32768u) / j->max_h) -
-					32768;
-				cpos_y = (int)(i * cstep_y) +
-					(int)(((unsigned int)cb->v * 32768u) / j->max_v) -
-					32768;
-				crpos_x = (int)(x * crstep_x) +
-					(int)(((unsigned int)cr->h * 32768u) / j->max_h) -
-					32768;
-				crpos_y = (int)(i * crstep_y) +
-					(int)(((unsigned int)cr->v * 32768u) / j->max_v) -
-					32768;
-				cbv = jpeg_chroma(cb, cpos_x, cpos_y) - 128;
-				crv = jpeg_chroma(cr, crpos_x, crpos_y) - 128;
-				yv = (int)yy;
-				int rr = yv + ((91881 * crv) >> 16);
-				int gg = yv - ((22554 * cbv + 46802 * crv) >> 16);
-				int bb = yv + ((116130 * cbv) >> 16);
-
-				if (rr < 0) rr = 0;
-				if (gg < 0) gg = 0;
-				if (bb < 0) bb = 0;
-				if (rr > 255) rr = 255;
-				if (gg > 255) gg = 255;
-				if (bb > 255) bb = 255;
-				r = (unsigned int)rr;
-				g = (unsigned int)gg;
-				b = (unsigned int)bb;
-			}
-			out->px[i * j->w + x] = img_rgb565(r, g, b);
-		}
-	}
+	if (j->progressive)
+		jpeg_reconstruct(j);
+	jpeg_output(j, out);
 	img_mem_rewind(m, image_end);
 	return 0;
 
@@ -889,15 +1316,12 @@ entropy_bad:
 	rcode = IMG_ERR_CORRUPT;
 	goto fail;
 too_big:
-	DBG("jpeg: too big %ux%u\n", j->w, j->h);
 	rcode = IMG_ERR_TOOBIG;
 	goto fail;
 unsupported:
-	DBG("jpeg: unsupported\n");
 	rcode = IMG_ERR_UNSUPPORTED;
 	goto fail;
 bad:
-	DBG("jpeg: bad at pos %u ncomp %u\n", j->pos, j->ncomp);
 	rcode = IMG_ERR_CORRUPT;
 fail:
 	img_mem_rewind(m, mark);

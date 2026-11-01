@@ -22,6 +22,7 @@
 #define IMG_FMT_TGA     5
 #define IMG_FMT_PNM     6
 #define IMG_FMT_ICO     7
+#define IMG_FMT_PAM     8
 
 #define IMG_FLAG_ALPHA  1
 
@@ -41,6 +42,9 @@ struct img_info {
 	unsigned int format;
 	unsigned int width, height;
 	unsigned int has_alpha;
+	unsigned int progressive;  /* JPEG only */
+	unsigned int components;   /* JPEG only */
+	unsigned int max_h, max_v; /* JPEG sampling factors */
 };
 
 struct img_options {
@@ -86,6 +90,14 @@ int  img_sniff(const void *data, unsigned int len, struct img_info *out);
 int  img_decode(const void *data, unsigned int len,
 		const struct img_options *opt, struct img_mem *m,
 		struct img_image *out);
+
+/* Animated GIF: count frames / decode one composited frame.  The first call
+ * with an empty out image allocates it; later calls may reuse the same image. */
+int  img_gif_frames(const void *data, unsigned int len, unsigned int *frames,
+		    unsigned int *first_delay_ms, int *has_alpha);
+int  img_decode_gif_frame(const void *data, unsigned int len,
+			  unsigned int frame, struct img_mem *m,
+			  struct img_image *out, unsigned int *delay_ms);
 unsigned int img_estimate(const struct img_info *info);
 
 const char *img_format_name(unsigned int format);

@@ -178,7 +178,8 @@ static int is_image_name(const char *name)
 	       ext_is(name, ".jpeg") || ext_is(name, ".gif") ||
 	       ext_is(name, ".bmp") || ext_is(name, ".tga") ||
 	       ext_is(name, ".ppm") || ext_is(name, ".pgm") ||
-	       ext_is(name, ".pbm");
+	       ext_is(name, ".pbm") || ext_is(name, ".ico") ||
+	       ext_is(name, ".cur") || ext_is(name, ".pam");
 }
 
 static void path_join(const char *dir, const char *name, char *out,

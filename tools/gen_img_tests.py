@@ -8,7 +8,7 @@ import gzip
 import os
 import struct
 import zlib
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "testdata", "images")
@@ -106,6 +106,9 @@ def main():
     files["rle.tga"] = (rgb, False)
     rgba.save(os.path.join(OUT, "rgba.tga"))
     files["rgba.tga"] = (rgba, True)
+    ic = rgba.resize((32, 32))
+    ic.save(os.path.join(OUT, "icon.ico"), sizes=[(32, 32)])
+    files["icon.ico"] = (Image.open(os.path.join(OUT, "icon.ico")).convert("RGBA"), True)
     save(rgb, "rgb.ppm")
     save(gray, "gray.pgm")
     save(bw, "bw.pbm")
@@ -115,6 +118,11 @@ def main():
             for x in range(w):
                 f.write("%d %d %d " % p[x, y])
     files["ascii.ppm"] = (rgb, False)
+    with open(os.path.join(OUT, "rgba.pam"), "wb") as f:
+        f.write(("P7\nWIDTH %d\nHEIGHT %d\nDEPTH 4\nMAXVAL 255\n"
+                 "TUPLTYPE RGB_ALPHA\nENDHDR\n" % (w, h)).encode())
+        f.write(rgba.tobytes())
+    files["rgba.pam"] = (rgba, True)
 
     gif_src = rgb.convert("P", palette=Image.ADAPTIVE, colors=256)
     save(gif_src, "plain.gif")
@@ -145,7 +153,30 @@ def main():
     rgb.save(os.path.join(OUT, "jrst.jpg"), quality=90, restart_marker_blocks=2)
     rgb.save(os.path.join(OUT, "ref", "jrst.jpg.ppm"))
     jpegs.append("jrst.jpg")
-    rgb.save(os.path.join(OUT, "prog.jpg"), quality=90, progressive=True)
+
+    for name, src, kw in [
+            ("prog.jpg", rgb, dict(subsampling=2)),
+            ("prog444.jpg", rgb, dict(subsampling=0)),
+            ("prog422.jpg", rgb, dict(subsampling=1)),
+            ("proggray.jpg", gray, {}),
+            ("progrst.jpg", rgb, dict(restart_marker_blocks=2))]:
+        src.save(os.path.join(OUT, name), quality=90, progressive=True, **kw)
+        Image.open(os.path.join(OUT, name)).convert("RGB").save(
+            os.path.join(OUT, "ref", name + ".ppm"))
+        jpegs.append(name)
+
+    # EXIF orientation: the reference is PIL's exif_transpose of the same
+    # JPEG, i.e. the upright image the viewer should show.
+    for o in range(2, 9):
+        ex = Image.Exif()
+        ex[0x0112] = o
+        name = "exif%d.jpg" % o
+        rgb.save(os.path.join(OUT, name), quality=90, exif=ex)
+        ImageOps.exif_transpose(Image.open(os.path.join(OUT, name))).convert("RGB").save(
+            os.path.join(OUT, "ref", name + ".ppm"))
+        jpegs.append(name)
+
+    rgb.convert("CMYK").save(os.path.join(OUT, "cmyk.jpg"), quality=90)
 
     # inflate vectors
     raw = (b"the quick brown fox jumps over the lazy dog\n" * 500) + bytes(range(256)) * 80

@@ -162,6 +162,7 @@ static int test_jpeg(const char *name)
 	unsigned char *ref;
 	struct img_mem mem;
 	struct img_options opt;
+	struct img_info info;
 	struct img_image im;
 	int r, x, y;
 	unsigned long long sum = 0, count = 0;
@@ -172,6 +173,14 @@ static int test_jpeg(const char *name)
 	if (read_file(path, filebuf, sizeof(filebuf), &n) ||
 	    read_ppm(refpath, &rw, &rh, &ref)) {
 		printf("FAIL %s: read\n", name);
+		return 1;
+	}
+	memset(&info, 0, sizeof(info));
+	if (img_sniff(filebuf, n, &info) != 0 || info.width != rw ||
+	    info.height != rh) {
+		printf("FAIL %s: sniff %ux%u, expected %ux%u\n", name,
+		       info.width, info.height, rw, rh);
+		free(ref);
 		return 1;
 	}
 	img_mem_init(&mem, arena, sizeof(arena));
@@ -314,6 +323,32 @@ static void test_blit(void)
 	});
 }
 
+static int test_gif_anim(void)
+{
+	unsigned int n, frames = 0, delay = 0;
+	int ha = 0;
+	struct img_mem mem;
+	struct img_image im;
+	int r;
+
+	if (read_file("testdata/images/anim.gif", filebuf, sizeof(filebuf), &n))
+		return 1;
+	if (img_gif_frames(filebuf, n, &frames, &delay, &ha) != 0 || frames < 2) {
+		printf("FAIL anim.gif: frame count %u\n", frames);
+		return 1;
+	}
+	img_mem_init(&mem, arena, sizeof(arena));
+	memset(&im, 0, sizeof(im));
+	r = img_decode_gif_frame(filebuf, n, 0, &mem, &im, &delay);
+	if (r == 0)
+		r = img_decode_gif_frame(filebuf, n, 1, &mem, &im, &delay);
+	if (r != 0) {
+		printf("FAIL anim.gif: frame decode %d\n", r);
+		return 1;
+	}
+	return 0;
+}
+
 static int test_unsupported(void)
 {
 	unsigned int n;
@@ -321,13 +356,13 @@ static int test_unsupported(void)
 	struct img_options opt;
 	struct img_image im;
 
-	if (read_file("testdata/images/prog.jpg", filebuf, sizeof(filebuf), &n))
+	if (read_file("testdata/images/cmyk.jpg", filebuf, sizeof(filebuf), &n))
 		return 1;
 	img_mem_init(&mem, arena, sizeof(arena));
 	opt.max_pixels = 0;
 	memset(&im, 0, sizeof(im));
 	if (img_decode(filebuf, n, &opt, &mem, &im) != IMG_ERR_UNSUPPORTED) {
-		printf("FAIL prog.jpg: not rejected\n");
+		printf("FAIL cmyk.jpg: not rejected\n");
 		return 1;
 	}
 	return 0;
@@ -340,6 +375,8 @@ int main(void)
 	test_blit();
 	test_inflate();
 	if (test_unsupported())
+		failures++;
+	if (test_gif_anim())
 		failures++;
 	for (i = 0; i < IMG_EXP_COUNT; i++) {
 		if (test_lossless(&img_exp[i]))

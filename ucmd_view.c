@@ -44,6 +44,7 @@ struct viewer {
 	int have_img;
 	int loading;
 	int error;
+	unsigned int gif_frames, gif_index, gif_delay, gif_next_ms;
 	int last_w, last_h;
 	char err[64];
 	char name[20];
@@ -552,6 +553,18 @@ void _start(const char *arg)
 		v.format = v.img.format;
 		v.fit = 1;
 	}
+	if (v.have_img && v.format == IMG_FMT_GIF) {
+		unsigned int frames = 0, delay = 100;
+		int ha = 0;
+
+		if (img_gif_frames(v.heap, v.file_size, &frames, &delay, &ha) == 0 &&
+		    frames > 1) {
+			v.gif_frames = frames;
+			v.gif_index = 0;
+			v.gif_delay = delay;
+			v.gif_next_ms = u_ticks_ms() + delay;
+		}
+	}
 	v.dirty = 1;
 
 	for (;;) {
@@ -559,6 +572,24 @@ void _start(const char *arg)
 		struct ngui_rect body = view_body(ui);
 		int close = 0;
 		int k;
+		unsigned int now = u_ticks_ms();
+
+		if (v.gif_frames > 1 &&
+		    (int)(now - v.gif_next_ms) >= 0) {
+			unsigned int d = v.gif_delay;
+
+			v.gif_index = (v.gif_index + 1) % v.gif_frames;
+			if (img_decode_gif_frame(v.heap, v.file_size,
+						 v.gif_index, &v.mem, &v.img,
+						 &d) == 0) {
+				if (d < 20) d = 20;
+				v.gif_delay = d;
+				v.dirty = 1;
+			} else {
+				v.gif_frames = 0;
+			}
+			v.gif_next_ms = u_ticks_ms() + v.gif_delay;
+		}
 
 		ngui_begin(ui);
 		if (ui->w != v.last_w || ui->h != v.last_h) {

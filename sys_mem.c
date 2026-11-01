@@ -21,7 +21,8 @@ static void zero_page(unsigned int phys)
 
 /* Map new pages [from, to) of the arena.  On failure release only the pages
  * mapped by this call; the caller's existing arena is untouched. */
-static int map_pages(struct process *p, unsigned int from, unsigned int to)
+static int map_pages(struct process *p, unsigned int from, unsigned int to,
+		     int zero)
 {
 	unsigned int i;
 
@@ -31,7 +32,8 @@ static int map_pages(struct process *p, unsigned int from, unsigned int to)
 
 		if (!phys)
 			break;
-		zero_page(phys);
+		if (zero)
+			zero_page(phys);
 		if (!paging_map_page(p->cr3, va, phys,
 				     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
 			mm_free_page(phys);
@@ -61,7 +63,7 @@ int sys_mem_alloc(unsigned int bytes)
 	pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
 	if (pages == 0 || pages > USER_HEAP_MAX / PAGE_SIZE)
 		return -1;
-	if (map_pages(p, 0, pages))
+	if (map_pages(p, 0, pages, 1))
 		return -1;
 	p->heap_pages = pages;
 	return (int)USER_HEAP_BASE;
@@ -79,7 +81,10 @@ int sys_mem_grow(unsigned int bytes)
 		return 0;              /* shrinking is deliberately unsupported */
 	if (pages > USER_HEAP_MAX / PAGE_SIZE)
 		return -1;
-	if (map_pages(p, p->heap_pages, pages))
+	/* Growth is normally used for a decode arena; the decoder fills every
+	 * byte it consumes.  Skip the zero pass, which dominates the grow
+	 * time on a large image.  The initial allocation above is zeroed. */
+	if (map_pages(p, p->heap_pages, pages, 0))
 		return -1;
 	p->heap_pages = pages;
 	return 0;
