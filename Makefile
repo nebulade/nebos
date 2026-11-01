@@ -35,6 +35,9 @@ tty.o: tty.c tty.h process.h
 font_8x8.o: font_8x8.c font_8x8.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+font_8x16.o: font_8x16.c font_8x16.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -369,10 +372,10 @@ ucmd_%.elf: ucmd_%.o ucmd.ld
 	$(OBJCOPY) --strip-all $@ $@
 
 # edit draws text itself, so it links the kernel's 8x8 font into its ELF.
-ucmd_edit.o: ucmd_edit.c ucmd_lib.h syscall.h font_8x8.h
+ucmd_edit.o: ucmd_edit.c ucmd_lib.h syscall.h font_8x16.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ucmd_edit.elf: ucmd_edit.o font_8x8.o ucmd.ld
+ucmd_edit.elf: ucmd_edit.o font_8x16.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
@@ -380,17 +383,17 @@ ucmd_edit.elf: ucmd_edit.o font_8x8.o ucmd.ld
 ucmd_wm.o: ucmd_wm.c ucmd_lib.h syscall.h wm_abi.h uwm_lib.h version.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-uwm_lib.o: uwm_lib.c uwm_lib.h font_8x8.h
+uwm_lib.o: uwm_lib.c uwm_lib.h font_8x16.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ucmd_wm.elf: ucmd_wm.o uwm_lib.o font_8x8.o ucmd.ld
+ucmd_wm.elf: ucmd_wm.o uwm_lib.o font_8x16.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 ucmd_term.o: ucmd_term.c ucmd_lib.h syscall.h wm_abi.h uwm_lib.h io.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x8.o ucmd.ld
+ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x16.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
@@ -627,4 +630,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack.o ramfs.o payload.o mkpack uwm_lib.o *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack.o ramfs.o payload.o mkpack uwm_lib.o *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

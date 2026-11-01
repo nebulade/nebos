@@ -7,13 +7,13 @@
 #define WM_MAX_WINDOWS 4
 
 /* Shared chrome layout (the WM draws it, the kernel only stores geometry). */
-#define WM_BAR_H   25
+#define WM_BAR_H   30
 #define WM_BTN_X   132
-#define WM_BTN_Y   3
+#define WM_BTN_Y   5
 #define WM_BTN_W   56
-#define WM_BTN_H   14
-#define WM_TITLE_H 16
-#define WM_CLOSE_W 14
+#define WM_BTN_H   20
+#define WM_TITLE_H 22
+#define WM_CLOSE_W 16
 
 /* Fixed user virtual addresses for the WM's mappings.  The shadow is one
  * mapping; each window gets a private content slot (large enough for the

@@ -203,7 +203,7 @@ static void render(void)
 	usurf_fill(&surf, 0, 0, wi.width, wi.height, 0x000000u);
 	usurf_cells(&surf, cells, COLS, ROWS, 0, 0, 0, 0, wi.width, wi.height);
 	if (cursor_on && cx < COLS && cy < ROWS)
-		usurf_fill(&surf, (int)cx * 8, (int)cy * 10, 2, 10, 0xFFFFFFu);
+		usurf_fill(&surf, (int)cx * 8, (int)cy * 16, 2, 16, 0xFFFFFFu);
 	u_win_present();
 	dirty = 0;
 }
@@ -738,7 +738,7 @@ void _start(const char *arg)
 	tty = u_tty_create();
 	if (tty <= 0)
 		u_exit(1);
-	if (u_win_create(512, 320, "term", &wi) != 0)
+	if (u_win_create(512, 512, "term", &wi) != 0)
 		u_exit(1);
 	usurf_init(&surf, wi.fb, wi.width, wi.height, wi.width * 2, 16);
 	term_clear();

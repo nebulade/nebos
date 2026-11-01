@@ -80,7 +80,7 @@ static void draw_bar(void)
 		r = (r1 * (256 - f) + r2 * f) / 256;
 		g = (g1 * (256 - f) + g2 * f) / 256;
 		b = (b1 * (256 - f) + b2 * f) / 256;
-		for (y = 18; y < 20; y++)
+		for (y = WM_BAR_H - 5; y < WM_BAR_H - 3; y++)
 			usurf_fill(&screen, (int)x, (int)y, 1, 1, rgb16(r, g, b));
 	}
 

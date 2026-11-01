@@ -6,11 +6,11 @@
  * changes).  Ctrl+C still reaches the terminal and kills the command.
  *
  * A gfx session is the only key-input path available to a ring-3 command, so
- * the editor repaints the window canvas itself.  The kernel's 8x8 font is
+ * the editor repaints the window canvas itself.  The 8x16 userland font is
  * linked into this ELF by the Makefile (see ucmd_edit.elf). */
 
 #include "ucmd_lib.h"
-#include "font_8x8.h"
+#include "font_8x16.h"
 
 #define EDIT_MAX       16384
 #define EDIT_READ_MAX  (EDIT_MAX + 1)   /* one extra byte detects "too large" */
@@ -21,7 +21,7 @@
 #define EDIT_BUF_SIZE  (EDIT_READ_MAX + 512)
 #define TAB_WIDTH      4
 #define CELL_W         8
-#define CELL_H         10
+#define CELL_H         16
 #define PATH_MAX       128
 #define BASE_MAX       64
 #define STATUS_MAX     96
@@ -115,12 +115,12 @@ static void fill_rect(unsigned int x, unsigned int y, unsigned int w,
 static void draw_glyph_at(unsigned int x, unsigned int y, unsigned char c,
 			  unsigned short fg)
 {
-	const unsigned char *g = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
+	const unsigned char *g = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
 	unsigned int row, col;
 
 	if (x >= fb_w)
 		return;
-	for (row = 0; row < FONT_8X8_ROWS; row++) {
+	for (row = 0; row < FONT_8X16_ROWS; row++) {
 		unsigned int py = y + row;
 		unsigned short *p;
 		unsigned char bits;
@@ -587,7 +587,7 @@ void _start(const char *arg)
 	}
 	new_file = (r == 1);
 
-	if (u_win_create(512, 320, "edit", &info) != 0) {
+	if (u_win_create(512, 512, "edit", &info) != 0) {
 		u_puts("edit: no graphics window\n");
 		u_exit(1);
 	}

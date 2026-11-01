@@ -2,9 +2,9 @@
  * fbtext/gfx byte order so the mapped shadow matches the kernel console. */
 
 #include "uwm_lib.h"
-#include "font_8x8.h"
+#include "font_8x16.h"
 
-#define FONT_H 8
+#define FONT_H 16
 
 static const unsigned char pal_r[16] = {
 	0, 0, 0, 0, 170, 170, 170, 170, 85, 85, 85, 85, 255, 255, 255, 255
@@ -142,7 +142,7 @@ void usurf_glyph(struct usurf *s, int x, int y, unsigned char c,
 		 unsigned int height,
 		 int cx, int cy, unsigned int cw, unsigned int ch)
 {
-	const unsigned char *glyph = &font_8x8[(unsigned int)c * FONT_8X8_ROWS];
+	const unsigned char *glyph = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
 	unsigned int fr = (fg >> 16) & 0xFF, fgn = (fg >> 8) & 0xFF, fb = fg & 0xFF;
 	unsigned int br = (bg >> 16) & 0xFF, bgn = (bg >> 8) & 0xFF, bb = bg & 0xFF;
 	unsigned int py, px;
@@ -189,8 +189,8 @@ void usurf_cells(struct usurf *s, const unsigned short *cells,
 {
 	int col0 = (cx - x0) / 8;
 	int col1 = (cx + (int)cw - x0 + 7) / 8;
-	int row0 = (cy - y0) / 10;
-	int row1 = (cy + (int)ch - y0 + 9) / 10;
+	int row0 = (cy - y0) / 16;
+	int row1 = (cy + (int)ch - y0 + 15) / 16;
 	int row, col;
 
 	if (col0 < 0) col0 = 0;
@@ -213,8 +213,8 @@ void usurf_cells(struct usurf *s, const unsigned short *cells,
 				((unsigned int)pal_g[(attr >> 4) & 15] << 8) |
 				pal_b[(attr >> 4) & 15];
 
-			usurf_glyph(s, x0 + col * 8, y0 + row * 10, c,
-				    fg, bg, 0, 10, cx, cy, cw, ch);
+			usurf_glyph(s, x0 + col * 8, y0 + row * 16, c,
+				    fg, bg, 0, 16, cx, cy, cw, ch);
 		}
 	}
 }
