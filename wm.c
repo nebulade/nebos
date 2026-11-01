@@ -557,6 +557,9 @@ int wm_server_resize(unsigned int index, unsigned int cw, unsigned int ch)
 	w->pw = cw + 2;
 	w->ph = ch + WM_TITLE_H + 2;
 	w->content_gen++;
+	/* The owner is probably parked in SYS_WIN_KEY_WAIT; wake it so it
+	 * acknowledges the resize (and reflows its content) immediately. */
+	wait_wake_one(&w->key_wq);
 	return 0;
 }
 
@@ -902,6 +905,9 @@ static void wm_queue_ptr_event(struct window *w, unsigned int type,
 	w->ptr_events[w->ptr_head].y = y;
 	w->ptr_events[w->ptr_head].buttons = buttons;
 	w->ptr_head = next;
+	/* Wake a window blocked in SYS_WIN_KEY_WAIT so a click (e.g. on the
+	 * terminal's scrollbar) is handled now, not on the next poll timeout. */
+	wait_wake_one(&w->key_wq);
 }
 
 /* Turn the sampled button state into content-relative press/release events for

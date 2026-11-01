@@ -1,6 +1,12 @@
-/* Ring-3 terminal: owns a canvas window, a cell grid and the shell.  Text
- * commands write bytes to the tty; this process drains and renders them.
- * Privileged kernel commands are spawned as kernel processes (term_kcmd). */
+/* Ring-3 terminal: owns a canvas window, a scrollback of text rows and the
+ * shell.  Text commands write bytes to the tty; this process drains and
+ * renders them.  Privileged kernel commands are spawned as kernel processes
+ * (term_kcmd).
+ *
+ * The screen is the tail of a ring of display rows, so output that scrolls
+ * off the top stays available behind a scrollbar.  Rows carry a "wrapped"
+ * flag (the line continued because it did not fit), which lets a window
+ * resize re-flow the whole log at the new width instead of clearing it. */
 
 #include "ucmd_lib.h"
 #include "uwm_lib.h"
@@ -13,15 +19,53 @@
 #define LINE_MAX 128
 #define HIST_MAX 16
 
+/* Scrollbar on the right edge of the canvas.  The text area is narrowed by
+ * SB_W so the bar never covers a glyph; the bottom SB_BOTTOM pixels stay
+ * free for the window manager's resize grip. */
+#define SB_W 8
+#define SB_BOTTOM 16
+
+/* Total row storage (screen + scrollback).  Allocated from the per-process
+ * heap; the fallback keeps a screen-only terminal working if that fails. */
+#define SCROLL_ROWS_PREF 512
+#define SCROLL_ROWS_MIN  128
+
+#define POS_NONE 0xFFFFFFFFu
+
+/* One display row.  `wrapped` marks a row that continues on the next one
+ * because the logical line did not fit at the width it was written at. */
+struct trow {
+	unsigned short cells[MAX_COLS];
+	unsigned int len;
+	unsigned int wrapped;
+};
+
+/* A position captured before a reflow and mapped through it. */
+struct pos_map {
+	unsigned int abs;    /* absolute row index in the row log */
+	unsigned int col;    /* column within that row */
+	unsigned int start;  /* first row of the containing logical line */
+	unsigned int off;    /* character offset inside that logical line */
+	unsigned int dst;    /* destination row of the logical line start */
+};
+
 static struct win_info wi;
 static struct usurf surf;
 static int tty;
-static unsigned short cells[MAX_COLS * MAX_ROWS];
+static unsigned short view_cells[MAX_COLS * MAX_ROWS];
+static struct trow base_rows[MAX_ROWS];
+static struct trow base_scratch[MAX_ROWS];
+static struct trow *row_mem = base_rows;
+static struct trow *row_scratch = base_scratch;
+static unsigned int row_cap = MAX_ROWS;
+static unsigned int row_first;    /* ring index of logical row 0 */
+static unsigned int row_count;    /* valid rows (always >= rows) */
+static unsigned int view;         /* rows scrolled back from the bottom */
 static unsigned int cols = 64, rows = 32;
 static unsigned int cx, cy;
 static char line[LINE_MAX];
 static unsigned int line_len;
-static unsigned int line_row, line_col;
+static unsigned int line_abs, line_col;
 static int hist_browse;
 static char cwd[VFS_PATH_MAX];
 static char path[VFS_PATH_MAX];
@@ -31,35 +75,130 @@ static int fg_pid = -1;
 static int dirty = 1;
 static int cursor_on = 1;
 static unsigned int last_blink;
+static int sb_drag;
+static int sb_grab_ofs;
+static int wrap_pending;   /* the row is full; the next glyph wraps */
 
-static unsigned short *cell_at(unsigned int x, unsigned int y)
+/* ---- Row log ---- */
+
+static struct trow *row_at(unsigned int i)
 {
-	return &cells[y * cols + x];
+	return &row_mem[(row_first + i) % row_cap];
 }
 
-static void cell_put(unsigned int x, unsigned int y, char ch)
+static struct trow *dst_row(unsigned int i)
 {
-	*cell_at(x, y) = (unsigned short)(0x0A00 | (unsigned char)ch);
+	return &row_scratch[i % row_cap];
 }
 
-static void scroll_up(void)
+static unsigned int origin_row(void)
+{
+	return row_count - rows;
+}
+
+static void row_blank(struct trow *r)
 {
 	unsigned int i;
 
-	for (i = 0; i < (rows - 1) * cols; i++)
-		cells[i] = cells[i + cols];
-	for (; i < rows * cols; i++)
-		cells[i] = 0x0A20;
+	for (i = 0; i < MAX_COLS; i++)
+		r->cells[i] = 0x0A20;
+	r->len = 0;
+	r->wrapped = 0;
+}
+
+static void row_add_blank(void)
+{
+	struct trow *r;
+
+	if (row_count < row_cap) {
+		r = &row_mem[(row_first + row_count) % row_cap];
+		row_count++;
+	} else {
+		row_first = (row_first + 1) % row_cap;
+		r = &row_mem[(row_first + row_count - 1) % row_cap];
+	}
+	row_blank(r);
+}
+
+/* Append a row at the bottom and scroll the screen one line.  When the log is
+ * not full yet the existing rows keep their place, so the view offset grows
+ * with the origin to leave what the user is reading on screen. */
+static void append_blank_row(void)
+{
+	int was_full = (row_count >= row_cap);
+
+	row_add_blank();
+	if (was_full) {
+		/* Every logical row moved down one slot; keep the input-line
+		 * anchor pointing at the same row. */
+		if (line_abs > 0)
+			line_abs--;
+	} else if (view) {
+		view++;
+	}
+}
+
+static void scroll_by(int delta)
+{
+	unsigned int maxs = row_count - rows;
+	unsigned int nv = view;
+
+	if (delta > 0) {
+		nv += (unsigned int)delta;
+	} else {
+		unsigned int d = (unsigned int)(-delta);
+
+		nv = (nv > d) ? nv - d : 0;
+	}
+	if (nv > maxs)
+		nv = maxs;
+	if (nv != view) {
+		view = nv;
+		dirty = 1;
+	}
+}
+
+/* ---- Text output ---- */
+
+static void cell_put(unsigned int x, unsigned int y, char ch)
+{
+	struct trow *r;
+
+	if (x >= MAX_COLS || y >= rows)
+		return;
+	r = row_at(origin_row() + y);
+	r->cells[x] = (unsigned short)(0x0A00 | (unsigned char)ch);
+	if (x + 1 > r->len)
+		r->len = x + 1;
+}
+
+static void term_scroll(void)
+{
+	append_blank_row();
+	cy = rows - 1;
 }
 
 static void term_newline(void)
 {
+	row_at(origin_row() + cy)->wrapped = 0;
+	wrap_pending = 0;
 	cx = 0;
 	cy++;
-	if (cy >= rows) {
-		scroll_up();
-		cy = rows - 1;
-	}
+	if (cy >= rows)
+		term_scroll();
+	dirty = 1;
+}
+
+/* The next glyph does not fit: the row continues on the next one, and the
+ * two rows form one logical line that reflow must re-wrap as a unit. */
+static void term_wrap(void)
+{
+	row_at(origin_row() + cy)->wrapped = 1;
+	wrap_pending = 0;
+	cx = 0;
+	cy++;
+	if (cy >= rows)
+		term_scroll();
 	dirty = 1;
 }
 
@@ -70,11 +209,13 @@ static void term_putc(char c)
 		return;
 	}
 	if (c == '\r') {
+		wrap_pending = 0;
 		cx = 0;
 		dirty = 1;
 		return;
 	}
 	if (c == '\b') {
+		wrap_pending = 0;
 		if (cx > 0)
 			cx--;
 		cell_put(cx, cy, ' ');
@@ -83,16 +224,19 @@ static void term_putc(char c)
 	}
 	if (c == '\t') {
 		unsigned int n = 8 - (cx % 8);
+
 		while (n--)
 			term_putc(' ');
 		return;
 	}
 	if (c < 0x20 || c > 0x7E)
 		return;
+	if (wrap_pending)
+		term_wrap();
 	cell_put(cx, cy, c);
 	cx++;
 	if (cx >= cols)
-		term_newline();
+		wrap_pending = 1;   /* stay on this row until the next glyph */
 	dirty = 1;
 }
 
@@ -102,22 +246,42 @@ static void term_puts(const char *s)
 		term_putc(*s++);
 }
 
-static void term_clear(void)
+/* ESC[2J: erase the visible screen in place.  The rows stay in the log, so a
+ * full-screen repaint (top) does not push a frame into the scrollback every
+ * second, and anything above the screen is still there to scroll back to. */
+static void term_erase_screen(void)
 {
 	unsigned int i;
 
-	for (i = 0; i < cols * rows; i++)
-		cells[i] = 0x0A20;
+	for (i = 0; i < rows; i++)
+		row_blank(row_at(origin_row() + i));
 	cx = cy = 0;
+	wrap_pending = 0;
+	dirty = 1;
+}
+
+/* The `clear` builtin: drop the screen and the whole scrollback. */
+static void term_reset(void)
+{
+	row_first = 0;
+	row_count = 0;
+	view = 0;
+	while (row_count < rows)
+		row_add_blank();
+	cx = cy = 0;
+	wrap_pending = 0;
 	dirty = 1;
 }
 
 static void cursor_set(unsigned int row, unsigned int col)
 {
-	if (row >= rows) row = rows - 1;
-	if (col >= cols) col = cols - 1;
+	if (row >= rows)
+		row = rows - 1;
+	if (col >= cols)
+		col = cols - 1;
 	cy = row;
 	cx = col;
+	wrap_pending = 0;
 	dirty = 1;
 }
 
@@ -128,6 +292,7 @@ static int esc_cursor(const char *p, unsigned int n)
 
 	if (n < 5 || p[0] != 0x1B || p[1] != '[')
 		return 0;
+	i = 2;   /* skip "ESC [" */
 	while (i < n && p[i] >= '0' && p[i] <= '9')
 		row = row * 10 + (unsigned int)(p[i++] - '0');
 	if (i >= n || p[i++] != ';')
@@ -175,7 +340,7 @@ static void tty_feed(const char *buf, unsigned int n)
 				}
 			}
 			if (sn > 1 && seq[sn - 1] == 'J' && seq[1] == '2') {
-				term_clear();
+				term_erase_screen();
 			} else if (sn && seq[sn - 1] == 'H') {
 				cursor_set(0, 0);
 			}
@@ -197,29 +362,397 @@ static void drain_tty(void)
 	}
 }
 
+/* ---- Scrollbar ---- */
+
+static void sb_metrics(unsigned int *track_h, unsigned int *thumb_h,
+		       unsigned int *thumb_y)
+{
+	unsigned int total = row_count ? row_count : 1;
+	unsigned int t = (wi.height > SB_BOTTOM) ? wi.height - SB_BOTTOM
+						 : wi.height;
+	unsigned int maxs = row_count - rows;
+	unsigned int h = (rows * t) / total;
+
+	if (h < 12)
+		h = 12;
+	if (h > t)
+		h = t;
+	if (maxs == 0)
+		*thumb_y = t - h;
+	else
+		*thumb_y = (t - h) * (maxs - view) / maxs;
+	*track_h = t;
+	*thumb_h = h;
+}
+
+static void draw_scrollbar(void)
+{
+	unsigned int track_h, thumb_h, thumb_y, color;
+	unsigned int x = wi.width - SB_W;
+
+	sb_metrics(&track_h, &thumb_h, &thumb_y);
+	usurf_fill(&surf, (int)x, 0, SB_W, track_h, 0x1C1C24u);
+	if (sb_drag)
+		color = 0xD0D0E0u;
+	else if (view)
+		color = 0xB0A050u;
+	else
+		color = 0x808090u;
+	usurf_fill(&surf, (int)x, (int)thumb_y, SB_W, thumb_h, color);
+}
+
+static void sb_set_from_y(int y)
+{
+	unsigned int track_h, thumb_h, thumb_y;
+	unsigned int maxs = row_count - rows;
+	unsigned int nv;
+	int ty = y - sb_grab_ofs;
+
+	sb_metrics(&track_h, &thumb_h, &thumb_y);
+	(void)thumb_y;
+	if (ty < 0)
+		ty = 0;
+	if (maxs == 0 || track_h <= thumb_h) {
+		nv = 0;
+	} else {
+		if ((unsigned int)ty > track_h - thumb_h)
+			ty = (int)(track_h - thumb_h);
+		nv = maxs - (unsigned int)ty * maxs / (track_h - thumb_h);
+	}
+	if (nv != view) {
+		view = nv;
+		dirty = 1;
+	}
+}
+
+static void handle_pointer(void)
+{
+	struct win_event e;
+	struct win_pointer p;
+
+	while (u_win_event(&e) == 1) {
+		if (e.type == WIN_EV_POINTER_DOWN) {
+			if (e.x >= (int)(wi.width - SB_W) && e.y >= 0 &&
+			    e.y < (int)wi.height) {
+				unsigned int track_h, thumb_h, thumb_y;
+
+				sb_metrics(&track_h, &thumb_h, &thumb_y);
+				(void)track_h;
+				if ((unsigned int)e.y >= thumb_y &&
+				    (unsigned int)e.y < thumb_y + thumb_h) {
+					sb_drag = 1;
+					sb_grab_ofs = e.y - (int)thumb_y;
+				} else if ((unsigned int)e.y < thumb_y) {
+					scroll_by((int)rows - 1);
+				} else {
+					scroll_by(-((int)rows - 1));
+				}
+			}
+		} else if (e.type == WIN_EV_POINTER_UP) {
+			if (sb_drag) {
+				sb_drag = 0;
+				dirty = 1;
+			}
+		}
+	}
+	if (sb_drag && u_win_pointer(&p) == 0) {
+		if (!(p.buttons & 1)) {
+			sb_drag = 0;
+			dirty = 1;
+		} else {
+			sb_set_from_y(p.y);
+		}
+	}
+}
+
+/* ---- Rendering ---- */
+
 static void render(void)
 {
+	unsigned int x, y, maxs, start;
+
 	if (!dirty)
 		return;
+	maxs = row_count - rows;
+	if (view > maxs)
+		view = maxs;
+	start = origin_row() - view;
+
+	for (y = 0; y < rows; y++) {
+		unsigned int idx = start + y;
+		unsigned short *dst = &view_cells[y * cols];
+
+		if (idx < row_count) {
+			struct trow *r = row_at(idx);
+			unsigned int n = r->len;
+
+			if (n > cols)
+				n = cols;
+			for (x = 0; x < n; x++)
+				dst[x] = r->cells[x];
+			for (; x < cols; x++)
+				dst[x] = 0x0A20;
+		} else {
+			for (x = 0; x < cols; x++)
+				dst[x] = 0x0A20;
+		}
+	}
+
 	usurf_fill(&surf, 0, 0, wi.width, wi.height, 0x000000u);
-	usurf_cells(&surf, cells, cols, rows, 0, 0, 0, 0, wi.width, wi.height);
-	if (cursor_on && cx < cols && cy < rows)
-		usurf_fill(&surf, (int)cx * 8, (int)cy * 16, 2, 16, 0xFFFFFFu);
+	usurf_cells(&surf, view_cells, cols, rows, 0, 0, 0, 0,
+		    wi.width, wi.height);
+	if (view == 0 && cursor_on && cy < rows) {
+		unsigned int ccx = (cx < cols) ? cx : (cols ? cols - 1 : 0);
+
+		usurf_fill(&surf, (int)ccx * 8, (int)cy * 16, 2, 16,
+			   0xFFFFFFu);
+	}
+	draw_scrollbar();
 	u_win_present();
 	dirty = 0;
 }
 
 static void line_show(void)
 {
-	unsigned int i, x;
+	unsigned int i, x, base, k;
+	struct trow *r;
 
-	cy = line_row;
+	if (view) {
+		view = 0;
+		dirty = 1;
+	}
+	base = line_abs;
+	if (base < origin_row())
+		base = origin_row();
+	if (base >= row_count)
+		base = row_count - 1;
+	line_abs = base;
+	r = row_at(base);
+	if (r->len > line_col)
+		r->len = line_col;
+	r->wrapped = 0;
+	/* The input line is the tail of the log: rows after its start are
+	 * leftovers of the previous, possibly longer, version of the line. */
+	for (k = 1; base + k < row_count; k++)
+		row_blank(row_at(base + k));
+
 	cx = line_col;
+	cy = base - origin_row();
+	wrap_pending = 0;
+	if (cx >= cols)
+		term_wrap();   /* the prompt filled the row exactly */
 	for (i = 0; i < line_len; i++)
 		term_putc(line[i]);
 	for (x = cx; x < cols; x++)
 		cell_put(x, cy, ' ');
 	dirty = 1;
+}
+
+/* ---- Reflow ---- */
+
+/* Absolute row index of `idx` and the character offset of (idx, col) in the
+ * logical line that contains it. */
+static void pos_capture(struct pos_map *m, unsigned int idx, unsigned int col)
+{
+	unsigned int ls, off = 0, j;
+
+	if (idx >= row_count)
+		idx = row_count - 1;
+	if (col > MAX_COLS)
+		col = MAX_COLS;
+	ls = idx;
+	while (ls > 0 && row_at(ls - 1)->wrapped)
+		ls--;
+	for (j = ls; j < idx; j++) {
+		unsigned int l = row_at(j)->len;
+
+		if (l > MAX_COLS)
+			l = MAX_COLS;
+		off += l;
+	}
+	{
+		unsigned int l = row_at(idx)->len;
+
+		if (col > l)
+			col = l;
+		off += col;
+	}
+	m->abs = idx;
+	m->col = col;
+	m->start = ls;
+	m->off = off;
+	m->dst = POS_NONE;
+}
+
+/* Re-wrap every logical line at `new_cols` into the scratch ring, then copy
+ * the retained tail back.  The two maps are moved through the same rebuild so
+ * the cursor and the shell's input line keep pointing at the same text. */
+static void reflow(unsigned int new_cols, struct pos_map *cur,
+		   struct pos_map *lin)
+{
+	unsigned int i = 0, out_total = 0, keep, drop, k;
+
+	while (i < row_count) {
+		unsigned int ls = i, j = i, len = 0;
+		unsigned int out_start = out_total;
+
+		while (1) {
+			struct trow *r = row_at(j);
+			unsigned int l = r->len;
+
+			if (l > MAX_COLS)
+				l = MAX_COLS;
+			len += l;
+			j++;
+			if (!r->wrapped || j >= row_count)
+				break;
+		}
+		if (ls == cur->start)
+			cur->dst = out_start;
+		if (ls == lin->start)
+			lin->dst = out_start;
+
+		if (len == 0) {
+			row_blank(dst_row(out_total++));
+		} else {
+			unsigned int p = 0, srow = ls, sc = 0;
+
+			while (p < len) {
+				struct trow *d = dst_row(out_total++);
+				unsigned int n = len - p;
+				unsigned int q = 0;
+
+				if (n > new_cols)
+					n = new_cols;
+				row_blank(d);
+				while (q < n) {
+					struct trow *s = row_at(srow);
+					unsigned int sl = s->len;
+
+					if (sl > MAX_COLS)
+						sl = MAX_COLS;
+					if (sc >= sl) {
+						srow++;
+						sc = 0;
+						continue;
+					}
+					d->cells[q++] = s->cells[sc++];
+					p++;
+				}
+				d->len = n;
+				d->wrapped = (p < len);
+			}
+		}
+		i = j;
+	}
+
+	keep = (out_total < row_cap) ? out_total : row_cap;
+	drop = out_total - keep;
+	for (k = 0; k < keep; k++) {
+		struct trow *s = dst_row(drop + k);
+		struct trow *d = &row_mem[k];
+		unsigned int c;
+
+		d->len = s->len;
+		d->wrapped = s->wrapped;
+		for (c = 0; c < MAX_COLS; c++)
+			d->cells[c] = s->cells[c];
+	}
+	row_first = 0;
+	row_count = keep;
+
+	if (cur->dst != POS_NONE) {
+		unsigned int a = cur->dst + cur->off / new_cols;
+
+		cur->abs = (a >= drop) ? a - drop : 0;
+		cur->col = cur->off % new_cols;
+	}
+	if (lin->dst != POS_NONE) {
+		unsigned int a = lin->dst + lin->off / new_cols;
+
+		lin->abs = (a >= drop) ? a - drop : 0;
+		lin->col = lin->off % new_cols;
+	}
+}
+
+static void finish_resize(unsigned int new_rows, struct pos_map *cur,
+			  struct pos_map *lin)
+{
+	unsigned int origin;
+
+	/* Blank rows below the last written one are only padding.  Dropping
+	 * them keeps the cursor on screen when the window gets shorter;
+	 * otherwise the tail-anchored screen would scroll the prompt away. */
+	while (row_count > 0) {
+		struct trow *r = row_at(row_count - 1);
+
+		if (r->len != 0 || r->wrapped)
+			break;
+		row_count--;
+	}
+	rows = new_rows;
+	while (row_count < rows)
+		row_add_blank();
+	origin = row_count - rows;
+	if (view > origin)
+		view = origin;
+
+	if (cur->abs < origin)
+		cur->abs = origin;
+	if (cur->abs >= row_count) {
+		row_add_blank();
+		cur->abs = row_count - 1;
+	}
+	origin = row_count - rows;
+	cy = cur->abs - origin;
+	cx = (cur->col < cols) ? cur->col : cols - 1;
+
+	if (lin->abs < origin)
+		lin->abs = origin;
+	if (lin->abs >= row_count)
+		lin->abs = row_count - 1;
+	line_abs = lin->abs;
+	line_col = (lin->col < cols) ? lin->col : cols - 1;
+	dirty = 1;
+}
+
+static void handle_resize(void)
+{
+	struct win_info cur;
+	struct pos_map cpos, lpos;
+	unsigned int new_cols, new_rows;
+
+	if (u_win_info(&cur) != 0)
+		return;
+	if (cur.width == wi.width && cur.height == wi.height)
+		return;
+	if (u_win_ack_resize() != 0)
+		return;
+
+	new_cols = (cur.width > SB_W) ? (cur.width - SB_W) / 8 : 1;
+	if (new_cols < 1)
+		new_cols = 1;
+	if (new_cols > MAX_COLS)
+		new_cols = MAX_COLS;
+	new_rows = cur.height / 16;
+	if (new_rows < 1)
+		new_rows = 1;
+	if (new_rows > MAX_ROWS)
+		new_rows = MAX_ROWS;
+	if (new_rows > row_cap)
+		new_rows = row_cap;
+
+	pos_capture(&cpos, origin_row() + cy, cx);
+	pos_capture(&lpos, line_abs, line_col);
+
+	wi = cur;
+	usurf_init(&surf, wi.fb, wi.width, wi.height, wi.width * 2, 16);
+
+	if (new_cols != cols) {
+		reflow(new_cols, &cpos, &lpos);
+		cols = new_cols;
+	}
+	finish_resize(new_rows, &cpos, &lpos);
 }
 
 static void line_set(const char *s)
@@ -252,7 +785,7 @@ static void prompt(void)
 	term_puts("] > ");
 	line_len = 0;
 	line[0] = '\0';
-	line_row = cy;
+	line_abs = origin_row() + cy;
 	line_col = cx;
 	hist_browse = 0;
 	dirty = 1;
@@ -394,6 +927,7 @@ static void run_line(void)
 	}
 	if (word[0] == 'p' && word[1] == 'a' && word[2] == 't' && !word[3]) {
 		unsigned int i;
+
 		if (!args[0]) {
 			term_puts(path);
 			term_putc('\n');
@@ -421,7 +955,7 @@ static void run_line(void)
 	}
 	if (word[0] == 'c' && word[1] == 'l' && word[2] == 'e' &&
 	    word[3] == 'a' && word[4] == 'r' && !word[5]) {
-		term_clear();
+		term_reset();
 		prompt();
 		return;
 	}
@@ -456,6 +990,7 @@ static void run_line(void)
 	if (word[0] == 'k' && word[1] == 'i' && word[2] == 'l' &&
 	    word[3] == 'l' && !word[4]) {
 		unsigned int pid = parse_num(args);
+
 		if (!pid || u_kill(pid) != 0)
 			term_puts("kill: no such process\n");
 		prompt();
@@ -481,6 +1016,7 @@ static void submit_line(void)
 	term_putc('\n');
 	if (line_len) {
 		unsigned int i;
+
 		for (i = 0; line[i] && i < sizeof(hist[hist_next]) - 1; i++)
 			hist[hist_next][i] = line[i];
 		hist[hist_next][i] = '\0';
@@ -573,7 +1109,8 @@ static void complete_line(void)
 			struct sys_mount m;
 
 			for (i = 0;; i++) {
-				if (u_syscall2(SYS_LIST_MOUNTS, (int)i, (int)&m) != 1)
+				if (u_syscall2(SYS_LIST_MOUNTS, (int)i,
+					       (int)&m) != 1)
 					break;
 				n = name_len(m.name, sizeof(m.name));
 				if (!prefix_is(base, bl, m.name, n))
@@ -618,6 +1155,7 @@ static void complete_line(void)
 					cl = 0;
 					if (slash > 0) {
 						unsigned int k;
+
 						for (k = 0; k < slash &&
 							    cl + 1 < sizeof(cand); k++)
 							cand[cl++] = token[k];
@@ -684,8 +1222,35 @@ static void complete_line(void)
 	line_show();
 }
 
+static int is_page_key(int k)
+{
+	return k == IO_KEY_PAGE_UP || k == IO_KEY_PAGE_DOWN ||
+	       k == IO_KEY_HOME || k == IO_KEY_END;
+}
+
 static void handle_key(int k)
 {
+	if (k == IO_KEY_PAGE_UP) {
+		scroll_by((int)rows - 1);
+		return;
+	}
+	if (k == IO_KEY_PAGE_DOWN) {
+		scroll_by(-((int)rows - 1));
+		return;
+	}
+	if (k == IO_KEY_HOME) {
+		scroll_by((int)row_count);
+		return;
+	}
+	if (k == IO_KEY_END) {
+		scroll_by(-(int)row_count);
+		return;
+	}
+	if (view) {
+		/* Typing always means the prompt: jump back to the tail. */
+		view = 0;
+		dirty = 1;
+	}
 	if (k == 0x03) {
 		if (fg_pid > 0) {
 			u_kill((unsigned int)fg_pid);
@@ -743,6 +1308,27 @@ static void handle_key(int k)
 	}
 }
 
+static void term_alloc_rows(void)
+{
+	unsigned int bytes;
+
+	row_cap = SCROLL_ROWS_PREF;
+	bytes = 2 * row_cap * (unsigned int)sizeof(struct trow);
+	row_mem = (struct trow *)u_mem_alloc(bytes);
+	if (!row_mem) {
+		row_cap = SCROLL_ROWS_MIN;
+		bytes = 2 * row_cap * (unsigned int)sizeof(struct trow);
+		row_mem = (struct trow *)u_mem_alloc(bytes);
+	}
+	if (row_mem) {
+		row_scratch = row_mem + row_cap;
+	} else {
+		row_mem = base_rows;
+		row_scratch = base_scratch;
+		row_cap = MAX_ROWS;
+	}
+}
+
 void _start(const char *arg)
 {
 	unsigned int now;
@@ -754,15 +1340,25 @@ void _start(const char *arg)
 	if (u_win_create(512, 512, "term", &wi) != 0)
 		u_exit(1);
 	usurf_init(&surf, wi.fb, wi.width, wi.height, wi.width * 2, 16);
-	cols = wi.width / 8;
+	term_alloc_rows();
+	cols = (wi.width > SB_W) ? (wi.width - SB_W) / 8 : 1;
+	if (cols < 1)
+		cols = 1;
+	if (cols > MAX_COLS)
+		cols = MAX_COLS;
 	rows = wi.height / 16;
-	if (cols > MAX_COLS) cols = MAX_COLS;
-	if (rows > MAX_ROWS) rows = MAX_ROWS;
-	term_clear();
+	if (rows < 1)
+		rows = 1;
+	if (rows > MAX_ROWS)
+		rows = MAX_ROWS;
+	if (rows > row_cap)
+		rows = row_cap;
+	term_reset();
 	u_getcwd(cwd, sizeof(cwd));
 	{
 		const char *def = "/ramfs/bin";
 		unsigned int i;
+
 		for (i = 0; def[i] && i + 1 < sizeof(path); i++)
 			path[i] = def[i];
 		path[i] = '\0';
@@ -771,29 +1367,9 @@ void _start(const char *arg)
 	render();
 
 	for (;;) {
-		struct win_info cur;
 		int got = 0;
 
-		if (u_win_info(&cur) == 0 &&
-		    (cur.width != wi.width || cur.height != wi.height)) {
-			if (u_win_ack_resize() == 0) {
-				wi = cur;
-				usurf_init(&surf, wi.fb, wi.width, wi.height,
-					   wi.width * 2, 16);
-				cols = wi.width / 8;
-				rows = wi.height / 16;
-				if (cols > MAX_COLS) cols = MAX_COLS;
-				if (rows > MAX_ROWS) rows = MAX_ROWS;
-				term_clear();
-				if (fg_pid < 0)
-					prompt();
-				else {
-					cx = cy = 0;
-					line_row = line_col = 0;
-				}
-				dirty = 1;
-			}
-		}
+		handle_resize();
 		drain_tty();
 		if (fg_pid > 0) {
 			if (!u_alive((unsigned int)fg_pid)) {
@@ -802,11 +1378,16 @@ void _start(const char *arg)
 				prompt();
 			} else {
 				int k = u_key_poll();
-				if (k == 0x03)
-					handle_key(k);
+
+				while (k) {
+					if (k == 0x03 || is_page_key(k))
+						handle_key(k);
+					k = u_key_poll();
+				}
 			}
 		} else {
-			int k = u_win_key_wait(100);
+			int k = u_win_key_wait(sb_drag ? 10 : 100);
+
 			if (k < 0)
 				u_exit(1);
 			while (k) {
@@ -815,13 +1396,15 @@ void _start(const char *arg)
 				k = u_key_poll();
 			}
 		}
+		handle_pointer();
 		now = u_ticks_ms();
 		if (now - last_blink >= 500) {
 			last_blink = now;
 			cursor_on = !cursor_on;
-			dirty = 1;
+			if (view == 0)
+				dirty = 1;
 		}
 		render();
-		u_sleep_ms(got ? 1 : 10);
+		u_sleep_ms((got || sb_drag) ? 1 : 10);
 	}
 }
