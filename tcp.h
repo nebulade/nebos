@@ -15,7 +15,9 @@ struct tcp_conn {
 	unsigned int  snd_nxt;    /* next sequence number to send */
 	unsigned int  rcv_nxt;    /* next sequence number expected from peer */
 	unsigned int  peer_mss;   /* from the SYN-ACK option; 536 when absent */
+	unsigned int  peer_wnd;   /* peer's advertised receive window (raw) */
 	int           peer_fin;   /* peer FIN consumed (EOF) */
+	int           need_wnd;   /* re-send the window update after the final ACK */
 };
 
 /* Open a connection (SYN -> SYN-ACK -> ACK).  Returns:

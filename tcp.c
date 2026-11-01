@@ -15,8 +15,12 @@
 
 #define TCP_MSS_OURS  1460
 #define TCP_WINDOW    4096
-#define TCP_RETRY_MS  1000
+#define TCP_RETRY_MS  500
 #define TCP_RETRIES   3
+
+/* Listening port for the server side (0 = not listening).  Declared here
+ * because the shared receive loop feeds non-matching frames to the listener. */
+static unsigned int srv_port;
 
 /* Frame buffers are file scope: a 4 KB process stack cannot hold them.  The
  * receive side uses the shared frame scratch (netdev_rx_scratch()). */
@@ -84,10 +88,10 @@ static void wr32(unsigned char *p, unsigned int v)
 
 /* Build and transmit one segment.  `seq` is the sequence of the first byte
  * (for SYN/FIN that is the flag's own sequence).  Returns 0 / -1 (tx). */
-static int tcp_send_segment(struct tcp_conn *c, unsigned char flags,
-			    unsigned int seq, unsigned int ack,
-			    const unsigned char *payload, unsigned int len,
-			    int with_mss)
+static int tcp_send_segment_wnd(struct tcp_conn *c, unsigned char flags,
+				unsigned int seq, unsigned int ack,
+				const unsigned char *payload, unsigned int len,
+				int with_mss, unsigned int wnd)
 {
 	const struct netdev *nd = netdev_active();
 	unsigned char my_mac[6], my_ip[4];
@@ -137,10 +141,7 @@ static int tcp_send_segment(struct tcp_conn *c, unsigned char flags,
 	wr32(tcp + 8, ack);
 	tcp[12] = (unsigned char)((5 + optlen / 4) << 4);
 	tcp[13] = flags;
-	/* Advertise the space actually left in the receive queue (the SYN
-	 * uses the conservative constant, before the queue is reset). */
-	wr16(tcp + 14, with_mss ? TCP_WINDOW :
-	     (rxq_space() > 0xFFFFu ? 0xFFFFu : rxq_space()));
+	wr16(tcp + 14, wnd > 0xFFFFu ? 0xFFFFu : wnd);
 	wr16(tcp + 16, 0);                /* checksum */
 	wr16(tcp + 18, 0);                /* urgent pointer */
 	for (i = 0; i < len; i++)
@@ -150,6 +151,17 @@ static int tcp_send_segment(struct tcp_conn *c, unsigned char flags,
 	wr16(tcp + 16, cs);
 
 	return nd->tx(tx_frame, 14 + total);
+}
+
+static int tcp_send_segment(struct tcp_conn *c, unsigned char flags,
+			    unsigned int seq, unsigned int ack,
+			    const unsigned char *payload, unsigned int len,
+			    int with_mss)
+{
+	unsigned int wnd = with_mss ? TCP_WINDOW : rxq_space();
+
+	return tcp_send_segment_wnd(c, flags, seq, ack, payload, len,
+				    with_mss, wnd);
 }
 
 /* One received segment. */
@@ -250,6 +262,8 @@ static int tcp_rx_data(struct tcp_conn *c, const struct tcp_seg *s)
 {
 	if (s->flags & TCP_RST)
 		return -2;
+	if (s->tcp)
+		c->peer_wnd = rd16(s->tcp + 14);
 
 	if (s->len) {
 		if (s->seq == c->rcv_nxt && s->len <= rxq_space()) {
@@ -291,7 +305,9 @@ int tcp_connect(const unsigned char *dst_mac, const unsigned char *dst_ip,
 	c->snd_una = c->snd_nxt = (get_ticks_ms() << 16) ^ 0x5EED0000u;
 	c->rcv_nxt = 0;
 	c->peer_mss = 536;
+	c->peer_wnd = 4096;
 	c->peer_fin = 0;
+	c->need_wnd = 0;
 	rxq_head = rxq_tail = 0;
 
 	for (tries = 0; tries < TCP_RETRIES; tries++) {
@@ -318,6 +334,7 @@ int tcp_connect(const unsigned char *dst_mac, const unsigned char *dst_ip,
 				c->rcv_nxt = s.seq + 1;
 				c->snd_nxt++;
 				c->snd_una = c->snd_nxt;
+				c->peer_wnd = rd16(s.tcp + 14);
 				if (tcp_parse_mss(s.tcp, s.doff, &mss) &&
 				    mss >= 64 && mss <= TCP_MSS_OURS)
 					c->peer_mss = mss;
@@ -410,8 +427,13 @@ int tcp_recv(struct tcp_conn *c, unsigned char *out, unsigned int maxlen,
 			if (len < 0)
 				continue;
 			if (!tcp_parse(rxbuf, (unsigned int)len, c->dst_ip,
-				       c->dport, c->sport, &s))
+				       c->dport, c->sport, &s)) {
+				/* A new connection (or its first data) while
+				 * this one is being served. */
+				if (srv_port)
+					tcp_srv_input(rxbuf, (unsigned int)len);
 				continue;
+			}
 		}
 
 		/* Track our send window (nothing pending here, but keeps
@@ -419,6 +441,11 @@ int tcp_recv(struct tcp_conn *c, unsigned char *out, unsigned int maxlen,
 		if ((unsigned)(s.ack - c->snd_una) <=
 		    (unsigned)(c->snd_nxt - c->snd_una))
 			c->snd_una = s.ack;
+		if (c->need_wnd && (s.flags & TCP_ACK)) {
+			tcp_send_segment(c, TCP_ACK, c->snd_nxt, c->rcv_nxt,
+					 0, 0, 0);
+			c->need_wnd = 0;
+		}
 
 		if (tcp_rx_data(c, &s) == -2)
 			return -2;
@@ -476,7 +503,7 @@ void tcp_close(struct tcp_conn *c)
  * is absorbed instead of answered with RST (libsoup treats a reset after a
  * complete response as an error). */
 
-#define TCP_SRV_SLOTS      3          /* 1 active + 2 backlog/closing */
+#define TCP_SRV_SLOTS      8          /* 1 active + 7 backlog/closing */
 #define TCP_SRV_CLOSE_MS   2000
 #define TCP_SRV_BACKLOG_MS 30000
 
@@ -487,15 +514,18 @@ enum {
 	SRV_CLOSING
 };
 
+#define SRV_PRE_MAX 1024
+
 struct tcp_srv {
 	struct tcp_conn c;
 	int used;
 	int state;
 	unsigned int last_ms;
+	unsigned char pre[SRV_PRE_MAX];   /* first request, held until accept */
+	unsigned int pre_len;
 };
 
 static struct tcp_srv srv[TCP_SRV_SLOTS];
-static unsigned int srv_port;
 static int srv_active = -1;
 
 struct tcp_rx {
@@ -576,6 +606,7 @@ static void srv_clear(int i)
 {
 	srv[i].used = 0;
 	srv[i].state = SRV_FREE;
+	srv[i].pre_len = 0;
 }
 
 static void srv_expire(void)
@@ -605,8 +636,8 @@ static unsigned int srv_isn(void)
 
 static void srv_resend_synack(struct tcp_srv *e)
 {
-	tcp_send_segment(&e->c, TCP_SYN | TCP_ACK, e->c.snd_una - 1,
-			 e->c.rcv_nxt, 0, 0, 1);
+	tcp_send_segment_wnd(&e->c, TCP_SYN | TCP_ACK, e->c.snd_una - 1,
+			     e->c.rcv_nxt, 0, 0, 1, 0);
 }
 
 /* Build a connection from a SYN and answer SYN-ACK. */
@@ -649,16 +680,21 @@ static int srv_new(const struct tcp_rx *s)
 	e->c.snd_una = e->c.snd_nxt = srv_isn();
 	e->c.rcv_nxt = s->seq + 1;
 	e->c.peer_fin = 0;
+	e->c.need_wnd = 0;
 	e->c.peer_mss = 536;
+	e->c.peer_wnd = rd16(s->tcp + 14);
+	if (!e->c.peer_wnd)
+		e->c.peer_wnd = 4096;
 	if (tcp_parse_mss(s->tcp, s->doff, &mss) &&
 	    mss >= 64 && mss <= TCP_MSS_OURS)
 		e->c.peer_mss = mss;
 	e->used = 1;
 	e->state = SRV_BACKLOG;
 	e->last_ms = get_ticks_ms();
+	e->pre_len = 0;
 
-	tcp_send_segment(&e->c, TCP_SYN | TCP_ACK, e->c.snd_nxt, e->c.rcv_nxt,
-			 0, 0, 1);
+	tcp_send_segment_wnd(&e->c, TCP_SYN | TCP_ACK, e->c.snd_nxt,
+			     e->c.rcv_nxt, 0, 0, 1, 0);
 	/* The SYN consumed one sequence number. */
 	e->c.snd_nxt++;
 	e->c.snd_una = e->c.snd_nxt;
@@ -731,6 +767,11 @@ int tcp_srv_input(const unsigned char *f, unsigned int len)
 	if (srv_active >= 0 && srv_match(&srv[srv_active].c, &s)) {
 		struct tcp_conn *c = &srv[srv_active].c;
 
+		if (c->need_wnd && (s.flags & TCP_ACK)) {
+			tcp_send_segment(c, TCP_ACK, c->snd_nxt, c->rcv_nxt,
+					 0, 0, 0);
+			c->need_wnd = 0;
+		}
 		if (s.flags & TCP_RST) {
 			srv_clear(srv_active);
 			srv_active = -1;
@@ -767,10 +808,34 @@ int tcp_srv_input(const unsigned char *f, unsigned int len)
 			srv_resend_synack(&srv[i]);
 			return 1;
 		}
-		/* Early data on a not-yet-accepted connection.  Do not ACK
-		 * it: the client retransmits after tcp_srv_accept(). */
-		if (s.flags & TCP_ACK)
-			srv[i].last_ms = get_ticks_ms();
+		if ((unsigned)(s.ack - srv[i].c.snd_una) <=
+		    (unsigned)(srv[i].c.snd_nxt - srv[i].c.snd_una))
+			srv[i].c.snd_una = s.ack;
+
+		/* Hold the first request (small HTTP headers) until the
+		 * command accepts this connection.  ACK it so the client does
+		 * not have to wait for an RTO; if it does not fit, leave it
+		 * unacknowledged and the client retransmits after accept. */
+		if (s.len && s.seq == srv[i].c.rcv_nxt &&
+		    s.len <= SRV_PRE_MAX - srv[i].pre_len) {
+			unsigned int k;
+
+			for (k = 0; k < s.len; k++)
+				srv[i].pre[srv[i].pre_len + k] = s.data[k];
+			srv[i].pre_len += s.len;
+			srv[i].c.rcv_nxt += s.len;
+			if ((s.flags & TCP_FIN) &&
+			    s.seq + s.len == srv[i].c.rcv_nxt) {
+				srv[i].c.peer_fin = 1;
+				srv[i].c.rcv_nxt++;
+			}
+			/* Keep the queued connection's window closed so it
+			 * does not send a body we have nowhere to put. */
+			tcp_send_segment_wnd(&srv[i].c, TCP_ACK,
+					     srv[i].c.snd_nxt, srv[i].c.rcv_nxt,
+					     0, 0, 0, 0);
+		}
+		srv[i].last_ms = get_ticks_ms();
 		return 1;
 	}
 
@@ -805,26 +870,117 @@ struct tcp_conn *tcp_srv_accept(void)
 	srv[best].state = SRV_ACTIVE;
 	srv_active = best;
 	rxq_head = rxq_tail = 0;
+	if (srv[best].pre_len) {
+		rxq_put(srv[best].pre, srv[best].pre_len);
+		srv[best].pre_len = 0;
+	}
+	/* The SYN-ACK advertised a zero window while this connection waited
+	 * for the command; open it now with the real queue space. */
+	tcp_send_segment(&srv[best].c, TCP_ACK, srv[best].c.snd_nxt,
+			 srv[best].c.rcv_nxt, 0, 0, 0);
+	/* If this update raced ahead of the client's final ACK it may have
+	 * been discarded; repeat it when that ACK reaches us. */
+	srv[best].c.need_wnd = 1;
 	return &srv[best].c;
 }
 
+/* Send up to four segments before waiting for the cumulative ACK.  Linux
+ * delays the ACK of a lone small segment by up to 40 ms; a burst makes the
+ * peer acknowledge every second segment immediately, which is the difference
+ * between ~35 KB/s and a few MB/s on a LAN.  The peer's advertised window
+ * caps the burst. */
 int tcp_srv_send(struct tcp_conn *c, const void *data, unsigned int len)
 {
+	const struct netdev *nd = netdev_active();
+	unsigned char *rxbuf = netdev_rx_scratch();
 	const unsigned char *p = data;
+	unsigned int mss;
 
-	if (!c)
+	if (!c || !nd)
 		return -3;
-	if (c->peer_mss < 64)
-		c->peer_mss = 64;
+	mss = c->peer_mss;
+	if (mss < 64)
+		mss = 64;
 
 	while (len) {
-		unsigned int n = len > c->peer_mss ? c->peer_mss : len;
-		int r = tcp_send(c, p, n);
+		struct {
+			unsigned int seq;
+			unsigned int len;
+			const unsigned char *data;
+		} seg[4];
+		unsigned int nseg = 0, off = 0, total = 0, cap, wnd;
+		unsigned int tries, i;
 
-		if (r != 0)
-			return r;
-		p += n;
-		len -= n;
+		wnd = c->peer_wnd ? c->peer_wnd : 4096;
+		cap = mss * 4;
+		if (cap > wnd)
+			cap = wnd;
+		if (cap < mss)
+			cap = mss;
+
+		while (off < len && nseg < 4 && total < cap) {
+			unsigned int n = len - off;
+
+			if (n > mss)
+				n = mss;
+			if (total + n > cap)
+				n = cap - total;
+			if (!n)
+				break;
+			seg[nseg].seq = c->snd_nxt;
+			seg[nseg].len = n;
+			seg[nseg].data = p + off;
+			if (tcp_send_segment(c, TCP_PSH | TCP_ACK, c->snd_nxt,
+					     c->rcv_nxt, p + off, n, 0) != 0)
+				return -3;
+			c->snd_nxt += n;
+			off += n;
+			total += n;
+			nseg++;
+		}
+
+		for (tries = 0; ; tries++) {
+			unsigned int deadline = get_ticks_ms() + TCP_RETRY_MS;
+
+			while ((int)(get_ticks_ms() - deadline) < 0) {
+				struct tcp_seg s;
+				int rlen = nd->rx(rxbuf, NETDEV_FRAME_MAX);
+
+				if (rlen < 0)
+					continue;
+				if (!tcp_parse(rxbuf, (unsigned int)rlen,
+					       c->dst_ip, c->dport, c->sport, &s)) {
+					if (srv_port)
+						tcp_srv_input(rxbuf,
+							      (unsigned int)rlen);
+					continue;
+				}
+				if (s.flags & TCP_RST)
+					return -2;
+				if ((unsigned)(s.ack - c->snd_una) <=
+				    (unsigned)(c->snd_nxt - c->snd_una))
+					c->snd_una = s.ack;
+				c->peer_wnd = rd16(s.tcp + 14);
+				if ((int)(s.ack - c->snd_nxt) >= 0)
+					goto burst_done;
+				tcp_rx_data(c, &s);
+			}
+			if (tries >= TCP_RETRIES)
+				return -1;
+			/* Retransmit the still-unacknowledged part of this
+			 * burst (duplicates are harmless). */
+			for (i = 0; i < nseg; i++) {
+				if ((int)(seg[i].seq + seg[i].len -
+					  c->snd_una) <= 0)
+					continue;
+				tcp_send_segment(c, TCP_PSH | TCP_ACK,
+						 seg[i].seq, c->rcv_nxt,
+						 seg[i].data, seg[i].len, 0);
+			}
+		}
+burst_done:
+		p += off;
+		len -= off;
 	}
 	return 0;
 }

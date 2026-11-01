@@ -23,7 +23,7 @@
 #define BODY_FALLBACK (1024u * 1024u)
 #define PATH_MAX      192u
 #define XML_MAX       3072u
-#define CHUNK_MAX     3072u
+#define CHUNK_MAX     8224u
 #define SOCK_MS       1000u
 #define HDR_TIMEOUT_MS 10000u
 #define REQ_TIMEOUT_MS 60000u
@@ -39,6 +39,8 @@ static unsigned int resp_len;
 static char xml[XML_MAX];
 static unsigned int xml_len;
 static char cbuf[CHUNK_MAX];
+static char batch[8192];
+static unsigned int batch_len;
 static struct sys_mount mounts[MAX_MOUNTS];
 static unsigned int mount_count;
 static unsigned int req_start;
@@ -58,6 +60,7 @@ struct req {
 	int  expect_continue;
 	int  overwrite;
 	int  have_dest;
+	int  keep_alive;
 };
 
 static struct req rq;
@@ -220,7 +223,9 @@ static int send_headers(int code, const char *reason, const char *ctype,
 	ra(" ");
 	ra(reason);
 	ra("\r\nServer: Nebs OS/0.2.0\r\n");
-	ra("Connection: close\r\nCache-Control: no-store\r\n");
+	ra((rq.keep_alive && code < 400) ? "Connection: keep-alive\r\n"
+					 : "Connection: close\r\n");
+	ra("Cache-Control: no-store\r\n");
 	if (extra_hdrs) {
 		ra(extra_hdrs);
 		ra("\r\n");
@@ -316,6 +321,16 @@ static const char multistatus_open[] =
 	"<?xml version=\"1.0\" encoding=\"utf-8\"?>"
 	"<D:multistatus xmlns:D=\"DAV:\">";
 
+static int flush_batch(void)
+{
+	if (!batch_len)
+		return 0;
+	if (chunk_send(batch, batch_len) != 0)
+		return -1;
+	batch_len = 0;
+	return 0;
+}
+
 static int send_multistatus_begin(void)
 {
 	resp_len = 0;
@@ -323,18 +338,30 @@ static int send_multistatus_begin(void)
 	ra("Server: Nebs OS/0.2.0\r\n");
 	ra("Content-Type: text/xml; charset=\"utf-8\"\r\n");
 	ra("Transfer-Encoding: chunked\r\n");
-	ra("Connection: close\r\nCache-Control: no-store\r\n\r\n");
+	ra(rq.keep_alive ? "Connection: keep-alive\r\n"
+			 : "Connection: close\r\n");
+	ra("Cache-Control: no-store\r\n\r\n");
 	status = 207;
 	if (u_tcp_srv_send(resp, resp_len) != 0)
 		return -1;
-	return chunk_send(multistatus_open, s_len(multistatus_open));
+	batch_len = 0;
+	if (s_len(multistatus_open) > sizeof(batch))
+		return -1;
+	mem_copy(batch, multistatus_open, s_len(multistatus_open));
+	batch_len = s_len(multistatus_open);
+	return 0;
 }
 
 static int end_multistatus(void)
 {
 	static const char close_tag[] = "</D:multistatus>";
+	unsigned int n = s_len(close_tag);
 
-	if (chunk_send(close_tag, s_len(close_tag)) != 0)
+	if (batch_len + n > sizeof(batch) && flush_batch() != 0)
+		return -1;
+	mem_copy(batch + batch_len, close_tag, n);
+	batch_len += n;
+	if (flush_batch() != 0)
 		return -1;
 	return chunk_send("", 0);
 }
@@ -602,6 +629,7 @@ static int parse_request(void)
 		return 414;
 	s_copy(rq.target, sp1, sizeof(rq.target));
 	rq.http11 = s_eq(sp2, "HTTP/1.1");
+	rq.keep_alive = rq.http11 ? 1 : 0;
 
 	if (s_eq(sp1, "*")) {
 		rq.path[0] = '\0';
@@ -669,6 +697,11 @@ static int parse_request(void)
 		} else if (s_ieq(line, "Expect")) {
 			if (s_contains_ci(value, "100-continue"))
 				rq.expect_continue = 1;
+		} else if (s_ieq(line, "Connection")) {
+			if (s_contains_ci(value, "close"))
+				rq.keep_alive = 0;
+			else if (s_contains_ci(value, "keep-alive"))
+				rq.keep_alive = 1;
 		}
 		line = end;
 	}
@@ -693,6 +726,7 @@ static int read_request(void)
 	rq.expect_continue = 0;
 	rq.overwrite = 1;
 	rq.have_dest = 0;
+	rq.keep_alive = 0;
 
 	for (;;) {
 		int end = find_hdr_end();
@@ -705,6 +739,10 @@ static int read_request(void)
 				if (r != 0)
 					return r;
 			}
+			/* One active TCP connection: gvfs/Nautilus open
+			 * parallel ones, and an idle keep-alive connection
+			 * would block their SYNs.  Close after each response. */
+			rq.keep_alive = 0;
 			rb_init((unsigned int)end + 4);
 			return 0;
 		}
@@ -1093,7 +1131,13 @@ static int emit_prop(const char *p, int is_dir, unsigned int size,
 	xa("<D:getlastmodified>Thu, 01 Jan 2026 00:00:00 GMT</D:getlastmodified>");
 	xa("</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>");
 	xa("</D:response>");
-	return chunk_send(xml, xml_len);
+	if (xml_len > sizeof(batch))
+		return -1;
+	if (batch_len + xml_len > sizeof(batch) && flush_batch() != 0)
+		return -1;
+	mem_copy(batch + batch_len, xml, xml_len);
+	batch_len += xml_len;
+	return 0;
 }
 
 static int list_child(unsigned int index, const char *dir, char *out,
@@ -1127,7 +1171,9 @@ static void do_options2(void)
 	ra("DAV: 1, 2\r\nMS-Author-Via: DAV\r\n");
 	ra("Allow: OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, PROPFIND, "
 	   "PROPPATCH, MOVE, LOCK, UNLOCK\r\n");
-	ra("Connection: close\r\nCache-Control: no-store\r\n");
+	ra(rq.keep_alive ? "Connection: keep-alive\r\n"
+			 : "Connection: close\r\n");
+	ra("Cache-Control: no-store\r\n");
 	ra("Content-Length: 0\r\n\r\n");
 	status = 200;
 	u_tcp_srv_send(resp, resp_len);
@@ -1503,23 +1549,35 @@ static void do_lock(void)
 
 /* ---- request dispatch ---- */
 
-static void serve(void)
+/* Serve one request.  Returns 1 when the connection should stay open for the
+ * next request (HTTP keep-alive), 0 to close. */
+static int serve(void)
 {
 	int r = read_request();
 
 	status = 0;
 	extra_hdrs = 0;
 	if (r == -2)
-		return;
+		return 0;
 	if (r != 0) {
 		send_error(r);
 		u_puts("websrv: bad request (");
 		u_putdec((unsigned int)r);
 		u_puts(")\n");
-		return;
+		return 0;
 	}
 
 	load_mounts();
+
+	/* Methods with no body of their own: consume one if a client sent it,
+	 * otherwise it would be parsed as the next request. */
+	if ((s_eq(rq.method, "GET") || s_eq(rq.method, "HEAD") ||
+	     s_eq(rq.method, "OPTIONS") || s_eq(rq.method, "DELETE") ||
+	     s_eq(rq.method, "MKCOL") || s_eq(rq.method, "MOVE")) &&
+	    (rq.have_len || rq.chunked)) {
+		if (drain_body() != 0)
+			return 0;
+	}
 
 	if (s_eq(rq.method, "OPTIONS"))
 		do_options2();
@@ -1558,6 +1616,14 @@ static void serve(void)
 		u_putdec((unsigned int)status);
 		u_putc('\n');
 	}
+
+	if (!status || status >= 400)
+		return 0;
+	/* Unconsumed bytes (HTTP pipelining, or a body we did not read) would
+	 * be lost on the next read: close rather than desynchronise. */
+	if (rlen > rpos)
+		return 0;
+	return rq.keep_alive ? 1 : 0;
 }
 
 static unsigned int parse_port(const char *arg)
@@ -1638,7 +1704,8 @@ void _start(const char *arg)
 				u_putdec(pport);
 				u_putc('\n');
 			}
-			serve();
+			while (serve())
+				;
 			u_tcp_srv_close();
 			continue;
 		}

@@ -87,6 +87,8 @@ static void copy_bounded(char *dst, const char *src, unsigned int size)
 
 /* ---- FAT implementation ---- */
 
+static void fat_cache_clear(void);
+
 /* One load buffer for the shell: only one command is loaded at a time and the
  * ELF loader has copied the segments out before we return. */
 static unsigned char fat_load_buf[VFS_FILE_MAX];
@@ -150,6 +152,7 @@ static void fat_op_release_file(struct vfs_mount *m, struct vfs_file *f)
 static int fat_op_write_file(struct vfs_mount *m, const char *path,
 			     const void *buf, unsigned int len)
 {
+	fat_cache_clear();
 	unsigned int dir;
 	char name[12];
 	int r = fat_resolve_path(&m->fs, path, &dir, name);
@@ -168,6 +171,7 @@ static int fat_op_write_file(struct vfs_mount *m, const char *path,
 
 static int fat_op_unlink(struct vfs_mount *m, const char *path)
 {
+	fat_cache_clear();
 	unsigned int dir;
 	char name[12];
 	int r = fat_resolve_path(&m->fs, path, &dir, name);
@@ -186,6 +190,7 @@ static int fat_op_unlink(struct vfs_mount *m, const char *path)
 
 static int fat_op_mkdir(struct vfs_mount *m, const char *path)
 {
+	fat_cache_clear();
 	unsigned int dir;
 	char name[12];
 	int r = fat_resolve_path(&m->fs, path, &dir, name);
@@ -204,6 +209,7 @@ static int fat_op_mkdir(struct vfs_mount *m, const char *path)
 
 static int fat_op_rmdir(struct vfs_mount *m, const char *path)
 {
+	fat_cache_clear();
 	unsigned int dir;
 	char name[12];
 	int r = fat_resolve_path(&m->fs, path, &dir, name);
@@ -220,8 +226,52 @@ static int fat_op_rmdir(struct vfs_mount *m, const char *path)
 	return 0;
 }
 
-/* Index-based listing: fat_list_dir walks from the start each call and we
- * count past `index` entries.  Directories are small. */
+/* Index-based listing used to re-walk the FAT directory for every index, and
+ * the WebDAV server asks for 0..N-1 in one PROPFIND.  Cache the first 64
+ * entries of the last directory so a listing is one directory walk; a write
+ * invalidates it.  Larger directories fall back to the old walk past 64. */
+#define FAT_LIST_CACHE 64
+
+static struct vfs_dirent fat_cache[FAT_LIST_CACHE];
+static unsigned int fat_cache_count;
+static int fat_cache_valid;
+static int fat_cache_truncated;
+static struct vfs_mount *fat_cache_mount;
+static char fat_cache_path[VFS_PATH_MAX];
+
+static void fat_cache_clear(void)
+{
+	fat_cache_valid = 0;
+}
+
+static int fat_path_eq(const char *a, const char *b)
+{
+	unsigned int i = 0;
+
+	while (a[i] && b[i] && a[i] == b[i])
+		i++;
+	return a[i] == '\0' && b[i] == '\0';
+}
+
+static void fat_cache_cb(const char *name, int is_dir, unsigned int size)
+{
+	struct vfs_dirent *d;
+	unsigned int i;
+
+	if (fat_cache_count >= FAT_LIST_CACHE) {
+		fat_cache_truncated = 1;
+		return;
+	}
+	d = &fat_cache[fat_cache_count++];
+	for (i = 0; i < 11; i++)
+		d->name[i] = name[i] ? name[i] : ' ';
+	d->name[11] = '\0';
+	d->size = size;
+	d->is_dir = (unsigned int)is_dir;
+	d->raw_83 = 1;
+}
+
+/* Old behaviour: one directory walk, counting to `index`. */
 static unsigned int fat_list_index;
 static struct vfs_dirent *fat_list_out;
 static int fat_list_done;
@@ -245,8 +295,8 @@ static void fat_list_cb(const char *name, int is_dir, unsigned int size)
 	fat_list_seen++;
 }
 
-static int fat_op_list_dir(struct vfs_mount *m, const char *path,
-			   unsigned int index, struct vfs_dirent *out)
+static int fat_list_walk(struct vfs_mount *m, const char *path,
+			 unsigned int index, struct vfs_dirent *out)
 {
 	unsigned int dir;
 	int r = fat_resolve_dir(&m->fs, path, &dir);
@@ -254,7 +304,7 @@ static int fat_op_list_dir(struct vfs_mount *m, const char *path,
 	if (r == -2)
 		return VFS_EIO;
 	if (r != 0)
-		return VFS_ENOENT;   /* not found (or not a directory) */
+		return VFS_ENOENT;
 
 	fat_list_index = index;
 	fat_list_seen = 0;
@@ -264,6 +314,50 @@ static int fat_op_list_dir(struct vfs_mount *m, const char *path,
 	if (r == -2)
 		return VFS_EIO;
 	return fat_list_done ? 1 : 0;
+}
+
+static int fat_op_list_dir(struct vfs_mount *m, const char *path,
+			   unsigned int index, struct vfs_dirent *out)
+{
+	int same = fat_cache_valid && fat_cache_mount == m &&
+		   fat_path_eq(fat_cache_path, path);
+
+	if (same) {
+		if (index < fat_cache_count) {
+			*out = fat_cache[index];
+			return 1;
+		}
+		if (!fat_cache_truncated)
+			return 0;
+		/* Beyond the cached prefix: use the old walk. */
+		return fat_list_walk(m, path, index, out);
+	}
+
+	{
+		unsigned int dir;
+		int r = fat_resolve_dir(&m->fs, path, &dir);
+
+		if (r == -2)
+			return VFS_EIO;
+		if (r != 0)
+			return VFS_ENOENT;   /* not found / not a directory */
+
+		fat_cache_count = 0;
+		fat_cache_truncated = 0;
+		fat_cache_mount = m;
+		copy_bounded(fat_cache_path, path, sizeof(fat_cache_path));
+		fat_cache_valid = 0;
+		r = fat_list_dir(&m->fs, dir, fat_cache_cb);
+		if (r == -2)
+			return VFS_EIO;
+		fat_cache_valid = 1;
+	}
+
+	if (index < fat_cache_count) {
+		*out = fat_cache[index];
+		return 1;
+	}
+	return 0;
 }
 
 static const struct fs_ops fat_ops = {
@@ -444,6 +538,8 @@ static void mount_one(blk_dev_t *dev, unsigned int part_lba, const char *name)
 	fat_fs_t fs;
 	vfs_mount_t *m;
 
+	fat_cache_clear();
+
 	if (fat_mount(dev, part_lba, &fs) != 0)
 		return;
 	m = mount_slot(name);
@@ -605,6 +701,7 @@ void vfs_remount_device(blk_dev_t *d)
 
 	if (!d)
 		return;
+	fat_cache_clear();
 	unmount_device(d->name);
 	mount_device(d, buf);
 	if (!device_is_mounted(d->name)) {

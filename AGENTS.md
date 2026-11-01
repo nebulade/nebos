@@ -234,7 +234,10 @@ below the run area), so adding code no longer moves any address.
   operation sets `sys_fs_busy`, which the scheduler honours (no process switch
   during it): the FAT driver has static state and the floppy still needs its
   IRQ.  So expect a brief system stall (not ticks — the PIT keeps running)
-  while a command reads or writes a disk.
+  while a command reads or writes a disk.  Directory listings cache the first
+  64 entries of the last FAT directory (`fat_cache` in `vfs.c`), so the
+  WebDAV server's index 0..N-1 sequence is one directory walk instead of N;
+  any write/mkdir/rmdir/unlink invalidates it.
 - **`/share`**: `share.c/h` — writable, page-backed in-memory filesystem for
   network uploads (the netbooted board may have no writable disk).  Entries
   are full relative paths (like the pack ramfs) plus explicit directory
@@ -255,7 +258,8 @@ below the run area), so adding code no longer moves any address.
 - **Serial**: `serial.c`, `serial_ring_buf.c/h`, `bin_recv.c/h`, `serial_recv.c`,
   `serial_loop.c`, `send_serial.c` — 16550 UART, IRQ-driven ring buffer, XMODEM.
 - **Network**: `netdev.c/h` — NIC driver registry (`struct netdev`, first probe
-  wins; drivers: `r8168.c` RTL8111/8168 (PCIe, polled, C+ mode) and `ne2000.c`
+  wins; drivers: `r8168.c` RTL8111/8168 (PCIe, polled, C+ mode, 64-entry RX
+  ring) and `ne2000.c`
   RTL8029 (QEMU/ISA)). `net.c` — ARP + ICMP echo, IPv4/UDP send + parse helpers,
   shared ARP resolution (`net_arp_resolve`) and routing (`net_next_hop`), frame
   decode, `net_checksum()`/`net_checksum_tcp()`. `dhcp.c` — minimal DHCP client
@@ -408,8 +412,14 @@ below the run area), so adding code no longer moves any address.
   net users, so being preempted mid-wait is safe.
 
   The server side is the WebDAV command: `tcp.c` has a small listener (one
-  active connection + a SYN backlog, SYN-ACK/RST, and a fast FIN that keeps
-  the tuple briefly so a late FIN/ACK is absorbed).  `SYS_TCP_LISTEN/ACCEPT/
+  active connection + 7 queued ones, SYN-ACK/RST, and a fast FIN that keeps
+  the tuple briefly so a late FIN/ACK is absorbed).  The SYN-ACK advertises a
+  zero window; a queued connection may hold 1 KB of early request (usually
+  the HTTP headers), `tcp_srv_accept()` opens the window, and the update is
+  repeated when the final ACK arrives, so parallel gvfs clients queue
+  without RTO stalls.  New SYNs/data are also handed to `tcp_srv_input()`
+  from the active connection's `tcp_recv`/`tcp_srv_send` poll loops, not just
+  between requests.  `SYS_TCP_LISTEN/ACCEPT/
   SRV_RECV/SRV_SEND/SRV_CLOSE` are called by `/ramfs/bin/websrv`, which serves
   HTTP/1.1 + WebDAV from the VFS (`/` lists mounts, `/ramfs` is read-only,
   FAT mounts accept only names that round-trip to 8.3, `/share` is the
@@ -421,6 +431,11 @@ below the run area), so adding code no longer moves any address.
   a window update whenever the application drains the queue (otherwise a full
   receive queue deadlocks until the peer's zero-window probe).  No auth: it is
   a trusted-LAN service, and `/share` is writable by anyone who can reach it.
+  Responses go out in up to four-segment bursts with a cumulative ACK
+  (`TCP_RETRY_MS` 500 ms) rather than one segment per ACK, and PROPFIND XML
+  is batched into 8 KB chunks instead of one chunk per entry.  Keep-alive is
+  deliberately not used: with one active connection an idle persistent
+  connection would block the parallel connections Nautilus opens.
 
 ## Shell commands
 
@@ -852,11 +867,12 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
 17. `files` recognises images by file extension only; a magic-based fallback
     would also open extensionless files in the viewer.
 
-18. WebDAV limits: one request at a time (a 2-deep SYN backlog only holds
-    handshakes), files are buffered whole (4 MB cap; a larger PUT gets 413),
-    directory `MOVE` is 501, `PROPPATCH` is answered 200 without persisting,
-    and there is no authentication.  TCP is stop-and-wait, so throughput is
-    roughly 0.5-4 MB/s depending on the link.
+18. WebDAV limits: one request at a time (one active connection plus 7
+    queued; the queue holds each connection's first 1 KB with a zero window),
+    files are buffered whole (4 MB cap; a larger PUT gets 413), directory
+    `MOVE` is 501, `PROPPATCH` is answered 200 without persisting, and there
+    is no authentication.  Sends use a four-segment window, and keep-alive is
+    off, so parallel gvfs clients serialize but do not wedge.
 19. FAT mounts are writable over WebDAV only for names that
     `fat_name_to_8_3()` can represent exactly; anything longer is refused
     with 409 instead of silently truncating (two long names could otherwise
@@ -867,3 +883,8 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     command first.
 21. `/share` is RAM only: a reboot/kexec starts empty, and the 16 MB cap is
     charged against the 128 MB identity-mapped window.
+
+22. The TCP backlog's early-request buffers cost 8 KB of kernel BSS
+    (8 slots x 1 KB), and the FAT listing cache another 5 KB; `_end` is
+    within roughly 20 KB of the `0x7F000` wall.  Adding more kernel buffers
+    or commands should be paired with reclaiming space elsewhere.

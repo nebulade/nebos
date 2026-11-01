@@ -107,7 +107,7 @@
 
 /* Rings. */
 #define R8168_NTX        16
-#define R8168_NRX        16
+#define R8168_NRX        64
 #define R8168_BUF_SIZE   2048
 #define R8168_RX_ARM     (R8168_BUF_SIZE - 1)
 
