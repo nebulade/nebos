@@ -5,7 +5,7 @@
 #include "timer.h"
 #include "netlog.h"
 
-#define NETLOG_RING      2048   /* producer/consumer byte ring */
+#define NETLOG_RING      4096   /* producer/consumer byte ring */
 #define NETLOG_FLUSH_MIN 256    /* flush even without a newline at this size */
 #define NETLOG_IDLE_MS   100    /* flush a partial line after this idle time */
 
