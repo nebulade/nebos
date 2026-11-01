@@ -4,8 +4,14 @@
 #define DISK_H
 
 /* Select the floppy drive (0 or 1) used by subsequent disk_read_sectors calls.
- * Resets FDC state so the next read re-initialises for the new drive. */
+ * Keeps the controller initialised; the new drive is spun up and recalibrated
+ * only when needed. */
 void disk_set_drive(unsigned int drive);
+
+/* Quick boot-scan presence/media probe: one read with a short timeout, no
+ * recovery retries.  Returns 1 if a readable disk is in the drive, 0
+ * otherwise.  Normal I/O after a successful probe still gets full retries. */
+int disk_probe(unsigned int drive);
 
 /* Return currently selected drive number. */
 unsigned int disk_get_drive(void);

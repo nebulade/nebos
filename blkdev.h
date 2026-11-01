@@ -11,7 +11,7 @@ typedef struct {
 	unsigned int bus;          /* floppy: drive #; ide: 0=primary,1=secondary;
 				    * sata: controller index (0) */
 	unsigned int unit;         /* ide: 0=master,1=slave; sata: AHCI port */
-	int present;               /* set by IDENTIFY; floppy: always listed */
+	int present;               /* set by IDENTIFY/probe; floppy: media present */
 	unsigned int total_sectors;/* 0 if unknown (floppy) */
 	char model[41];            /* IDE/SATA model string */
 } blk_dev_t;

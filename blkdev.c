@@ -4,6 +4,8 @@
 #include "ahci.h"
 #include "ata.h"
 #include "disk.h"
+#include "serial.h"
+#include "timer.h"
 
 blk_dev_t blk_devs[BLKDEV_MAX];
 unsigned int blk_dev_count;
@@ -41,17 +43,40 @@ static blk_dev_t *add(const char *name, blk_kind_t kind,
 	return d;
 }
 
+static void blk_trace(const char *name, int present, unsigned int ms)
+{
+	serial_puts(SERIAL_COM1, "blk: ");
+	serial_puts(SERIAL_COM1, name);
+	serial_puts(SERIAL_COM1, present ? " present " : " absent ");
+	serial_putdec(SERIAL_COM1, ms);
+	serial_puts(SERIAL_COM1, " ms\n");
+}
+
 void blk_scan(void)
 {
 	blk_dev_t *d;
+	unsigned int t0;
 
 	blk_dev_count = 0;
 
-	/* Floppy drives 0 and 1. */
+	/* Floppy drives 0 and 1.  Probe for media instead of assuming both
+	 * drives exist: an empty drive would otherwise go through the full
+	 * ten-retry recovery loop at every mount. */
+	t0 = get_ticks_ms();
 	d = add("floppy0", BLK_FLOPPY, 0, 0);
-	if (d) { d->present = 1; d->total_sectors = 2880; }
+	if (d) {
+		d->present = disk_probe(0);
+		d->total_sectors = 2880;
+	}
+	blk_trace("floppy0", d ? d->present : 0, get_ticks_ms() - t0);
+
+	t0 = get_ticks_ms();
 	d = add("floppy1", BLK_FLOPPY, 1, 0);
-	if (d) { d->present = 1; d->total_sectors = 2880; }
+	if (d) {
+		d->present = disk_probe(1);
+		d->total_sectors = 2880;
+	}
+	blk_trace("floppy1", d ? d->present : 0, get_ticks_ms() - t0);
 
 	/* IDE: primary + secondary, master + slave.  The channel port bases
 	 * come from the PCI IDE interface (native mode) or the legacy default. */
@@ -62,10 +87,15 @@ void blk_scan(void)
 		for (i = 0; i < 4; i++) {
 			unsigned int sectors = 0;
 			char model[41];
+			int ok;
+
 			d = add(names[i], BLK_IDE, i / 2, i % 2);
 			if (!d)
 				continue;
-			if (ata_probe(i / 2, i % 2, &sectors, model) == 0) {
+			t0 = get_ticks_ms();
+			ok = ata_probe(i / 2, i % 2, &sectors, model) == 0;
+			blk_trace(names[i], ok, get_ticks_ms() - t0);
+			if (ok) {
 				unsigned int j;
 				d->present = 1;
 				d->total_sectors = sectors;
@@ -79,8 +109,15 @@ void blk_scan(void)
 	/* SATA/AHCI: only present disks are registered, named by port index. */
 	{
 		struct ahci_disk disks[AHCI_MAX_DISKS];
-		unsigned int n = ahci_scan(disks, AHCI_MAX_DISKS);
-		unsigned int i;
+		unsigned int n, i;
+
+		t0 = get_ticks_ms();
+		n = ahci_scan(disks, AHCI_MAX_DISKS);
+		serial_puts(SERIAL_COM1, "blk: ahci ");
+		serial_putdec(SERIAL_COM1, n);
+		serial_puts(SERIAL_COM1, " disk(s) ");
+		serial_putdec(SERIAL_COM1, get_ticks_ms() - t0);
+		serial_puts(SERIAL_COM1, " ms\n");
 		for (i = 0; i < n; i++) {
 			unsigned int j;
 			d = add(sata_name(i, disks[i].port), BLK_SATA, 0, disks[i].port);

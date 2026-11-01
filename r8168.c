@@ -561,19 +561,6 @@ static void phy_autoneg(void)
 	mdio_write(MII_BMCR, BMCR_AUTONEG | BMCR_RESTART_AN);
 }
 
-static void wait_link(unsigned int ms)
-{
-	unsigned int t0 = get_ticks_ms();
-
-	while (get_ticks_ms() - t0 <= ms) {
-		int bmsr = mdio_read(MII_BMSR);
-
-		if ((bmsr >= 0 && (bmsr & BMSR_LINK)) ||
-		    (r8(REG_PHYstatus) & PHYST_LINK))
-			return;
-	}
-}
-
 /* ---- netdev interface ---- */
 
 /* Rings + configuration registers + PHY + RX/TX enable.  Used by both the
@@ -598,17 +585,10 @@ static void hw_start(void)
 
 	w8(REG_ChipCmd, ChipCmd_RxEnb | ChipCmd_TxEnb);
 
-	/* Give autoneg a moment, then wait for link (bounded). */
-	{
-		unsigned int t0 = get_ticks_ms();
-
-		while (get_ticks_ms() - t0 < 3000) {
-			if (r8(REG_PHYstatus) & PHYST_LINK)
-				break;
-		}
-	}
-	wait_link(2000);
-	dbg(r8(REG_PHYstatus) & PHYST_LINK ? "link up" : "no link");
+	/* Auto-negotiation runs in the background.  Do not wait for link here:
+	 * that used to add up to 5 s to boot (and to every netreset), while
+	 * DHCP already retries and netinfo reports the live link state. */
+	dbg(r8(REG_PHYstatus) & PHYST_LINK ? "link up" : "link started");
 }
 
 int r8168_init(void)

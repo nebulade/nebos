@@ -38,6 +38,7 @@
 
 #define MOTOR_DELAY_MS   300
 #define IRQ_TIMEOUT_MS   2000
+#define PROBE_TIMEOUT_MS 500   /* boot-scan probe: shorter than normal I/O */
 #define MAX_RETRIES      10
 #define SEEK_SETTLE_MS   25   /* head settle after seek */
 
@@ -65,9 +66,12 @@ void fdc_irq(void)
 }
 
 static int fdc_initialized;
-static int motor_on;
+static int fdc_absent;          /* controller did not answer at all */
+static unsigned int motor_mask; /* bits 0/1: motor spinning for drive N */
 static unsigned int cur_cylinder;
 static unsigned int current_drive;
+static unsigned int irq_timeout_ms = IRQ_TIMEOUT_MS;
+static int quiet_errors;        /* presence probe: don't print read errors */
 
 /* ---- low-level FDC helpers ---- */
 
@@ -105,11 +109,28 @@ static int fdc_wait_irq(void)
 {
 	unsigned int t0 = get_ticks_ms();
 	while (!fdc_irq_fired) {
-		if ((get_ticks_ms() - t0) >= IRQ_TIMEOUT_MS)
+		if ((get_ticks_ms() - t0) >= irq_timeout_ms)
 			return -1;
 		__asm__ volatile ("hlt");
 	}
 	return 0;
+}
+
+/* A controller that reads back 0x00/0xFF on the MSR is not there (or the
+ * floppy function is disabled).  Checking this before waiting for IRQ 6 keeps
+ * a machine with no floppy controller from sitting in a 2 s timeout. */
+static int fdc_controller_alive(void)
+{
+	unsigned int t0 = get_ticks_ms();
+
+	for (;;) {
+		unsigned char msr = inb(FDC_MSR);
+
+		if (msr != 0x00 && msr != 0xFF && (msr & MSR_RQM))
+			return 1;
+		if ((get_ticks_ms() - t0) >= 200)
+			return 0;
+	}
 }
 
 static int fdc_sense_interrupt(unsigned char *st0, unsigned char *cyl)
@@ -125,17 +146,36 @@ static int fdc_sense_interrupt(unsigned char *st0, unsigned char *cyl)
 
 /* ---- motor control ---- */
 
+/* Program DOR: controller on, DMA+IRQ enabled, current drive selected, and
+ * every motor that has been spun up left running.  Keeping the other drive's
+ * motor bit set avoids a second 300 ms spin-up when the scan switches from
+ * floppy0 to floppy1. */
+static void fdc_select_drive(void)
+{
+	unsigned int dor = 0x0Cu | current_drive;
+
+	if (motor_mask & 1u)
+		dor |= 1u << 4;
+	if (motor_mask & 2u)
+		dor |= 1u << 5;
+	outb(FDC_DOR, (unsigned char)dor);
+}
+
 static void fdc_motor_on(void)
 {
-	if (motor_on)
+	unsigned int bit = 1u << current_drive;
+
+	if (motor_mask & bit) {
+		fdc_select_drive();     /* switch select bits, no delay */
 		return;
-	outb(FDC_DOR, (unsigned char)((1 << (4 + current_drive)) | 0x0C | current_drive));
+	}
+	motor_mask |= bit;
+	fdc_select_drive();
 	{
 		unsigned int t0 = get_ticks_ms();
 		while ((get_ticks_ms() - t0) < MOTOR_DELAY_MS)
 			__asm__ volatile ("hlt");
 	}
-	motor_on = 1;
 }
 
 /* ---- reset ---- */
@@ -145,9 +185,12 @@ static int fdc_reset(void)
 	unsigned char st0, cyl;
 	int i;
 
+	if (fdc_absent)
+		return -1;
+
 	/* Pull reset line: DOR = 0 turns off controller + motor */
 	outb(FDC_DOR, 0x00);
-	motor_on = 0;
+	motor_mask = 0;
 	{
 		unsigned int t0 = get_ticks_ms();
 		while ((get_ticks_ms() - t0) < 10)
@@ -157,7 +200,7 @@ static int fdc_reset(void)
 	/* Release reset: controller on, DMA/IRQ enabled, no motor.
 	 * The FDC fires IRQ 6 once the reset completes. */
 	fdc_irq_fired = 0;
-	outb(FDC_DOR, (unsigned char)(0x0C | current_drive));
+	fdc_select_drive();
 
 	if (fdc_wait_irq() != 0)
 		return -1;
@@ -304,19 +347,21 @@ static int fdc_do_read(unsigned int cyl, unsigned int head, unsigned int sec)
 	}
 
 	if (results[0] & 0xC0) {
-		io_putstr("fdc: CHS=");
-		io_puthex(cyl);
-		io_putchar('/');
-		io_puthex(head);
-		io_putchar('/');
-		io_puthex(sec);
-		io_putstr(" ST0=");
-		io_puthex(results[0]);
-		io_putstr(" ST1=");
-		io_puthex(results[1]);
-		io_putstr(" ST2=");
-		io_puthex(results[2]);
-		io_putchar('\n');
+		if (!quiet_errors) {
+			io_putstr("fdc: CHS=");
+			io_puthex(cyl);
+			io_putchar('/');
+			io_puthex(head);
+			io_putchar('/');
+			io_puthex(sec);
+			io_putstr(" ST0=");
+			io_puthex(results[0]);
+			io_putstr(" ST1=");
+			io_puthex(results[1]);
+			io_putstr(" ST2=");
+			io_puthex(results[2]);
+			io_putchar('\n');
+		}
 		return -1;
 	}
 
@@ -351,19 +396,21 @@ static int fdc_do_write(unsigned int cyl, unsigned int head, unsigned int sec)
 	}
 
 	if (results[0] & 0xC0) {
-		io_putstr("fdc write: CHS=");
-		io_puthex(cyl);
-		io_putchar('/');
-		io_puthex(head);
-		io_putchar('/');
-		io_puthex(sec);
-		io_putstr(" ST0=");
-		io_puthex(results[0]);
-		io_putstr(" ST1=");
-		io_puthex(results[1]);
-		io_putstr(" ST2=");
-		io_puthex(results[2]);
-		io_putchar('\n');
+		if (!quiet_errors) {
+			io_putstr("fdc write: CHS=");
+			io_puthex(cyl);
+			io_putchar('/');
+			io_puthex(head);
+			io_putchar('/');
+			io_puthex(sec);
+			io_putstr(" ST0=");
+			io_puthex(results[0]);
+			io_putstr(" ST1=");
+			io_puthex(results[1]);
+			io_putstr(" ST2=");
+			io_puthex(results[2]);
+			io_putchar('\n');
+		}
 		return -1;
 	}
 
@@ -431,13 +478,16 @@ static int fdc_write_one_retry(unsigned int lba)
 
 static int fdc_init_once(void)
 {
+	if (fdc_absent)
+		return -1;
+
 	/* Mask IRQ 6 before reset so the completion interrupt doesn't
 	 * fire before we're ready (IRQ 6 may already be unmasked from
 	 * a previous init).  Then clear the flag and release the reset. */
 	outb(PIC1_DATA, inb(PIC1_DATA) | 0x40);
 
 	outb(FDC_DOR, 0x00);
-	motor_on = 0;
+	motor_mask = 0;
 	{
 		unsigned int t0 = get_ticks_ms();
 		while ((get_ticks_ms() - t0) < 10)
@@ -445,10 +495,17 @@ static int fdc_init_once(void)
 	}
 
 	fdc_irq_fired = 0;
-	outb(FDC_DOR, (unsigned char)(0x0C | current_drive));
+	fdc_select_drive();
 
 	/* Unmask IRQ 6 — the latched reset-completion interrupt fires now. */
 	outb(PIC1_DATA, inb(PIC1_DATA) & ~0x40);
+
+	/* No FDC at all: fail now instead of waiting out the IRQ timeout. */
+	if (!fdc_controller_alive()) {
+		outb(PIC1_DATA, inb(PIC1_DATA) | 0x40);
+		fdc_absent = 1;
+		return -1;
+	}
 
 	if (fdc_wait_irq() != 0)
 		return -1;
@@ -481,11 +538,50 @@ void disk_set_drive(unsigned int drive)
 {
 	if (drive > 1)
 		return;
-	if (drive == current_drive && fdc_initialized)
+	if (drive == current_drive)
 		return;
 	current_drive = drive;
-	motor_on = 0;
-	fdc_initialized = 0;
+	if (fdc_initialized) {
+		/* Same controller, different drive: its motor may still be off
+		 * and its head position is unknown.  Keep the controller
+		 * initialised instead of paying a full reset. */
+		cur_cylinder = 0xFFFFFFFFu;
+		fdc_motor_on();
+		fdc_recalibrate();
+	}
+}
+
+/* Quick presence/media probe used by the boot scan.  One command with a short
+ * timeout, never the ten-retry recovery loop: an empty drive must not hold the
+ * UI back.  Normal I/O after a successful mount still gets full retries. */
+int disk_probe(unsigned int drive)
+{
+	int rc;
+
+	if (drive > 1 || fdc_absent)
+		return 0;
+
+	irq_timeout_ms = PROBE_TIMEOUT_MS;
+	disk_set_drive(drive);
+	if (!fdc_initialized && fdc_init_once() != 0) {
+		irq_timeout_ms = IRQ_TIMEOUT_MS;
+		return 0;
+	}
+
+	quiet_errors = 1;
+	rc = fdc_read_one(0);
+	quiet_errors = 0;
+	irq_timeout_ms = IRQ_TIMEOUT_MS;
+	if (rc != 0) {
+		/* A timed-out command may still be sitting in the FDC: force a
+		 * clean re-init next time.  A normal error response (empty
+		 * drive / no media) leaves the controller usable, so keep it
+		 * initialized for the mount that follows. */
+		if (rc == -2)
+			fdc_initialized = 0;
+		return 0;
+	}
+	return 1;
 }
 
 unsigned int disk_get_drive(void)

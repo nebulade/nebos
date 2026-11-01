@@ -170,6 +170,16 @@ static void ata_400ns(unsigned short base)
 	(void)port_inb(base + REG_CMD);
 }
 
+/* A channel with no device floats to 0xFF.  Treat that as "absent" before
+ * any reset/wait: otherwise an AHCI-only machine spends a full second in
+ * ata_reset_channel() for each of the four legacy targets.  (0x00 is left
+ * alone: a drive that has not finished spinning up can report it, and the
+ * IDENTIFY path already fails fast when it stays 0x00.) */
+static int ata_bus_floating(unsigned short base)
+{
+	return port_inb(base + REG_CMD) == 0xFF;
+}
+
 static int ata_wait_not_busy(unsigned short base, unsigned int timeout_ms)
 {
 	unsigned int t0 = get_ticks_ms();
@@ -196,9 +206,12 @@ static void ata_reset_channel(unsigned short base, unsigned short ctrl)
 	 * instead of leaving a masked level-triggered interrupt asserted. */
 	port_outb(ctrl, 0x02);
 	t0 = get_ticks_ms();
-	while ((port_inb(base + REG_CMD) & SR_BSY) &&
-	       get_ticks_ms() - t0 < 1000)
-		;
+	while (get_ticks_ms() - t0 < 1000) {
+		unsigned char st = port_inb(base + REG_CMD);
+
+		if (!(st & SR_BSY) || st == 0x00 || st == 0xFF)
+			break;
+	}
 	ata_400ns(base);
 }
 
@@ -240,6 +253,9 @@ static int ata_identify(int bus, int unit, unsigned short *id)
 	unsigned char st;
 	unsigned int t0;
 	unsigned int i;
+
+	if (ata_bus_floating(base))
+		return -1;             /* floating bus: no device on this channel */
 
 	/* A previous failed transfer can leave the drive waiting for PIO
 	 * data, in which case it ignores IDENTIFY and returns zeros. */

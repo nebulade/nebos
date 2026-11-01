@@ -6,11 +6,21 @@
 #include "fatdetect.h"
 #include "io.h"
 #include "kmalloc.h"
+#include "process.h"
 #include "ramfs.h"
+#include "serial.h"
 #include "share.h"
+#include "timer.h"
 
 vfs_mount_t vfs_mounts[VFS_MAX_MOUNTS];
 unsigned int vfs_mount_count;
+
+/* Set while vfs_mount_all() rebuilds the mount table.  File syscalls wait on
+ * this (sys_fs.c) so they never resolve a path in a half-rebuilt table or use
+ * the FAT sector buffer while the scan is reading disks.  The owner (a
+ * `storage` syscall) is exempt. */
+volatile int vfs_scan_busy;
+volatile unsigned int vfs_scan_owner_pid;
 
 static void put_dec(unsigned int n)
 {
@@ -544,11 +554,17 @@ static void mount_one(blk_dev_t *dev, unsigned int part_lba, const char *name)
 {
 	fat_fs_t fs;
 	vfs_mount_t *m;
+	int r;
 
 	fat_cache_clear();
 
-	if (fat_mount(dev, part_lba, &fs) != 0)
+	r = fat_mount(dev, part_lba, &fs);
+	if (r != 0) {
+		serial_puts(SERIAL_COM1, "vfs: ");
+		serial_puts(SERIAL_COM1, name);
+		serial_puts(SERIAL_COM1, " no FAT\n");
 		return;
+	}
 	m = mount_slot(name);
 	if (!m)
 		return;
@@ -559,6 +575,11 @@ static void mount_one(blk_dev_t *dev, unsigned int part_lba, const char *name)
 	copy_bounded(m->type, fat_name(fs.type), sizeof(m->type));
 	copy_bounded(m->label, fs.label, sizeof(m->label));
 	vfs_mount_count++;
+	serial_puts(SERIAL_COM1, "vfs: ");
+	serial_puts(SERIAL_COM1, name);
+	serial_puts(SERIAL_COM1, " ");
+	serial_puts(SERIAL_COM1, fat_name(fs.type));
+	serial_puts(SERIAL_COM1, "\n");
 }
 
 void vfs_mount_ramfs(void)
@@ -623,7 +644,7 @@ static void mount_device(blk_dev_t *d, unsigned char *buf)
 	int n, j;
 	int any_fat = 0;
 
-	if (d->kind != BLK_FLOPPY && !d->present)
+	if (!d->present)
 		return;
 	if (d->kind == BLK_FLOPPY) {
 		mount_one(d, 0, d->name);
@@ -679,17 +700,37 @@ void vfs_mount_all(void)
 	static unsigned char buf[512];
 	unsigned int i;
 
+	/* Publish the scan before touching the table: a ring-3 file syscall
+	 * on another CPU waits for it instead of resolving a path halfway
+	 * through the rebuild.  At boot current_proc() is idle (pid 0). */
+	vfs_scan_owner_pid = current_proc() ? current_proc()->pid : 0;
+	vfs_scan_busy = 1;
+
 	vfs_mount_count = 0;
-	blk_scan();
 
-	for (i = 0; i < blk_dev_count; i++)
-		mount_device(&blk_devs[i], buf);
-
-	/* The ramfs is not a block device; keep it mounted across a refresh
-	 * (the `storage` command calls vfs_mount_all()).  /share is likewise
-	 * independent of the block devices. */
+	/* Non-block filesystems first.  The WM and terminal live on /ramfs,
+	 * so they stay usable while the (possibly slow) disk scan runs. */
 	vfs_mount_ramfs();
 	vfs_mount_share();
+
+	blk_scan();
+
+	for (i = 0; i < blk_dev_count; i++) {
+		unsigned int t0 = get_ticks_ms();
+
+		mount_device(&blk_devs[i], buf);
+		serial_puts(SERIAL_COM1, "vfs: ");
+		serial_puts(SERIAL_COM1, blk_devs[i].name);
+		serial_puts(SERIAL_COM1, " mount ");
+		serial_putdec(SERIAL_COM1, get_ticks_ms() - t0);
+		serial_puts(SERIAL_COM1, " ms\n");
+	}
+
+	serial_puts(SERIAL_COM1, "vfs: ");
+	serial_putdec(SERIAL_COM1, vfs_mount_count);
+	serial_puts(SERIAL_COM1, " mount(s)\n");
+
+	vfs_scan_busy = 0;
 }
 
 static int device_is_mounted(const char *dev)

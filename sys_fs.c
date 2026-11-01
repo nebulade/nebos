@@ -29,6 +29,16 @@ void sys_fs_enter(void)
 		}
 		process_sleep_ms(10);
 	}
+	/* A boot-time `storage` scan (or a concurrent storage command) is
+	 * rebuilding the mount table and reading through the FAT static
+	 * buffers.  Wait for it instead of racing. */
+	while (vfs_scan_busy && current_proc()->pid != vfs_scan_owner_pid) {
+		if (vfs_scan_owner_pid && !process_is_alive(vfs_scan_owner_pid)) {
+			vfs_scan_busy = 0;
+			break;
+		}
+		process_sleep_ms(10);
+	}
 	preempt_disable();
 	__asm__ volatile ("sti");   /* the disk may need its IRQ */
 }

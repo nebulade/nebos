@@ -73,6 +73,7 @@ static struct {
 	unsigned int abar;
 	unsigned int nports;
 	unsigned int pi;
+	unsigned int port_ready;      /* bitmask: port brought up and usable */
 	unsigned int cl;              /* command list (1 page) */
 	unsigned int fis;             /* FIS receive area (1 page) */
 	unsigned int ct;              /* command table (1 page) */
@@ -172,7 +173,15 @@ static int ahci_find(unsigned int *out_bus, unsigned int *out_dev, unsigned int 
 
 static void ahci_port_init(unsigned int port)
 {
-	unsigned int t0, c;
+	unsigned int det, t0, c;
+
+	/* An implemented port with no device (DET=0) or a powered-down PHY
+	 * (DET=4) has nothing to bring up.  Issuing COMRESET and waiting for
+	 * the link there is what made boot spend ~1 s on every empty port;
+	 * the port is initialised lazily by ahci_scan() if a device appears. */
+	det = prd(port, P_SSTS) & 0x0Fu;
+	if (det == 0 || det == 4)
+		return;
 
 	/* Stop the port and its FIS receive engine. */
 	c = prd(port, P_CMD);
@@ -220,7 +229,7 @@ static void ahci_port_init(unsigned int port)
 
 int ahci_init(void)
 {
-	unsigned int bus, dev, func, bar, cmd, cap, i;
+	unsigned int bus, dev, func, bar, cmd, cap;
 
 	if (ahci.inited)
 		return ahci.ok ? 0 : -1;
@@ -291,11 +300,8 @@ int ahci_init(void)
 	serial_puthex(SERIAL_COM1, ahci.pi);
 	serial_putc(SERIAL_COM1, '\n');
 
-	for (i = 0; i < ahci.nports; i++) {
-		if (ahci.pi & (1u << i))
-			ahci_port_init(i);
-	}
-
+	/* Ports are brought up on demand by ahci_scan(): empty ports are
+	 * skipped, and a scan after a disk was plugged in still works. */
 	ahci.ok = 1;
 	return 0;
 }
@@ -485,14 +491,43 @@ unsigned int ahci_scan(struct ahci_disk *out, unsigned int max)
 		return 0;
 
 	for (port = 0; port < ahci.nports && n < max; port++) {
-		if (!(ahci.pi & (1u << port)))
+		unsigned int ssts, bit = 1u << port;
+
+		if (!(ahci.pi & bit))
 			continue;
-		if ((prd(port, P_SSTS) & 0x0Fu) != 3)
+
+		ssts = prd(port, P_SSTS) & 0x0Fu;
+		if (ssts == 0 || ssts == 4) {
+			/* No device (or PHY offline).  Drop the ready bit so a
+			 * later scan re-initialises the port if a disk appears. */
+			ahci.port_ready &= ~bit;
 			continue;
+		}
+		if (!(ahci.port_ready & bit)) {
+			unsigned int t0 = get_ticks_ms();
+
+			ahci_port_init(port);
+			serial_puts(SERIAL_COM1, "ahci: port ");
+			serial_putdec(SERIAL_COM1, port);
+			serial_puts(SERIAL_COM1, " init ");
+			serial_putdec(SERIAL_COM1, get_ticks_ms() - t0);
+			serial_puts(SERIAL_COM1, " ms\n");
+			if ((prd(port, P_SSTS) & 0x0Fu) != 3)
+				continue;
+			ahci.port_ready |= bit;
+		}
+		if ((prd(port, P_SSTS) & 0x0Fu) != 3) {
+			ahci.port_ready &= ~bit;
+			continue;
+		}
 		if (prd(port, P_SIG) != SIG_ATA)
 			continue;              /* ATAPI / port multiplier / SEMB */
-		if (ahci_identify_port(port, &out[n].sectors, out[n].model) != 0)
+		if (ahci_identify_port(port, &out[n].sectors, out[n].model) != 0) {
+			/* A slow disk may not answer yet; leave the port for a
+			 * later scan instead of reporting a half-initialised one. */
+			ahci.port_ready &= ~bit;
 			continue;
+		}
 		out[n].port = port;
 		serial_puts(SERIAL_COM1, "ahci: port ");
 		serial_putdec(SERIAL_COM1, port);

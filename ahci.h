@@ -13,8 +13,10 @@ struct ahci_disk {
 	char model[41];
 };
 
-/* Initialise the first AHCI controller. Idempotent; returns 0 if a controller
- * was found and brought up, -1 otherwise. */
+/* Initialise the first AHCI controller (register window + DMA areas).  Ports
+ * are brought up lazily by ahci_scan(), so empty ports cost nothing at boot.
+ * Idempotent; returns 0 if a controller was found and brought up, -1
+ * otherwise. */
 int ahci_init(void);
 
 /* 1 if an AHCI controller was found and initialised. */

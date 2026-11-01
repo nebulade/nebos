@@ -74,10 +74,17 @@ typedef struct vfs_mount {
 extern vfs_mount_t vfs_mounts[VFS_MAX_MOUNTS];
 extern unsigned int vfs_mount_count;
 
-/* Scan devices and mount all detected FAT filesystems. */
+/* Scan devices and mount all detected FAT filesystems.  The ramfs/share
+ * mounts are kept available throughout the scan; file syscalls that run on
+ * another CPU wait until it completes (see vfs_scan_busy). */
 void vfs_mount_all(void);
 /* Re-mount only one block device after it was formatted. */
 void vfs_remount_device(blk_dev_t *d);
+
+/* Set while vfs_mount_all() owns the mount table and the FAT sector buffer.
+ * sys_fs.c waits for it; the owner (the calling `storage` syscall) is exempt. */
+extern volatile int vfs_scan_busy;
+extern volatile unsigned int vfs_scan_owner_pid;
 
 /* Mount the command pack (ramfs) at /ramfs; no-op when no pack is loaded. */
 void vfs_mount_ramfs(void);

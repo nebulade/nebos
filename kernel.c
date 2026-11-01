@@ -264,6 +264,19 @@ static void kernel_idle_loop(void)
 	}
 }
 
+/* Boot-stage timing: written to COM1, which the netlog mirror forwards to
+ * `make netmon` on boards without a serial port. */
+static unsigned int boot_t0;
+
+static void boot_trace(const char *what)
+{
+	serial_puts(SERIAL_COM1, "[boot] ");
+	serial_puts(SERIAL_COM1, what);
+	serial_puts(SERIAL_COM1, " +");
+	serial_putdec(SERIAL_COM1, get_ticks_ms() - boot_t0);
+	serial_puts(SERIAL_COM1, " ms\n");
+}
+
 void kernel_main(void);
 void kernel_main(void)
 {
@@ -303,18 +316,25 @@ void kernel_main(void)
 	 * the current process, its CR3 and the TSS, so those must be valid. */
 	process_init();
 	timer_init();
+	boot_t0 = get_ticks_ms();
+	boot_trace("timer");
 	/* The PIT (and its sti) is live, so the AP bring-up can use it as a
 	 * timeout clock.  APs idle until smp_enable_sched() after boot. */
 	smp_init();
+	boot_trace("smp");
 	mouse_init();
 	/* USB HID backend (mouse + keyboard): controller bring-up + first
 	 * scan; devices plugged in later are picked up by the hotplug
 	 * watcher in the WM loop. */
 	usbhid_init();
+	boot_trace("usb");
 	vga_shadow_init();
 	vga_fb_flush();
-	vfs_mount_all();
-	/* The command pack: read-only, mounted at /ramfs (see ramfs.c). */
+	boot_trace("vga");
+
+	/* The command pack: read-only, mounted at /ramfs (see ramfs.c).  This
+	 * happens before the block-device scan because the WM and terminal are
+	 * loaded from /ramfs, not from a disk. */
 	{
 		extern unsigned char _binary_cmds_pack_gz_bin_start[];
 		extern unsigned char _binary_cmds_pack_gz_bin_end[];
@@ -334,17 +354,21 @@ void kernel_main(void)
 			vfs_mount_ramfs();
 		}
 	}
-	/* Bring the NIC up before the WM loop starts, so an idle board can pick
-	 * up a network kexec (`make net-dev`) without any typing. */
-	netdev_active();
-	/* With a NIC present, try DHCP; on failure the static default stays. */
-	if (netdev_active())
-		dhcp_run(3000);
-	/* The idle process is the kernel_main context; the ring-3 WM is spawned
-	 * from /ramfs/bin/wm.  Housekeeping runs in its own process so it cannot
-	 * be starved by a busy system. */
+	boot_trace("ramfs");
+
+	/* Start the WM before touching disks: the first frame can be painted
+	 * while storage and the network are still being probed. */
 	wm_server_init();
 	wm_server_start();
+	boot_trace("wm");
+
+	/* Probe the NIC (link negotiation is asynchronous now) before the
+	 * kworker starts, so its netlog flushes have a device to use. */
+	netdev_active();
+	boot_trace("net");
+
+	/* The idle process is the kernel_main context; housekeeping runs in
+	 * its own process so it cannot be starved by a busy system. */
 	kworker_pid = process_create("kworker", kworker_main);
 	if (kworker_pid < 0) {
 		serial_puts(SERIAL_COM1, "kworker: cannot create, using idle fallback\n");
@@ -353,8 +377,29 @@ void kernel_main(void)
 		process_set_weight((unsigned int)kworker_pid, 1);
 		process_set_affinity((unsigned int)kworker_pid, 1);
 	}
+	boot_trace("kworker");
+
+	/* Slow storage bring-up happens behind the usable desktop now. */
+	boot_trace("storage begin");
+	vfs_mount_all();
+	boot_trace("storage");
+
+	/* The first terminal is spawned only now: while the boot scan was
+	 * rebuilding the mount table, no user command could touch the disks.
+	 * The desktop itself was already painted from /ramfs. */
+	wm_spawn_terminal();
+	boot_trace("terminal");
+
+	/* With a NIC present, try DHCP; on failure the static default stays.
+	 * Deliberately after the WM: a missing cable or DHCP server must not
+	 * delay the first frame. */
+	if (netdev_active())
+		dhcp_run(3000);
+	boot_trace("dhcp");
+
 	/* Boot-time device/FS setup is complete; APs may now take user work.
 	 * Kernel threads stay pinned to the BSP and serialize on the BKL. */
 	smp_enable_sched();
+	boot_trace("sched");
 	kernel_idle_loop();
 }

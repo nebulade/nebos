@@ -79,6 +79,7 @@ static unsigned int wm_pid;
 static unsigned int wm_cr3;
 static int wm_attached;
 static int wm_frame_active;
+static int wm_first_frame;
 static int wm_kernel_fallback;
 static unsigned int wm_last_start;
 static unsigned int wm_last_seen;
@@ -1006,6 +1007,10 @@ int wm_server_present(const struct wm_present_info *in)
 	else
 		vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
 	sys_gfx_collect();
+	if (!wm_first_frame) {
+		wm_first_frame = 1;
+		serial_puts(SERIAL_COM1, "wm: first frame\n");
+	}
 	return 0;
 }
 
@@ -1154,9 +1159,11 @@ void wm_server_init(void)
 	wm_cr3 = 0;
 	wm_attached = 0;
 	wm_frame_active = 0;
+	wm_first_frame = 0;
 	wm_kernel_fallback = 0;
-	if (have_terms)
-		wm_spawn_terminal();
+	/* The first terminal is spawned by kernel_main after the boot storage
+	 * scan: no user command can touch the disks while the mount table is
+	 * being rebuilt.  The desktop itself does not need a window. */
 }
 
 static int wm_point_in_rect(unsigned int px, unsigned int py,
