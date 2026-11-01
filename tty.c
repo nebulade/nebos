@@ -61,6 +61,18 @@ int tty_valid(int id)
 	return t && t->used;
 }
 
+int tty_free_count(void)
+{
+	unsigned int i, n = 0;
+
+	if (!tty_init())
+		return 0;
+	for (i = 0; i < TTY_MAX; i++)
+		if (!tty_slot(i)->used)
+			n++;
+	return (int)n;
+}
+
 int tty_create(void)
 {
 	struct process *p = current_proc();

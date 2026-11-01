@@ -4,7 +4,7 @@
 #ifndef WM_ABI_H
 #define WM_ABI_H
 
-#define WM_MAX_WINDOWS 4
+#define WM_MAX_WINDOWS 8
 
 /* Shared chrome layout (the WM draws it, the kernel only stores geometry). */
 #define WM_BAR_H   30

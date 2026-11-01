@@ -5,10 +5,11 @@
 #ifndef TTY_H
 #define TTY_H
 
-#define TTY_MAX 4
+#define TTY_MAX 8
 #define TTY_BUF 4096
 
 int  tty_create(void);                    /* owner = current process */
+int  tty_free_count(void);                /* unused terminal slots */
 void tty_close(int id);
 int  tty_write(int id, const char *buf, unsigned int len); /* 0/-1, blocks */
 int  tty_write_str(int id, const char *s);

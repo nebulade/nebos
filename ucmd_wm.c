@@ -33,6 +33,30 @@ static unsigned int prev_buttons;
 static int full_redraw = 1;
 static unsigned int bar_kexec_busy, bar_kexec_progress, bar_kexec_total;
 static int bar_temp_c = -1;
+static char bar_msg[24];
+static unsigned int bar_msg_until;
+static int bar_msg_dirty;
+
+static void bar_notice(const char *msg)
+{
+	unsigned int i;
+
+	for (i = 0; msg[i] && i + 1 < sizeof(bar_msg); i++)
+		bar_msg[i] = msg[i];
+	bar_msg[i] = '\0';
+	bar_msg_until = u_ticks_ms() + 2000;
+	bar_msg_dirty = 1;
+}
+
+static int free_window_slot(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < WM_MAX_WINDOWS; i++)
+		if (!wins[i].info.used)
+			return 1;
+	return 0;
+}
 
 static unsigned int rgb16(unsigned int r, unsigned int g, unsigned int b)
 {
@@ -111,6 +135,10 @@ static void draw_bar(void)
 		   WM_BTN_FILES_H, "Files");
 	bar_button(WM_BTN_MINES_X, WM_BTN_MINES_Y, WM_BTN_MINES_W,
 		   WM_BTN_MINES_H, "Mines");
+	if (bar_msg_until &&
+	    (int)(u_ticks_ms() - bar_msg_until) < 0)
+		usurf_text(&screen, (int)(WM_BTN_MINES_X + WM_BTN_MINES_W + 8),
+			   5, bar_msg, 0xFFD250u, 0, 0, fbw, WM_BAR_H);
 
 	/* Rainbow separator (same y as the kernel's old bar). */
 	for (x = 0; x < fbw; x++) {
@@ -340,6 +368,15 @@ static void do_update(struct wm_status *st)
 	static char last_dt[20];
 	int kexec_changed = (st->kexec_busy != bar_kexec_busy) ||
 		(st->kexec_busy && st->kexec_progress != bar_kexec_progress);
+	unsigned int msg_now = u_ticks_ms();
+
+	if (bar_msg_dirty ||
+	    (bar_msg_until && (int)(msg_now - bar_msg_until) >= 0)) {
+		bar_dirty = 1;
+		bar_msg_dirty = 0;
+		if (bar_msg_until && (int)(msg_now - bar_msg_until) >= 0)
+			bar_msg_until = 0;
+	}
 
 	bar_kexec_busy = st->kexec_busy;
 	bar_kexec_progress = st->kexec_progress;
@@ -505,6 +542,19 @@ static int spawn_app(const char *path)
 	return pid;
 }
 
+static void spawn_app_checked(const char *path)
+{
+	if (!free_window_slot()) {
+		bar_notice("window limit");
+		full_redraw = 1;
+		return;
+	}
+	if (spawn_app(path) < 0) {
+		bar_notice("spawn failed");
+		full_redraw = 1;
+	}
+}
+
 static void handle_mouse(struct wm_status *st)
 {
 	unsigned int buttons = st->mouse.buttons;
@@ -515,24 +565,31 @@ static void handle_mouse(struct wm_status *st)
 	if (down && !was) {
 		if (mx >= WM_BTN_X && my >= WM_BTN_Y &&
 		    mx < WM_BTN_X + WM_BTN_W && my < WM_BTN_Y + WM_BTN_H) {
-			u_wm_create_term();
-			full_redraw = 1;
+			if (!free_window_slot()) {
+				bar_notice("window limit");
+				full_redraw = 1;
+			} else if (u_wm_create_term() < 0) {
+				bar_notice("cannot start term");
+				full_redraw = 1;
+			} else {
+				full_redraw = 1;
+			}
 		} else if (mx >= WM_BTN_CLOCK_X && my >= WM_BTN_CLOCK_Y &&
 			   mx < WM_BTN_CLOCK_X + WM_BTN_CLOCK_W &&
 			   my < WM_BTN_CLOCK_Y + WM_BTN_CLOCK_H) {
-			spawn_app("/ramfs/bin/clock");
+			spawn_app_checked("/ramfs/bin/clock");
 		} else if (mx >= WM_BTN_COLORS_X && my >= WM_BTN_COLORS_Y &&
 			   mx < WM_BTN_COLORS_X + WM_BTN_COLORS_W &&
 			   my < WM_BTN_COLORS_Y + WM_BTN_COLORS_H) {
-			spawn_app("/ramfs/bin/colors");
+			spawn_app_checked("/ramfs/bin/colors");
 		} else if (mx >= WM_BTN_FILES_X && my >= WM_BTN_FILES_Y &&
 			   mx < WM_BTN_FILES_X + WM_BTN_FILES_W &&
 			   my < WM_BTN_FILES_Y + WM_BTN_FILES_H) {
-			spawn_app("/ramfs/bin/files");
+			spawn_app_checked("/ramfs/bin/files");
 		} else if (mx >= WM_BTN_MINES_X && my >= WM_BTN_MINES_Y &&
 			   mx < WM_BTN_MINES_X + WM_BTN_MINES_W &&
 			   my < WM_BTN_MINES_Y + WM_BTN_MINES_H) {
-			spawn_app("/ramfs/bin/mines");
+			spawn_app_checked("/ramfs/bin/mines");
 		} else {
 			int idx = window_at(mx, my);
 

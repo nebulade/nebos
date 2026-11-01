@@ -21,6 +21,7 @@
 #include "sys_gfx.h"
 #include "thermal.h"
 #include "timer.h"
+#include "tty.h"
 #include "version.h"
 #include "vga.h"
 #include "vfs.h"
@@ -287,8 +288,10 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	for (i = 0; i < MAX_WINDOWS; i++)
 		if (!windows[i].used)
 			break;
-	if (i == MAX_WINDOWS)
+	if (i == MAX_WINDOWS) {
+		serial_puts(SERIAL_COM1, "wm: win_create no window slot\n");
 		return -1;
+	}
 	w = &windows[i];
 	c = &w->canvas;
 	if (gfx_alloc(c, cw, ch) != 0)
@@ -1184,6 +1187,16 @@ int wm_spawn_terminal(void)
 	struct term *t;
 	int pid;
 	unsigned int n;
+
+	/* Do not start a term that has nowhere to go: it would create a tty
+	 * and then exit at SYS_WIN_CREATE, which looks like a dead button. */
+	for (i = 0; i < MAX_WINDOWS; i++)
+		if (!windows[i].used)
+			break;
+	if (i == MAX_WINDOWS || tty_free_count() <= 0) {
+		serial_puts(SERIAL_COM1, "wm: no term slot (windows/free tty)\n");
+		return -1;
+	}
 
 	/* Preferred path: the ring-3 terminal owns a canvas window and creates
 	 * its own tty.  The in-kernel cell terminal below is only a fallback for
