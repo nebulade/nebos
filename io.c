@@ -306,6 +306,11 @@ static int kbd_process_byte(unsigned char sc)
 		if (sc == 0x4D) return IO_KEY_RIGHT;
 		if (sc == 0x48) return IO_KEY_UP;
 		if (sc == 0x50) return IO_KEY_DOWN;
+		if (sc == 0x49) return IO_KEY_PAGE_UP;
+		if (sc == 0x51) return IO_KEY_PAGE_DOWN;
+		if (sc == 0x47) return IO_KEY_HOME;
+		if (sc == 0x4F) return IO_KEY_END;
+		if (sc == 0x53) return IO_KEY_DELETE;
 		return 0;
 	}
 	if (sc & 0x80) {

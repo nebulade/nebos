@@ -188,6 +188,34 @@ int sys_win_ack_resize(void)
 	return wm_server_win_ack_resize();
 }
 
+int sys_win_pointer(struct win_pointer *out)
+{
+	struct win_pointer p;
+	int r;
+
+	if (!user_ok(out, sizeof(p), 1))
+		return -1;
+	zero_struct(&p, sizeof(p));
+	r = wm_server_win_pointer(&p);
+	if (r == 0)
+		copy_to_user(out, &p, sizeof(p));
+	return r;
+}
+
+int sys_win_event(struct win_event *out)
+{
+	struct win_event e;
+	int r;
+
+	if (!user_ok(out, sizeof(e), 1))
+		return -1;
+	zero_struct(&e, sizeof(e));
+	r = wm_server_win_event(&e);
+	if (r == 1)
+		copy_to_user(out, &e, sizeof(e));
+	return r;
+}
+
 int sys_wm_resize(unsigned int index, const struct wm_size *in)
 {
 	struct wm_size s;

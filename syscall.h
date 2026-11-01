@@ -106,6 +106,8 @@
 #define SYS_WM_RESIZE      83  /* (index, struct wm_size *content) -> 0/-1 */
 #define SYS_WIN_INFO       84  /* (struct win_info *out) -> 0/-1 */
 #define SYS_WIN_ACK_RESIZE 85  /* () -> 0/-1; swap in the pending canvas */
+#define SYS_WIN_POINTER    86  /* (struct win_pointer *out) -> 0/-1 */
+#define SYS_WIN_EVENT      87  /* (struct win_event *out) -> 1 event, 0 none */
 
 /* Terminal / process services used by the ring-3 shell. */
 #define SYS_TTY_CREATE     73  /* () -> tty id 1..TTY_MAX / -1 */

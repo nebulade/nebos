@@ -28,6 +28,9 @@ struct window {
 	int keys[16];
 	unsigned int key_head, key_tail;
 	struct wait_queue key_wq;
+	/* Pointer press/release edges for a generic canvas window. */
+	struct win_event ptr_events[8];
+	unsigned int ptr_head, ptr_tail;
 	/* Ring-3 WM content mapping/bookkeeping. */
 	unsigned int content_gen; /* bumped when the content kind/session changes */
 	unsigned int mapped_kind;
@@ -71,6 +74,8 @@ int  wm_server_win_ack_resize(void);
 int  wm_server_resize(unsigned int index, unsigned int cw, unsigned int ch);
 int  wm_server_key_poll(void);
 int  wm_server_key_wait(unsigned int timeout_ms);
+int  wm_server_win_pointer(struct win_pointer *out);
+int  wm_server_win_event(struct win_event *out);
 void wm_content_changed(struct text_screen *screen);
 void wm_server_unmap_screen(struct text_screen *screen);
 void wm_server_unmap_canvas(struct text_screen *screen, const void *canvas);

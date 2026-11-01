@@ -239,6 +239,10 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 		return sys_win_info((struct win_info *)a1);
 	case SYS_WIN_ACK_RESIZE:
 		return sys_win_ack_resize();
+	case SYS_WIN_POINTER:
+		return sys_win_pointer((struct win_pointer *)a1);
+	case SYS_WIN_EVENT:
+		return sys_win_event((struct win_event *)a1);
 	case SYS_WIN_KEY_WAIT:
 		return sys_win_key_wait((unsigned int)a1);
 	case SYS_SCHEDINFO:

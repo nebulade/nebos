@@ -295,6 +295,16 @@ static inline int u_win_ack_resize(void)
 	return u_syscall0(SYS_WIN_ACK_RESIZE);
 }
 
+static inline int u_win_pointer(struct win_pointer *out)
+{
+	return u_syscall1(SYS_WIN_POINTER, (int)out);
+}
+
+static inline int u_win_event(struct win_event *out)
+{
+	return u_syscall1(SYS_WIN_EVENT, (int)out);
+}
+
 static inline int u_wm_resize(unsigned int index, unsigned int cw,
 			      unsigned int ch)
 {

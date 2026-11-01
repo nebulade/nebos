@@ -22,6 +22,10 @@
 #define WM_BTN_COLORS_Y WM_BTN_Y
 #define WM_BTN_COLORS_W 72
 #define WM_BTN_COLORS_H WM_BTN_H
+#define WM_BTN_FILES_X (WM_BTN_COLORS_X + WM_BTN_COLORS_W + WM_BTN_GAP)
+#define WM_BTN_FILES_Y WM_BTN_Y
+#define WM_BTN_FILES_W 64
+#define WM_BTN_FILES_H WM_BTN_H
 #define WM_TITLE_H 22
 #define WM_CLOSE_W 16
 
@@ -115,6 +119,24 @@ struct win_info {
 	void *fb;                  /* mapped RGB565 back buffer */
 	unsigned int width, height;
 	unsigned int id;
+};
+
+/* Pointer input for generic canvas windows.  The ring-3 WM queues press and
+ * release edges; the command polls the current position for hover and drags. */
+struct win_pointer {
+	int x, y;                  /* relative to the canvas, may be outside */
+	unsigned int buttons;      /* bit0 left, bit1 right, bit2 middle */
+	unsigned int inside;       /* pointer is over this window's content */
+	unsigned int focused;
+};
+
+#define WIN_EV_POINTER_DOWN 1
+#define WIN_EV_POINTER_UP   2
+
+struct win_event {
+	unsigned int type;         /* WIN_EV_POINTER_* */
+	int x, y;                  /* content-relative */
+	unsigned int buttons;      /* buttons after the event */
 };
 
 #endif

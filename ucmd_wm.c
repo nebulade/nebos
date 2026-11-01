@@ -72,6 +72,10 @@ static void draw_bar(void)
 		   WM_BTN_COLORS_H, 0x963CD2u);
 	usurf_text(&screen, WM_BTN_COLORS_X + 4, WM_BTN_COLORS_Y + 3, "+ Colors",
 		   COL_WHITE, 0, 0, fbw, WM_BAR_H);
+	usurf_fill(&screen, WM_BTN_FILES_X, WM_BTN_FILES_Y, WM_BTN_FILES_W,
+		   WM_BTN_FILES_H, 0x963CD2u);
+	usurf_text(&screen, WM_BTN_FILES_X + 4, WM_BTN_FILES_Y + 3, "Files",
+		   COL_WHITE, 0, 0, fbw, WM_BAR_H);
 
 	/* Rainbow separator (same y as the kernel's old bar). */
 	for (x = 0; x < fbw; x++) {
@@ -451,6 +455,10 @@ static void handle_mouse(struct wm_status *st)
 			   mx < WM_BTN_COLORS_X + WM_BTN_COLORS_W &&
 			   my < WM_BTN_COLORS_Y + WM_BTN_COLORS_H) {
 			spawn_app("/ramfs/bin/colors");
+		} else if (mx >= WM_BTN_FILES_X && my >= WM_BTN_FILES_Y &&
+			   mx < WM_BTN_FILES_X + WM_BTN_FILES_W &&
+			   my < WM_BTN_FILES_Y + WM_BTN_FILES_H) {
+			spawn_app("/ramfs/bin/files");
 		} else {
 			int idx = window_at(mx, my);
 

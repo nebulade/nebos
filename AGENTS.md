@@ -125,8 +125,9 @@ below the run area), so adding code no longer moves any address.
   trampoline (`kexec_tramp.S`) clears CR0.PG before the copy so it can overwrite
   the old kernel's page tables safely.
 - **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
-  terminal windows (64×32) with a system bar (banner + purple "+ New" button +
-  clock + rainbow). Click-to-focus, drag-by-title-bar, close (×). The "+ New"
+  terminal windows (64×32) with a system bar (banner + purple "+ New", "+ Clock",
+  "+ Colors" and "Files" buttons + clock + rainbow). Click-to-focus,
+  drag-by-title-bar, close (×). The "+ New"
   button and first boot spawn terminals; there is no `term` command.  Content is
   repainted per damage rect (`wm_redraw_rect`: desktop fill + every intersecting
   window back-to-front, clipped by `wm_draw_window_clip`), not by full redraws —
@@ -142,7 +143,13 @@ below the run area), so adding code no longer moves any address.
   Keys of a window with a live session go to the session (`SYS_KEY_POLL`; Ctrl+C
   still reaches the terminal), closing a window kills its session, and
   `sys_gfx_reap`/`sys_gfx_collect` free the canvas after exit/crash.  `clock`
-  and `colors` are its users.
+  and `colors` are its users.  Generic canvas windows (`SYS_WIN_CREATE`) also
+  get pointer input: `SYS_WIN_POINTER` reports the content-relative position,
+  buttons and focus, and `SYS_WIN_EVENT` queues press/release edges with a
+  capture window, so a click that starts in a window still gets its release
+  after the pointer leaves.  The userland `ngui.c/h` immediate-mode toolkit
+  builds on those: clipped RGB565 primitives, buttons, text input, procedural
+  icons and scrolling panes.  `files` (`ucmd_files.c`) is its first user.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `blit.c/h`, `gpu.c`, `ati.c`, `nvidia.c`,
   `nv50.c`, `pci.h` — VESA LFB + shadow buffer.  Drawing goes into a
   `struct surface` render target: `vga_target()` is the screen's shadow buffer
@@ -320,7 +327,10 @@ below the run area), so adding code no longer moves any address.
   syscalls resolve relative paths against it, so commands keep working after
   `cd` (the shell passes arguments verbatim).  The one argument is passed as a
   C string on the top of the user stack (`process_create_user(..., arg)`), so
-  `_start(const char *arg)` needs no crt0.
+  `_start(const char *arg)` needs no crt0.  `ngui.c/h` is the shared userland
+  GUI toolkit linked into `ucmd_files.c` (buttons, text fields, icons, layout
+  cuts and scroll panes); `files` opens the selected text file through
+  `/ramfs/bin/edit`.
 - **Network service**: `sys_net.c/h` — the NIC and the stack stay in the
   kernel; ring-3 commands get `SYS_NET_INFO`/config, the DNS and DHCP clients
   and the raw frame paths (`NET_TX/RX/DECODE/REPLY/LOOPBACK/REGS/RESET`), so
@@ -372,7 +382,7 @@ nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`, `spin`,
-`clock`, `colors`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
+`clock`, `colors`, `files`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
 `netreset`, `curl` and `hello` are files in `/ramfs/bin` (packed by the
 Makefile), found through the shell's PATH; the rest are kernel commands

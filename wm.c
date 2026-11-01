@@ -64,6 +64,12 @@ static int drag_window;      /* index into windows[] */
 static int drag_dx, drag_dy; /* mouse offset from window origin */
 static unsigned int prev_buttons;
 
+/* Content pointer routing for generic canvas windows.  wm_server_poll() is
+ * called by the ring-3 WM every loop, so it is the cheapest place to turn the
+ * sampled mouse state into press/release edges. */
+static unsigned int wm_ptr_buttons;
+static int wm_ptr_capture = -1;
+
 /* Ring-3 WM lifecycle.  The kernel only admits the process it spawned; a
  * stale pid cannot keep drawing after a restart. */
 static unsigned int wm_expected_pid;
@@ -97,6 +103,7 @@ static void wm_focus_top(void);
 static void wm_close_window(unsigned int idx);
 static void wm_clamp_window(struct window *w, int nx, int ny);
 static void wm_server_unmap_index(unsigned int idx);
+static int wm_window_at(unsigned int px, unsigned int py);
 
 void wm_request_redraw(void)
 {
@@ -340,6 +347,7 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	w->mapped_src = 0;
 	w->key_head = w->key_tail = 0;
 	wait_queue_init(&w->key_wq);
+	w->ptr_head = w->ptr_tail = 0;
 	for (j = 0; j < sizeof(w->title) - 1 && in->title[j]; j++)
 		w->title[j] = in->title[j];
 	w->title[j] = '\0';
@@ -461,6 +469,45 @@ int wm_server_win_ack_resize(void)
 	w->pending_pages = 0;
 	w->resize_pending = 0;
 	return 0;
+}
+
+int wm_server_win_pointer(struct win_pointer *out)
+{
+	int idx = wm_window_for_pid(current_proc()->pid);
+	struct window *w;
+	unsigned int mx, my;
+	int cx, cy;
+
+	if (!out || idx < 0 || !windows[idx].canvas_window)
+		return -1;
+	w = &windows[idx];
+	mx = mouse_get_x();
+	my = mouse_get_y();
+	cx = (int)mx - (int)w->x - 1;
+	cy = (int)my - (int)w->y - 1 - WM_TITLE_H;
+	out->x = cx;
+	out->y = cy;
+	out->buttons = mouse_buttons_state();
+	out->inside = (cx >= 0 && cy >= 0 &&
+		       cx < (int)w->canvas.w && cy < (int)w->canvas.h &&
+		       (w->focused || wm_window_at(mx, my) == idx)) ? 1 : 0;
+	out->focused = w->focused ? 1 : 0;
+	return 0;
+}
+
+int wm_server_win_event(struct win_event *out)
+{
+	int idx = wm_window_for_pid(current_proc()->pid);
+	struct window *w;
+
+	if (!out || idx < 0 || !windows[idx].canvas_window)
+		return -1;
+	w = &windows[idx];
+	if (w->ptr_tail == w->ptr_head)
+		return 0;
+	*out = w->ptr_events[w->ptr_tail];
+	w->ptr_tail = (w->ptr_tail + 1) % 8;
+	return 1;
 }
 
 int wm_server_resize(unsigned int index, unsigned int cw, unsigned int ch)
@@ -838,6 +885,62 @@ int wm_server_close(unsigned int index)
 	return 0;
 }
 
+static void wm_queue_ptr_event(struct window *w, unsigned int type,
+			       int x, int y, unsigned int buttons)
+{
+	unsigned int next = (w->ptr_head + 1) % 8;
+
+	if (next == w->ptr_tail)
+		return;                 /* full: drop the event, not the app */
+	w->ptr_events[w->ptr_head].type = type;
+	w->ptr_events[w->ptr_head].x = x;
+	w->ptr_events[w->ptr_head].y = y;
+	w->ptr_events[w->ptr_head].buttons = buttons;
+	w->ptr_head = next;
+}
+
+/* Turn the sampled button state into content-relative press/release events for
+ * the topmost canvas window.  The kernel WM still owns focus, drag and resize;
+ * only clicks that land in the content area are forwarded. */
+static void wm_route_pointer(unsigned int mx, unsigned int my,
+			     unsigned int buttons)
+{
+	unsigned int press = buttons & ~wm_ptr_buttons;
+	unsigned int release = wm_ptr_buttons & ~buttons;
+
+	if (press & 1) {
+		int idx = wm_window_at(mx, my);
+
+		if (idx >= 0) {
+			struct window *w = &windows[idx];
+			int cx = (int)mx - (int)w->x - 1;
+			int cy = (int)my - (int)w->y - 1 - WM_TITLE_H;
+
+			if (w->canvas_window && cx >= 0 && cy >= 0 &&
+			    cx < (int)w->canvas.w && cy < (int)w->canvas.h &&
+			    !(mx >= w->x + w->pw - 16 &&
+			      my >= w->y + w->ph - 16)) {
+				wm_queue_ptr_event(w, WIN_EV_POINTER_DOWN,
+						   cx, cy, buttons);
+				wm_ptr_capture = idx;
+			}
+		}
+	}
+	if ((release & 1) && wm_ptr_capture >= 0) {
+		struct window *w = &windows[wm_ptr_capture];
+
+		if (w->used && w->canvas_window) {
+			int cx = (int)mx - (int)w->x - 1;
+			int cy = (int)my - (int)w->y - 1 - WM_TITLE_H;
+
+			wm_queue_ptr_event(w, WIN_EV_POINTER_UP,
+					   cx, cy, buttons);
+		}
+		wm_ptr_capture = -1;
+	}
+	wm_ptr_buttons = buttons;
+}
+
 int wm_server_poll(struct wm_status *out)
 {
 	if (!wm_server_is_wm() || !out)
@@ -846,6 +949,7 @@ int wm_server_poll(struct wm_status *out)
 	out->mouse.x = mouse_get_x();
 	out->mouse.y = mouse_get_y();
 	out->mouse.buttons = mouse_buttons_state();
+	wm_route_pointer(out->mouse.x, out->mouse.y, out->mouse.buttons);
 	out->full_redraw = wm_full_redraw ? 1 : 0;
 	out->kexec_busy = kexec_busy ? 1 : 0;
 	out->kexec_progress = kexec_progress;
@@ -922,6 +1026,8 @@ static void wm_server_wm_died(void)
 	wm_pid = 0;
 	wm_cr3 = 0;
 	wm_kernel_fallback = 0;
+	wm_ptr_buttons = 0;
+	wm_ptr_capture = -1;
 	for (i = 0; i < MAX_WINDOWS; i++) {
 		windows[i].mapped_kind = WM_KIND_NONE;
 		windows[i].mapped_gen = 0;
@@ -1037,6 +1143,8 @@ void wm_server_init(void)
 	wm_full_redraw = 1;
 	drag_active = 0;
 	prev_buttons = 0;
+	wm_ptr_buttons = 0;
+	wm_ptr_capture = -1;
 	wm_expected_pid = 0;
 	wm_pid = 0;
 	wm_cr3 = 0;
@@ -1193,6 +1301,8 @@ static void wm_close_window(unsigned int idx)
 {
 	struct window *w = &windows[idx];
 
+	if (wm_ptr_capture == (int)idx)
+		wm_ptr_capture = -1;
 	/* A terminal/key reader blocked on this window must not sleep through
 	 * the close; process_kill() also removes it from the queue. */
 	wait_wake_all(&w->key_wq);
