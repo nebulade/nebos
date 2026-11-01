@@ -1393,6 +1393,10 @@ static void kcmd_entry(void *arg)
 				for (i = 0; i < 2 * PAGE_SIZE; i++)
 					p[i] = 0;
 				t->fg_pid = -1;
+				/* Kernel-command output has no cell screen; help uses
+				 * this width to lay out its columns on the tty. */
+				t->screen.cols = 64;
+				t->screen.rows = 32;
 				for (i = 0; i + 1 < sizeof(t->cwd) &&
 					    current_proc()->cwd[i]; i++)
 					t->cwd[i] = current_proc()->cwd[i];
@@ -1430,7 +1434,7 @@ int term_kcmd_spawn(const char *name, const char *args, unsigned int tty)
 	unsigned int i;
 	int pid;
 
-	if (!c || (c->flags & CMD_BUILTIN))
+	if (!c || ((c->flags & CMD_BUILTIN) && c->custom != cmd_help))
 		return -1;
 	ctx = (struct kcmd_ctx *)kmalloc(sizeof(*ctx));
 	if (!ctx)

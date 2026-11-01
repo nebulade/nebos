@@ -406,6 +406,11 @@ static void run_line(void)
 	}
 	if (word[0] == 'h' && word[1] == 'e' && word[2] == 'l' &&
 	    word[3] == 'p' && !word[4]) {
+		pid = u_spawn_kcmd("help", "", tty);
+		if (pid > 0) {
+			fg_pid = pid;
+			return;
+		}
 		term_puts("builtins: cd path help clear ps kill\n");
 		term_puts("commands: files in ");
 		term_puts(path);
@@ -486,59 +491,184 @@ static void submit_line(void)
 	run_line();
 }
 
+static unsigned int name_len(const char *s, unsigned int max)
+{
+	unsigned int n = 0;
+
+	while (n < max && s[n])
+		n++;
+	while (n && s[n - 1] == ' ')
+		n--;
+	return n;
+}
+
+static int prefix_is(const char *word, unsigned int wl, const char *name,
+		     unsigned int nl)
+{
+	unsigned int i;
+
+	if (wl > nl)
+		return 0;
+	for (i = 0; i < wl; i++)
+		if (word[i] != name[i])
+			return 0;
+	return 1;
+}
+
+/* Complete the token at the end of the line.  A token after the command word
+ * (or any token containing '/') is a path; the first token is a command. */
 static void complete_line(void)
 {
-	static const char * const builtins[] = {
-		"cd", "path", "help", "clear", "ps", "kill"
-	};
-	struct sys_dirent de;
-	char match[16];
-	unsigned int matches = 0, i, n;
-	int r;
+	unsigned int start = line_len;
+	unsigned int tlen, slash = 0, i, n, bl, cl, matches = 0;
+	char token[LINE_MAX], dir[VFS_PATH_MAX], base[LINE_MAX];
+	char cand[LINE_MAX];
+	int has_slash = 0, cand_dir = 0;
 
-	if (!line_len)
+	while (start > 0 && line[start - 1] != ' ')
+		start--;
+	tlen = line_len - start;
+	if (!tlen)
 		return;
-	for (i = 0; i < line_len; i++)
-		if (line[i] == ' ')
-			return;
-	match[0] = '\0';
-	for (i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
-		const char *b = builtins[i];
-		for (n = 0; n < line_len && b[n] == line[n]; n++)
-			;
-		if (n == line_len && b[n]) {
-			matches++;
-			for (n = 0; b[n] && n + 1 < sizeof(match); n++)
-				match[n] = b[n];
-			match[n] = '\0';
+	for (i = 0; i < tlen && i + 1 < sizeof(token); i++)
+		token[i] = line[start + i];
+	token[i] = '\0';
+	for (i = 0; i < tlen; i++)
+		if (token[i] == '/') {
+			has_slash = 1;
+			slash = i;
 		}
-	}
-	for (i = 0;; i++) {
-		r = u_syscall3(SYS_LIST_DIR, (int)"/ramfs/bin", (int)i, (int)&de);
-		if (r != 1)
-			break;
-		for (n = 0; n < line_len && de.name[n] == line[n]; n++)
-			;
-		if (n == line_len && de.name[n]) {
-			matches++;
-			for (n = 0; de.name[n] && n + 1 < sizeof(match); n++)
-				match[n] = de.name[n];
-			match[n] = '\0';
+
+	if (has_slash || start > 0) {
+		/* Path token: split into directory + basename prefix. */
+		if (!has_slash) {
+			dir[0] = '.';
+			dir[1] = '\0';
+			for (i = 0; i < tlen && i + 1 < sizeof(base); i++)
+				base[i] = token[i];
+			base[i] = '\0';
+			bl = i;
+		} else if (slash == 0) {
+			dir[0] = '/';
+			dir[1] = '\0';
+			for (i = 0; i + 1 < tlen && i + 1 < sizeof(base); i++)
+				base[i] = token[i + 1];
+			base[i] = '\0';
+			bl = i;
+		} else {
+			if (slash >= sizeof(dir))
+				return;
+			for (i = 0; i < slash; i++)
+				dir[i] = token[i];
+			dir[i] = '\0';
+			for (i = 0; slash + 1 + i < tlen &&
+				    i + 1 < sizeof(base); i++)
+				base[i] = token[slash + 1 + i];
+			base[i] = '\0';
+			bl = i;
 		}
+
+		if (dir[0] == '/' && dir[1] == '\0') {
+			struct sys_mount m;
+
+			for (i = 0;; i++) {
+				if (u_syscall2(SYS_LIST_MOUNTS, (int)i, (int)&m) != 1)
+					break;
+				n = name_len(m.name, sizeof(m.name));
+				if (!prefix_is(base, bl, m.name, n))
+					continue;
+				matches++;
+				if (matches == 1) {
+					cl = 0;
+					cand[cl++] = '/';
+					for (n = 0; m.name[n] && cl + 1 < sizeof(cand); n++)
+						cand[cl++] = m.name[n];
+					cand[cl] = '\0';
+					cand_dir = 1;
+				}
+			}
+		} else {
+			struct sys_dirent d;
+
+			for (i = 0;; i++) {
+				if (u_syscall3(SYS_LIST_DIR, (int)dir, (int)i,
+					       (int)&d) != 1)
+					break;
+				n = name_len(d.name, sizeof(d.name));
+				if (n == 0 ||
+				    (n == 1 && d.name[0] == '.') ||
+				    (n == 2 && d.name[0] == '.' && d.name[1] == '.'))
+					continue;
+				if (!prefix_is(base, bl, d.name, n))
+					continue;
+				matches++;
+				if (matches == 1) {
+					cl = 0;
+					if (slash > 0) {
+						unsigned int k;
+						for (k = 0; k < slash &&
+							    cl + 1 < sizeof(cand); k++)
+							cand[cl++] = token[k];
+						if (cl && cand[cl - 1] != '/' &&
+						    cl + 1 < sizeof(cand))
+							cand[cl++] = '/';
+					}
+					for (n = 0; d.name[n] && n < sizeof(d.name) &&
+						    cl + 1 < sizeof(cand); n++)
+						cand[cl++] = d.name[n];
+					cand[cl] = '\0';
+					cand_dir = d.is_dir ? 1 : 0;
+				}
+			}
+		}
+	} else {
+		/* Command-name completion: builtins + /ramfs/bin. */
+		static const char * const builtins[] = {
+			"cd", "path", "help", "clear", "ps", "kill"
+		};
+		struct sys_dirent d;
+
+		for (i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+			n = name_len(builtins[i], 16);
+			if (!prefix_is(token, tlen, builtins[i], n))
+				continue;
+			matches++;
+			if (matches == 1) {
+				for (n = 0; builtins[i][n] && n + 1 < sizeof(cand); n++)
+					cand[n] = builtins[i][n];
+				cand[n] = '\0';
+			}
+		}
+		for (i = 0;; i++) {
+			if (u_syscall3(SYS_LIST_DIR, (int)"/ramfs/bin", (int)i,
+				       (int)&d) != 1)
+				break;
+			n = name_len(d.name, sizeof(d.name));
+			if (!prefix_is(token, tlen, d.name, n))
+				continue;
+			matches++;
+			if (matches == 1) {
+				for (n = 0; d.name[n] && n < sizeof(d.name) &&
+					    n + 1 < sizeof(cand); n++)
+					cand[n] = d.name[n];
+				cand[n] = '\0';
+			}
+		}
+		cand_dir = 0;
 	}
+
 	if (matches != 1)
 		return;
-	for (n = line_len; match[n] && n + 1 < LINE_MAX; n++) {
-		line[n] = match[n];
-		term_putc(match[n]);
-	}
-	line_len = n;
-	line[line_len] = '\0';
-	if (line_len + 1 < LINE_MAX) {
+
+	line_len = start;
+	for (i = 0; cand[i] && line_len + 1 < LINE_MAX; i++)
+		line[line_len++] = cand[i];
+	if (cand_dir && line_len + 1 < LINE_MAX)
+		line[line_len++] = '/';
+	else if (line_len + 1 < LINE_MAX)
 		line[line_len++] = ' ';
-		line[line_len] = '\0';
-		term_putc(' ');
-	}
+	line[line_len] = '\0';
+	line_show();
 }
 
 static void handle_key(int k)
