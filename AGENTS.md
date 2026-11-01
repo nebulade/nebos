@@ -451,8 +451,12 @@ run area), so adding code no longer moves any address.
   `ngui_theme_dark` (dark page, light text, `theme.panel` for `<pre>`);
   a site's own `background-color`/`color` CSS still overrides it.  `browser.c`
   owns a 960x640 window, the layout/render, URL bar, history, status bar and
-  inline `<img>` decoding.
-  Page and image buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
+  inline `<img>` decoding.  Images are fetched one per main-loop iteration
+  (so text and scrolling stay responsive) and only when their measured
+  position is within the viewport plus 160 px; deferred images are loaded as
+  the page scrolls.  `uhttp` keep-alive reuses one TCP/TLS connection across a
+  batch of images and reconnects/retries once if the server drops it.  Page
+  and image buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
   arenas (2560 nodes, 128 KB attributes, 1792 rules), and page bodies are
   capped at 2 MB with CSS sheets up to 832 KB (six sheets).  Images are
   decoded once into a shared 24 MB arena and copied to a display bitmap at
@@ -986,14 +990,17 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     desktop rules, not their mobile layout), and pseudo-classes are never
     matched.  `font-size` maps to 1x/2x only, `em`/`rem` both use a 16 px
     root, and block `width`/`max-width` are not used for centring.  Images
-    are decoded eagerly into a 24 MB shared arena and downscaled to a 1000 px
-    display bitmap (16 images, 512 KB files / 8 MP decodes); a large
-    image-heavy page can still exhaust the 32 MB heap, and the first `<img>`
-    after a big screenshot can transiently need a new heap growth.  `img_draw`
-    rescales the cached bitmap on every repaint.  Video/audio elements are
-    placeholders, and pages that depend on `display:grid`/flex or CSS
-    variables (tagesschau's player and ad slots, for example) can show empty
-    bordered boxes or miss colours.  Because the default canvas is dark, a
+    are decoded into a 24 MB shared arena and downscaled to a 1000 px display
+    bitmap (16 images, 512 KB files / 8 MP decodes); a large image-heavy page
+    can still exhaust the 32 MB heap, and the first `<img>` after a big
+    screenshot can transiently need a new heap growth.  `img_draw` rescales
+    the cached bitmap on every repaint.  Lazy image loading uses the last
+    measured positions; adding an image can reflow the content above it, and
+    images below the viewport stay as `[image]` until scrolled into range.
+    Video/audio elements are placeholders, and pages that depend on
+    `display:grid`/flex or CSS variables (tagesschau's player and ad slots,
+    for example) can show empty bordered boxes or miss colours.  Because the
+    default canvas is dark, a
     page that sets dark text but relies on the browser's default white
     background can be hard to read; pages with their own full background and
     colour rules are unaffected.  TLS is phase A (no certificate

@@ -529,6 +529,7 @@ static int read_response_head(struct uhttp *h, char *location, int *have_loc)
 	h->resp.gzip = 0;
 	h->resp.content_type[0] = '\0';
 	h->resp.content_encoding[0] = '\0';
+	h->peer_close = 0;
 	h->chunk_state = 0;
 	h->chunk_left = 0;
 	h->body_read = 0;
@@ -574,6 +575,9 @@ static int read_response_head(struct uhttp *h, char *location, int *have_loc)
 		} else if (hdr_match(line, "location")) {
 			copy_after_colon(line, location, UHTTP_LOC_MAX);
 			*have_loc = location[0] != '\0';
+		} else if (hdr_match(line, "connection") &&
+			   contains_ci(line, "close")) {
+			h->peer_close = 1;
 		}
 	}
 	return 0;
@@ -598,7 +602,10 @@ static int send_request(struct uhttp *h, unsigned int flags)
 	n = req_app(req, n, sizeof(req), "\r\nAccept: */*\r\n");
 	if (flags & UHTTP_GZIP)
 		n = req_app(req, n, sizeof(req), "Accept-Encoding: gzip\r\n");
-	n = req_app(req, n, sizeof(req), "Connection: close\r\n\r\n");
+	n = req_app(req, n, sizeof(req),
+		      (h->keepalive && !h->peer_close) ?
+		      "Connection: keep-alive\r\n\r\n" :
+		      "Connection: close\r\n\r\n");
 
 	if ((int)n > u_syscall0(SYS_TCP_PEER_MSS))
 		return UHTTP_ERR_TOOLONG;
@@ -617,56 +624,93 @@ void uhttp_init(struct uhttp *h)
 	h->user_agent = "nebos-uhttp/0.1";
 }
 
+static int host_same(const char *a, const char *b)
+{
+	while (*a && *b && *a == *b) {
+		a++;
+		b++;
+	}
+	return *a == *b;
+}
+
 int uhttp_open(struct uhttp *h, const char *url, unsigned int flags,
 	       const struct uhttp_hooks *hooks)
 {
 	char location[UHTTP_LOC_MAX];
+	char old_host[UHTTP_HOST_MAX];
+	unsigned int old_port = 0;
+	int old_secure = 0;
 	unsigned int hops = 0;
+	int reuse = 0;
 	int rv;
 
 	h->hooks = hooks;
 	if (!h->user_agent)
 		h->user_agent = "nebos-uhttp/0.1";
+	if (h->keepalive && h->connected) {
+		s_copy(old_host, h->url.host, sizeof(old_host));
+		old_port = h->url.port;
+		old_secure = h->url.secure;
+		reuse = 1;
+	}
 	h->len = h->pos = 0;
 	h->eof = 0;
 	h->error = 0;
-	h->connected = 0;
-	h->owns_nic = 0;
+	h->peer_close = 0;
 
 	if (uhttp_parse_url(url, &h->url) != 0)
 		return UHTTP_ERR_URL;
 	url_build(&h->url, h->resp.final_url, sizeof(h->resp.final_url));
 
-	{
-		struct sys_netinfo ni;
+	if (reuse && host_same(old_host, h->url.host) &&
+	    old_port == h->url.port && old_secure == h->url.secure) {
+		/* Keep the existing TCP/TLS connection. */
+	} else {
+		reuse = 0;
+		if (h->connected)
+			transport_close(h);
+		if (!h->owns_nic) {
+			struct sys_netinfo ni;
 
-		if (u_syscall1(SYS_NET_INFO, (int)&ni) != 1)
-			return UHTTP_ERR_NIC;
-		if (u_syscall0(SYS_NET_CONFIGURED) != 1)
-			return UHTTP_ERR_IP;
-		if (u_syscall0(SYS_NET_ACQUIRE) != 0)
-			return UHTTP_ERR_BUSY;
-		h->owns_nic = 1;
+			if (u_syscall1(SYS_NET_INFO, (int)&ni) != 1)
+				return UHTTP_ERR_NIC;
+			if (u_syscall0(SYS_NET_CONFIGURED) != 1)
+				return UHTTP_ERR_IP;
+			if (u_syscall0(SYS_NET_ACQUIRE) != 0)
+				return UHTTP_ERR_BUSY;
+			h->owns_nic = 1;
+		}
 	}
 
 	h->total_deadline = u_ticks_ms() + UHTTP_TOTAL_TIMEOUT_MS;
 
 	for (;;) {
 		int have_loc;
+		int used_reuse = reuse;
 
-		rv = http_connect(h);
-		if (rv != 0)
-			goto fail;
-		if (h->hooks && h->hooks->connected)
-			h->hooks->connected(h->hooks->ctx, h->url.secure);
-
-		rv = send_request(h, flags);
-		if (rv != 0)
-			goto fail;
-
-		rv = read_response_head(h, location, &have_loc);
-		if (rv != 0)
-			goto fail;
+		reuse = 0;
+		for (;;) {
+			if (!used_reuse) {
+				rv = http_connect(h);
+				if (rv != 0)
+					goto fail;
+				if (h->hooks && h->hooks->connected)
+					h->hooks->connected(h->hooks->ctx,
+							    h->url.secure);
+			}
+			rv = send_request(h, flags);
+			if (rv == 0)
+				rv = read_response_head(h, location,
+							&have_loc);
+			if (rv == 0)
+				break;
+			if (!used_reuse)
+				goto fail;
+			/* A kept-alive socket may have been closed by the
+			 * server; reconnect and retry once. */
+			used_reuse = 0;
+			transport_close(h);
+		}
 
 		if (h->resp.status >= 300 && h->resp.status < 400 && have_loc) {
 			if (h->hooks && h->hooks->redirect)
@@ -690,6 +734,7 @@ int uhttp_open(struct uhttp *h, const char *url, unsigned int flags,
 	return 0;
 
 fail:
+	h->keepalive = 0;
 	uhttp_close(h);
 	return rv;
 }
@@ -725,6 +770,8 @@ int uhttp_read(struct uhttp *h, void *vbuf, unsigned int max,
 							 timeout_ms);
 
 				if (hl < 0) {
+					if (h->eof)
+						h->peer_close = 1;
 					if (n)
 						break;
 					return h->error ? h->error : 0;
@@ -757,6 +804,8 @@ int uhttp_read(struct uhttp *h, void *vbuf, unsigned int max,
 			} else if (h->chunk_state == 1) {
 				c = reader_getc(h, timeout_ms);
 				if (c < 0) {
+					if (h->eof)
+						h->peer_close = 1;
 					if (n)
 						break;
 					return h->error ? h->error : 0;
@@ -776,6 +825,7 @@ int uhttp_read(struct uhttp *h, void *vbuf, unsigned int max,
 
 				if (hl <= 0) {
 					h->eof = 1;
+					h->peer_close = 1;
 					break;
 				}
 			}
@@ -787,6 +837,8 @@ int uhttp_read(struct uhttp *h, void *vbuf, unsigned int max,
 			}
 			c = reader_getc(h, timeout_ms);
 			if (c < 0) {
+				if (h->eof)
+					h->peer_close = 1;
 				if (n)
 					break;
 				return h->error ? h->error : 0;
@@ -800,6 +852,8 @@ int uhttp_read(struct uhttp *h, void *vbuf, unsigned int max,
 
 void uhttp_close(struct uhttp *h)
 {
+	if (h->keepalive && h->connected && !h->peer_close && !h->error)
+		return;
 	transport_close(h);
 	if (h->owns_nic) {
 		u_syscall0(SYS_NET_RELEASE);

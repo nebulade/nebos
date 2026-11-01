@@ -71,6 +71,23 @@ static struct br_doc doc;
 static struct br_image images[BR_MAX_IMAGES];
 static int image_count;
 
+/* Images are loaded one per main-loop iteration so the parsed page stays
+ * interactive while a slow network/TLS fetch or 4K decode is in progress. */
+static int preload_active;
+static int preload_pending;
+static int preload_wait;
+static unsigned int preload_node;
+static int preload_loaded;
+static int preload_scroll;
+static char post_status_text[BR_STATUS_MAX];
+static int post_status_error;
+static unsigned int post_status_ttl;
+
+/* Content-relative position/height of each <img>, recorded by the measure
+ * pass so image loading can be deferred until it is near the viewport. */
+static unsigned short img_top[BR_MAX_NODES];
+static unsigned short img_h[BR_MAX_NODES];
+
 static unsigned char *heap;
 static unsigned int heap_size = 0;
 static unsigned int heap_used = 0;
@@ -329,6 +346,11 @@ static void image_reset(void)
 		images[i].err[0] = '\0';
 	}
 	image_count = 0;
+	preload_active = 0;
+	preload_pending = 0;
+	preload_wait = 0;
+	preload_node = 0;
+	preload_loaded = 0;
 }
 
 /* Decode into the shared arena, then copy/scale the result into a display
@@ -710,7 +732,6 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 		return 0;
 	}
 
-	uhttp_init(&http);
 	http.user_agent = "nebos-browser/0.1";
 	rv = uhttp_open(&http, url, UHTTP_GZIP, 0);
 	if (rv != 0) {
@@ -836,7 +857,6 @@ static int fetch_image(const char *url, unsigned int cap,
 		return 0;
 	}
 
-	uhttp_init(&http);
 	http.user_agent = "nebos-browser/0.1";
 	rv = uhttp_open(&http, url, UHTTP_GZIP, 0);
 	if (rv != 0) {
@@ -938,7 +958,6 @@ static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
 		return 0;
 	}
 
-	uhttp_init(&http);
 	http.user_agent = "nebos-browser/0.1";
 	rv = uhttp_open(&http, url, UHTTP_GZIP, 0);
 	if (rv != 0) {
@@ -1016,6 +1035,19 @@ static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
 	return 0;
 }
 
+static void browser_net_open(void)
+{
+	http.keepalive = 0;
+	uhttp_close(&http);
+	http.keepalive = 1;
+}
+
+static void browser_net_close(void)
+{
+	http.keepalive = 0;
+	uhttp_close(&http);
+}
+
 /* ---- page loading ---- */
 
 static void redraw_now(void);
@@ -1046,6 +1078,9 @@ static void show_error(const char *title, const char *detail)
 	s_append(page, &n, "</p><p><a href=\"/\">home</a></p></body></html>",
 		 sizeof(error_page));
 	br_parse(&doc, page, n);
+	preload_active = 0;
+	preload_pending = 0;
+	preload_wait = 0;
 	s_copy(page_title, title, sizeof(page_title));
 	page_loading = 0;
 	set_status(title, 1, 0);
@@ -1108,12 +1143,23 @@ static void load_stylesheets(void)
 	br_reset_styles(&doc);
 }
 
-static void preload_images(void)
+static void preload_begin(void)
 {
-	unsigned int i;
-	int loaded = 0;
+	preload_active = 1;
+	preload_pending = 0;
+	preload_wait = 1;
+	preload_node = 0;
+	preload_loaded = 0;
+	preload_scroll = 0;
+}
 
-	for (i = 0; i < doc.nnode && loaded < BR_MAX_IMAGES; i++) {
+/* Load at most one image per call.  Images below the current viewport are
+ * left pending until the page is scrolled; this keeps a long article with
+ * many 4K screenshots from stalling on content the user cannot see yet. */
+static void preload_step(void)
+{
+	while (preload_active && preload_node < doc.nnode) {
+		unsigned int i = preload_node;
 		struct br_node *nd = &doc.nodes[i];
 		const char *src;
 		char url[BR_URL_MAX];
@@ -1122,35 +1168,70 @@ static void preload_images(void)
 		char err[64];
 		char msg[64];
 		unsigned int n = 0;
+		int rv;
 
 		if (nd->type != BR_NODE_ELEM || nd->tag != BR_TAG_IMG ||
-		    nd->img_index >= 0)
+		    nd->img_index >= 0) {
+			preload_node++;
 			continue;
-		if (ancestor_is(i, BR_TAG_NOSCRIPT))
+		}
+		if (ancestor_is(i, BR_TAG_NOSCRIPT)) {
+			preload_node++;
 			continue;
+		}
 		src = br_src(&doc, i);
 		if (!src[0] || contains_ci(src, ".svg") ||
-		    starts_with(src, "data:"))
+		    starts_with(src, "data:")) {
+			preload_node++;
 			continue;
-		if (resolve_link(page_url, src, url, sizeof(url)) != 0)
+		}
+		if (resolve_link(page_url, src, url, sizeof(url)) != 0) {
+			preload_node++;
 			continue;
-		s_append(msg, &n, "Loading images ", sizeof(msg));
-		s_append_dec(msg, &n, (unsigned int)loaded + 1, sizeof(msg));
-		s_append(msg, &n, "...", sizeof(msg));
-		s_copy(status_text, msg, sizeof(status_text));
-		status_until = 0;
-		status_error = 0;
-		redraw_now();
+		}
+		if (image_count >= BR_MAX_IMAGES) {
+			preload_node = doc.nnode;
+			break;
+		}
+		if (img_top[i] >
+		    (unsigned int)(page_scroll.offset + page_rect.h + 160)) {
+			preload_active = 0;
+			preload_pending = 1;
+			preload_scroll = page_scroll.offset;
+			browser_net_close();
+			set_status(post_status_text, post_status_error,
+				   post_status_ttl);
+			ngui_invalidate(&ui);
+			return;
+		}
+		preload_node = i + 1;
 
-		if (fetch_image(url, BR_IMG_FILE_MAX, &data, &len, err,
-				sizeof(err)) != 0)
-			continue;
-		if (decode_image_data(data, len, &images[image_count]) != 0)
-			continue;
-		nd->img_index = (short)image_count;
-		image_count++;
-		loaded++;
+		s_append(msg, &n, "Loading images ", sizeof(msg));
+		s_append_dec(msg, &n, (unsigned int)preload_loaded + 1,
+			     sizeof(msg));
+		s_append(msg, &n, "...", sizeof(msg));
+		set_status(msg, 0, 0);
+		ngui_invalidate(&ui);
+
+		data = 0;
+		len = 0;
+		rv = fetch_image(url, BR_IMG_FILE_MAX, &data, &len, err,
+				 sizeof(err));
+		if (rv == 0 &&
+		    decode_image_data(data, len, &images[image_count]) == 0) {
+			nd->img_index = (short)image_count;
+			image_count++;
+			preload_loaded++;
+		}
+		ngui_invalidate(&ui);
+		return;
 	}
+
+	preload_active = 0;
+	preload_pending = 0;
+	browser_net_close();
+	set_status(post_status_text, post_status_error, post_status_ttl);
+	ngui_invalidate(&ui);
 }
 
 static void history_push(const char *url)
@@ -1188,6 +1269,7 @@ static void load_page(const char *url, int local, int push)
 
 	final[0] = '\0';
 
+	browser_net_open();
 	heap_clear();
 	image_reset();
 	page_scroll.offset = 0;
@@ -1238,16 +1320,24 @@ static void load_page(const char *url, int local, int push)
 		s_copy(page_title, doc.title[0] ? doc.title : page_url,
 		       sizeof(page_title));
 		load_stylesheets();
-		preload_images();
 	}
-	if (truncated)
-		set_status("Page truncated at the buffer limit", 0, 6000);
-	else if (doc.truncated)
-		set_status("Page truncated by the parser", 0, 6000);
-	else if (starts_with(page_url, "https://"))
-		set_status("HTTPS: certificate NOT verified", 0, 6000);
-	else
-		set_status("", 0, 0);
+	post_status_text[0] = '\0';
+	post_status_error = 0;
+	post_status_ttl = 0;
+	if (truncated) {
+		s_copy(post_status_text, "Page truncated at the buffer limit",
+		       sizeof(post_status_text));
+		post_status_ttl = 6000;
+	} else if (doc.truncated) {
+		s_copy(post_status_text, "Page truncated by the parser",
+		       sizeof(post_status_text));
+		post_status_ttl = 6000;
+	} else if (starts_with(page_url, "https://")) {
+		s_copy(post_status_text, "HTTPS: certificate NOT verified",
+		       sizeof(post_status_text));
+		post_status_ttl = 6000;
+	}
+	preload_begin();
 	page_loading = 0;
 	s_copy(url_in.text, page_url, NGUI_INPUT_MAX);
 	url_in.len = s_len(url_in.text);
@@ -1259,6 +1349,7 @@ static void load_page(const char *url, int local, int push)
 
 static void load_home(int push)
 {
+	browser_net_close();
 	heap_clear();
 	image_reset();
 	page_scroll.offset = 0;
@@ -1305,6 +1396,9 @@ static void load_home(int push)
 		br_reset_styles(&doc);
 		s_copy(page_title, doc.title, sizeof(page_title));
 	}
+	post_status_text[0] = '\0';
+	post_status_error = 0;
+	post_status_ttl = 0;
 	page_loading = 0;
 	set_status("", 0, 0);
 	s_copy(url_in.text, page_url, NGUI_INPUT_MAX);
@@ -1574,6 +1668,17 @@ static void add_image_run(struct lay *l, unsigned int node,
 		    (l->nruns > 0 || l->line_x > l->left))
 			flush_line(l);
 		add_run(l, 0, 0, &gs, href, tmp);
+		if (!l->draw) {
+			int t = l->line_y < 0 ? 0 : l->line_y;
+			int hh = 16 * gs.scale;
+
+			if (t > 65535)
+				t = 65535;
+			if (hh > 65535)
+				hh = 65535;
+			img_top[node] = (unsigned short)t;
+			img_h[node] = (unsigned short)hh;
+		}
 		return;
 	}
 	maxw = l->right - l->left;
@@ -1637,6 +1742,16 @@ static void add_image_run(struct lay *l, unsigned int node,
 	if (dw > maxw) {
 		dh = dw ? dh * maxw / dw : dh;
 		dw = maxw;
+	}
+	if (!l->draw) {
+		int t = l->line_y < 0 ? 0 : l->line_y;
+
+		if (t > 65535)
+			t = 65535;
+		if (dh > 65535)
+			dh = 65535;
+		img_top[node] = (unsigned short)t;
+		img_h[node] = (unsigned short)dh;
 	}
 	if (l->line_x + dw > l->right && (l->nruns > 0 ||
 					  l->line_x > l->left))
@@ -2132,8 +2247,11 @@ static int measure_page(int left, int right)
 	struct br_style base = base_style();
 	unsigned int i;
 
-	for (i = 0; i < BR_MAX_NODES; i++)
+	for (i = 0; i < BR_MAX_NODES; i++) {
 		block_h[i] = 0;
+		img_top[i] = 0;
+		img_h[i] = 0;
+	}
 	l->draw = 0;
 	l->ui = 0;
 	l->left = left;
@@ -2433,6 +2551,8 @@ void _start(const char *arg)
 	br_set_theme(ui.theme.text, ui.theme.bg, ui.theme.panel,
 		     ui.theme.accent);
 	br_set_viewport(BR_VIEWPORT_W);
+	uhttp_init(&http);
+	http.user_agent = "nebos-browser/0.1";
 	if (u_getcwd(cwd, sizeof(cwd)) != 0 || !cwd[0])
 		s_copy(cwd, "/", sizeof(cwd));
 	heap_clear();
@@ -2448,6 +2568,18 @@ void _start(const char *arg)
 		unsigned int action = 0;
 		unsigned int now;
 
+		if (preload_active) {
+			if (preload_wait)
+				preload_wait = 0;
+			else
+				preload_step();
+		} else if (preload_pending &&
+			   page_scroll.offset != preload_scroll) {
+			preload_scroll = page_scroll.offset;
+			preload_pending = 0;
+			preload_active = 1;
+			browser_net_open();
+		}
 		click_url[0] = '\0';
 		now = u_ticks_ms();
 		if (status_until && (int)(now - status_until) >= 0) {
@@ -2498,6 +2630,7 @@ void _start(const char *arg)
 			break;
 		u_sleep_ms(10);
 	}
+	browser_net_close();
 	u_win_close();
 	u_exit(0);
 }

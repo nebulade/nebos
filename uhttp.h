@@ -83,6 +83,8 @@ struct uhttp {
 	int error;                      /* UHTTP_ERR_* once a read failed */
 	int connected;
 	int owns_nic;
+	int keepalive;                  /* reuse the TCP/TLS connection */
+	int peer_close;                 /* response asked to close it */
 
 	/* chunked transfer state */
 	int chunk_state;                /* 0 size line, 1 data, 2 crlf, 3 trailers */
