@@ -64,6 +64,14 @@ static void draw_bar(void)
 	usurf_fill(&screen, WM_BTN_X, WM_BTN_Y, WM_BTN_W, WM_BTN_H, 0x963CD2u);
 	usurf_text(&screen, WM_BTN_X + 4, WM_BTN_Y + 3, "+ New", COL_WHITE,
 		   0, 0, fbw, WM_BAR_H);
+	usurf_fill(&screen, WM_BTN_CLOCK_X, WM_BTN_CLOCK_Y, WM_BTN_CLOCK_W,
+		   WM_BTN_CLOCK_H, 0x963CD2u);
+	usurf_text(&screen, WM_BTN_CLOCK_X + 4, WM_BTN_CLOCK_Y + 3, "+ Clock",
+		   COL_WHITE, 0, 0, fbw, WM_BAR_H);
+	usurf_fill(&screen, WM_BTN_COLORS_X, WM_BTN_COLORS_Y, WM_BTN_COLORS_W,
+		   WM_BTN_COLORS_H, 0x963CD2u);
+	usurf_text(&screen, WM_BTN_COLORS_X + 4, WM_BTN_COLORS_Y + 3, "+ Colors",
+		   COL_WHITE, 0, 0, fbw, WM_BAR_H);
 
 	/* Rainbow separator (same y as the kernel's old bar). */
 	for (x = 0; x < fbw; x++) {
@@ -412,6 +420,15 @@ static void do_update(struct wm_status *st)
 	u_wm_present(&present);
 }
 
+static int spawn_app(const char *path)
+{
+	int pid = u_spawn(path, "", 0, "/");
+
+	if (pid > 0)
+		full_redraw = 1;
+	return pid;
+}
+
 static void handle_mouse(struct wm_status *st)
 {
 	unsigned int buttons = st->mouse.buttons;
@@ -424,6 +441,14 @@ static void handle_mouse(struct wm_status *st)
 		    mx < WM_BTN_X + WM_BTN_W && my < WM_BTN_Y + WM_BTN_H) {
 			u_wm_create_term();
 			full_redraw = 1;
+		} else if (mx >= WM_BTN_CLOCK_X && my >= WM_BTN_CLOCK_Y &&
+			   mx < WM_BTN_CLOCK_X + WM_BTN_CLOCK_W &&
+			   my < WM_BTN_CLOCK_Y + WM_BTN_CLOCK_H) {
+			spawn_app("/ramfs/bin/clock");
+		} else if (mx >= WM_BTN_COLORS_X && my >= WM_BTN_COLORS_Y &&
+			   mx < WM_BTN_COLORS_X + WM_BTN_COLORS_W &&
+			   my < WM_BTN_COLORS_Y + WM_BTN_COLORS_H) {
+			spawn_app("/ramfs/bin/colors");
 		} else {
 			int idx = window_at(mx, my);
 

@@ -12,6 +12,16 @@
 #define WM_BTN_Y   5
 #define WM_BTN_W   56
 #define WM_BTN_H   20
+/* The other top-bar buttons follow the terminal button. */
+#define WM_BTN_GAP     6
+#define WM_BTN_CLOCK_X (WM_BTN_X + WM_BTN_W + WM_BTN_GAP)
+#define WM_BTN_CLOCK_Y WM_BTN_Y
+#define WM_BTN_CLOCK_W 64
+#define WM_BTN_CLOCK_H WM_BTN_H
+#define WM_BTN_COLORS_X (WM_BTN_CLOCK_X + WM_BTN_CLOCK_W + WM_BTN_GAP)
+#define WM_BTN_COLORS_Y WM_BTN_Y
+#define WM_BTN_COLORS_W 72
+#define WM_BTN_COLORS_H WM_BTN_H
 #define WM_TITLE_H 22
 #define WM_CLOSE_W 16
 
