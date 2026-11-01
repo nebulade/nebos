@@ -20,11 +20,15 @@
 #define BR_STATUS_H     18
 
 #define BR_HEAP_INIT    (6u * 1024u * 1024u)
-#define BR_HEAP_MAX     (28u * 1024u * 1024u)
+#define BR_HEAP_MAX     (32u * 1024u * 1024u)
 #define BR_PAGE_MAX     (512u * 1024u)
-#define BR_IMG_FILE_MAX (4u * 1024u * 1024u)
-#define BR_IMG_PIX_MAX  (4u * 1024u * 1024u)
-#define BR_MAX_IMAGES   6
+#define BR_IMG_FILE_MAX (512u * 1024u)
+#define BR_IMG_PIX_MAX  (8u * 1024u * 1024u)
+#define BR_MAX_IMAGES   16
+#define BR_IMG_ARENA    (24u * 1024u * 1024u)
+#define BR_IMG_LAYOUT_W 1000
+#define BR_CSS_MAX      (128u * 1024u)
+#define BR_MAX_SHEETS   6
 #define BR_HISTORY      16
 #define BR_URL_MAX      320
 #define BR_STATUS_MAX   200
@@ -54,7 +58,8 @@ enum {
 
 struct br_image {
 	int state;                  /* 0 empty, 1 ready */
-	struct img_image img;
+	struct img_image img;       /* scaled bitmap at <= BR_IMG_LAYOUT_W */
+	int native_w, native_h;
 	char err[32];
 };
 
@@ -69,6 +74,15 @@ static int image_count;
 static unsigned char *heap;
 static unsigned int heap_size = 0;
 static unsigned int heap_used = 0;
+
+/* One reusable file buffer and one shared decode arena: decoded pixels are
+ * scaled down to a display bitmap, then the arena is reused for the next
+ * image.  This keeps 4K screenshots inside the 32 MB heap. */
+static unsigned char image_file_buf[BR_IMG_FILE_MAX];
+static unsigned char image_comp_buf[BR_IMG_FILE_MAX];
+static struct inflate image_inflate_ws;
+static unsigned char *image_arena;
+static unsigned int image_arena_size;
 
 static char page_url[BR_URL_MAX];
 static char page_title[BR_TITLE_MAX];
@@ -249,6 +263,8 @@ static void heap_clear(void)
 	u_mem_free();
 	heap = 0;
 	heap_size = heap_used = 0;
+	image_arena = 0;
+	image_arena_size = 0;
 }
 
 static void *heap_alloc(unsigned int bytes, unsigned int align)
@@ -301,43 +317,103 @@ static void image_reset(void)
 
 	for (i = 0; i < BR_MAX_IMAGES; i++) {
 		images[i].state = 0;
+		images[i].native_w = images[i].native_h = 0;
 		images[i].err[0] = '\0';
 	}
 	image_count = 0;
 }
 
+/* Decode into the shared arena, then copy/scale the result into a display
+ * bitmap of at most BR_IMG_LAYOUT_W pixels wide.  The arena is reused by the
+ * next image, so the per-image cost is its scaled bitmap, not full 4K RGBA
+ * pixels.  Transparent edges are composited over white. */
 static int decode_image_data(const unsigned char *data, unsigned int len,
 			     struct br_image *bi)
 {
 	struct img_info info;
 	struct img_options opt;
 	struct img_mem mem;
-	void *arena;
-	unsigned int est;
-	int r;
+	struct img_image decoded;
+	unsigned int est, bytes, i;
+	unsigned short *px;
+	int dw, dh, r;
 
 	if (img_sniff(data, len, &info) != 0) {
 		s_copy(bi->err, "unknown image format", sizeof(bi->err));
 		return -1;
 	}
 	est = img_estimate(&info);
-	if (est == 0xFFFFFFFFu || est > BR_HEAP_MAX / 2) {
+	if (est == 0xFFFFFFFFu || est > BR_IMG_ARENA) {
 		s_copy(bi->err, "image too large", sizeof(bi->err));
 		return -1;
 	}
-	est += 64u * 1024u;
-	arena = heap_alloc(est, 16);
-	if (!arena) {
-		s_copy(bi->err, "out of memory", sizeof(bi->err));
-		return -1;
+	if (!image_arena) {
+		image_arena = (unsigned char *)heap_alloc(BR_IMG_ARENA, 16);
+		if (!image_arena) {
+			s_copy(bi->err, "out of memory", sizeof(bi->err));
+			return -1;
+		}
+		image_arena_size = BR_IMG_ARENA;
 	}
-	img_mem_init(&mem, arena, est);
+	img_mem_init(&mem, image_arena, image_arena_size);
 	opt.max_pixels = BR_IMG_PIX_MAX;
-	r = img_decode(data, len, &opt, &mem, &bi->img);
+	r = img_decode(data, len, &opt, &mem, &decoded);
 	if (r != 0) {
 		s_copy(bi->err, img_error_string(r), sizeof(bi->err));
 		return -1;
 	}
+	if (decoded.w == 0 || decoded.h == 0) {
+		s_copy(bi->err, "empty image", sizeof(bi->err));
+		return -1;
+	}
+	bi->native_w = (int)decoded.w;
+	bi->native_h = (int)decoded.h;
+
+	dw = (int)decoded.w;
+	dh = (int)decoded.h;
+	if (dw > BR_IMG_LAYOUT_W) {
+		dh = (int)((unsigned int)decoded.h * BR_IMG_LAYOUT_W /
+			   decoded.w);
+		dw = BR_IMG_LAYOUT_W;
+	}
+	if (dh < 1)
+		dh = 1;
+	if (dw < 1)
+		dw = 1;
+	bytes = (unsigned int)dw * (unsigned int)dh * 2u;
+	px = (unsigned short *)heap_alloc(bytes, 16);
+	if (!px) {
+		s_copy(bi->err, "out of memory", sizeof(bi->err));
+		return -1;
+	}
+	for (i = 0; i < (unsigned int)dw * (unsigned int)dh; i++)
+		px[i] = BR_WHITE;
+
+	{
+		struct img_blit b;
+
+		b.dst = px;
+		b.dst_w = dw;
+		b.dst_h = dh;
+		b.clip_x = 0;
+		b.clip_y = 0;
+		b.clip_w = dw;
+		b.clip_h = dh;
+		b.x = 0;
+		b.y = 0;
+		b.scale = ((unsigned int)dw << 16) / decoded.w;
+		b.bg = BR_WHITE;
+		b.bg2 = BR_WHITE;
+		b.flags = IMG_BLIT_OVER_DST;
+		img_draw(&decoded, &b);
+	}
+
+	bi->img.format = decoded.format;
+	bi->img.w = (unsigned int)dw;
+	bi->img.h = (unsigned int)dh;
+	bi->img.px = px;
+	bi->img.alpha = 0;
+	bi->img.flags = 0;
 	bi->state = 1;
 	return 0;
 }
@@ -661,6 +737,111 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 	return 0;
 }
 
+/* Fetch an image into the fixed scratch buffers.  The page heap is already
+ * carrying the 24 MB decode arena and every scaled bitmap, so images must not
+ * allocate their file body from it as well. */
+static int fetch_image(const char *url, unsigned int cap,
+		       unsigned char **out, unsigned int *outlen,
+		       char *err, unsigned int errcap)
+{
+	unsigned int total = 0;
+	int rv;
+
+	*out = 0;
+	*outlen = 0;
+	if (cap > BR_IMG_FILE_MAX)
+		cap = BR_IMG_FILE_MAX;
+	if (url[0] == '/') {
+		rv = u_syscall3(SYS_READ_FILE, (int)url, (int)image_file_buf,
+				(int)cap);
+		if (rv < 0) {
+			s_copy(err, "file not found", errcap);
+			return -1;
+		}
+		*out = image_file_buf;
+		*outlen = (unsigned int)rv;
+		return 0;
+	}
+
+	uhttp_init(&http);
+	http.user_agent = "nebos-browser/0.1";
+	rv = uhttp_open(&http, url, UHTTP_GZIP, 0);
+	if (rv != 0) {
+		s_copy(err, uhttp_error_string(rv), errcap);
+		return -1;
+	}
+	if (http.resp.gzip ||
+	    contains_ci(http.resp.content_encoding, "gzip") ||
+	    contains_ci(http.resp.content_encoding, "deflate")) {
+		unsigned int plen = 0;
+		int zr;
+
+		total = 0;
+		for (;;) {
+			rv = uhttp_read(&http, image_comp_buf + total,
+					BR_IMG_FILE_MAX - total,
+					UHTTP_IDLE_TIMEOUT_MS);
+			if (rv > 0) {
+				total += (unsigned int)rv;
+				if (total >= BR_IMG_FILE_MAX)
+					break;
+				continue;
+			}
+			if (rv < 0) {
+				s_copy(err, uhttp_error_string(rv), errcap);
+				uhttp_close(&http);
+				return -1;
+			}
+			break;
+		}
+		uhttp_close(&http);
+		if (!total) {
+			s_copy(err, "empty image", errcap);
+			return -1;
+		}
+		if (contains_ci(http.resp.content_encoding, "deflate"))
+			zr = inflate_zlib_mem(image_comp_buf, total,
+					      image_file_buf, cap, &plen,
+					      &image_inflate_ws);
+		else
+			zr = inflate_gzip_mem(image_comp_buf, total,
+					      image_file_buf, cap, &plen,
+					      &image_inflate_ws);
+		if (zr != 0) {
+			s_copy(err, "compressed image is corrupt", errcap);
+			return -1;
+		}
+		*out = image_file_buf;
+		*outlen = plen;
+		return 0;
+	}
+
+	for (;;) {
+		rv = uhttp_read(&http, image_file_buf + total, cap - total,
+				UHTTP_IDLE_TIMEOUT_MS);
+		if (rv > 0) {
+			total += (unsigned int)rv;
+			if (total >= cap)
+				break;
+			continue;
+		}
+		if (rv < 0) {
+			s_copy(err, uhttp_error_string(rv), errcap);
+			uhttp_close(&http);
+			return -1;
+		}
+		break;
+	}
+	uhttp_close(&http);
+	if (!total) {
+		s_copy(err, "empty image", errcap);
+		return -1;
+	}
+	*out = image_file_buf;
+	*outlen = total;
+	return 0;
+}
+
 /* ---- page loading ---- */
 
 static void redraw_now(void);
@@ -709,6 +890,55 @@ static int decode_direct_image(const unsigned char *data, unsigned int len,
 	return 0;
 }
 
+static int ancestor_is(unsigned int node, unsigned int tag)
+{
+	unsigned int p = doc.nodes[node].parent;
+
+	while (p) {
+		if (doc.nodes[p].tag == tag)
+			return 1;
+		p = doc.nodes[p].parent;
+	}
+	return 0;
+}
+
+static void load_stylesheets(void)
+{
+	unsigned int i, sheets = 0;
+
+	for (i = 0; i < doc.nnode && sheets < BR_MAX_SHEETS; i++) {
+		struct br_node *nd = &doc.nodes[i];
+		const char *rel, *href;
+		char url[BR_URL_MAX];
+		unsigned char *data;
+		unsigned int len;
+		int local, trunc;
+		char ctype[64];
+		char final[BR_URL_MAX];
+		char err[64];
+
+		if (nd->type != BR_NODE_ELEM || nd->tag != BR_TAG_LINK)
+			continue;
+		rel = br_rel(&doc, i);
+		if (!contains_ci(rel, "stylesheet"))
+			continue;
+		href = br_href(&doc, i);
+		if (!href[0])
+			continue;
+		if (resolve_link(page_url, href, url, sizeof(url)) != 0)
+			continue;
+		if (read_url(url, BR_CSS_MAX, &data, &len, &local, ctype,
+			     sizeof(ctype), final, sizeof(final), err,
+			     sizeof(err), &trunc) != 0)
+			continue;
+		if (len)
+			br_parse_css_text(&doc, (const char *)data, len);
+		sheets++;
+	}
+	br_parse_inline_css(&doc);
+	br_reset_styles(&doc);
+}
+
 static void preload_images(void)
 {
 	unsigned int i;
@@ -720,9 +950,6 @@ static void preload_images(void)
 		char url[BR_URL_MAX];
 		unsigned char *data;
 		unsigned int len;
-		int local, trunc;
-		char ctype[64];
-		char final[BR_URL_MAX];
 		char err[64];
 		char msg[64];
 		unsigned int n = 0;
@@ -730,8 +957,11 @@ static void preload_images(void)
 		if (nd->type != BR_NODE_ELEM || nd->tag != BR_TAG_IMG ||
 		    nd->img_index >= 0)
 			continue;
+		if (ancestor_is(i, BR_TAG_NOSCRIPT))
+			continue;
 		src = br_src(&doc, i);
-		if (!src[0])
+		if (!src[0] || contains_ci(src, ".svg") ||
+		    starts_with(src, "data:"))
 			continue;
 		if (resolve_link(page_url, src, url, sizeof(url)) != 0)
 			continue;
@@ -743,13 +973,9 @@ static void preload_images(void)
 		status_error = 0;
 		redraw_now();
 
-		if (read_url(url, BR_IMG_FILE_MAX, &data, &len, &local, ctype,
-			     sizeof(ctype), final, sizeof(final), err,
-			     sizeof(err), &trunc) != 0) {
+		if (fetch_image(url, BR_IMG_FILE_MAX, &data, &len, err,
+				sizeof(err)) != 0)
 			continue;
-		}
-		(void)local;
-		(void)trunc;
 		if (decode_image_data(data, len, &images[image_count]) != 0)
 			continue;
 		nd->img_index = (short)image_count;
@@ -795,6 +1021,8 @@ static void load_page(const char *url, int local, int push)
 
 	heap_clear();
 	image_reset();
+	page_scroll.offset = 0;
+	page_scroll.dragging = 0;
 	br_parse_plain(&doc, "", 0);    /* blank while loading */
 	page_title[0] = '\0';
 	page_loading = 1;
@@ -840,6 +1068,7 @@ static void load_page(const char *url, int local, int push)
 		br_parse(&doc, (const char *)body, len);
 		s_copy(page_title, doc.title[0] ? doc.title : page_url,
 		       sizeof(page_title));
+		load_stylesheets();
 		preload_images();
 	}
 	if (truncated)
@@ -863,6 +1092,8 @@ static void load_home(int push)
 {
 	heap_clear();
 	image_reset();
+	page_scroll.offset = 0;
+	page_scroll.dragging = 0;
 	br_parse_plain(&doc, "", 0);
 	page_loading = 1;
 	page_is_local = 0;
@@ -901,6 +1132,8 @@ static void load_home(int push)
 			"\nimages: PNG JPEG GIF BMP TGA PNM ICO</pre>"
 			"</body></html>";
 		br_parse(&doc, home, sizeof(home) - 1);
+		br_parse_inline_css(&doc);
+		br_reset_styles(&doc);
 		s_copy(page_title, doc.title, sizeof(page_title));
 	}
 	page_loading = 0;
@@ -959,16 +1192,24 @@ static void navigate(const char *input, int push)
 
 static struct br_style base_style(void)
 {
-	struct br_style s;
+	struct br_style s = { 0 };
 
 	s.color = BR_BLACK;
 	s.bg = BR_WHITE;
 	s.has_bg = 0;
+	s.border_color = 0;
 	s.scale = 1;
 	s.bold = 0;
 	s.underline = 0;
 	s.align = BR_ALIGN_LEFT;
 	s.display = BR_DISPLAY_BLOCK;
+	s.no_bullet = 0;
+	s.uppercase = 0;
+	s.border_w = 0;
+	s.width_kind = s.max_width_kind = s.height_kind = 0;
+	s.width = s.max_width = s.height = 0;
+	s.line_h_pct = 0;
+	s.line_h_px = 0;
 	s.mt = s.mb = s.ml = s.mr = 0;
 	s.pt = s.pb = s.pl = s.pr = 0;
 	return s;
@@ -1119,8 +1360,18 @@ static void add_run(struct lay *l, unsigned short off, unsigned short len,
 	}
 	l->line_x += w;
 	l->run_x = l->line_x;
-	if (l->line_h < 16 * st->scale)
-		l->line_h = 16 * st->scale;
+	{
+		int lh = 16 * st->scale;
+
+		if (st->line_h_px)
+			lh = st->line_h_px;
+		else if (st->line_h_pct)
+			lh = (16 * st->scale) * st->line_h_pct / 100;
+		if (lh < 16 * st->scale)
+			lh = 16 * st->scale;
+		if (l->line_h < lh)
+			l->line_h = lh;
+	}
 }
 
 static void add_image_run(struct lay *l, unsigned int node,
@@ -1156,30 +1407,66 @@ static void add_image_run(struct lay *l, unsigned int node,
 		add_run(l, 0, 0, &gs, href, tmp);
 		return;
 	}
-	if (l->space_pending && (l->nruns > 0 || l->line_x > l->left)) {
-		if (l->line_x + 8 <= l->right)
-			l->line_x += 8;
-	}
 	maxw = l->right - l->left;
-	dw = (int)bi->img.w;
-	dh = (int)bi->img.h;
-	if (doc.nodes[node].width_attr) {
-		int want = doc.nodes[node].width_attr;
-		dh = dh * want / dw;
-		dw = want;
-	}
-	if (doc.nodes[node].height_attr) {
-		int want = doc.nodes[node].height_attr;
-		if (dw > 0)
-			dw = dw * want / dh;
-		dh = want;
+	if (maxw < 8)
+		maxw = 8;
+	{
+		int iw = bi->native_w, ih = bi->native_h;
+		int have_w = 0, have_h = 0, css_w = 0, css_h = 0;
+
+		if (iw <= 0 || ih <= 0) {
+			iw = (int)bi->img.w;
+			ih = (int)bi->img.h;
+		}
+
+		dw = iw;
+		dh = ih;
+		if (doc.nodes[node].width_attr) {
+			int want = doc.nodes[node].width_attr;
+			dw = doc.nodes[node].width_pct ? maxw * want / 100 : want;
+			have_w = 1;
+		}
+		if (doc.nodes[node].height_attr) {
+			int want = doc.nodes[node].height_attr;
+			dh = doc.nodes[node].height_pct ? maxw * want / 100 : want;
+			have_h = 1;
+		}
+		if (have_w && !have_h)
+			dh = ih ? ih * dw / iw : 0;
+		if (have_h && !have_w)
+			dw = iw ? iw * dh / ih : 0;
+
+		if (st->width_kind) {
+			css_w = 1;
+			dw = st->width_kind == 2 ? maxw * (int)st->width / 100 :
+						   (int)st->width;
+		}
+		if (st->height_kind) {
+			css_h = 1;
+			dh = st->height_kind == 2 ? maxw * (int)st->height / 100 :
+						    (int)st->height;
+		}
+		if (css_w && !css_h)
+			dh = ih ? ih * dw / iw : 0;
+		if (css_h && !css_w)
+			dw = iw ? iw * dh / ih : 0;
+
+		if (st->max_width_kind) {
+			int mw = st->max_width_kind == 2 ?
+				 maxw * (int)st->max_width / 100 :
+				 (int)st->max_width;
+			if (mw > 0 && dw > mw) {
+				dh = iw ? ih * mw / iw : 0;
+				dw = mw;
+			}
+		}
 	}
 	if (dw < 8)
 		dw = 8;
 	if (dh < 8)
 		dh = 8;
-	if (dw > maxw && maxw > 0) {
-		dh = dh * maxw / dw;
+	if (dw > maxw) {
+		dh = dw ? dh * maxw / dw : dh;
 		dw = maxw;
 	}
 	if (l->line_x + dw > l->right && (l->nruns > 0 ||
@@ -1228,6 +1515,14 @@ static void emit_text(struct lay *l, const char *s, unsigned int len,
 	if (!s || !len)
 		return;
 	base = (unsigned int)(s - doc.text);
+	if (st->uppercase) {
+		char *p = (char *)s;
+		unsigned int j;
+
+		for (j = 0; j < len; j++)
+			if (p[j] >= 'a' && p[j] <= 'z')
+				p[j] = (char)(p[j] - 'a' + 'A');
+	}
 	if (pre) {
 		while (i < len) {
 			unsigned int start;
@@ -1362,6 +1657,10 @@ static void layout_block(struct lay *l, unsigned int node,
 		ngui_fill_rect(l->ui, (struct ngui_rect){l0, top, r0 - l0,
 							 block_h[node]},
 			       st->bg);
+	if (l->draw && st->border_w && block_h[node])
+		ngui_frame(l->ui, (struct ngui_rect){l0, top, r0 - l0,
+						    block_h[node]},
+			   st->border_color);
 	l->left = l0 + st->pl;
 	l->right = r0 - st->pr;
 	if (l->right < l->left + 8)
@@ -1375,7 +1674,7 @@ static void layout_block(struct lay *l, unsigned int node,
 				 l->y + 2, l->right - l->left, 1}, BR_GRAY);
 		l->y += 8;
 	} else {
-		if (doc.nodes[node].tag == BR_TAG_LI) {
+		if (doc.nodes[node].tag == BR_TAG_LI && !st->no_bullet) {
 			char *m = li_marker[node];
 			if (!m[0]) {
 				unsigned int parent = doc.nodes[node].parent;

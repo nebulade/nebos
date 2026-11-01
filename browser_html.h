@@ -8,9 +8,10 @@
 
 #define BR_MAX_NODES     1536
 #define BR_TEXT_SIZE     24576
-#define BR_ATTR_SIZE     16384
+#define BR_ATTR_SIZE     64000
 #define BR_CSS_SIZE      12288
-#define BR_MAX_RULES     96
+#define BR_MAX_RULES     1536
+#define BR_DECLS         16
 #define BR_TITLE_MAX     96
 
 /* Node types. */
@@ -56,12 +57,24 @@ enum br_tag {
 struct br_style {
 	unsigned short color;
 	unsigned short bg;
+	unsigned short border_color;
 	unsigned char has_bg;
 	unsigned char scale;        /* 1 or 2 */
 	unsigned char bold;
 	unsigned char underline;
 	unsigned char align;        /* BR_ALIGN_* */
 	unsigned char display;      /* BR_DISPLAY_* */
+	unsigned char no_bullet;    /* list-style: none (inherited) */
+	unsigned char uppercase;    /* text-transform: uppercase (inherited) */
+	unsigned char border_w;
+	unsigned char width_kind;   /* 0 none, 1 px, 2 percent */
+	unsigned short width;
+	unsigned char max_width_kind;
+	unsigned short max_width;
+	unsigned char height_kind;
+	unsigned short height;
+	unsigned char line_h_pct;   /* percent of font size, 0 = default */
+	unsigned short line_h_px;   /* absolute px, 0 = default */
 	signed short mt, mb, ml, mr;
 	signed short pt, pb, pl, pr;
 };
@@ -84,20 +97,26 @@ struct br_node {
 	unsigned short src_off;
 	unsigned short alt_off;
 	unsigned short color_off;
+	unsigned short rel_off;
 	unsigned short width_attr;
 	unsigned short height_attr;
+	unsigned char width_pct;
+	unsigned char height_pct;
 	short img_index;            /* -1 until the image is loaded */
+	struct br_style style;      /* computed-style cache */
+	unsigned char style_valid;
 };
 
 struct br_decl {
 	unsigned char prop;
+	unsigned char important;
 	short val;
 };
 
 struct br_rule {
 	unsigned short sel_off;     /* selector text in the attr arena */
 	unsigned char nd;
-	struct br_decl d[8];
+	struct br_decl d[BR_DECLS];
 };
 
 struct br_doc {
@@ -111,6 +130,7 @@ struct br_doc {
 	struct br_rule *rules;
 	unsigned int nrules;
 	char title[BR_TITLE_MAX];
+	unsigned int inline_css_len;
 	int truncated;
 	int plain;                  /* text/plain: one preformatted text node */
 };
@@ -120,8 +140,15 @@ int  br_parse(struct br_doc *d, const char *html, unsigned int len);
 int  br_parse_plain(struct br_doc *d, const char *text, unsigned int len);
 unsigned int br_parse_image_doc(struct br_doc *d, const char *src);
 
+/* External CSS is parsed by the browser after br_parse(); parse the inline
+ * <style> blocks last so the cascade order matches the document. */
+void br_parse_css_text(struct br_doc *d, const char *css, unsigned int len);
+void br_parse_inline_css(struct br_doc *d);
+void br_reset_styles(struct br_doc *d);
+
 /* A node's style: parent inherited values, UA defaults, matching rules, then
- * the inline style attribute. */
+ * the inline style attribute.  Results are cached in the node until
+ * br_reset_styles(). */
 void br_style_for(struct br_doc *d, unsigned int node,
 		  const struct br_style *parent, struct br_style *out);
 
@@ -133,5 +160,6 @@ unsigned int br_tag_from_name(const char *name);
 const char *br_href(struct br_doc *d, unsigned int node);
 const char *br_src(struct br_doc *d, unsigned int node);
 const char *br_alt(struct br_doc *d, unsigned int node);
+const char *br_rel(struct br_doc *d, unsigned int node);
 
 #endif

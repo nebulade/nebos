@@ -404,6 +404,11 @@ const char *br_alt(struct br_doc *d, unsigned int node)
 	return attr_ptr(d, d->nodes[node].alt_off);
 }
 
+const char *br_rel(struct br_doc *d, unsigned int node)
+{
+	return attr_ptr(d, d->nodes[node].rel_off);
+}
+
 /* ---- document setup / node append ---- */
 
 void br_doc_init(struct br_doc *d)
@@ -431,6 +436,7 @@ static void doc_reset(struct br_doc *d)
 	d->attrs[0] = '\0';
 	d->nrules = 0;
 	d->title[0] = '\0';
+	d->inline_css_len = 0;
 	d->truncated = 0;
 	d->plain = 0;
 	for (i = 0; i < BR_MAX_NODES; i++) {
@@ -444,9 +450,11 @@ static void doc_reset(struct br_doc *d)
 		d->nodes[i].href_off = d->nodes[i].class_off = 0;
 		d->nodes[i].id_off = d->nodes[i].style_off = 0;
 		d->nodes[i].src_off = d->nodes[i].alt_off = 0;
-		d->nodes[i].color_off = 0;
+		d->nodes[i].color_off = d->nodes[i].rel_off = 0;
 		d->nodes[i].width_attr = d->nodes[i].height_attr = 0;
+		d->nodes[i].width_pct = d->nodes[i].height_pct = 0;
 		d->nodes[i].img_index = -1;
+		d->nodes[i].style_valid = 0;
 	}
 }
 
@@ -589,10 +597,17 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 			n->alt_off = store_attr(d, s + vstart, vlen, 120);
 		else if (str_eq(name, "color"))
 			n->color_off = store_attr(d, s + vstart, vlen, 32);
-		else if (str_eq(name, "width"))
+		else if (str_eq(name, "rel"))
+			n->rel_off = store_attr(d, s + vstart, vlen, 64);
+		else if (str_eq(name, "width")) {
 			n->width_attr = (unsigned short)parse_uint(s + vstart, vlen);
-		else if (str_eq(name, "height"))
+			if (vlen && s[vstart + vlen - 1] == '%')
+				n->width_pct = 1;
+		} else if (str_eq(name, "height")) {
 			n->height_attr = (unsigned short)parse_uint(s + vstart, vlen);
+			if (vlen && s[vstart + vlen - 1] == '%')
+				n->height_pct = 1;
+		}
 	}
 }
 
@@ -610,7 +625,11 @@ static int str_eq(const char *a, const char *b)
 enum {
 	PROP_COLOR, PROP_BG, PROP_SCALE, PROP_BOLD, PROP_ALIGN, PROP_UNDERLINE,
 	PROP_DISPLAY, PROP_MT, PROP_MR, PROP_MB, PROP_ML,
-	PROP_PT, PROP_PR, PROP_PB, PROP_PL, PROP_COUNT
+	PROP_PT, PROP_PR, PROP_PB, PROP_PL,
+	PROP_BORDER_W, PROP_BORDER_COLOR, PROP_LIST_NONE,
+	PROP_WIDTH, PROP_WIDTH_KIND, PROP_MAXW, PROP_MAXW_KIND,
+	PROP_HEIGHT, PROP_HEIGHT_KIND, PROP_LH_PCT, PROP_LH_PX, PROP_UPPER,
+	PROP_COUNT
 };
 
 struct color_name {
@@ -666,7 +685,8 @@ static int named_color(const char *s, unsigned int len, unsigned short *out)
 	return 0;
 }
 
-/* Parse #rgb/#rrggbb/rgb(r,g,b)/a named colour. */
+/* Parse #rgb/#rrggbb/rgb()/rgba()/a named colour.  Alpha is composited
+ * over white; the render target is a white page. */
 static int parse_color(const char *s, unsigned int len, unsigned short *out)
 {
 	unsigned int i = 0;
@@ -697,8 +717,9 @@ static int parse_color(const char *s, unsigned int len, unsigned short *out)
 		}
 		return 0;
 	}
-	if (i + 3 < len && ci_eq_n(s + i, "rgb", 3)) {
-		unsigned int v[3], k = 0;
+	if (i + 3 <= len && ci_eq_n(s + i, "rgb", 3)) {
+		unsigned int v[3], k = 0, a = 255;
+		int is_rgba = (i + 4 <= len && ci_eq_n(s + i, "rgba", 4));
 
 		while (i < len && s[i] != '(')
 			i++;
@@ -713,6 +734,10 @@ static int parse_color(const char *s, unsigned int len, unsigned short *out)
 				x = x * 10 + (unsigned int)(s[i] - '0');
 				i++;
 			}
+			if (i < len && s[i] == '%') {
+				x = x * 255 / 100;
+				i++;
+			}
 			if (x > 255)
 				x = 255;
 			v[k++] = x;
@@ -721,9 +746,46 @@ static int parse_color(const char *s, unsigned int len, unsigned short *out)
 			if (i < len && s[i] == ',')
 				i++;
 		}
+		if (is_rgba && i < len) {
+			unsigned int whole = 0, frac = 0, scale = 1;
+			int percent = 0;
+
+			while (i < len && is_space(s[i]))
+				i++;
+			while (i < len && s[i] >= '0' && s[i] <= '9') {
+				whole = whole * 10 + (unsigned int)(s[i] - '0');
+				i++;
+			}
+			if (i < len && s[i] == '.') {
+				i++;
+				while (i < len && s[i] >= '0' && s[i] <= '9' && scale < 1000) {
+					frac = frac * 10 + (unsigned int)(s[i] - '0');
+					scale *= 10;
+					i++;
+				}
+			}
+			while (i < len && is_space(s[i]))
+				i++;
+			if (i < len && s[i] == '%')
+				percent = 1;
+			if (percent) {
+				a = whole > 100 ? 255 : whole * 255 / 100;
+			} else {
+				a = whole >= 1 ? 255 : (frac * 255) / scale;
+			}
+			if (a > 255)
+				a = 255;
+		}
 		if (k == 3) {
-			*out = (unsigned short)(((v[0] >> 3) << 11) |
-						((v[1] >> 2) << 5) | (v[2] >> 3));
+			unsigned int r = v[0], g = v[1], b = v[2];
+
+			if (a < 255) {
+				r = (r * a + 255u * (255u - a)) / 255u;
+				g = (g * a + 255u * (255u - a)) / 255u;
+				b = (b * a + 255u * (255u - a)) / 255u;
+			}
+			*out = (unsigned short)(((r >> 3) << 11) |
+						((g >> 2) << 5) | (b >> 3));
 			return 1;
 		}
 		return 0;
@@ -737,6 +799,7 @@ static int parse_color(const char *s, unsigned int len, unsigned short *out)
 	}
 }
 
+/* Length values for margins/padding: px, ignore percentages/units. */
 static int parse_len(const char *s, unsigned int len, unsigned int *pos)
 {
 	unsigned int i = *pos;
@@ -772,6 +835,213 @@ static int parse_len(const char *s, unsigned int len, unsigned int *pos)
 	return v;
 }
 
+/* width/height: kind 0 = auto/none, 1 = px, 2 = percent. */
+static int parse_size(const char *s, unsigned int len, unsigned short *val,
+		      unsigned char *kind)
+{
+	unsigned int i = 0;
+	unsigned int v = 0;
+	int digits = 0;
+	int pct = 0;
+
+	*val = 0;
+	*kind = 0;
+	while (i < len && is_space(s[i]))
+		i++;
+	if (i + 4 <= len && ci_eq_n(s + i, "auto", 4))
+		return 0;
+	if (i + 4 <= len && ci_eq_n(s + i, "none", 4))
+		return 0;
+	while (i < len && s[i] >= '0' && s[i] <= '9') {
+		v = v * 10 + (unsigned int)(s[i] - '0');
+		digits = 1;
+		i++;
+	}
+	if (i < len && s[i] == '.') {
+		i++;
+		while (i < len && s[i] >= '0' && s[i] <= '9')
+			i++;
+	}
+	if (!digits)
+		return 0;
+	while (i < len && is_space(s[i]))
+		i++;
+	if (i < len && s[i] == '%')
+		pct = 1;
+	if (pct) {
+		if (v > 100)
+			v = 100;
+		*kind = 2;
+	} else {
+		if (v > 2048)
+			v = 2048;
+		*kind = 1;
+	}
+	*val = (unsigned short)v;
+	return 1;
+}
+
+static int parse_font_px(const char *s, unsigned int len)
+{
+	unsigned int i = 0;
+	int whole = 0, frac = 0, fscale = 1, digits = 0;
+	int v1000, px;
+	int is_px = 1, is_rem = 0, is_pct = 0;
+
+	while (i < len && is_space(s[i]))
+		i++;
+	if (i + 5 <= len && ci_eq_n(s + i, "large", 5))
+		return 24;
+	if (i + 7 <= len && ci_eq_n(s + i, "x-large", 7))
+		return 32;
+	if (i + 5 <= len && ci_eq_n(s + i, "small", 5))
+		return 14;
+	while (i < len && s[i] >= '0' && s[i] <= '9') {
+		whole = whole * 10 + (s[i] - '0');
+		digits = 1;
+		i++;
+	}
+	if (i < len && s[i] == '.') {
+		i++;
+		while (i < len && s[i] >= '0' && s[i] <= '9' && fscale < 1000) {
+			frac = frac * 10 + (s[i] - '0');
+			fscale *= 10;
+			i++;
+		}
+	}
+	if (!digits)
+		return 0;
+	while (i < len && is_space(s[i]))
+		i++;
+	if (i + 3 <= len && ci_eq_n(s + i, "rem", 3)) {
+		is_rem = 1;
+		is_px = 0;
+	} else if (i + 2 <= len && ci_eq_n(s + i, "em", 2)) {
+		is_rem = 1;
+		is_px = 0;
+	} else if (i < len && s[i] == '%') {
+		is_pct = 1;
+		is_px = 0;
+	}
+	v1000 = whole * 1000 + frac * 1000 / fscale;
+	if (is_rem)
+		px = v1000 * 16 / 1000;
+	else if (is_pct)
+		px = v1000 * 16 / 100000;
+	else if (is_px)
+		px = v1000 / 1000;
+	else
+		px = v1000 / 1000;
+	if (px < 8)
+		px = 8;
+	if (px > 72)
+		px = 72;
+	return px;
+}
+
+static int parse_line_height(const char *s, unsigned int len,
+			     unsigned short *px, unsigned char *pct)
+{
+	unsigned int i = 0;
+	int whole = 0, frac = 0, fscale = 1, digits = 0;
+	int v1000;
+	int is_px = 0, is_pct = 0;
+
+	*px = 0;
+	*pct = 0;
+	while (i < len && is_space(s[i]))
+		i++;
+	if (i + 6 <= len && ci_eq_n(s + i, "normal", 6))
+		return 0;
+	while (i < len && s[i] >= '0' && s[i] <= '9') {
+		whole = whole * 10 + (s[i] - '0');
+		digits = 1;
+		i++;
+	}
+	if (i < len && s[i] == '.') {
+		i++;
+		while (i < len && s[i] >= '0' && s[i] <= '9' && fscale < 1000) {
+			frac = frac * 10 + (s[i] - '0');
+			fscale *= 10;
+			i++;
+		}
+	}
+	if (!digits)
+		return 0;
+	while (i < len && is_space(s[i]))
+		i++;
+	if (i + 2 <= len && ci_eq_n(s + i, "px", 2))
+		is_px = 1;
+	else if (i < len && s[i] == '%')
+		is_pct = 1;
+	v1000 = whole * 1000 + frac * 1000 / fscale;
+	if (is_px) {
+		int v = v1000 / 1000;
+
+		if (v < 8)
+			v = 8;
+		if (v > 160)
+			v = 160;
+		*px = (unsigned short)v;
+	} else {
+		int v = v1000 / 10;     /* unitless multiplier -> percent */
+
+		if (is_pct)
+			v = v1000 / 1000;
+		if (v < 50)
+			v = 50;
+		if (v > 400)
+			v = 400;
+		*pct = (unsigned char)v;
+	}
+	return 1;
+}
+
+static int contains_ci_len(const char *s, unsigned int len, const char *needle)
+{
+	unsigned int i, j, n = s_len(needle);
+
+	for (i = 0; i + n <= len; i++) {
+		for (j = 0; j < n; j++) {
+			char a = s[i + j];
+			if (a >= 'A' && a <= 'Z')
+				a = (char)(a - 'A' + 'a');
+			if (a != needle[j])
+				break;
+		}
+		if (j == n)
+			return 1;
+	}
+	return 0;
+}
+
+/* Pull a colour out of a border/background shorthand. */
+static int find_color(const char *s, unsigned int len, unsigned short *c)
+{
+	unsigned int i;
+
+	for (i = 0; i < len; i++) {
+		if (s[i] == '#')
+			return parse_color(s + i, len - i, c);
+		if ((s[i] == 'r' || s[i] == 'R') &&
+		    i + 3 <= len && ci_eq_n(s + i, "rgb", 3))
+			return parse_color(s + i, len - i, c);
+	}
+	for (i = 0; i < len; ) {
+		unsigned int st, e;
+
+		while (i < len && (is_space(s[i]) || s[i] == ','))
+			i++;
+		st = i;
+		while (i < len && !is_space(s[i]) && s[i] != ',')
+			i++;
+		e = i;
+		if (e > st && parse_color(s + st, e - st, c))
+			return 1;
+	}
+	return 0;
+}
+
 static int parse_display(const char *s, unsigned int len)
 {
 	unsigned int i;
@@ -789,7 +1059,66 @@ static int parse_display(const char *s, unsigned int len)
 		return BR_DISPLAY_INLINE;
 	if (i == 10 && ci_eq_n(s, "list-item", 10))
 		return BR_DISPLAY_BLOCK;
+	if (i == 4 && ci_eq_n(s, "flex", 4))
+		return BR_DISPLAY_BLOCK;
+	if (i == 5 && ci_eq_n(s, "table", 5))
+		return BR_DISPLAY_BLOCK;
+	if (i == 10 && ci_eq_n(s, "table-cell", 10))
+		return BR_DISPLAY_INLINE;
+	if (i == 5 && ci_eq_n(s, "grid", 5))
+		return BR_DISPLAY_BLOCK;
 	return BR_DISPLAY_INLINE;
+}
+
+static void decl_add(struct br_decl *out, unsigned int *nout,
+		     unsigned char prop, int val, int important)
+{
+	if (*nout >= BR_DECLS)
+		return;
+	out[*nout].prop = prop;
+	out[*nout].val = (short)val;
+	out[*nout].important = (unsigned char)(important != 0);
+	(*nout)++;
+}
+
+static int parse_border_width(const char *s, unsigned int len)
+{
+	unsigned int i = 0;
+
+	while (i < len) {
+		while (i < len && is_space(s[i]))
+			i++;
+		if (i >= len)
+			break;
+		if (s[i] == '#') {
+			while (i < len && !is_space(s[i]))
+				i++;
+			continue;
+		}
+		if (i + 3 <= len && ci_eq_n(s + i, "rgb", 3)) {
+			while (i < len && s[i] != ')')
+				i++;
+			if (i < len)
+				i++;
+			continue;
+		}
+		if (s[i] >= '0' && s[i] <= '9') {
+			int v = 0;
+
+			while (i < len && s[i] >= '0' && s[i] <= '9') {
+				v = v * 10 + (s[i] - '0');
+				i++;
+			}
+			if (v < 0)
+				v = 0;
+			if (v > 3)
+				v = 3;
+			return v;
+		}
+		while (i < len && !is_space(s[i]))
+			i++;
+	}
+	return -1;
 }
 
 static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
@@ -798,9 +1127,10 @@ static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
 	unsigned int i = 0;
 
 	*nout = 0;
-	while (i < len && *nout < 8) {
+	while (i < len && *nout < BR_DECLS) {
 		unsigned int pstart, pend, vstart, vend, k;
 		char prop[24];
+		int important = 0;
 
 		while (i < len && (is_space(s[i]) || s[i] == ';'))
 			i++;
@@ -825,6 +1155,13 @@ static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
 			vstart++;
 		while (vend > vstart && is_space(s[vend - 1]))
 			vend--;
+		if (vend - vstart >= 10 &&
+		    ci_eq_n(s + vend - 10, "!important", 10)) {
+			important = 1;
+			vend -= 10;
+			while (vend > vstart && is_space(s[vend - 1]))
+				vend--;
+		}
 		for (k = 0; k < sizeof(prop) - 1 && pstart + k < pend; k++) {
 			char c = s[pstart + k];
 			if (c >= 'A' && c <= 'Z')
@@ -834,73 +1171,131 @@ static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
 		prop[k] = '\0';
 		if (str_eq(prop, "color")) {
 			unsigned short c;
-			if (parse_color(s + vstart, vend - vstart, &c)) {
-				out[*nout].prop = PROP_COLOR;
-				out[*nout].val = (short)c;
-				(*nout)++;
-			}
+			if (parse_color(s + vstart, vend - vstart, &c))
+				decl_add(out, nout, PROP_COLOR, c, important);
 		} else if (str_eq(prop, "background-color") ||
 			   str_eq(prop, "background")) {
 			unsigned short c;
-			if (parse_color(s + vstart, vend - vstart, &c)) {
-				out[*nout].prop = PROP_BG;
-				out[*nout].val = (short)c;
-				(*nout)++;
-			}
+			if (parse_color(s + vstart, vend - vstart, &c))
+				decl_add(out, nout, PROP_BG, c, important);
+			else if (str_eq(prop, "background") &&
+				 find_color(s + vstart, vend - vstart, &c))
+				decl_add(out, nout, PROP_BG, c, important);
 		} else if (str_eq(prop, "font-size")) {
-			unsigned int pos = 0;
-			int v = parse_len(s + vstart, vend - vstart, &pos);
-			int scale = 1;
-
-			if (v >= 20)
-				scale = 2;
-			if (vend - vstart >= 5 &&
-			    ci_eq_n(s + vstart, "large", 5))
-				scale = 2;
-			if (vend - vstart >= 6 &&
-			    ci_eq_n(s + vstart, "x-large", 7))
-				scale = 2;
-			out[*nout].prop = PROP_SCALE;
-			out[*nout].val = (short)scale;
-			(*nout)++;
+			int px = parse_font_px(s + vstart, vend - vstart);
+			if (px > 0)
+				decl_add(out, nout, PROP_SCALE,
+					 px >= 24 ? 2 : 1, important);
 		} else if (str_eq(prop, "font-weight")) {
 			int bold = 0;
-			if ((vend - vstart >= 4 &&
-			     ci_eq_n(s + vstart, "bold", 4)) ||
-			    (vend - vstart >= 3 &&
-			     ci_eq_n(s + vstart, "700", 3)) ||
-			    (vend - vstart >= 3 &&
-			     ci_eq_n(s + vstart, "800", 3)) ||
-			    (vend - vstart >= 3 &&
-			     ci_eq_n(s + vstart, "900", 3)))
+			unsigned int j;
+
+			if (vend - vstart >= 4 &&
+			    ci_eq_n(s + vstart, "bold", 4))
 				bold = 1;
-			out[*nout].prop = PROP_BOLD;
-			out[*nout].val = (short)bold;
-			(*nout)++;
+			else {
+				int w = 0;
+				for (j = vstart; j < vend; j++)
+					if (s[j] >= '0' && s[j] <= '9')
+						w = w * 10 + (s[j] - '0');
+				if (w >= 500)
+					bold = 1;
+			}
+			decl_add(out, nout, PROP_BOLD, bold, important);
 		} else if (str_eq(prop, "text-align")) {
 			int a = BR_ALIGN_LEFT;
-			if ((vend - vstart >= 6 &&
-			     ci_eq_n(s + vstart, "center", 6)))
+			if (vend - vstart >= 6 &&
+			    ci_eq_n(s + vstart, "center", 6))
 				a = BR_ALIGN_CENTER;
-			else if ((vend - vstart >= 5 &&
-				  ci_eq_n(s + vstart, "right", 5)))
+			else if (vend - vstart >= 5 &&
+				 ci_eq_n(s + vstart, "right", 5))
 				a = BR_ALIGN_RIGHT;
-			out[*nout].prop = PROP_ALIGN;
-			out[*nout].val = (short)a;
-			(*nout)++;
+			decl_add(out, nout, PROP_ALIGN, a, important);
 		} else if (str_eq(prop, "text-decoration")) {
 			int u = 0;
 			if (vend - vstart >= 9 &&
 			    ci_eq_n(s + vstart, "underline", 9))
 				u = 1;
-			out[*nout].prop = PROP_UNDERLINE;
-			out[*nout].val = (short)u;
-			(*nout)++;
+			decl_add(out, nout, PROP_UNDERLINE, u, important);
+		} else if (str_eq(prop, "text-transform")) {
+			int u = (vend - vstart >= 9 &&
+				 ci_eq_n(s + vstart, "uppercase", 9));
+			decl_add(out, nout, PROP_UPPER, u, important);
 		} else if (str_eq(prop, "display")) {
-			out[*nout].prop = PROP_DISPLAY;
-			out[*nout].val = (short)parse_display(s + vstart,
-							      vend - vstart);
-			(*nout)++;
+			decl_add(out, nout, PROP_DISPLAY,
+				 parse_display(s + vstart, vend - vstart),
+				 important);
+		} else if (str_eq(prop, "width") ||
+			   str_eq(prop, "max-width") ||
+			   str_eq(prop, "height")) {
+			unsigned short v;
+			unsigned char kind;
+			if (parse_size(s + vstart, vend - vstart, &v, &kind)) {
+				if (str_eq(prop, "width")) {
+					decl_add(out, nout, PROP_WIDTH, v, important);
+					decl_add(out, nout, PROP_WIDTH_KIND, kind,
+						 important);
+				} else if (str_eq(prop, "max-width")) {
+					decl_add(out, nout, PROP_MAXW, v, important);
+					decl_add(out, nout, PROP_MAXW_KIND, kind,
+						 important);
+				} else {
+					decl_add(out, nout, PROP_HEIGHT, v, important);
+					decl_add(out, nout, PROP_HEIGHT_KIND, kind,
+						 important);
+				}
+			}
+		} else if (str_eq(prop, "line-height")) {
+			unsigned short px;
+			unsigned char pct;
+
+			if (parse_line_height(s + vstart, vend - vstart, &px, &pct)) {
+				if (px) {
+					decl_add(out, nout, PROP_LH_PX, px, important);
+					decl_add(out, nout, PROP_LH_PCT, 0, important);
+				} else {
+					decl_add(out, nout, PROP_LH_PX, 0, important);
+					decl_add(out, nout, PROP_LH_PCT, pct, important);
+				}
+			}
+		} else if (str_eq(prop, "list-style") ||
+			   str_eq(prop, "list-style-type")) {
+			int none = (vend - vstart >= 4 &&
+				    contains_ci_len(s + vstart, vend - vstart,
+						    "none"));
+			decl_add(out, nout, PROP_LIST_NONE, none, important);
+		} else if (str_eq(prop, "border") ||
+			   str_eq(prop, "border-top") ||
+			   str_eq(prop, "border-right") ||
+			   str_eq(prop, "border-bottom") ||
+			   str_eq(prop, "border-left") ||
+			   str_eq(prop, "border-color") ||
+			   str_eq(prop, "border-width")) {
+			unsigned short c;
+			int bw;
+			int have_color;
+
+			if (vend - vstart >= 4 &&
+			    ci_eq_n(s + vstart, "none", 4)) {
+				decl_add(out, nout, PROP_BORDER_W, 0, important);
+			} else {
+				bw = parse_border_width(s + vstart,
+							vend - vstart);
+				have_color = find_color(s + vstart,
+							vend - vstart, &c);
+				if (have_color) {
+					decl_add(out, nout, PROP_BORDER_COLOR, c,
+						 important);
+					if (bw < 0)
+						bw = 1;
+				}
+				if (bw >= 0) {
+					if (bw > 3)
+						bw = 3;
+					decl_add(out, nout, PROP_BORDER_W, bw,
+						 important);
+				}
+			}
 		} else if (str_eq(prop, "margin") || str_eq(prop, "padding")) {
 			int vals[4], nv = 0;
 			unsigned int pos = 0;
@@ -923,19 +1318,13 @@ static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
 				vals[3] = vals[1];
 			}
 			if (nv > 0) {
-				/* props are T, R, B, L adjacent */
-				out[*nout].prop = base;
-				out[*nout].val = (short)vals[0];
-				(*nout)++;
-				out[*nout].prop = (unsigned char)(base + 1);
-				out[*nout].val = (short)vals[1];
-				(*nout)++;
-				out[*nout].prop = (unsigned char)(base + 2);
-				out[*nout].val = (short)vals[2];
-				(*nout)++;
-				out[*nout].prop = (unsigned char)(base + 3);
-				out[*nout].val = (short)vals[3];
-				(*nout)++;
+				decl_add(out, nout, base, vals[0], important);
+				decl_add(out, nout, (unsigned char)(base + 1),
+					 vals[1], important);
+				decl_add(out, nout, (unsigned char)(base + 2),
+					 vals[2], important);
+				decl_add(out, nout, (unsigned char)(base + 3),
+					 vals[3], important);
 			}
 		} else if (str_eq(prop, "margin-top") ||
 			   str_eq(prop, "margin-right") ||
@@ -948,20 +1337,47 @@ static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
 			unsigned int pos = 0;
 			int v = parse_len(s + vstart, vend - vstart, &pos);
 			unsigned char p = PROP_MT;
+			const char *side;
 
 			if (prop[0] == 'p')
 				p = PROP_PT;
-			if (str_eq(prop + 7, "right"))
+			side = prop + (prop[0] == 'p' ? 8 : 7);
+			if (str_eq(side, "right"))
 				p = (unsigned char)(p + 1);
-			else if (str_eq(prop + 7, "bottom"))
+			else if (str_eq(side, "bottom"))
 				p = (unsigned char)(p + 2);
-			else if (str_eq(prop + 7, "left"))
+			else if (str_eq(side, "left"))
 				p = (unsigned char)(p + 3);
-			out[*nout].prop = p;
-			out[*nout].val = (short)v;
-			(*nout)++;
+			decl_add(out, nout, p, v, important);
 		}
 	}
+}
+
+/* Skip @media/@font-face/@keyframes/@import without descending into their
+ * nested blocks.  This is the mobile/base rules path: media enhancements are
+ * deliberately ignored for now. */
+static unsigned int skip_at_rule(const char *s, unsigned int len,
+				 unsigned int i)
+{
+	unsigned int j = i;
+	int depth;
+
+	while (j < len && s[j] != '{' && s[j] != ';')
+		j++;
+	if (j >= len)
+		return len;
+	if (s[j] == ';')
+		return j + 1;
+	depth = 1;
+	j++;
+	while (j < len && depth) {
+		if (s[j] == '{')
+			depth++;
+		else if (s[j] == '}')
+			depth--;
+		j++;
+	}
+	return j;
 }
 
 static void parse_css(struct br_doc *d, const char *s, unsigned int len)
@@ -970,7 +1386,7 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 
 	while (i < len && d->nrules < BR_MAX_RULES) {
 		unsigned int sstart, send, bstart, bend, j;
-		struct br_decl decls[8];
+		struct br_decl decls[BR_DECLS];
 		unsigned int nd;
 
 		while (i < len && is_space(s[i]))
@@ -984,6 +1400,10 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 		}
 		if (i >= len || s[i] == '}')
 			break;
+		if (s[i] == '@') {
+			i = skip_at_rule(s, len, i);
+			continue;
+		}
 		sstart = i;
 		while (i < len && s[i] != '{')
 			i++;
@@ -1003,15 +1423,6 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 			send--;
 		if (sstart == send)
 			continue;
-		if (s[sstart] == '@')
-			continue;
-		/* Ignore sibling combinators and pseudo-classes: they need
-		 * state we do not model. */
-		for (j = sstart; j < send; j++)
-			if (s[j] == '+' || s[j] == '~' || s[j] == ':')
-				break;
-		if (j < send)
-			continue;
 		parse_decls(s + bstart, bend - bstart, decls, &nd);
 		if (!nd)
 			continue;
@@ -1030,6 +1441,20 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 			while (e > j && is_space(s[e - 1]))
 				e--;
 			if (e > j) {
+				/* Ignore single selectors with sibling combinators,
+				 * pseudo-classes or attribute tests: they need
+				 * state/attributes we do not model.  The other
+				 * selectors in the list still apply. */
+				for (k = j; k < e; k++)
+					if (s[k] == '+' || s[k] == '~' ||
+					    s[k] == ':' || s[k] == '[')
+						break;
+				if (k < e) {
+					j = q + 1;
+					if (q >= send)
+						break;
+					continue;
+				}
 				for (k = 0; k < sizeof(sel) - 1 && j + k < e; k++)
 					sel[k] = s[j + k];
 				sel[k] = '\0';
@@ -1047,6 +1472,26 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 				break;
 		}
 	}
+}
+
+void br_parse_css_text(struct br_doc *d, const char *css, unsigned int len)
+{
+	parse_css(d, css, len);
+}
+
+void br_parse_inline_css(struct br_doc *d)
+{
+	if (d->inline_css_len)
+		parse_css(d, css_store, d->inline_css_len);
+	d->inline_css_len = 0;
+}
+
+void br_reset_styles(struct br_doc *d)
+{
+	unsigned int i;
+
+	for (i = 0; i < d->nnode; i++)
+		d->nodes[i].style_valid = 0;
 }
 
 /* ---- selector matching ---- */
@@ -1258,7 +1703,64 @@ static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 	case PROP_PR: st->pr = dcl->val; break;
 	case PROP_PB: st->pb = dcl->val; break;
 	case PROP_PL: st->pl = dcl->val; break;
-	default: break;
+	case PROP_BORDER_W:
+		st->border_w = (unsigned char)dcl->val;
+		if (st->border_w && !st->border_color)
+			st->border_color = st->color;
+		break;
+	case PROP_BORDER_COLOR:
+		st->border_color = (unsigned short)dcl->val;
+		break;
+	case PROP_LIST_NONE:
+		st->no_bullet = (unsigned char)(dcl->val != 0);
+		break;
+	case PROP_WIDTH:
+		st->width = (unsigned short)dcl->val;
+		break;
+	case PROP_WIDTH_KIND:
+		st->width_kind = (unsigned char)dcl->val;
+		break;
+	case PROP_MAXW:
+		st->max_width = (unsigned short)dcl->val;
+		break;
+	case PROP_MAXW_KIND:
+		st->max_width_kind = (unsigned char)dcl->val;
+		break;
+	case PROP_HEIGHT:
+		st->height = (unsigned short)dcl->val;
+		break;
+	case PROP_HEIGHT_KIND:
+		st->height_kind = (unsigned char)dcl->val;
+		break;
+	case PROP_LH_PCT:
+		st->line_h_pct = (unsigned char)dcl->val;
+		break;
+	case PROP_LH_PX:
+		st->line_h_px = (unsigned short)dcl->val;
+		break;
+	case PROP_UPPER:
+		st->uppercase = (unsigned char)(dcl->val != 0);
+		break;
+	default:
+		break;
+	}
+}
+
+static void cascade_decl(struct br_style *st, const struct br_decl *dcl,
+			 int spec, short *best, short *best_imp)
+{
+	unsigned char p = dcl->prop;
+
+	if (p >= PROP_COUNT)
+		return;
+	if (dcl->important) {
+		if (spec >= best_imp[p]) {
+			apply_decl(st, dcl);
+			best_imp[p] = (short)spec;
+		}
+	} else if (best_imp[p] < 0 && spec >= best[p]) {
+		apply_decl(st, dcl);
+		best[p] = (short)spec;
 	}
 }
 
@@ -1266,18 +1768,29 @@ void br_style_for(struct br_doc *d, unsigned int node,
 		  const struct br_style *parent, struct br_style *out)
 {
 	unsigned int tag;
-	short best[PROP_COUNT];
+	short best[PROP_COUNT], best_imp[PROP_COUNT];
 	unsigned int i;
+
+	if (d->nodes[node].style_valid) {
+		*out = d->nodes[node].style;
+		return;
+	}
 
 	*out = *parent;
 	out->has_bg = 0;
+	out->border_w = 0;
+	out->border_color = 0;
+	out->width = out->max_width = out->height = 0;
+	out->width_kind = out->max_width_kind = out->height_kind = 0;
 	out->mt = out->mr = out->mb = out->ml = 0;
 	out->pt = out->pr = out->pb = out->pl = 0;
 	tag = d->nodes[node].tag;
 	out->display = br_tag_is_block(tag) ? BR_DISPLAY_BLOCK :
 					      BR_DISPLAY_INLINE;
-	for (i = 0; i < PROP_COUNT; i++)
+	for (i = 0; i < PROP_COUNT; i++) {
 		best[i] = -1;
+		best_imp[i] = -1;
+	}
 
 	switch (tag) {
 	case BR_TAG_HEAD:
@@ -1334,6 +1847,9 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	case BR_TAG_TD: case BR_TAG_TH:
 		out->pr = 12;
 		break;
+	case BR_TAG_VIDEO:
+		out->display = BR_DISPLAY_BLOCK;
+		break;
 	default:
 		break;
 	}
@@ -1354,24 +1870,22 @@ void br_style_for(struct br_doc *d, unsigned int node,
 
 		if (spec < 0)
 			continue;
-		for (k = 0; k < r->nd; k++) {
-			unsigned char p = r->d[k].prop;
-			if (spec >= best[p]) {
-				apply_decl(out, &r->d[k]);
-				best[p] = (short)spec;
-			}
-		}
+		for (k = 0; k < r->nd; k++)
+			cascade_decl(out, &r->d[k], spec, best, best_imp);
 	}
 
 	if (d->nodes[node].style_off) {
-		struct br_decl decls[8];
+		struct br_decl decls[BR_DECLS];
 		unsigned int nd, k;
 		const char *v = attr_ptr(d, d->nodes[node].style_off);
 
 		parse_decls(v, s_len(v), decls, &nd);
 		for (k = 0; k < nd; k++)
-			apply_decl(out, &decls[k]);
+			cascade_decl(out, &decls[k], 1000, best, best_imp);
 	}
+
+	d->nodes[node].style = *out;
+	d->nodes[node].style_valid = 1;
 }
 
 /* ---- HTML parser ---- */
@@ -1625,8 +2139,7 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 		}
 	}
 
-	if (css_len)
-		parse_css(d, css_store, css_len);
+	d->inline_css_len = css_len;
 	return 0;
 }
 
