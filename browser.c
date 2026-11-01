@@ -97,13 +97,15 @@ static unsigned int heap_used = 0;
  * image.  This keeps 4K screenshots inside the 32 MB heap.  The two halves
  * double as the gzip input scratch for page/CSS fetches, where the heap has
  * no room for another multi-megabyte body. */
-static unsigned char image_io_buf[2u * BR_IMG_FILE_MAX];
+static unsigned char *image_io_buf;
 #define image_file_buf (image_io_buf)
 #define image_comp_buf (image_io_buf + BR_IMG_FILE_MAX)
 #define BR_PAGE_COMP_MAX (2u * BR_IMG_FILE_MAX)
 static struct inflate image_inflate_ws;
 static unsigned char *image_arena;
 static unsigned int image_arena_size;
+
+static void *heap_alloc(unsigned int bytes, unsigned int align);
 
 #if BR_CSS_MAX + BR_CSS_COMP_MAX > 2u * BR_IMG_FILE_MAX
 #error "CSS scratch must fit in image_io_buf"
@@ -123,6 +125,8 @@ static char history[BR_HISTORY][BR_URL_MAX];
 static int hist_len, hist_pos;
 
 static char click_url[BR_URL_MAX];
+static char wait_click_url[BR_URL_MAX];
+static int wait_nav;
 static int quit;
 
 static struct ngui_rect page_rect;
@@ -279,6 +283,11 @@ static int heap_start(void)
 	}
 	heap_size = BR_HEAP_INIT;
 	heap_used = 0;
+	image_io_buf = (unsigned char *)heap_alloc(2u * BR_IMG_FILE_MAX, 16);
+	if (!image_io_buf) {
+		heap_size = heap_used = 0;
+		return -1;
+	}
 	return 0;
 }
 
@@ -287,6 +296,7 @@ static void heap_clear(void)
 	u_mem_free();
 	heap = 0;
 	heap_size = heap_used = 0;
+	image_io_buf = 0;
 	image_arena = 0;
 	image_arena_size = 0;
 }
@@ -728,6 +738,7 @@ struct fetch_meta {
 };
 
 static void draw(unsigned int *action);
+static void handle_page_click(unsigned int *action);
 static int fetch_helper_tty = -2;
 static struct fetch_meta fetch_meta;
 
@@ -770,6 +781,12 @@ static void worker_wait_ui(void)
 	if (!ngui_begin(&ui))
 		return;
 	draw(&action);
+	handle_page_click(&action);
+	if ((action & ACT_NAV) && click_url[0]) {
+		s_copy(wait_click_url, click_url, sizeof(wait_click_url));
+		wait_nav = 1;
+		click_url[0] = '\0';
+	}
 	if (!ngui_focus(&ui) && ngui_scroll_keys(&ui, &page_scroll))
 		ngui_invalidate(&ui);
 	ngui_end(&ui);
@@ -2100,7 +2117,7 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 			n = nd->next;
 			continue;
 		}
-		if (!cs.float_left)
+		if (!cs.float_left || cs.display != BR_DISPLAY_BLOCK)
 			break;
 		if (cs.width_kind == 2)
 			colw = (row_right - row_left) * (int)cs.width / 100;
@@ -2204,7 +2221,7 @@ static void layout_children(struct lay *l, unsigned int parent,
 			n = nd->next;
 			continue;
 		}
-		if (cs.float_left) {
+		if (cs.float_left && cs.display == BR_DISPLAY_BLOCK) {
 			n = layout_float_group(l, n, pst, depth, link);
 			continue;
 		}
@@ -2502,7 +2519,7 @@ static void handle_page_click(unsigned int *action)
 	int node;
 	char url[BR_URL_MAX];
 
-	if (!ui.pressed || !ui.inside)
+	if (!ui.pressed)
 		return;
 	if (ui.press_x < page_rect.x ||
 	    ui.press_x >= page_rect.x + page_rect.w - 12 ||
@@ -2548,6 +2565,7 @@ void _start(const char *arg)
 		unsigned int action = 0;
 		unsigned int now;
 
+		click_url[0] = '\0';
 		if (preload_active) {
 			if (preload_wait)
 				preload_wait = 0;
@@ -2559,7 +2577,11 @@ void _start(const char *arg)
 			preload_pending = 0;
 			preload_active = 1;
 		}
-		click_url[0] = '\0';
+		if (wait_nav) {
+			s_copy(click_url, wait_click_url, sizeof(click_url));
+			action |= ACT_NAV;
+			wait_nav = 0;
+		}
 		now = u_ticks_ms();
 		if (status_until && (int)(now - status_until) >= 0) {
 			status_text[0] = '\0';

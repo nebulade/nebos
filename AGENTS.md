@@ -192,7 +192,9 @@ run area), so adding code no longer moves any address.
   capture window, so a click that starts in a window still gets its release
   after the pointer leaves.  The userland `ngui.c/h` immediate-mode toolkit
   builds on those: clipped RGB565 primitives, buttons, text input, procedural
-  icons and scrolling panes.  `files` (`ucmd_files.c`) is its first user.
+  icons and scrolling panes.  `files` (`ucmd_files.c`) is its first user;
+  `gallery` (`gallery.c`) is the live showcase of every control and primitive
+  the toolkit exports.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `blit.c/h`, `gpu.c`, `ati.c`, `nvidia.c`,
   `nv50.c`, `pci.h` — VESA LFB + shadow buffer.  Drawing goes into a
   `struct surface` render target: `vga_target()` is the screen's shadow buffer
@@ -421,12 +423,21 @@ run area), so adding code no longer moves any address.
   `cd` (the shell passes arguments verbatim).  The one argument is passed as a
   C string on the top of the user stack (`process_create_user(..., arg)`), so
   `_start(const char *arg)` needs no crt0.  `ngui.c/h` is the shared userland
-  GUI toolkit linked into `ucmd_files.c` (buttons, text fields, icons, layout
-  cuts and scroll panes); `files` opens the selected text file through
+  GUI toolkit linked into `ucmd_files.c` and the external `gallery.elf`
+  (buttons, text fields, icons, layout cuts and scroll panes); `files` opens
+  the selected text file through
   `/ramfs/bin/edit`, image files through `/ramfs/bin/view`, and `.htm`/`.html`
   files through `/ramfs/bin/browser`.  `ngui_end_ex()`
   is the variant that runs the bookkeeping without publishing the canvas, for
   apps that poll input without redrawing.
+- **Gallery**: `gallery.c` is the ngui widget gallery: typography and
+  truncation, the drawing primitives and clip stack, the theme palette, all
+  nine icons, live buttons/icon buttons, text fields with event feedback, a
+  nested draggable scroll pane and the `ngui_cut_*` layout helpers.  It is a
+  disk app (`GALLERY` on `root.img`, or `/share`/FAT mounts) like the browser
+  because the embedded command pack is tight against the `0x7F000` wall;
+  `ucmd_gallery.c` is the tiny `bin/gallery` launcher, and `make gallery-dev`
+  uploads the real app to a board's `/share`.
 - **Browser**: `ucmd_browser.c` is a tiny `bin/browser` launcher; the real
   browser is the external `BROWSER` on `root.img` (also looked up in `/share`
   and on IDE/SATA FAT mounts) because it links ngui, the full image library,
@@ -459,9 +470,9 @@ run area), so adding code no longer moves any address.
   under `/share`, while the browser keeps drawing and scrolling its own
   window.  The helper asks for identity encoding because inflating multi-MB
   pages in the browser process stalled the UI; if a server still sends gzip,
-  the browser's inflate has a progress hook that pumps the UI.  Page and
-  image buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
-  arenas (2560 nodes, 128 KB attributes, 1792 rules), and page bodies are
+  the browser's inflate has a progress hook that pumps the UI.  Page, image
+  and CSS scratch buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
+  arenas (6144 nodes, 512 KB attributes, 2304 rules), and page bodies are
   capped at 2 MB with CSS sheets up to 832 KB (six sheets).  Images are
   decoded once into a shared 24 MB arena and copied to a display bitmap at
   most 1000 px wide (up to 16 images, 512 KB files / 8 MP decodes), so 4K
@@ -564,7 +575,7 @@ nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`, `spin`,
-`clock`, `colors`, `files`, `view`, `sensors`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
+`clock`, `colors`, `files`, `gallery`, `view`, `sensors`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
 `netreset`, `websrv`, `curl` and `hello` are files in `/ramfs/bin` (packed by the
 Makefile), found through the shell's PATH; the rest are kernel commands

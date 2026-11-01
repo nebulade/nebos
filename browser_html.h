@@ -6,11 +6,11 @@
 #ifndef BROWSER_HTML_H
 #define BROWSER_HTML_H
 
-#define BR_MAX_NODES     2560
-#define BR_TEXT_SIZE     32768
-#define BR_ATTR_SIZE     131072
+#define BR_MAX_NODES     6144
+#define BR_TEXT_SIZE     65536
+#define BR_ATTR_SIZE     524288
 #define BR_CSS_SIZE      12288
-#define BR_MAX_RULES     1792
+#define BR_MAX_RULES     2304
 #define BR_DECLS         16
 #define BR_TITLE_MAX     96
 
