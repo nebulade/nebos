@@ -198,7 +198,11 @@ int sys_net_reset(void)
 
 	if (!nd || !nd->reset)
 		return -1;
+	/* Own the receiver for the whole reset, so the netlog kworker cannot
+	 * submit frames while the MAC and rings are being reinitialised. */
+	netdev_acquire();
 	nd->reset();
+	netdev_release();
 	return 0;
 }
 

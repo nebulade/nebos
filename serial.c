@@ -5,8 +5,12 @@
 #include "sched.h"
 #include "timer.h"
 
+static int serial_dead;   /* COM1 stopped answering (no UART present) */
+
 void serial_init(unsigned int port)
 {
+	if (port == SERIAL_COM1)
+		serial_dead = 0;
 	port_outb(port + 1, 0x00);
 	port_outb(port + 3, 0x80);
 	port_outb(port + 0, 0x01); /* divisor low = 1  -> 115200 baud */
@@ -18,13 +22,30 @@ void serial_init(unsigned int port)
 
 void serial_putc(unsigned int port, char c)
 {
-	/* Mirror the debug console to the network (netlog; a no-op until the
-	 * mirror is enabled and the NIC is up). */
+	unsigned int n;
+
+	/* Mirror the debug console to the network first (netlog; a no-op until
+	 * the mirror is enabled and the NIC is up).  This must happen even when
+	 * COM1 itself is unusable -- boards without a serial port are exactly
+	 * the ones that use netlog. */
 	if (port == SERIAL_COM1)
 		netlog_char(c);
 
-	while (!(port_inb(port + 5) & 0x20))
-		;
+	/* A machine without a serial port can leave LSR.THRE clear forever
+	 * (the port is decoded but the UART is absent or clocked off).  Never
+	 * hang the boot on it: poll with a bound, then switch COM1 off. */
+	if (port == SERIAL_COM1 && serial_dead)
+		return;
+
+	for (n = 0; n < 100000u; n++) {
+		if (port_inb(port + 5) & 0x20)
+			break;
+	}
+	if (n == 100000u) {
+		if (port == SERIAL_COM1)
+			serial_dead = 1;
+		return;
+	}
 	port_outb(port, (unsigned char)c);
 }
 
@@ -71,7 +92,10 @@ int serial_has_data(unsigned int port)
 void serial_poll(void)
 {
 	unsigned char c;
-	while ((port_inb(SERIAL_COM1 + 5) & 0x01) != 0) {
+	unsigned int guard = 0;
+
+	/* Bounded drain: a floating LSR (0xFF) has DR set forever. */
+	while (((port_inb(SERIAL_COM1 + 5) & 0x01) != 0) && guard++ < 256) {
 		c = (unsigned char)port_inb(SERIAL_COM1);
 		serial_ring_push(c);
 	}

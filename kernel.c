@@ -1,6 +1,7 @@
 /* Kernel: entry point at 0x7E00, timer (PIT 1 kHz), process init, terminal. */
 
 #include "acpi.h"
+#include "bootcon.h"
 #include "cpu.h"
 #include "idle.h"
 #include "io.h"
@@ -15,6 +16,7 @@
 #include "paging.h"
 #include "process.h"
 #include "ramfs.h"
+#include "sched.h"
 #include "sys_gfx.h"
 #include "thermal.h"
 #include "timer.h"
@@ -264,17 +266,53 @@ static void kernel_idle_loop(void)
 	}
 }
 
-/* Boot-stage timing: written to COM1, which the netlog mirror forwards to
- * `make netmon` on boards without a serial port. */
+/* Boot-stage tracing: COM1 (netlog mirrors it) plus the direct-LFB boot
+ * console, so a machine without serial still shows where the boot stops. */
 static unsigned int boot_t0;
 
 static void boot_trace(const char *what)
 {
+	unsigned int ms = get_ticks_ms() - boot_t0;
+
+	bootcon_puts("[");
+	bootcon_puts(what);
+	bootcon_puts("] +");
+	bootcon_dec(ms);
+	bootcon_puts(" ms\n");
+
 	serial_puts(SERIAL_COM1, "[boot] ");
 	serial_puts(SERIAL_COM1, what);
 	serial_puts(SERIAL_COM1, " +");
-	serial_putdec(SERIAL_COM1, get_ticks_ms() - boot_t0);
+	serial_putdec(SERIAL_COM1, ms);
 	serial_puts(SERIAL_COM1, " ms\n");
+}
+
+static void boot_val(const char *name, unsigned int v)
+{
+	bootcon_puts(name);
+	bootcon_puts(": ");
+	bootcon_dec(v);
+	bootcon_puts("\n");
+
+	serial_puts(SERIAL_COM1, name);
+	serial_puts(SERIAL_COM1, ": ");
+	serial_putdec(SERIAL_COM1, v);
+	serial_puts(SERIAL_COM1, "\n");
+}
+
+/* Bounded PIT self-test.  If the 8259 does not deliver IRQ0, every later
+ * delay/timeout would spin on a frozen tick counter; say so and stop. */
+static int pit_ticking(void)
+{
+	unsigned int t0 = get_ticks_ms();
+	unsigned int n;
+
+	for (n = 0; n < 5000000u; n++) {
+		if (get_ticks_ms() != t0)
+			return 1;
+		__asm__ volatile ("pause");
+	}
+	return 0;
 }
 
 void kernel_main(void);
@@ -284,22 +322,34 @@ void kernel_main(void)
 	while (p < __bss_end)
 		*p++ = 0;
 
+	/* Earliest possible output: straight into the boot framebuffer, before
+	 * paging, drivers, the heap or the serial port.  Everything below logs
+	 * here as well as to COM1, so a machine without serial (the X201) can
+	 * show where the boot stops. */
+	bootcon_init();
+	bootcon_puts(OS_NAME " v" OS_VERSION "\n");
+
 	serial_init(SERIAL_COM1);
 	serial_ring_init();
 	/* Network console mirror from the very first line on; the ring holds the
 	 * early boot output until the WM loop starts flushing it. */
 	netlog_init();
 	serial_puts(SERIAL_COM1, "\n" OS_NAME " v" OS_VERSION " booted\n");
+	boot_trace("start");
 
 	/* GDT/TSS and the per-CPU GS base must exist before anything that can
 	 * use current_proc()/this_cpu().  The BSS is already cleared and the
 	 * GDT/TSS live at identity-mapped addresses. */
 	gdt_tss_init(0);
+	boot_trace("gdt");
 
 	mm_init();
 	mm_dump();
+	boot_trace("mm");
+	boot_val("mm free KB", mm_free_pages() * 4);
 	kmalloc_init();
 	paging_init();
+	boot_trace("paging");
 	/* paging_init only ORs in PSE; make sure the BSP's SSE state is on
 	 * before any drawing path can select an SSE2 helper. */
 	cpu_enable_sse();
@@ -307,22 +357,36 @@ void kernel_main(void)
 	 * leaves the machine at one CPU. */
 	acpi_init();
 	acpi_dump();
+	boot_trace("acpi");
+	boot_val("acpi cpus", acpi_cpu_count());
 	io_init();
+	boot_trace("io");
 	idle_init();
 	thermal_init();
+	boot_trace("idle");
 
 	/* process_init must run before timer_init: once the PIT is started (sti
 	 * in timer_init) the context-switch stub runs on every tick and reads
 	 * the current process, its CR3 and the TSS, so those must be valid. */
 	process_init();
+	boot_trace("process");
 	timer_init();
 	boot_t0 = get_ticks_ms();
 	boot_trace("timer");
+	if (!pit_ticking()) {
+		bootcon_puts("*** PIT NOT TICKING ***\n");
+		serial_puts(SERIAL_COM1, "*** PIT NOT TICKING ***\n");
+		for (;;)
+			__asm__ volatile ("cli; hlt");
+	}
+	boot_val("timer ticks", get_ticks_ms());
 	/* The PIT (and its sti) is live, so the AP bring-up can use it as a
 	 * timeout clock.  APs idle until smp_enable_sched() after boot. */
 	smp_init();
 	boot_trace("smp");
+	boot_val("smp cpus", cpu_count);
 	mouse_init();
+	boot_trace("ps2");
 	/* USB HID backend (mouse + keyboard): controller bring-up + first
 	 * scan; devices plugged in later are picked up by the hotplug
 	 * watcher in the WM loop. */
@@ -331,6 +395,7 @@ void kernel_main(void)
 	vga_shadow_init();
 	vga_fb_flush();
 	boot_trace("vga");
+	bootcon_fb_info();
 
 	/* The command pack: read-only, mounted at /ramfs (see ramfs.c).  This
 	 * happens before the block-device scan because the WM and terminal are
@@ -355,10 +420,15 @@ void kernel_main(void)
 		}
 	}
 	boot_trace("ramfs");
+	boot_val("ramfs files", ramfs_count());
 
 	/* Start the WM before touching disks: the first frame can be painted
 	 * while storage and the network are still being probed. */
 	wm_server_init();
+	boot_trace("wm init");
+	/* The WM's first frame covers this console; stop drawing before it can
+	 * run, or a later stage line would appear on top of the desktop. */
+	bootcon_set_enabled(0);
 	wm_server_start();
 	boot_trace("wm");
 

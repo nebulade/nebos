@@ -319,7 +319,7 @@ int dhcp_run(unsigned int timeout_ms)
 				      DHCP_CLIENT_PORT, DHCP_SERVER_PORT,
 				      msg, DHCP_MSG_LEN) != 0) {
 			netdev_release();
-			return -2;
+			return -3;      /* TX failed (NIC present) */
 		}
 		if (dhcp_wait(nd, xid, my_mac, wait_until, DHCP_OFFER,
 			      yiaddr, mask, gw, dns, &lease, server) == 0)
@@ -354,7 +354,7 @@ int dhcp_run(unsigned int timeout_ms)
 				      DHCP_CLIENT_PORT, DHCP_SERVER_PORT,
 				      msg, DHCP_MSG_LEN) != 0) {
 			netdev_release();
-			return -2;
+			return -3;      /* TX failed (NIC present) */
 		}
 		r = dhcp_wait(nd, xid, my_mac, wait_until, DHCP_ACK,
 			      yiaddr, mask, gw, dns, &lease, server);

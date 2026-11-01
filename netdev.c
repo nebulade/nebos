@@ -1,12 +1,14 @@
 /* NIC driver registry: see netdev.h. */
 
 #include "netdev.h"
+#include "e1000e.h"
 #include "ne2000.h"
 #include "process.h"
 #include "r8168.h"
 static const struct netdev *const netdev_drivers[] = {
-	/* PCIe Gigabit first: on the AT3IONT-I this is the real NIC, while
-	 * the NE2000 only exists under QEMU/ISA-era hardware. */
+	/* Intel PCIe/PCH first: the X201's 82577LM is an e1000e.  On the
+	 * AT3IONT-I this probe misses and r8168 drives the real NIC. */
+	&e1000e_netdev,
 	&r8168_netdev,
 	&ne2000_netdev,
 };

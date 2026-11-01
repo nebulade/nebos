@@ -24,7 +24,7 @@ EFI_LDFLAGS = -nostdlib -Wl,--subsystem,10 -Wl,-e,efi_main \
               -Wl,--image-base,0x0 -Wl,--dynamicbase \
               -Wl,--enable-reloc-section -Wl,--no-insert-timestamp
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev netmon monitor test-crypto test-images test-images-asan
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev netmon monitor test-crypto test-images test-images-asan
 
 all: floppy.img usb.img final.bin root.img
 
@@ -166,6 +166,9 @@ lsusb.o: lsusb.c io.h usb.h
 panic.o: panic.c panic.h bootinfo.h font_8x8.h process.h serial.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+bootcon.o: bootcon.c bootcon.h bootinfo.h font_8x8.h vga.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 lspci.o: lspci.c io.h pci.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
@@ -176,6 +179,9 @@ ne2000.o: ne2000.c ne2000.h pci.h timer.h io.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
 r8168.o: r8168.c r8168.h netdev.h io.h mm.h paging.h pci.h process.h serial.h timer.h
+	$(CC) $(CFLAGS) -Os -o $@ $<
+
+e1000e.o: e1000e.c e1000e.h io.h mm.h netdev.h paging.h pci.h process.h serial.h timer.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
 netkexec.o: netkexec.c netkexec.h io.h kexec.h net.h netdev.h timer.h
@@ -193,7 +199,7 @@ dns.o: dns.c dns.h io.h timer.h netdev.h net.h
 tcp.o: tcp.c tcp.h io.h timer.h netdev.h net.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-netdev.o: netdev.c netdev.h ne2000.h
+netdev.o: netdev.c netdev.h ne2000.h r8168.h e1000e.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 net.o: net.c net.h io.h netdev.h
@@ -313,7 +319,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h pr
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o cmds_pack.o ramfs.o share.o payload.o
+kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o cmds_pack.o ramfs.o share.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -340,11 +346,11 @@ kernel.bin: kernel.elf
 # parse 0x… literals (it silently treats them as 0) and the error is hidden by
 # the 2>/dev/null below.
 # 62 = kernel_sectors field (0x3E)
-# 87 = low byte of the "movw $1, %si" kernel start LBA (0x57)
+# 64 = kernel_lba field (0x40, word; LBA 64 fits in the low byte)
 # 26/28/32 = BPB: heads (0x1A, word), hidden sectors (0x1C, dword),
 #            total sectors 32-bit (0x20, dword)
 KERNEL_SECTORS_OFFSET = 62
-BOOT_SECTOR_START_OFFSET = 87
+BOOT_SECTOR_START_OFFSET = 64
 BPB_HEADS_OFFSET = 26
 BPB_HIDDEN_OFFSET = 28
 BPB_TOTAL_OFFSET = 32
@@ -738,6 +744,19 @@ run-net: floppy.img root.img
 	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
 	qemu-system-x86_64 -M pc -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
+# Intel e1000 variant: QEMU's 82540EM exercises the e1000e driver's MAC/DMA
+# path.  (The X201's 82577LM uses the same registers; only its PCH PHY is
+# different.)  usb-kbd is there for headless QMP `send-key` typing.
+run-e1000: floppy.img root.img
+	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -device usb-kbd \
+	  -device e1000,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 \
+	  -drive file=floppy.img,format=raw,if=floppy \
+	  -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -device pci-ohci -device usb-mouse -device usb-kbd \
+	  -device e1000,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 \
+	  -drive file=floppy.img,format=raw,if=floppy \
+	  -drive file=root.img,format=raw,if=floppy
+
 # SATA/AHCI variant: an ICH9 AHCI controller with a test disk on port 0.
 # The disk image lives outside the repo and is created on first use; boot
 # stays on the floppy (order=a), the SATA disk shows up as sata0.
@@ -852,4 +871,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h
