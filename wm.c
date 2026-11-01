@@ -71,6 +71,7 @@ static unsigned int wm_pid;
 static unsigned int wm_cr3;
 static int wm_attached;
 static int wm_frame_active;
+static int wm_kernel_fallback;
 static unsigned int wm_last_start;
 static unsigned int wm_last_seen;
 
@@ -605,6 +606,7 @@ int wm_server_attach(struct wm_screen_info *out)
 
 	wm_pid = current_proc()->pid;
 	wm_attached = 1;
+	wm_kernel_fallback = 0;
 	wm_frame_active = 0;
 	wm_last_seen = get_ticks_ms();
 	mouse_set_auto_draw(1);
@@ -919,6 +921,7 @@ static void wm_server_wm_died(void)
 	wm_attached = 0;
 	wm_pid = 0;
 	wm_cr3 = 0;
+	wm_kernel_fallback = 0;
 	for (i = 0; i < MAX_WINDOWS; i++) {
 		windows[i].mapped_kind = WM_KIND_NONE;
 		windows[i].mapped_gen = 0;
@@ -951,6 +954,7 @@ void wm_server_start(void)
 		vfs_release_file(m, &f);
 		if (pid > 0) {
 			process_set_weight((unsigned int)pid, 16);
+			wm_kernel_fallback = 0;
 			serial_puts(SERIAL_COM1, "wm: ring-3 WM started\n");
 			return;
 		}
@@ -967,6 +971,7 @@ void wm_server_start(void)
 	irq_restore(flags);
 	if (pid > 0) {
 		process_set_weight((unsigned int)pid, 16);
+		wm_kernel_fallback = 1;
 		serial_puts(SERIAL_COM1, "wm: kernel WM fallback\n");
 	}
 }
@@ -977,9 +982,13 @@ void wm_server_supervise(void)
 
 	/* Watchdog: a WM that never attaches, or stops polling for several
 	 * seconds, is treated like a crash so a wedged UI can recover. */
-	if (wm_expected_pid && process_is_alive(wm_expected_pid)) {
-		if ((wm_attached && now - wm_last_seen > 5000) ||
-		    (!wm_attached && now - wm_last_start > 3000)) {
+	if (wm_expected_pid && process_is_alive(wm_expected_pid) &&
+	    !wm_kernel_fallback &&
+	    !process_is_sleeping(wm_expected_pid)) {
+		/* A sleeping WM is usually blocked on the BKL or its normal
+		 * 10 ms poll sleep; do not treat a long disk scan as a hang. */
+		if ((wm_attached && now - wm_last_seen > 15000) ||
+		    (!wm_attached && now - wm_last_start > 10000)) {
 			serial_puts(SERIAL_COM1, "wm: watchdog, killing WM\n");
 			process_kill(wm_expected_pid);
 		}
@@ -1033,6 +1042,7 @@ void wm_server_init(void)
 	wm_cr3 = 0;
 	wm_attached = 0;
 	wm_frame_active = 0;
+	wm_kernel_fallback = 0;
 	if (have_terms)
 		wm_spawn_terminal();
 }

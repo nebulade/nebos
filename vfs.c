@@ -533,6 +533,10 @@ void vfs_mount_all(void)
 				mount_one(d, 0, d->name);
 		}
 	}
+
+	/* The ramfs is not a block device; keep it mounted across a refresh
+	 * (the `storage` command calls vfs_mount_all()). */
+	vfs_mount_ramfs();
 }
 
 vfs_mount_t *vfs_find(const char *name)
