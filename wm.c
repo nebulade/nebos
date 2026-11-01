@@ -1170,7 +1170,9 @@ static void wm_focus_index(unsigned int idx)
 static void wm_focus_top(void)
 {
 	unsigned int i;
-	for (i = 0; i < MAX_WINDOWS; i++)
+	/* With no explicit z-order the highest used slot is painted last, so
+	 * it is the topmost window left after a close. */
+	for (i = MAX_WINDOWS; i-- > 0; )
 		if (windows[i].used) {
 			wm_focus_index(i);
 			return;
@@ -1224,7 +1226,9 @@ static int wm_window_at(unsigned int px, unsigned int py)
 		    wm_point_in_rect(px, py, windows[i].x, windows[i].y,
 		    	windows[i].pw, windows[i].ph))
 			return (int)i;
-	for (i = 0; i < MAX_WINDOWS; i++)
+	/* Inactive windows are painted in slot order, so the highest slot is
+	 * the topmost one under the cursor. */
+	for (i = MAX_WINDOWS; i-- > 0; )
 		if (windows[i].used && !windows[i].focused &&
 		    wm_point_in_rect(px, py, windows[i].x, windows[i].y,
 		    	windows[i].pw, windows[i].ph))

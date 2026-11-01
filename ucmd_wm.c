@@ -221,7 +221,9 @@ static int window_at(unsigned int mx, unsigned int my)
 		    mx < (unsigned int)(wins[i].info.x + (int)wins[i].info.w) &&
 		    my < (unsigned int)(wins[i].info.y + (int)wins[i].info.h))
 			return (int)i;
-	for (i = 0; i < WM_MAX_WINDOWS; i++)
+	/* Inactive windows are painted in slot order, so the highest slot is
+	 * the topmost one under the cursor. */
+	for (i = WM_MAX_WINDOWS; i-- > 0; )
 		if (wins[i].info.used && !wins[i].info.focused &&
 		    mx >= (unsigned int)wins[i].info.x &&
 		    my >= (unsigned int)wins[i].info.y &&
