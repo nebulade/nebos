@@ -281,7 +281,7 @@ void _start(const char *arg)
 {
 	struct sys_meminfo m;
 	struct sys_procinfo p;
-	unsigned int i, t0, t1, frame_pos = 0, have_frame = 0;
+	unsigned int i, t0, t1;
 
 	(void)arg;
 
@@ -307,16 +307,7 @@ void _start(const char *arg)
 			wall = 1;
 		uptime_s = t1 / 1000;
 
-		if (!have_frame)
-			frame_pos = u_get_cursor();  /* the shell left us at a line start */
-		else
-			u_set_cursor(frame_pos);
+		u_puts("\x1b[2J\x1b[H");
 		frame();
-		if (!have_frame) {
-			/* If the first frame scrolled the screen, its content moved
-			 * up with it; the cursor tells us where it ended up. */
-			frame_pos = u_get_cursor() - FRAME_CHARS;
-			have_frame = 1;
-		}
 	}
 }

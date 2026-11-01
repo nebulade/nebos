@@ -20,6 +20,8 @@ static unsigned short cells[COLS * ROWS];
 static unsigned int cx, cy;
 static char line[LINE_MAX];
 static unsigned int line_len;
+static unsigned int line_row, line_col;
+static int hist_browse;
 static char cwd[VFS_PATH_MAX];
 static char path[VFS_PATH_MAX];
 static char hist[HIST_MAX][LINE_MAX];
@@ -206,6 +208,42 @@ static void render(void)
 	dirty = 0;
 }
 
+static void line_show(void)
+{
+	unsigned int i, x;
+
+	cy = line_row;
+	cx = line_col;
+	for (i = 0; i < line_len; i++)
+		term_putc(line[i]);
+	for (x = cx; x < COLS; x++)
+		cell_put(x, cy, ' ');
+	dirty = 1;
+}
+
+static void line_set(const char *s)
+{
+	unsigned int i = 0;
+
+	while (s[i] && i + 1 < LINE_MAX) {
+		line[i] = s[i];
+		i++;
+	}
+	line[i] = '\0';
+	line_len = i;
+	line_show();
+}
+
+static void history_load(int n)
+{
+	unsigned int idx;
+
+	if (n <= 0 || n > (int)hist_count)
+		return;
+	idx = (hist_next + HIST_MAX - (unsigned int)n) % HIST_MAX;
+	line_set(hist[idx]);
+}
+
 static void prompt(void)
 {
 	term_putc('[');
@@ -213,6 +251,9 @@ static void prompt(void)
 	term_puts("] > ");
 	line_len = 0;
 	line[0] = '\0';
+	line_row = cy;
+	line_col = cx;
+	hist_browse = 0;
 	dirty = 1;
 }
 
@@ -433,7 +474,63 @@ static void submit_line(void)
 		if (hist_count < HIST_MAX)
 			hist_count++;
 	}
+	hist_browse = 0;
 	run_line();
+}
+
+static void complete_line(void)
+{
+	static const char * const builtins[] = {
+		"cd", "path", "help", "clear", "ps", "kill"
+	};
+	struct sys_dirent de;
+	char match[16];
+	unsigned int matches = 0, i, n;
+	int r;
+
+	if (!line_len)
+		return;
+	for (i = 0; i < line_len; i++)
+		if (line[i] == ' ')
+			return;
+	match[0] = '\0';
+	for (i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+		const char *b = builtins[i];
+		for (n = 0; n < line_len && b[n] == line[n]; n++)
+			;
+		if (n == line_len && b[n]) {
+			matches++;
+			for (n = 0; b[n] && n + 1 < sizeof(match); n++)
+				match[n] = b[n];
+			match[n] = '\0';
+		}
+	}
+	for (i = 0;; i++) {
+		r = u_syscall3(SYS_LIST_DIR, (int)"/ramfs/bin", (int)i, (int)&de);
+		if (r != 1)
+			break;
+		for (n = 0; n < line_len && de.name[n] == line[n]; n++)
+			;
+		if (n == line_len && de.name[n]) {
+			matches++;
+			for (n = 0; de.name[n] && n + 1 < sizeof(match); n++)
+				match[n] = de.name[n];
+			match[n] = '\0';
+		}
+	}
+	if (matches != 1)
+		return;
+	for (n = line_len; match[n] && n + 1 < LINE_MAX; n++) {
+		line[n] = match[n];
+		term_putc(match[n]);
+	}
+	line_len = n;
+	line[line_len] = '\0';
+	if (line_len + 1 < LINE_MAX) {
+		line[line_len++] = ' ';
+		line[line_len] = '\0';
+		term_putc(' ');
+	}
 }
 
 static void handle_key(int k)
@@ -460,13 +557,35 @@ static void handle_key(int k)
 		if (line_len) {
 			line_len--;
 			line[line_len] = '\0';
-			term_putc('\b');
+			line_show();
 		}
+		return;
+	}
+	if (k == IO_KEY_UP) {
+		if ((int)hist_browse < (int)hist_count) {
+			hist_browse++;
+			history_load(hist_browse);
+		}
+		return;
+	}
+	if (k == IO_KEY_DOWN) {
+		if (hist_browse > 0) {
+			hist_browse--;
+			if (hist_browse == 0)
+				line_set("");
+			else
+				history_load(hist_browse);
+		}
+		return;
+	}
+	if (k == '\t') {
+		complete_line();
 		return;
 	}
 	if (k < 0x20 || k > 0x7E)
 		return;
 	if (line_len + 1 < LINE_MAX) {
+		hist_browse = 0;
 		line[line_len++] = (char)k;
 		line[line_len] = '\0';
 		term_putc((char)k);
