@@ -66,8 +66,10 @@ static void print_features_leaf1(unsigned int ecx1, unsigned int edx1)
 	if (edx1 & (1u << 25)) print_flag("SSE", &any);
 	if (edx1 & (1u << 26)) print_flag("SSE2", &any);
 	if (edx1 & (1u << 28)) print_flag("HTT", &any);
+	if (edx1 & (1u << 29)) print_flag("TM", &any);
 	if (ecx1 & (1u << 0))  print_flag("SSE3", &any);
 	if (ecx1 & (1u << 1))  print_flag("PCLMULQDQ", &any);
+	if (ecx1 & (1u << 7))  print_flag("EST", &any);
 	if (ecx1 & (1u << 9))  print_flag("SSSE3", &any);
 	if (ecx1 & (1u << 12)) print_flag("FMA", &any);
 	if (ecx1 & (1u << 13)) print_flag("CX16", &any);
@@ -287,6 +289,23 @@ void _start(void)
 	u_puts(" threads/core\n");
 
 	print_cpuid_frequency(max_leaf);
+
+	{
+		struct sys_cputemp ct;
+
+		if (u_cpu_temp(&ct) == 0 && ct.temp_c >= 0) {
+			u_puts("temp ");
+			put_uint((unsigned int)ct.temp_c);
+			u_puts(" C (tjmax ");
+			put_uint((unsigned int)ct.tjmax_c);
+			u_puts(" C)\n");
+		} else {
+			u_puts("temp unavailable (no Intel DTS)\n");
+		}
+	}
+	u_puts("eist ");
+	u_puts((ecx1 & (1u << 7)) ? "yes" : "no");
+	u_puts("\n");
 
 	start_ms = u_ticks_ms();
 	t0 = read_tsc_low();

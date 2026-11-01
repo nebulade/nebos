@@ -18,12 +18,13 @@ struct vfs_file {
 	unsigned int size;
 };
 
-/* One directory entry: `name` is the raw 8.3 field for FAT (space padded) or
- * the plain file name for ramfs. */
+/* One directory entry.  `name` is the raw 8.3 field for FAT (space padded,
+ * `raw_83` set) or the plain file name for the name-string filesystems. */
 struct vfs_dirent {
-	char name[12];
+	char name[64];
 	unsigned int size;
 	unsigned int is_dir;
+	unsigned int raw_83;
 };
 
 /* Per-filesystem error codes (0 = success; the read/list calls additionally
@@ -32,6 +33,7 @@ struct vfs_dirent {
 #define VFS_ENOENT (-2)
 #define VFS_EINVAL (-3)
 #define VFS_EROFS  (-4)
+#define VFS_ENOSPC (-5)
 
 /* Per-filesystem operations.  Paths are relative to the mount (no leading
  * '/'); "" is the mount root.  Implementations never print; list_dir returns
@@ -77,6 +79,9 @@ void vfs_remount_device(blk_dev_t *d);
 
 /* Mount the command pack (ramfs) at /ramfs; no-op when no pack is loaded. */
 void vfs_mount_ramfs(void);
+
+/* Mount the writable in-memory /share store (no-op if it cannot be set up). */
+void vfs_mount_share(void);
 
 /* Update the ramfs mount's reported size after ramfs_replace(). */
 void vfs_refresh_ramfs(void);

@@ -5,9 +5,12 @@
 #include "syscall.h"
 #include "ahci.h"
 #include "blkdev.h"
+#include "it87.h"
 #include "mm.h"
 #include "mouse.h"
+#include "sched.h"
 #include "sys_fs.h"
+#include "thermal.h"
 #include "usb.h"
 #include "usbhid.h"
 #include "vfs.h"
@@ -102,4 +105,44 @@ int sys_blkdev(unsigned int index, struct sys_blkdev *out)
 	out->present = d->present ? 1 : 0;
 	out->total_sectors = d->total_sectors;
 	return 1;
+}
+
+int sys_cputemp(struct sys_cputemp *out)
+{
+	unsigned int i;
+
+	_Static_assert(MAX_CPUS <= SYS_CPU_MAX,
+		       "sys_cputemp.cpu_temp_c is too small");
+	if (!out)
+		return -1;
+	out->temp_c = thermal_max_c();
+	out->tjmax_c = thermal_tjmax();
+	out->delta_c = -1;
+	out->status = 0;
+	if (thermal_status_this_cpu(&out->status) == 0)
+		out->delta_c = (int)((out->status >> 16) & 0x7F);
+	out->ncpus = cpu_count;
+	for (i = 0; i < SYS_CPU_MAX; i++)
+		out->cpu_temp_c[i] = cpus[i].temp_c;
+	return 0;
+}
+
+int sys_sensors(struct sys_sensors *out)
+{
+	struct it87_info info;
+	unsigned int i;
+
+	if (!out)
+		return -1;
+	it87_read(&info);
+	out->present = info.present ? 1u : 0u;
+	out->chip_id = info.chip_id;
+	out->base = info.base;
+	out->temp_enable = info.temp_enable;
+	out->temp_extra = info.temp_extra;
+	for (i = 0; i < 3; i++) {
+		out->temp_c[i] = info.temp_c[i];
+		out->fan_rpm[i] = info.fan_rpm[i];
+	}
+	return 0;
 }

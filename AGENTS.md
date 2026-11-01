@@ -36,7 +36,7 @@ make clean
    `0x600`, enables A20, enters protected mode, jumps to `kernel_entry`
    (`entry.S`, re-points ESP to the current stack top, then `kernel_main`).
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → memory/paging →
-   ACPI/MADT → I/O → idle → processes → timer (PIT 1 kHz + IDT) → SMP AP
+   ACPI/MADT → I/O → idle → processes → timer (PIT; 1 kHz busy, 100 Hz idle + IDT) → SMP AP
    bring-up → mouse → VGA shadow buffer → terminal.
 4. `mbr.S` — MBR (USB/HDD boot); loads partition boot sector at LBA 1.
 
@@ -95,7 +95,7 @@ below the run area), so adding code no longer moves any address.
   to the BSP; user processes may run on any CPU.  The idle fallback uses
   `bkl_trylock()` (never blocks); the kworker and kernel commands take the BKL
   normally and release it around their sleeps.
-  APs use their LAPIC timer (vector 0x30); the BSP keeps the 8259 PIC/PIT and
+  APs use their LAPIC timer (vector 0x30; 1 ms busy, 10 ms idle); the BSP keeps the 8259 PIC/PIT and
   is the only global-tick source.  APs do not start taking user work until
   `smp_enable_sched()`, i.e. after device/FS setup.  LAPIC IPIs (vector 0x31)
   request a reschedule; they must be EOIed on the target LAPIC.
@@ -126,9 +126,9 @@ below the run area), so adding code no longer moves any address.
   trampoline (`kexec_tramp.S`) clears CR0.PG before the copy so it can overwrite
   the old kernel's page tables safely.
 - **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
-  terminal windows (64×32) with a system bar (banner + purple "+ New", "+ Clock",
-  "+ Colors" and "Files" buttons + clock + rainbow). Click-to-focus,
-  drag-by-title-bar, close (×). The "+ New"
+  terminal windows (64×32) with a system bar (banner + purple "New", "Clock",
+  "Colors" and "Files" buttons + clock + CPU temperature + rainbow). Click-to-focus,
+  drag-by-title-bar, close (×). The "New"
   button and first boot spawn terminals; there is no `term` command.  Content is
   repainted per damage rect (`wm_redraw_rect`: desktop fill + every intersecting
   window back-to-front, clipped by `wm_draw_window_clip`), not by full redraws —
@@ -218,7 +218,11 @@ below the run area), so adding code no longer moves any address.
 - **Filesystem**: `fat.c` (FAT12/16/32 read/write, device-parameterized),
   `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
   `blkdev.c` (floppy + IDE + SATA registry), `ata.c` (ATA PIO, either the
-  legacy ports or the PCI IDE interface's native BARs — `ata_init_ports()`),
+  legacy ports or the PCI IDE interface's native BARs — `ata_init_ports()`;
+  multi-sector PIO waits for DRQ before every sector, since drives drop it
+  between sectors, polls the command-block status rather than the alt-status
+  BAR, and falls back to single-sector commands when a bridge leaves DRQ
+  pending after a multi-sector transfer),
   `disk.c` (FDC + ISA DMA ch2, retries).  `vfs.c` exposes an `fs_ops` vtable
   (FAT and the ramfs implement it) so the file service and the shell never
   touch `fat_*` directly; `vfs_resolve()` normalizes the path relative to the
@@ -231,6 +235,16 @@ below the run area), so adding code no longer moves any address.
   during it): the FAT driver has static state and the floppy still needs its
   IRQ.  So expect a brief system stall (not ticks — the PIT keeps running)
   while a command reads or writes a disk.
+- **`/share`**: `share.c/h` — writable, page-backed in-memory filesystem for
+  network uploads (the netbooted board may have no writable disk).  Entries
+  are full relative paths (like the pack ramfs) plus explicit directory
+  entries, so empty directories work; names are plain strings (up to 63
+  bytes), file data comes from `mm_alloc_pages()` and is freed on
+  replace/delete.  Limits: 64 entries and 16 MB, volatile across reboot/kexec.
+  Mounted at `/share` by `vfs_mount_all()`, so it appears in `ls /` and the
+  `files` GUI.  `SYS_FS_STAT` exposes size/dir/read-only, and `sys_dirent`
+  carries a display name (64 bytes) plus `raw_83` so FAT's space-padded
+  fields and the name-string filesystems share one ABI.
 - **SATA/AHCI**: `ahci.c/h` — polled AHCI driver (first controller only, PCI
   class `01:06:01`, no IRQs, no NCQ): port bring-up with COMRESET, IDENTIFY
   (shared `ata_identify_parse()` with `ata.c`) and READ/WRITE DMA EXT through
@@ -301,7 +315,29 @@ below the run area), so adding code no longer moves any address.
   and can be plugged in at any time (root-port connect-change watcher);
   `lsusb` re-enumerates the bus, after which `usbhid` re-inits itself via a
   scan generation counter.
-- **Power/idle**: `idle.c` — `mwait` C-states, `hlt` fallback.
+- **Power/idle**: `idle.c` — HLT/C1 by default, `idle c2`/`idle c3`
+  (and the `c2ap`/`c3ap` AP-only variants) switch to MONITOR/MWAIT at runtime
+  (the old USB-legacy SMM hang is addressed by the UHCI/OHCI `0xC0`
+  legacy-SMI disable; test the keyboard before making it the default).  The
+  BSP PIT and each AP's LAPIC timer run at 1 kHz while a process runs and drop
+  to 100 Hz/10 ms while the CPU is idle (`timer_set_hz`,
+  `lapic_timer_set_ms`); the PIT stub advances the global millisecond clock by
+  `timer_tick_advance()`, and `smp_resched_wake()` shortens the idle period
+  when new work arrives.
+- **CPU temperature**: `thermal.c/h` — Intel DTS through `IA32_THERM_STATUS`
+  (MSR `0x19C`).  Each CPU samples itself once a second from its scheduler
+  tick (`struct cpu.temp_c`), and `SYS_CPU_TEMP` (`sys_info.c`) exposes the
+  hottest core plus TjMax to ring 3.  TjMax is table-driven (Atom 330 =
+  125 °C, 230 = 100, other Bonnell = 90, otherwise 100) because Bonnell has
+  no `IA32_TEMPERATURE_TARGET`.  The 330's 125 °C is Linux coretemp's
+  empirical value; Intel only specifies TJ = 90 °C and Tcase-max = 85.2 °C,
+  so `sensors` prints the raw delta and the 90/100/125 °C scales as well as
+  the top bar's `CPU 43C` before the clock and `cpuinfo`'s value plus EIST
+  state.  Platforms without DTS (QEMU, Pentium) hide it.
+- **Board sensors**: `it87.c/h` — read-only probe of the IT87xx Super I/O
+  (the AT3IONT-I exposes three temperatures and three fan tachometers), used
+  by `SYS_SENSORS` and the ring-3 `sensors` command to cross-check the DTS
+  and show whether the fans turn.  Nothing is written to the fan control.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
   `0x80000`, API function-pointer struct at `0x7FF00`.  `prog`/`space` are
   **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`, like
@@ -371,13 +407,28 @@ below the run area), so adding code no longer moves any address.
   counter would never satisfy them.  The netdev ownership already serializes
   net users, so being preempted mid-wait is safe.
 
+  The server side is the WebDAV command: `tcp.c` has a small listener (one
+  active connection + a SYN backlog, SYN-ACK/RST, and a fast FIN that keeps
+  the tuple briefly so a late FIN/ACK is absorbed).  `SYS_TCP_LISTEN/ACCEPT/
+  SRV_RECV/SRV_SEND/SRV_CLOSE` are called by `/ramfs/bin/websrv`, which serves
+  HTTP/1.1 + WebDAV from the VFS (`/` lists mounts, `/ramfs` is read-only,
+  FAT mounts accept only names that round-trip to 8.3, `/share` is the
+  writable target).  While listening, `SYS_TCP_ACCEPT` also answers ARP/ICMP
+  and captures a KXNU/KXNP header through `netkexec_capture_frame()`, so
+  `make net-dev`/`make net-cmds` interrupts the server cleanly instead of
+  waiting for header retries.  The body is buffered whole (4 MB, or 1 MB when
+  the heap alloc fails) from the per-process arena; the TCP receive path sends
+  a window update whenever the application drains the queue (otherwise a full
+  receive queue deadlocks until the peer's zero-window probe).  No auth: it is
+  a trusted-LAN service, and `/share` is writable by anyone who can reach it.
+
 ## Shell commands
 
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
-`display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device>`,
-`ps`, `renice <pid> <weight>`, `kill <pid>`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, and `view <file>` (image viewer; PNG, baseline JPEG, GIF first frame, BMP, TGA, PNM).
+`display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [hlt|c2|c3|c2ap|c3ap]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, and `view <file>` (image viewer; PNG, baseline JPEG, GIF first frame, BMP, TGA, PNM).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `pong` (responds to ARP/ICMP for our IP for 30 s),
@@ -407,9 +458,9 @@ nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`, `spin`,
-`clock`, `colors`, `files`, `view`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
+`clock`, `colors`, `files`, `view`, `sensors`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
-`netreset`, `curl` and `hello` are files in `/ramfs/bin` (packed by the
+`netreset`, `websrv`, `curl` and `hello` are files in `/ramfs/bin` (packed by the
 Makefile), found through the shell's PATH; the rest are kernel commands
 spawned as processes, or builtins (`cd`, `path`, `help`, `clear`).
 
@@ -789,7 +840,6 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     rely on not-present TLB entries not being cached; there is no cross-CPU
     TLB shootdown.  No process shares an address space with another, so normal
     process teardown is unaffected.
-
 15. Image library limits: progressive/arithmetic JPEG and CMYK are rejected;
     GIF shows only the first frame; EXIF orientation and ICC/gamma are ignored;
     the whole file is read into memory (4 MB cap in the viewer); decoding uses
@@ -801,3 +851,19 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     rescaling on every repaint.
 17. `files` recognises images by file extension only; a magic-based fallback
     would also open extensionless files in the viewer.
+
+18. WebDAV limits: one request at a time (a 2-deep SYN backlog only holds
+    handshakes), files are buffered whole (4 MB cap; a larger PUT gets 413),
+    directory `MOVE` is 501, `PROPPATCH` is answered 200 without persisting,
+    and there is no authentication.  TCP is stop-and-wait, so throughput is
+    roughly 0.5-4 MB/s depending on the link.
+19. FAT mounts are writable over WebDAV only for names that
+    `fat_name_to_8_3()` can represent exactly; anything longer is refused
+    with 409 instead of silently truncating (two long names could otherwise
+    collide and overwrite each other).  Use `/share` for long names.
+20. The WebDAV server and the packet-level net commands are mutually
+    exclusive: both need the single NIC receiver (`netdev_acquire`).  Starting
+    `websrv` while `ping`/`curl`/`netrecv` owns the NIC fails; kill the other
+    command first.
+21. `/share` is RAM only: a reboot/kexec starts empty, and the 16 MB cap is
+    charged against the 128 MB identity-mapped window.

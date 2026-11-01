@@ -16,6 +16,7 @@
 #include "process.h"
 #include "ramfs.h"
 #include "sys_gfx.h"
+#include "thermal.h"
 #include "timer.h"
 #include "tss.h"
 #include "usbhid.h"
@@ -32,6 +33,8 @@ static inline void outb(unsigned short port, unsigned char v)
 }
 
 volatile unsigned int ticks;
+static unsigned int timer_hz;
+static unsigned int tick_ms = 1;
 
 struct idt_entry {
 	unsigned short offset_lo;
@@ -63,6 +66,36 @@ extern unsigned int exc_stub_table[];
 unsigned int get_ticks_ms(void)
 {
 	return ticks;
+}
+
+unsigned int timer_tick_ms(void)
+{
+	return tick_ms;
+}
+
+void timer_tick_advance(void)
+{
+	ticks += tick_ms;
+}
+
+void timer_set_hz(unsigned int hz)
+{
+	unsigned int flags, divisor;
+
+	if (hz < 100 || hz > 1000)
+		hz = 1000;
+	if (hz == timer_hz)
+		return;
+	__asm__ volatile ("pushfl; popl %0" : "=r"(flags));
+	__asm__ volatile ("cli" ::: "memory");
+	timer_hz = hz;
+	tick_ms = 1000 / hz;
+	divisor = 1193182u / hz;
+	outb(0x43, 0x36);
+	outb(0x40, (unsigned char)(divisor & 0xFF));
+	outb(0x40, (unsigned char)((divisor >> 8) & 0xFF));
+	if (flags & (1u << 9))
+		__asm__ volatile ("sti" ::: "memory");
 }
 
 void exc_handler(struct exc_state *st);
@@ -169,9 +202,9 @@ static void timer_init(void)
 	idtr.base  = (unsigned int)idt;
 	__asm__ volatile ("lidt %0" : : "m"(idtr));
 
-	outb(0x43, 0x36);
-	outb(0x40, (unsigned char)(1193 & 0xFF));
-	outb(0x40, (unsigned char)((1193 >> 8) & 0xFF));
+	/* Start the PIT at 1 kHz; schedule() drops it to 100 Hz while the BSP
+	 * is idle (see timer_set_hz). */
+	timer_set_hz(1000);
 
 	__asm__ volatile ("sti");
 }
@@ -263,6 +296,7 @@ void kernel_main(void)
 	acpi_dump();
 	io_init();
 	idle_init();
+	thermal_init();
 
 	/* process_init must run before timer_init: once the PIT is started (sti
 	 * in timer_init) the context-switch stub runs on every tick and reads

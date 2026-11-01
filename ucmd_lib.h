@@ -387,6 +387,16 @@ static inline int u_schedinfo(struct sys_schedinfo *out)
 	return u_syscall1(SYS_SCHEDINFO, (int)out);
 }
 
+static inline int u_cpu_temp(struct sys_cputemp *out)
+{
+	return u_syscall1(SYS_CPU_TEMP, (int)out);
+}
+
+static inline int u_sensors(struct sys_sensors *out)
+{
+	return u_syscall1(SYS_SENSORS, (int)out);
+}
+
 /* Per-process anonymous heap: one growable arena, freed at exit. */
 static inline void *u_mem_alloc(unsigned int bytes)
 {
@@ -403,6 +413,64 @@ static inline int u_mem_grow(unsigned int bytes)
 static inline int u_mem_free(void)
 {
 	return u_syscall0(SYS_MEM_FREE);
+}
+
+/* Path metadata (size, directory flag, read-only mount). */
+static inline int u_stat(const char *path, struct sys_stat *out)
+{
+	return u_syscall2(SYS_FS_STAT, (int)path, (int)out);
+}
+
+/* TCP server (the caller owns the NIC). */
+static inline int u_tcp_listen(unsigned int port)
+{
+	return u_syscall1(SYS_TCP_LISTEN, (int)port);
+}
+
+static inline int u_tcp_accept(void)
+{
+	return u_syscall0(SYS_TCP_ACCEPT);
+}
+
+static inline int u_tcp_srv_recv(void *buf, unsigned int max,
+				 unsigned int timeout_ms)
+{
+	return u_syscall3(SYS_TCP_SRV_RECV, (int)buf, (int)max,
+			  (int)timeout_ms);
+}
+
+static inline int u_tcp_srv_send(const void *buf, unsigned int len)
+{
+	return u_syscall2(SYS_TCP_SRV_SEND, (int)buf, (int)len);
+}
+
+static inline void u_tcp_srv_close(void)
+{
+	u_syscall0(SYS_TCP_SRV_CLOSE);
+}
+
+static inline int u_tcp_peer(unsigned char ip[4], unsigned int *port)
+{
+	return u_syscall2(SYS_TCP_PEER, (int)ip, (int)port);
+}
+
+/* Raw FAT 8.3 field -> display name ("FOO     TXT" -> "FOO.TXT"). */
+static inline void u_fat_name(const char *raw, char *out, unsigned int cap)
+{
+	unsigned int n = 0, i, ext = 8;
+
+	while (ext < 11 && raw[ext] == ' ')
+		ext++;
+	for (i = 0; i < 8 && raw[i] && raw[i] != ' ' && n + 1 < cap; i++)
+		out[n++] = raw[i];
+	if (ext < 11 && raw[ext]) {
+		if (n + 1 < cap)
+			out[n++] = '.';
+		for (i = ext; i < 11 && raw[i] && raw[i] != ' ' &&
+		     n + 1 < cap; i++)
+			out[n++] = raw[i];
+	}
+	out[n] = '\0';
 }
 
 #endif

@@ -6,6 +6,7 @@
 #include "fatdetect.h"
 #include "io.h"
 #include "ramfs.h"
+#include "share.h"
 
 vfs_mount_t vfs_mounts[VFS_MAX_MOUNTS];
 unsigned int vfs_mount_count;
@@ -239,6 +240,7 @@ static void fat_list_cb(const char *name, int is_dir, unsigned int size)
 	fat_list_out->name[11] = '\0';
 	fat_list_out->size = size;
 	fat_list_out->is_dir = (unsigned int)is_dir;
+	fat_list_out->raw_83 = 1;
 	fat_list_done = 1;
 	fat_list_seen++;
 }
@@ -401,6 +403,7 @@ static int ramfs_op_list_dir(struct vfs_mount *m, const char *path,
 	copy_bounded(out->name, e.name, sizeof(out->name));
 	out->size = e.size;
 	out->is_dir = e.is_dir;
+	out->raw_83 = 0;
 	return 1;
 }
 
@@ -478,6 +481,25 @@ void vfs_refresh_ramfs(void)
 
 	if (m)
 		m->total_sectors = (ramfs_pack_size() + 511u) / 512u;
+}
+
+/* Writable RAM store for network uploads.  Unlike the pack ramfs it is not a
+ * block device and its contents survive vfs_mount_all() refreshes. */
+void vfs_mount_share(void)
+{
+	vfs_mount_t *m;
+
+	if (share_init() != 0)
+		return;
+	m = mount_slot("share");
+	if (!m)
+		return;
+	m->ops = &share_ops;
+	m->ro = 0;
+	m->total_sectors = SHARE_MAX_BYTES / 512u;
+	copy_bounded(m->type, "share", sizeof(m->type));
+	m->label[0] = '\0';
+	vfs_mount_count++;
 }
 
 static void part_name(char *out, const char *base, unsigned int idx)
@@ -561,8 +583,10 @@ void vfs_mount_all(void)
 		mount_device(&blk_devs[i], buf);
 
 	/* The ramfs is not a block device; keep it mounted across a refresh
-	 * (the `storage` command calls vfs_mount_all()). */
+	 * (the `storage` command calls vfs_mount_all()).  /share is likewise
+	 * independent of the block devices. */
 	vfs_mount_ramfs();
+	vfs_mount_share();
 }
 
 static int device_is_mounted(const char *dev)

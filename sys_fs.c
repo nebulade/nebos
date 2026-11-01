@@ -45,6 +45,7 @@ static int sys_err(int vfs_err)
 	case VFS_EIO:    return SYS_EIO;
 	case VFS_ENOENT: return SYS_ENOENT;
 	case VFS_EROFS:  return SYS_EROFS;
+	case VFS_ENOSPC: return SYS_ENOSPC;
 	default:         return SYS_EINVAL;
 	}
 }
@@ -177,6 +178,7 @@ int sys_list_dir(const char *path, unsigned int index, struct sys_dirent *out)
 			out->name[i] = '\0';
 			out->size = d.size;
 			out->is_dir = d.is_dir;
+			out->raw_83 = d.raw_83;
 			r = 1;
 		} else if (r < 0) {
 			r = sys_err(r);
@@ -207,5 +209,38 @@ int sys_list_mounts(unsigned int index, struct sys_mount *out)
 	copy_bounded(out->type, vfs_mounts[index].type, sizeof(out->type));
 	out->total_sectors = vfs_mounts[index].total_sectors;
 	copy_bounded(out->label, vfs_mounts[index].label, sizeof(out->label));
+	out->ro = (unsigned int)vfs_mounts[index].ro;
 	return 1;
+}
+
+/* Stat a path.  Unlike read_file this never touches the disk beyond the FAT
+ * directory walk, so the WebDAV server can probe a collection cheaply. */
+int sys_stat_path(const char *path, struct sys_stat *out)
+{
+	struct vfs_mount *m;
+	char rel[VFS_PATH_MAX];
+	unsigned int size = 0, ro = 0;
+	int is_dir = 0, r;
+
+	if (!out)
+		return SYS_EINVAL;
+	size = 0;
+	is_dir = 0;
+	ro = 0;
+	sys_fs_enter();
+	r = fs_resolve(path, &m, rel, sizeof(rel));
+	if (r == 0) {
+		r = m->ops->stat(m, rel, &size, &is_dir);
+		if (r < 0) {
+			r = sys_err(r);
+		} else {
+			ro = (unsigned int)m->ro;
+			out->size = size;
+			out->is_dir = (unsigned int)is_dir;
+			out->ro = ro;
+			r = 0;
+		}
+	}
+	sys_fs_exit();
+	return r;
 }

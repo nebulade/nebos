@@ -38,4 +38,23 @@ int tcp_recv(struct tcp_conn *c, unsigned char *out, unsigned int maxlen,
 /* Send FIN and drain the close handshake briefly (best effort). */
 void tcp_close(struct tcp_conn *c);
 
+/* ---- Server side (WebDAV listener) ----
+ *
+ * One listening port, one active connection and a small SYN backlog.  The
+ * caller owns the NIC.  Incoming frames are fed to tcp_srv_input() (which
+ * also answers SYNs and RSTs unknown ports); tcp_srv_accept() promotes a
+ * backlog connection for send/recv with the normal tcp_send()/tcp_recv(). */
+void tcp_srv_init(unsigned int port);
+void tcp_srv_reset(void);
+/* Handle one frame.  Returns 1 when it was a TCP frame for us (consumed),
+ * 0 when it is not TCP / not addressed to us (the caller may answer ARP). */
+int  tcp_srv_input(const unsigned char *frame, unsigned int len);
+/* Promote the oldest pending connection (NULL when none is ready). */
+struct tcp_conn *tcp_srv_accept(void);
+/* Send len bytes, split to the peer's MSS.  0 / -1 / -2 / -3. */
+int  tcp_srv_send(struct tcp_conn *c, const void *data, unsigned int len);
+/* FIN once, then remember the tuple briefly so a late FIN/ACK is absorbed
+ * instead of answered with RST. */
+void tcp_srv_close(struct tcp_conn *c);
+
 #endif

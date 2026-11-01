@@ -16,5 +16,6 @@ int sys_mkdir(const char *path);
 int sys_rmdir(const char *path);
 int sys_list_dir(const char *path, unsigned int index, struct sys_dirent *out);
 int sys_list_mounts(unsigned int index, struct sys_mount *out);
+int sys_stat_path(const char *path, struct sys_stat *out);
 
 #endif

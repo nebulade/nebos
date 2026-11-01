@@ -38,15 +38,24 @@ static void print_entry(const struct sys_dirent *d)
 	unsigned int i, n;
 	char buf[BUF_SIZE];
 
-	for (i = 0; i < 11 && d->name[i]; i++)
-		u_putc(d->name[i] == ' ' ? ' ' : d->name[i]);
-	if (i < 11)
+	if (!d->raw_83) {
+		u_puts(d->name);
+		if (d->is_dir) {
+			u_puts("  <DIR>\n");
+			return;
+		}
 		u_putc(' ');
-	if (d->is_dir) {
-		u_puts("  <DIR>\n");
-		return;
+	} else {
+		for (i = 0; i < 11 && d->name[i]; i++)
+			u_putc(d->name[i] == ' ' ? ' ' : d->name[i]);
+		if (i < 11)
+			u_putc(' ');
+		if (d->is_dir) {
+			u_puts("  <DIR>\n");
+			return;
+		}
+		u_puts(" ");
 	}
-	u_puts(" ");
 	n = d->size;
 	if (n == 0) {
 		u_putc('0');

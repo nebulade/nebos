@@ -141,12 +141,12 @@ static int parse_udp(const unsigned char *f, unsigned int len,
 int netkexec_pending(void)
 {
 	const struct netdev *nd;
-	const unsigned char *payload;
-	unsigned int plen, port;
 	int len;
 
 	if (kexec_busy || netdev_in_use())
 		return 0;
+	if (have_header)
+		return 1;
 	nd = netdev_active();
 	if (!nd)
 		return 0;
@@ -157,39 +157,54 @@ int netkexec_pending(void)
 	if (len < 0)
 		return 0;
 
-	if (!parse_udp(rxbuf, (unsigned int)len, &payload, &plen,
-		       peer_mac, peer_ip, &port)) {
-		/* Not a kexec datagram: stay reachable by answering ARP and ICMP
-		 * echo requests for our IP (so the board can be pinged, and a
-		 * host can resolve its MAC, without running a command).  Until
-		 * an address is configured there is nothing to answer for. */
-		int rlen;
+	if (netkexec_capture_frame(rxbuf, (unsigned int)len))
+		return 1;
 
-		if (!net_is_configured())
-			return 0;
-		rlen = net_build_reply(rxbuf, (unsigned int)len,
-				       replybuf, sizeof(replybuf));
+	/* Not a kexec datagram: stay reachable by answering ARP and ICMP echo
+	 * requests for our IP (so the board can be pinged, and a host can
+	 * resolve its MAC, without running a command).  Until an address is
+	 * configured there is nothing to answer for. */
+	if (net_is_configured()) {
+		int rlen = net_build_reply(rxbuf, (unsigned int)len,
+					   replybuf, sizeof(replybuf));
 		if (rlen > 0)
 			nd->tx(replybuf, (unsigned int)rlen);
-		return 0;
 	}
+	return 0;
+}
+
+/* Validate one received frame as a KXNU/KXNP header and stash the transfer.
+ * Returns 1 when it was captured.  The WebDAV server calls this while it
+ * owns the receiver, so `make net-dev` hands the NIC back without waiting
+ * for the host's header retransmits. */
+int netkexec_capture_frame(const unsigned char *frame, unsigned int len)
+{
+	const unsigned char *payload;
+	unsigned int plen, port, magic, i;
+	unsigned char p_mac[6], p_ip[4];
+
+	if (have_header)
+		return 0;
+	if (!parse_udp(frame, len, &payload, &plen, p_mac, p_ip, &port))
+		return 0;
 	if (plen < 16)
 		return 0;
-	{
-		/* KXNU: kernel image (jump after the checksum); KXNP: a command
-		 * pack for /ramfs (swap it in and stay running). */
-		unsigned int magic = rd32(payload);
 
-		if (magic != X_MAGIC_HDR && magic != X_MAGIC_PAY)
-			return 0;
-		payload_mode = (magic == X_MAGIC_PAY);
-	}
+	magic = rd32(payload);
+	if (magic != X_MAGIC_HDR && magic != X_MAGIC_PAY)
+		return 0;
+
 	x_entry = rd32(payload + 4);
 	x_size = rd32(payload + 8);
 	x_csum = rd32(payload + 12);
 	if (x_size == 0 || x_size > KEXEC_MAX)
 		return 0;
 
+	payload_mode = (magic == X_MAGIC_PAY);
+	for (i = 0; i < 6; i++)
+		peer_mac[i] = p_mac[i];
+	for (i = 0; i < 4; i++)
+		peer_ip[i] = p_ip[i];
 	peer_port = port;
 	have_header = 1;
 	return 1;

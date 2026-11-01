@@ -13,6 +13,7 @@ void smp_ap_main(unsigned int cpu);
 
 /* Ask another CPU to run its scheduler soon (LAPIC IPI). */
 void smp_resched_cpu(unsigned int cpu);
+void smp_resched_wake(void);
 
 /* Park APs before kexec overwrites the kernel image. */
 void smp_stop_aps(void);

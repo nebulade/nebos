@@ -180,12 +180,28 @@ void smp_ap_main(unsigned int cpu)
 		cpu_idle();
 }
 
+/* Called from the reschedule IPI stub (and from smp_resched_cpu when the
+ * target is the current CPU): mark the CPU and shorten its idle timer so the
+ * next tick schedules promptly even when the PIT/LAPIC period is 10 ms. */
+void smp_resched_wake(void)
+{
+	struct cpu *c = this_cpu();
+
+	c->need_resched = 1;
+	if (c->id == 0) {
+		timer_set_hz(1000);
+	} else {
+		c->tick_ms = 1;
+		lapic_timer_set_ms(1);
+	}
+}
+
 void smp_resched_cpu(unsigned int cpu)
 {
 	if (cpu >= cpu_count || cpu >= MAX_CPUS)
 		return;
 	if (cpu == this_cpu()->id) {
-		cpus[cpu].need_resched = 1;
+		smp_resched_wake();
 		return;
 	}
 	if (cpus[cpu].lapic_id == 0xFFFFFFFFu)

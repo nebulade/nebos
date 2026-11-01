@@ -5,7 +5,7 @@
 static int sse2 = -1;      /* -1 = not probed yet, 0 = no, 1 = yes */
 
 /* CPUID exists only if the ID bit in EFLAGS can be toggled (i586+). */
-static int cpuid_supported(void)
+int cpu_has_cpuid(void)
 {
 	unsigned int a, b;
 
@@ -20,7 +20,7 @@ void cpu_enable_sse(void)
 {
 	unsigned int eax, ebx, ecx, edx, cr4;
 
-	if (!cpuid_supported())
+	if (!cpu_has_cpuid())
 		return;
 	eax = 1;
 	__asm__ volatile ("cpuid"
@@ -39,7 +39,7 @@ int cpu_has_sse2(void)
 	if (sse2 >= 0)
 		return sse2;
 	sse2 = 0;
-	if (cpuid_supported()) {
+	if (cpu_has_cpuid()) {
 		eax = 1;
 		__asm__ volatile ("cpuid"
 				  : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));

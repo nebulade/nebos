@@ -17,13 +17,14 @@
 .code32
 .text
 
-.extern ticks
+.extern timer_tick_advance
 .extern schedule
 .extern sched_tick_bsp
 .extern sched_tick_ap
 .extern sched_finish_switch
 .extern serial_poll
 .extern lapic_eoi
+.extern smp_resched_wake
 
 .include "irqret.inc"
 
@@ -41,8 +42,10 @@ pit_irq_stub:
 	movw  $0x28, %ax
 	movw  %ax, %gs
 
-	/* ticks++ and send EOI -- always, even when we don't switch. */
-	incl  ticks
+	/* Advance the millisecond clock and send EOI -- always, even when we
+	 * don't switch.  The PIT period is 1 ms while the BSP runs a process
+	 * and 10 ms while it is idle (timer_tick_advance adds the period). */
+	call  timer_tick_advance
 	movb  $0x20, %al
 	outb  %al, $0x20
 
@@ -125,8 +128,7 @@ lapic_resched_stub:
 	movw  $0x28, %ax
 	movw  %ax, %gs
 
-	movl  %gs:0, %eax
-	movl  $1, 24(%eax)          /* struct cpu.need_resched */
+	call  smp_resched_wake
 
 	call  lapic_eoi
 	IRQ_RETURN_DS 36

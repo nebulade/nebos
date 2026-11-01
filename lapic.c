@@ -20,6 +20,7 @@
 
 static volatile unsigned int *lapic_mmio;
 static unsigned int lapic_phys;
+static unsigned int lapic_per_ms;
 
 static inline unsigned int lapic_read(unsigned int off)
 {
@@ -173,8 +174,22 @@ int lapic_timer_start(unsigned int vector)
 		return 0;
 
 	lapic_write(LAPIC_LVT_TIMER, (vector & 0xFFu) | 0x00020000u);
+	lapic_per_ms = per_ms;
 	lapic_write(LAPIC_TIMER_INIT, per_ms);
 	return 1;
+}
+
+void lapic_timer_set_ms(unsigned int ms)
+{
+	unsigned int init;
+
+	if (!lapic_mmio || !lapic_per_ms)
+		return;
+	if (ms == 0)
+		ms = 1;
+	init = lapic_per_ms * ms;
+	if (init)
+		lapic_write(LAPIC_TIMER_INIT, init);
 }
 
 void lapic_timer_stop(void)

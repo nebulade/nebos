@@ -29,7 +29,7 @@ screen.o: screen.c screen.h
 io.o: io.c io.h fbtext.h process.h screen.h tty.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-tty.o: tty.c tty.h process.h
+tty.o: tty.c tty.h mm.h netlog.h process.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 font_8x8.o: font_8x8.c font_8x8.h
@@ -93,6 +93,12 @@ blit.o: blit.c blit.h vga.h gfx.h cpu.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 cpu.o: cpu.c cpu.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+thermal.o: thermal.c thermal.h cpu.h sched.h serial.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+it87.o: it87.c it87.h pci.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 gfxbench.o: gfxbench.c blit.h cpu.h fbtext.h gfx.h io.h mm.h timer.h vga.h
@@ -194,10 +200,10 @@ ahci.o: ahci.c ahci.h ata.h mm.h paging.h pci.h process.h serial.h timer.h
 fatdetect.o: fatdetect.c fatdetect.h fat.h blkdev.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-fatformat.o: fatformat.c fatformat.h blkdev.h mm.h
+fatformat.o: fatformat.c fatformat.h blkdev.h io.h mm.h sched.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-format.o: format.c blkdev.h disk.h fatformat.h io.h vga.h vfs.h
+format.o: format.c blkdev.h disk.h fatformat.h io.h process.h sched.h vga.h vfs.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
 mouse.o: mouse.c mouse.h cirrus.h radeon.h timer.h usbhid.h vga.h
@@ -233,7 +239,7 @@ switch.o: switch.S irqret.inc
 entry.o: entry.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-sched.o: sched.c sched.h process.h paging.h smp.h spinlock.h sys_fs.h timer.h tss.h vga.h
+sched.o: sched.c sched.h process.h paging.h smp.h spinlock.h sys_fs.h thermal.h timer.h tss.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 acpi.o: acpi.c acpi.h paging.h serial.h
@@ -287,7 +293,7 @@ sys_mem.o: sys_mem.c sys_mem.h mm.h paging.h process.h
 inflate.o: inflate.c inflate.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-sys_info.o: sys_info.c sys_info.h syscall.h ahci.h blkdev.h mm.h mouse.h usbhid.h vfs.h
+sys_info.o: sys_info.c sys_info.h syscall.h ahci.h blkdev.h it87.h mm.h mouse.h thermal.h usbhid.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h process.h sched.h
@@ -296,7 +302,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h pr
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o cmds_pack.o ramfs.o payload.o
+kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o cmds_pack.o ramfs.o share.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -386,7 +392,7 @@ UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
         ucmd_netinfo ucmd_netip ucmd_netdns ucmd_host ucmd_dhcp \
         ucmd_netsend ucmd_netrecv ucmd_ping ucmd_pong ucmd_netlog \
         ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_curl \
-        ucmd_files ucmd_view
+        ucmd_files ucmd_view ucmd_sensors ucmd_mines ucmd_websrv
 
 # Keep the linked ELFs around (make would treat them as disposable
 # intermediates between the pattern rules).
@@ -433,6 +439,14 @@ ucmd_files.o: ucmd_files.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 ucmd_files.elf: ucmd_files.o ngui.o font_8x16.o ucmd.ld
+	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+	$(OBJCOPY) --strip-all $@ $@
+
+# mines is a second ngui canvas app; it links the same toolkit.
+ucmd_mines.o: ucmd_mines.c ucmd_lib.h syscall.h wm_abi.h ngui.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+ucmd_mines.elf: ucmd_mines.o ngui.o font_8x16.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
@@ -605,8 +619,8 @@ run-uhci: floppy.img root.img
 # user-mode network (slirp).  DHCP/DNS come from slirp, the host is 10.0.2.2
 # (e.g. `python3 -m http.server` + `curl http://10.0.2.2:8000/` in a window).
 run-net: floppy.img root.img
-	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 # SATA/AHCI variant: an ICH9 AHCI controller with a test disk on port 0.
 # The disk image lives outside the repo and is created on first use; boot
@@ -715,4 +729,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_file.o img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_file.o img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

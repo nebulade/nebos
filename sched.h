@@ -43,6 +43,13 @@ struct cpu {
 	 * on its kernel stack. */
 	unsigned int    deferred_unlock;
 	unsigned int    sched_flags;
+	/* Last DTS reading published by this CPU's tick, and the millisecond
+	 * divider that limits sampling to once per second (see thermal.c). */
+	unsigned int    temp_div;
+	int             temp_c;
+	/* This CPU's timer period: 1 ms while a process runs, 10 ms while
+	 * idle (see schedule()/sched_tick_ap). */
+	unsigned int    tick_ms;
 };
 
 extern struct cpu cpus[MAX_CPUS];

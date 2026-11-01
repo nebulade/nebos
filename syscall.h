@@ -116,6 +116,26 @@
 #define SYS_MEM_GROW       89  /* (unsigned total_bytes) -> 0/-1 */
 #define SYS_MEM_FREE       90  /* () -> 0/-1 */
 
+/* CPU temperature (see thermal.c): the hottest core's DTS reading. */
+#define SYS_CPU_TEMP       91  /* (struct sys_cputemp *out) -> 0/-1 */
+
+/* IT87xx Super I/O hardware monitor (see it87.c); read-only. */
+#define SYS_SENSORS        92  /* (struct sys_sensors *out) -> 0/-1 */
+
+/* TCP server (WebDAV listener).  The caller must own the NIC (SYS_NET_ACQUIRE).
+ * SYS_TCP_ACCEPT polls a few frames and returns 1 once a connection is ready,
+ * 0 when nothing arrived, or -3 when a netkexec header was captured (the
+ * command should exit and let the kworker take over). */
+#define SYS_TCP_LISTEN     93  /* (port) -> 0/-1 */
+#define SYS_TCP_ACCEPT     94  /* () -> 1/0/-2/-3 */
+#define SYS_TCP_SRV_RECV   95  /* (buf, max, timeout_ms) -> >0/0/-1/-2 */
+#define SYS_TCP_SRV_SEND   96  /* (buf, len) -> 0/-1/-2/-3 */
+#define SYS_TCP_SRV_CLOSE  97
+#define SYS_TCP_PEER       99  /* (ip[4], unsigned *port) -> 0/-1 (debug log) */
+
+/* Stat one path (the file service has no open handle). */
+#define SYS_FS_STAT        98  /* (path, struct sys_stat *out) -> 0/<0 */
+
 /* Terminal / process services used by the ring-3 shell. */
 #define SYS_TTY_CREATE     73  /* () -> tty id 1..TTY_MAX / -1 */
 #define SYS_TTY_READ       74  /* (id, buf, max) -> bytes / 0 / -1 */
@@ -155,20 +175,32 @@ struct sys_netinfo {
 #define SYS_EINVAL  (-5)     /* path is not valid for this operation */
 #define SYS_EWRITE  (-6)     /* write refused (full, or FAT rejected it) */
 #define SYS_EROFS   (-7)     /* read-only filesystem (ramfs) */
+#define SYS_ENOSPC  (-8)     /* no space left on the filesystem */
 
-/* One directory entry, raw 8.3 name exactly as stored (space padded). */
+/* One directory entry.  `name` is a display name: raw 8.3 for FAT mounts
+ * (space padded, `raw_83` set) or the plain name for name-string filesystems
+ * such as ramfs and /share. */
 struct sys_dirent {
-	char name[12];
+	char name[64];
 	unsigned int size;
 	unsigned int is_dir;
+	unsigned int raw_83;
 };
 
 /* One mounted filesystem (for `ls /`). */
 struct sys_mount {
 	char name[16];
-	char type[8];           /* "FAT12", "FAT16", "FAT32" */
+	char type[8];           /* "FAT12", "FAT16", "FAT32", "ramfs", "share" */
 	unsigned int total_sectors;
 	char label[12];
+	unsigned int ro;
+};
+
+/* Result of SYS_FS_STAT. */
+struct sys_stat {
+	unsigned int size;
+	unsigned int is_dir;
+	unsigned int ro;
 };
 
 struct sys_meminfo {
@@ -202,6 +234,31 @@ struct sys_schedinfo {
 	unsigned int wakeups;
 	unsigned int idle_ticks;
 	unsigned int slice_ticks;
+};
+
+/* CPU temperature snapshot (see thermal.c).  temp_c is the hottest core's
+ * last DTS sample; a negative value means no Intel DTS is available.  delta_c
+ * and status are from the CPU that serviced the syscall (for diagnostics).
+ * cpu_temp_c[] holds the per-logical-CPU cached samples. */
+#define SYS_CPU_MAX 8
+struct sys_cputemp {
+	int temp_c;
+	int tjmax_c;
+	int delta_c;
+	unsigned int status;
+	int cpu_temp_c[SYS_CPU_MAX];
+	unsigned int ncpus;
+};
+
+/* IT87xx hardware monitor snapshot (temps are signed; -128 = unconnected). */
+struct sys_sensors {
+	unsigned int present;
+	unsigned int chip_id;
+	unsigned int base;
+	unsigned int temp_enable;
+	unsigned int temp_extra;
+	int temp_c[3];
+	unsigned int fan_rpm[3];
 };
 
 /* Window canvas handed to a ring-3 graphics command (see sys_gfx.c). */

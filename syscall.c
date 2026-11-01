@@ -61,6 +61,8 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 		return sys_rmdir((const char *)a1);
 	case SYS_LIST_MOUNTS:
 		return sys_list_mounts((unsigned int)a1, (struct sys_mount *)a2);
+	case SYS_FS_STAT:
+		return sys_stat_path((const char *)a1, (struct sys_stat *)a2);
 	case SYS_MEMINFO:
 		return sys_meminfo((struct sys_meminfo *)a1);
 	case SYS_E820:
@@ -138,6 +140,20 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 	case SYS_TCP_CLOSE:
 		sys_tcp_close();
 		return 0;
+	case SYS_TCP_LISTEN:
+		return sys_tcp_listen((unsigned int)a1);
+	case SYS_TCP_ACCEPT:
+		return sys_tcp_accept();
+	case SYS_TCP_SRV_RECV:
+		return sys_tcp_srv_recv((void *)a1, (unsigned int)a2,
+					(unsigned int)a3);
+	case SYS_TCP_SRV_SEND:
+		return sys_tcp_srv_send((const void *)a1, (unsigned int)a2);
+	case SYS_TCP_SRV_CLOSE:
+		sys_tcp_srv_close();
+		return 0;
+	case SYS_TCP_PEER:
+		return sys_tcp_peer((unsigned char *)a1, (unsigned int *)a2);
 	case SYS_NET_NEXT_HOP:
 		return sys_net_next_hop((const unsigned char *)a1,
 					(unsigned char *)a2);
@@ -250,6 +266,16 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 		return sys_mem_grow((unsigned int)a1);
 	case SYS_MEM_FREE:
 		return sys_mem_free();
+	case SYS_CPU_TEMP:
+		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)a1,
+					  sizeof(struct sys_cputemp), 1))
+			return -1;
+		return sys_cputemp((struct sys_cputemp *)a1);
+	case SYS_SENSORS:
+		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)a1,
+					  sizeof(struct sys_sensors), 1))
+			return -1;
+		return sys_sensors((struct sys_sensors *)a1);
 	case SYS_WIN_KEY_WAIT:
 		return sys_win_key_wait((unsigned int)a1);
 	case SYS_SCHEDINFO:

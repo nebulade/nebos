@@ -32,6 +32,7 @@ static unsigned int resize_mx, resize_my, resize_ow, resize_oh;
 static unsigned int prev_buttons;
 static int full_redraw = 1;
 static unsigned int bar_kexec_busy, bar_kexec_progress, bar_kexec_total;
+static int bar_temp_c = -1;
 
 static unsigned int rgb16(unsigned int r, unsigned int g, unsigned int b)
 {
@@ -53,6 +54,46 @@ static void fill_clip(int x, int y, unsigned int w, unsigned int h,
 			   (unsigned int)(y1 - y0), rgb);
 }
 
+static void bar_button(unsigned int x, unsigned int y, unsigned int w,
+		       unsigned int h, const char *label)
+{
+	unsigned int n = 0;
+
+	usurf_fill(&screen, x, y, w, h, 0x963CD2u);
+	while (label[n])
+		n++;
+	usurf_text(&screen, (int)(x + (w - n * 8) / 2), (int)(y + 3),
+		   label, COL_WHITE, 0, 0, fbw, WM_BAR_H);
+}
+
+static unsigned int temp_color(int c)
+{
+	if (c >= 80)
+		return 0xFF5050u;
+	if (c >= 60)
+		return 0xFFD250u;
+	return 0x55FF55u;
+}
+
+/* "CPU 43C" (no libc printf here). */
+static unsigned int temp_text(char *b, int c)
+{
+	unsigned int n = 0, v = (unsigned int)c;
+
+	b[n++] = 'C';
+	b[n++] = 'P';
+	b[n++] = 'U';
+	b[n++] = ' ';
+	if (v >= 100)
+		b[n++] = (char)('0' + (v / 100) % 10);
+	if (v >= 10)
+		b[n++] = (char)('0' + (v / 10) % 10);
+	b[n++] = (char)('0' + v % 10);
+	b[n++] = 'C';
+	b[n] = '\0';
+	return n;
+}
+
 static void draw_bar(void)
 {
 	char dt[48];
@@ -61,21 +102,15 @@ static void draw_bar(void)
 	usurf_fill(&screen, 0, 0, fbw, WM_BAR_H, COL_BG);
 	usurf_text(&screen, 4, 5, OS_NAME " v" OS_VERSION, COL_BANNER,
 		   0, 0, fbw, WM_BAR_H);
-	usurf_fill(&screen, WM_BTN_X, WM_BTN_Y, WM_BTN_W, WM_BTN_H, 0x963CD2u);
-	usurf_text(&screen, WM_BTN_X + 4, WM_BTN_Y + 3, "+ New", COL_WHITE,
-		   0, 0, fbw, WM_BAR_H);
-	usurf_fill(&screen, WM_BTN_CLOCK_X, WM_BTN_CLOCK_Y, WM_BTN_CLOCK_W,
-		   WM_BTN_CLOCK_H, 0x963CD2u);
-	usurf_text(&screen, WM_BTN_CLOCK_X + 4, WM_BTN_CLOCK_Y + 3, "+ Clock",
-		   COL_WHITE, 0, 0, fbw, WM_BAR_H);
-	usurf_fill(&screen, WM_BTN_COLORS_X, WM_BTN_COLORS_Y, WM_BTN_COLORS_W,
-		   WM_BTN_COLORS_H, 0x963CD2u);
-	usurf_text(&screen, WM_BTN_COLORS_X + 4, WM_BTN_COLORS_Y + 3, "+ Colors",
-		   COL_WHITE, 0, 0, fbw, WM_BAR_H);
-	usurf_fill(&screen, WM_BTN_FILES_X, WM_BTN_FILES_Y, WM_BTN_FILES_W,
-		   WM_BTN_FILES_H, 0x963CD2u);
-	usurf_text(&screen, WM_BTN_FILES_X + 4, WM_BTN_FILES_Y + 3, "Files",
-		   COL_WHITE, 0, 0, fbw, WM_BAR_H);
+	bar_button(WM_BTN_X, WM_BTN_Y, WM_BTN_W, WM_BTN_H, "New");
+	bar_button(WM_BTN_CLOCK_X, WM_BTN_CLOCK_Y, WM_BTN_CLOCK_W,
+		   WM_BTN_CLOCK_H, "Clock");
+	bar_button(WM_BTN_COLORS_X, WM_BTN_COLORS_Y, WM_BTN_COLORS_W,
+		   WM_BTN_COLORS_H, "Colors");
+	bar_button(WM_BTN_FILES_X, WM_BTN_FILES_Y, WM_BTN_FILES_W,
+		   WM_BTN_FILES_H, "Files");
+	bar_button(WM_BTN_MINES_X, WM_BTN_MINES_Y, WM_BTN_MINES_W,
+		   WM_BTN_MINES_H, "Mines");
 
 	/* Rainbow separator (same y as the kernel's old bar). */
 	for (x = 0; x < fbw; x++) {
@@ -112,12 +147,28 @@ static void draw_bar(void)
 		dt[n] = '\0';
 		usurf_text(&screen, (int)fbw - (int)n * 8 - 4, 5, dt,
 			   0xFFC864u, 0, 0, fbw, WM_BAR_H);
-	} else if (u_rtc_datetime(dt, sizeof(dt)) == 0) {
-		n = 0;
-		while (dt[n] && n < sizeof(dt) - 1)
-			n++;
-		usurf_text(&screen, (int)fbw - (int)n * 8 - 4, 5, dt,
-			   COL_BANNER, 0, 0, fbw, WM_BAR_H);
+	} else {
+		unsigned int clock_chars = 0;
+
+		if (u_rtc_datetime(dt, sizeof(dt)) == 0) {
+			n = 0;
+			while (dt[n] && n < sizeof(dt) - 1)
+				n++;
+			usurf_text(&screen, (int)fbw - (int)n * 8 - 4, 5, dt,
+				   COL_BANNER, 0, 0, fbw, WM_BAR_H);
+			clock_chars = n;
+		}
+		if (bar_temp_c >= 0) {
+			char tb[12];
+			unsigned int tn = temp_text(tb, bar_temp_c);
+			int tx = (int)fbw - 4 - (int)clock_chars * 8 -
+				 (clock_chars ? 8 : 0) - (int)tn * 8;
+
+			if (tx >= WM_BTN_MINES_X + (int)WM_BTN_MINES_W + 4)
+				usurf_text(&screen, tx, 5, tb,
+					   temp_color(bar_temp_c), 0, 0,
+					   fbw, WM_BAR_H);
+		}
 	}
 }
 
@@ -328,14 +379,33 @@ static void do_update(struct wm_status *st)
 			}
 		}
 	}
-	if (u_rtc_datetime(dt, sizeof(dt)) == 0) {
-		for (i = 0; i < sizeof(dt); i++)
-			if (dt[i] != last_dt[i]) {
+	/* The RTC is slow (CMOS polling) and the temperature only changes
+	 * once a second; query both at 1 Hz instead of every 10 ms. */
+	{
+		static unsigned int last_rtc_ms;
+		unsigned int now_ms = u_ticks_ms();
+
+		if (full_redraw || now_ms - last_rtc_ms >= 1000) {
+			last_rtc_ms = now_ms;
+			if (u_rtc_datetime(dt, sizeof(dt)) == 0) {
 				for (i = 0; i < sizeof(dt); i++)
-					last_dt[i] = dt[i];
-				bar_dirty = 1;
-				break;
+					if (dt[i] != last_dt[i]) {
+						for (i = 0; i < sizeof(dt); i++)
+							last_dt[i] = dt[i];
+						bar_dirty = 1;
+						break;
+					}
 			}
+			{
+				struct sys_cputemp ct;
+
+				if (u_cpu_temp(&ct) == 0 &&
+				    ct.temp_c != bar_temp_c) {
+					bar_temp_c = ct.temp_c;
+					bar_dirty = 1;
+				}
+			}
+		}
 	}
 	if (full_redraw) {
 		if (u_wm_begin() != 0) {
@@ -459,6 +529,10 @@ static void handle_mouse(struct wm_status *st)
 			   mx < WM_BTN_FILES_X + WM_BTN_FILES_W &&
 			   my < WM_BTN_FILES_Y + WM_BTN_FILES_H) {
 			spawn_app("/ramfs/bin/files");
+		} else if (mx >= WM_BTN_MINES_X && my >= WM_BTN_MINES_Y &&
+			   mx < WM_BTN_MINES_X + WM_BTN_MINES_W &&
+			   my < WM_BTN_MINES_Y + WM_BTN_MINES_H) {
+			spawn_app("/ramfs/bin/mines");
 		} else {
 			int idx = window_at(mx, my);
 

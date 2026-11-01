@@ -14,6 +14,7 @@
 #include "io.h"
 #include "net.h"
 #include "netdev.h"
+#include "netkexec.h"
 #include "netlog.h"
 #include "process.h"
 #include "tcp.h"
@@ -22,6 +23,13 @@
 /* One TCP connection at a time (the stack is single-connection, and the
  * receiver is owned by the process using it). */
 static struct tcp_conn tcp;
+
+/* Accepted server connection (NULL until SYS_TCP_ACCEPT returns one). */
+static struct tcp_conn *srv_conn;
+
+/* Reply buffer for ARP/ICMP answered while listening (the rx scratch is
+ * occupied by the received frame). */
+static unsigned char srv_reply[NETDEV_FRAME_MAX];
 
 /* Long waits inside the stack (ARP/DNS/DHCP/TCP) spin on get_ticks_ms(), so
  * they need interrupts: the syscall stub entered with them off, and a frozen
@@ -51,8 +59,11 @@ static unsigned int caller_pid(void)
 /* Called from the scheduler's reap loop for every dead process. */
 void sys_net_reap(unsigned int pid)
 {
-	if (netdev_owner() == pid)
+	if (netdev_owner() == pid) {
 		netdev_release_all();
+		tcp_srv_reset();
+		srv_conn = 0;
+	}
 }
 
 int sys_net_info(struct sys_netinfo *out)
@@ -269,6 +280,109 @@ void sys_tcp_close(void)
 	net_enter();
 	tcp_close(&tcp);
 	net_exit();
+}
+
+/* ---- TCP server ---- */
+
+int sys_tcp_listen(unsigned int port)
+{
+	if (!owns_nic() || port == 0 || port > 65535)
+		return -1;
+	net_enter();
+	tcp_srv_init(port);
+	net_exit();
+	srv_conn = 0;
+	return 0;
+}
+
+/* Poll the receiver for new connections.  Also answers ARP/ICMP and hands a
+ * netkexec header back to the kworker (the server exits, the watcher picks
+ * the transfer up without waiting for the host's retry). */
+int sys_tcp_accept(void)
+{
+	const struct netdev *nd = netdev_active();
+	unsigned char *rx;
+	struct tcp_conn *c;
+	int i, len;
+
+	if (!nd || !owns_nic())
+		return -2;
+	rx = netdev_rx_scratch();
+
+	net_enter();
+	for (i = 0; i < 16; i++) {
+		len = nd->rx(rx, NETDEV_FRAME_MAX);
+		if (len < 0)
+			break;
+		if (tcp_srv_input(rx, (unsigned int)len))
+			continue;
+		if (netkexec_capture_frame(rx, (unsigned int)len)) {
+			net_exit();
+			return -3;
+		}
+		{
+			int rlen = net_build_reply(rx, (unsigned int)len,
+						   srv_reply,
+						   sizeof(srv_reply));
+			if (rlen > 0)
+				nd->tx(srv_reply, (unsigned int)rlen);
+		}
+	}
+	c = tcp_srv_accept();
+	net_exit();
+	if (!c)
+		return 0;
+	srv_conn = c;
+	return 1;
+}
+
+int sys_tcp_srv_recv(void *buf, unsigned int max, unsigned int timeout_ms)
+{
+	int r;
+
+	if (!owns_nic() || !srv_conn)
+		return -2;
+	net_enter();
+	r = tcp_recv(srv_conn, buf, max, get_ticks_ms() + timeout_ms);
+	net_exit();
+	return r;
+}
+
+int sys_tcp_srv_send(const void *buf, unsigned int len)
+{
+	int r;
+
+	if (!owns_nic() || !srv_conn)
+		return -3;
+	net_enter();
+	r = tcp_srv_send(srv_conn, buf, len);
+	net_exit();
+	return r;
+}
+
+void sys_tcp_srv_close(void)
+{
+	if (owns_nic() && srv_conn) {
+		net_enter();
+		tcp_srv_close(srv_conn);
+		net_exit();
+	}
+	srv_conn = 0;
+}
+
+/* Peer of the accepted connection (for the server's connection log). */
+int sys_tcp_peer(unsigned char ip[4], unsigned int *port)
+{
+	unsigned int i;
+
+	if (!srv_conn)
+		return -1;
+	if (ip)
+		for (i = 0; i < 4; i++)
+			ip[i] = srv_conn->dst_ip[i];
+	if (port)
+		*port = srv_conn->dport;
+	return 0;
 }
 
 int sys_net_next_hop(const unsigned char dst[4], unsigned char hop[4])

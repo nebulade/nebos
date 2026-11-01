@@ -3,6 +3,7 @@
 
 #include "io.h"
 #include "dbg.h"
+#include "idle.h"
 #include "kexec.h"
 #include "kmalloc.h"
 #include "mm.h"
@@ -87,6 +88,7 @@ static int cmd_clear(struct term *t, const char *args);
 static int cmd_dbg(struct term *t, const char *args);
 static int cmd_format(struct term *t, const char *args);
 static int cmd_help(struct term *t, const char *args);
+static int cmd_idle(struct term *t, const char *args);
 static int cmd_path(struct term *t, const char *args);
 static int cmd_kexec(struct term *t, const char *args);
 static int cmd_kill(struct term *t, const char *args);
@@ -119,6 +121,7 @@ static const struct kcmd cmds[] = {
 	{ "poke",       "poke <addr> <val>",             CK_SPAWN_ARG, CMD_REQARG, 0, program_poke_main, 0, 0 },
 	{ "ps",         "ps",                            CK_CUSTOM, 0, 0, 0, 0, cmd_ps },
 	{ "sched",      "sched",                         CK_CUSTOM, 0, 0, 0, 0, cmd_sched },
+	{ "idle",       "idle [hlt|c2|c3|c2ap|c3ap]",    CK_CUSTOM, 0, 0, 0, 0, cmd_idle },
 	{ "renice",     "renice <pid> <weight>",         CK_CUSTOM, CMD_REQARG, 0, 0, 0, cmd_renice },
 	{ "kill",       "kill <pid>",                    CK_CUSTOM, 0, 0, 0, 0, cmd_kill },
 	{ "kexec",      "kexec",                         CK_CUSTOM, 0, 0, 0, 0, cmd_kexec },
@@ -471,6 +474,57 @@ static int cmd_sched(struct term *t, const char *args)
 	(void)t;
 	(void)args;
 	sched_print();
+	return 0;
+}
+
+static int arg_is(const char *args, const char *word)
+{
+	unsigned int i = 0;
+
+	while (word[i] && args[i] == word[i])
+		i++;
+	return word[i] == '\0' && args[i] == '\0';
+}
+
+static int cmd_idle(struct term *t, const char *args)
+{
+	(void)t;
+	if (!args[0] || arg_is(args, "status")) {
+		io_putstr("idle ");
+		io_putstr(idle_mode_name(idle_mode()));
+		if (!idle_mwait_supported())
+			io_putstr(" (mwait unsupported)");
+		io_putchar('\n');
+		return 0;
+	}
+	if (arg_is(args, "hlt")) {
+		idle_set_mode(IDLE_C1);
+		io_putstr("idle hlt\n");
+		return 0;
+	}
+	{
+		int mode = -1;
+
+		if (arg_is(args, "c2"))
+			mode = IDLE_C2;
+		else if (arg_is(args, "c3"))
+			mode = IDLE_C3;
+		else if (arg_is(args, "c2ap"))
+			mode = IDLE_C2_AP;
+		else if (arg_is(args, "c3ap"))
+			mode = IDLE_C3_AP;
+		if (mode >= 0) {
+			if (idle_set_mode(mode) < 0) {
+				io_putstr("idle: mwait not available\n");
+				return 0;
+			}
+			io_putstr("idle ");
+			io_putstr(idle_mode_name(mode));
+			io_putstr(" (test the keyboard; power-cycle if it hangs)\n");
+			return 0;
+		}
+	}
+	io_putstr("idle: usage idle [hlt|c2|c3|c2ap|c3ap]\n");
 	return 0;
 }
 

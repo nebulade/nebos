@@ -20,5 +20,6 @@ void lapic_send_sipi(unsigned int apic_id, unsigned int vector);
 
 int  lapic_timer_start(unsigned int vector);
 void lapic_timer_stop(void);
+void lapic_timer_set_ms(unsigned int ms);
 
 #endif

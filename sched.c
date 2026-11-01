@@ -15,11 +15,13 @@
 
 #include "sched.h"
 #include "io.h"
+#include "lapic.h"
 #include "paging.h"
 #include "process.h"
 #include "smp.h"
 #include "spinlock.h"
 #include "syscall.h"
+#include "thermal.h"
 #include "timer.h"
 #include "tss.h"
 
@@ -75,7 +77,7 @@ _Static_assert(__builtin_offsetof(struct cpu, current) == 0,
 _Static_assert(__builtin_offsetof(struct process, esp) == 0,
 	       "switch.S saves the interrupted esp at offset 0");
 _Static_assert(__builtin_offsetof(struct cpu, need_resched) == 24,
-	       "switch.S sets need_resched at offset 24");
+	       "smp_resched_wake expects need_resched at offset 24");
 
 static inline unsigned long long weight_stride(unsigned int weight)
 {
@@ -238,8 +240,12 @@ static void wake_locked(struct process *p)
 	runq_add_locked(p);
 	wakeups++;
 	if (cur && (p->affinity & (1u << c->id)) &&
-	    (cur == c->idle || p->weight >= cur->weight))
+	    (cur == c->idle || p->weight >= cur->weight)) {
 		c->need_resched = 1;
+		/* The idle timer period is 10 ms; shorten it so the woken
+		 * process runs at the next millisecond instead. */
+		smp_resched_wake();
+	}
 }
 
 void sched_add_ready(struct process *p)
@@ -531,6 +537,9 @@ void sched_init(void)
 		cpus[i].switches = 0;
 		cpus[i].pending_zombie = 0;
 		cpus[i].deferred_unlock = 0;
+		cpus[i].temp_div = 0;
+		cpus[i].temp_c = -1;
+		cpus[i].tick_ms = 1;
 	}
 }
 
@@ -635,6 +644,18 @@ void schedule(void)
 	next->slice_start = get_ticks_ms();
 	c->current = next;
 	c->need_resched = 0;
+	/* The BSP PIT and each AP's LAPIC timer tick at 1 kHz while a process
+	 * runs; while a CPU is idle they drop to 100 Hz so MWAIT can hold C2
+	 * for 10 ms.  The global millisecond clock stays accurate because the
+	 * PIT stub adds tick_ms (see timer_tick_advance). */
+	if (c->id == 0) {
+		timer_set_hz(next == c->idle ? 100 : 1000);
+	} else {
+		unsigned int ms = (next == c->idle) ? 10 : 1;
+
+		c->tick_ms = ms;
+		lapic_timer_set_ms(ms);
+	}
 	sched_switch_to(next);
 	/* Keep the lock across the stack switch performed by switch.S; the
 	 * old process must not become runnable on another CPU while this CPU
@@ -688,12 +709,13 @@ void sched_sleep_ms(unsigned int ms)
  * assembly should call schedule(). */
 /* Common tail of the tick path: with the scheduler lock held, decide whether
  * the assembly stub should call schedule(). */
-static int tick_decide_locked(struct cpu *c, struct process *p, int ap)
+static int tick_decide_locked(struct cpu *c, struct process *p, int ap,
+			      unsigned int ms)
 {
 	if (p) {
-		p->cpu_ticks++;
+		p->cpu_ticks += ms;
 		if (p == c->idle)
-			c->idle_ticks++;
+			c->idle_ticks += ms;
 	}
 	/* A process inside the kernel holding the big lock must not be
 	 * preempted: the lock is not preemptible, and its owner may be in the
@@ -740,9 +762,10 @@ int sched_tick_bsp(void)
 	unsigned int flags = sched_lock_acquire();
 	int r;
 
+	thermal_tick();
 	p = c->current;
 	wake_sleepers_locked();
-	r = tick_decide_locked(c, p, 0);
+	r = tick_decide_locked(c, p, 0, timer_tick_ms());
 	sched_lock_release(flags);
 	return r;
 }
@@ -756,8 +779,15 @@ int sched_tick_ap(void)
 	unsigned int flags = sched_lock_acquire();
 	int r;
 
+	thermal_tick();
 	p = c->current;
-	r = tick_decide_locked(c, p, 1);
+	r = tick_decide_locked(c, p, 1, c->tick_ms);
+	if (!r && p == c->idle && c->tick_ms != 10) {
+		/* Entered idle without a schedule(): stretch this CPU's LAPIC
+		 * period so MWAIT can hold C2 for 10 ms. */
+		c->tick_ms = 10;
+		lapic_timer_set_ms(10);
+	}
 	sched_lock_release(flags);
 	return r;
 }

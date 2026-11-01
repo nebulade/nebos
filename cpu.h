@@ -6,6 +6,9 @@
 #ifndef CPU_H
 #define CPU_H
 
+/* 1 when CPUID is available (has the ID bit in EFLAGS). */
+int cpu_has_cpuid(void);
+
 /* 1 when the CPU supports SSE2 (the ION does, the Pentium targets do not). */
 int cpu_has_sse2(void);
 

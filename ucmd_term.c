@@ -592,15 +592,26 @@ static void complete_line(void)
 			struct sys_dirent d;
 
 			for (i = 0;; i++) {
+				char disp[64];
+				unsigned int dl;
+
 				if (u_syscall3(SYS_LIST_DIR, (int)dir, (int)i,
 					       (int)&d) != 1)
 					break;
-				n = name_len(d.name, sizeof(d.name));
+				if (d.raw_83)
+					u_fat_name(d.name, disp, sizeof(disp));
+				else {
+					for (dl = 0; dl + 1 < sizeof(disp) &&
+						      d.name[dl]; dl++)
+						disp[dl] = d.name[dl];
+					disp[dl] = '\0';
+				}
+				n = name_len(disp, sizeof(disp));
 				if (n == 0 ||
-				    (n == 1 && d.name[0] == '.') ||
-				    (n == 2 && d.name[0] == '.' && d.name[1] == '.'))
+				    (n == 1 && disp[0] == '.') ||
+				    (n == 2 && disp[0] == '.' && disp[1] == '.'))
 					continue;
-				if (!prefix_is(base, bl, d.name, n))
+				if (!prefix_is(base, bl, disp, n))
 					continue;
 				matches++;
 				if (matches == 1) {
@@ -614,9 +625,10 @@ static void complete_line(void)
 						    cl + 1 < sizeof(cand))
 							cand[cl++] = '/';
 					}
-					for (n = 0; d.name[n] && n < sizeof(d.name) &&
+					for (n = 0; disp[n] &&
+						    n < sizeof(disp) &&
 						    cl + 1 < sizeof(cand); n++)
-						cand[cl++] = d.name[n];
+						cand[cl++] = disp[n];
 					cand[cl] = '\0';
 					cand_dir = d.is_dir ? 1 : 0;
 				}

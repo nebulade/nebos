@@ -19,6 +19,7 @@
 #include "rtc.h"
 #include "serial.h"
 #include "sys_gfx.h"
+#include "thermal.h"
 #include "timer.h"
 #include "version.h"
 #include "vga.h"
@@ -1561,7 +1562,8 @@ static void wm_draw_bar(void)
 
 	/* "+ New" button: purple box, white text. */
 	vga_fill_rect(WM_BTN_X, WM_BTN_Y, WM_BTN_W, WM_BTN_H, 150, 60, 210);
-	fbtext_draw_string_xy(WM_BTN_X + 4, WM_BTN_Y + 3, "+ New", 255, 255, 255, 1);
+	fbtext_draw_string_xy(WM_BTN_X + (WM_BTN_W - 3 * 8) / 2, WM_BTN_Y + 3,
+			      "New", 255, 255, 255, 1);
 
 	if (kexec_busy) {
 		/* Kexec progress, in place of the clock. */
@@ -1577,9 +1579,41 @@ static void wm_draw_bar(void)
 		buf[n] = '\0';
 		fbtext_draw_string_xy(fbw - n * 8 - 4, 5, buf, 255, 200, 100, 0);
 	} else {
+		int temp = thermal_max_c();
+
 		/* Live clock (light green, right-aligned). */
 		rtc_read_datetime(dt);
 		fbtext_draw_string_xy(fbw - 19 * 8 - 4, 5, dt, 85, 255, 85, 0);
+		if (temp >= 0) {
+			char tb[12];
+			unsigned int tn = 0;
+			unsigned int v = (unsigned int)temp;
+			int x;
+
+			tb[tn++] = 'C';
+			tb[tn++] = 'P';
+			tb[tn++] = 'U';
+			tb[tn++] = ' ';
+			if (v >= 100)
+				tb[tn++] = (char)('0' + (v / 100) % 10);
+			if (v >= 10)
+				tb[tn++] = (char)('0' + (v / 10) % 10);
+			tb[tn++] = (char)('0' + v % 10);
+			tb[tn++] = 'C';
+			tb[tn] = '\0';
+			x = (int)fbw - 19 * 8 - 4 - 8 - (int)tn * 8;
+			if (x >= WM_BTN_X + (int)WM_BTN_W + 4) {
+				if (temp >= 80)
+					fbtext_draw_string_xy((unsigned int)x, 5, tb,
+							      255, 80, 80, 0);
+				else if (temp >= 60)
+					fbtext_draw_string_xy((unsigned int)x, 5, tb,
+							      255, 210, 80, 0);
+				else
+					fbtext_draw_string_xy((unsigned int)x, 5, tb,
+							      85, 255, 85, 0);
+			}
+		}
 	}
 
 	/* Rainbow separator. */

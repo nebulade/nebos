@@ -45,7 +45,7 @@ enum {
 #define ACT_CLOSE    (1u << 10)
 
 struct fm_entry {
-	char name[16];
+	char name[64];
 	char detail[8];
 	unsigned int size;
 	unsigned int is_dir;
@@ -233,39 +233,15 @@ static void make_abs(const char *p, char *out, unsigned int cap)
 		path_join(cwd, p, out, cap);
 }
 
-static void format_name(const char *raw, char *out, unsigned int cap)
+static void format_name(const char *raw, unsigned int raw_83, char *out,
+			unsigned int cap)
 {
-	unsigned int n = 0, i, ext = 8;
-	int dotted = 0, lower = 0, space = 0;
-
-	/* ramfs names are plain strings (usually lowercase, sometimes with a
-	 * dot); FAT names are the raw 11-byte, space-padded 8.3 form. */
-	for (i = 0; i < 11 && raw[i]; i++) {
-		if (raw[i] == '.')
-			dotted = 1;
-		if (raw[i] >= 'a' && raw[i] <= 'z')
-			lower = 1;
-		if (raw[i] == ' ')
-			space = 1;
-	}
-	if (dotted || (lower && !space)) {
+	/* Name-string filesystems (ramfs, share) already give a display name;
+	 * FAT gives the raw 11-byte, space-padded 8.3 field. */
+	if (!raw_83)
 		s_copy(out, raw, cap);
-		return;
-	}
-	while (ext < 11 && raw[ext] == ' ')
-		ext++;
-	for (i = 0; i < 8 && raw[i] && raw[i] != ' ' && n + 1 < cap; i++)
-		out[n++] = raw[i];
-	if (ext < 11 && raw[ext]) {
-		if (n + 1 < cap)
-			out[n++] = '.';
-		for (i = ext; i < 11 && raw[i] && raw[i] != ' ' &&
-		     n + 1 < cap; i++)
-			out[n++] = raw[i];
-	}
-	out[n] = '\0';
-	if (!n && cap)
-		s_copy(out, "?", cap);
+	else
+		u_fat_name(raw, out, cap);
 }
 
 static void format_size(unsigned int bytes, char *out, unsigned int cap)
@@ -428,7 +404,7 @@ static int load_path(const char *path)
 			truncated = 1;
 			break;
 		}
-		format_name(d.name, load_entries[n].name,
+		format_name(d.name, d.raw_83, load_entries[n].name,
 			    sizeof(load_entries[n].name));
 		load_entries[n].detail[0] = '\0';
 		load_entries[n].size = d.size;

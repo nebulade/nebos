@@ -137,7 +137,10 @@ static int tcp_send_segment(struct tcp_conn *c, unsigned char flags,
 	wr32(tcp + 8, ack);
 	tcp[12] = (unsigned char)((5 + optlen / 4) << 4);
 	tcp[13] = flags;
-	wr16(tcp + 14, TCP_WINDOW);
+	/* Advertise the space actually left in the receive queue (the SYN
+	 * uses the conservative constant, before the queue is reset). */
+	wr16(tcp + 14, with_mss ? TCP_WINDOW :
+	     (rxq_space() > 0xFFFFu ? 0xFFFFu : rxq_space()));
 	wr16(tcp + 16, 0);                /* checksum */
 	wr16(tcp + 18, 0);                /* urgent pointer */
 	for (i = 0; i < len; i++)
@@ -389,6 +392,11 @@ int tcp_recv(struct tcp_conn *c, unsigned char *out, unsigned int maxlen,
 			if (n > maxlen)
 				n = maxlen;
 			rxq_get(out, n);
+			/* Window update: ACKs sent while the queue was full may
+			 * have advertised zero, and without this the peer would
+			 * only recover on its next zero-window probe. */
+			tcp_send_segment(c, TCP_ACK, c->snd_nxt, c->rcv_nxt,
+					 0, 0, 0);
 			return (int)n;
 		}
 		if (c->peer_fin)
@@ -457,5 +465,386 @@ void tcp_close(struct tcp_conn *c)
 			if (s.ack == c->snd_nxt)
 				return;
 		}
+	}
+}
+
+/* ---- Server side ----
+ *
+ * One listening port, one active connection, two slots that hold a
+ * handshake-complete connection until the command gets around to accepting
+ * it.  A closed connection lingers for a few seconds so the peer's FIN/ACK
+ * is absorbed instead of answered with RST (libsoup treats a reset after a
+ * complete response as an error). */
+
+#define TCP_SRV_SLOTS      3          /* 1 active + 2 backlog/closing */
+#define TCP_SRV_CLOSE_MS   2000
+#define TCP_SRV_BACKLOG_MS 30000
+
+enum {
+	SRV_FREE = 0,
+	SRV_BACKLOG,
+	SRV_ACTIVE,
+	SRV_CLOSING
+};
+
+struct tcp_srv {
+	struct tcp_conn c;
+	int used;
+	int state;
+	unsigned int last_ms;
+};
+
+static struct tcp_srv srv[TCP_SRV_SLOTS];
+static unsigned int srv_port;
+static int srv_active = -1;
+
+struct tcp_rx {
+	unsigned int seq, ack;
+	unsigned char flags;
+	const unsigned char *data;
+	unsigned int len;
+	const unsigned char *tcp;
+	unsigned int doff;
+	unsigned char src_mac[6];
+	unsigned char src_ip[4];
+	unsigned int sport, dport;
+};
+
+/* Parse any IPv4/TCP frame addressed to us (no connection match). */
+static int tcp_parse_any(const unsigned char *f, unsigned int flen,
+			 struct tcp_rx *s)
+{
+	const unsigned char *ip = f + 14;
+	const unsigned char *tcp;
+	unsigned char my_ip[4];
+	unsigned int i, ihl, ip_len, doff;
+
+	if (flen < 14 + 20)
+		return 0;
+	if ((((unsigned int)f[12] << 8) | f[13]) != ET_IPV4)
+		return 0;
+	if ((ip[0] >> 4) != 4)
+		return 0;
+	ihl = (unsigned int)(ip[0] & 0x0F) * 4;
+	if (ihl < 20 || ip[9] != IPPROTO_TCP)
+		return 0;
+	if ((ip[6] & 0x3F) != 0 || ip[7] != 0)
+		return 0;
+	ip_len = rd16(ip + 2);
+	if (ip_len < ihl + 20 || ip_len > flen - 14)
+		return 0;
+
+	net_get_ip(my_ip);
+	for (i = 0; i < 4; i++)
+		if (ip[16 + i] != my_ip[i])
+			return 0;
+
+	tcp = ip + ihl;
+	doff = (unsigned int)(tcp[12] >> 4) * 4;
+	if (doff < 20 || ihl + doff > ip_len)
+		return 0;
+
+	for (i = 0; i < 6; i++)
+		s->src_mac[i] = f[6 + i];
+	for (i = 0; i < 4; i++)
+		s->src_ip[i] = ip[12 + i];
+	s->sport = rd16(tcp);
+	s->dport = rd16(tcp + 2);
+	s->seq = rd32(tcp + 4);
+	s->ack = rd32(tcp + 8);
+	s->flags = tcp[13];
+	s->data = tcp + doff;
+	s->len = ip_len - ihl - doff;
+	s->tcp = tcp;
+	s->doff = doff;
+	return 1;
+}
+
+static int srv_match(const struct tcp_conn *c, const struct tcp_rx *s)
+{
+	unsigned int i;
+
+	if (s->sport != c->dport || s->dport != c->sport)
+		return 0;
+	for (i = 0; i < 4; i++)
+		if (s->src_ip[i] != c->dst_ip[i])
+			return 0;
+	return 1;
+}
+
+static void srv_clear(int i)
+{
+	srv[i].used = 0;
+	srv[i].state = SRV_FREE;
+}
+
+static void srv_expire(void)
+{
+	unsigned int now = get_ticks_ms();
+	int i;
+
+	for (i = 0; i < TCP_SRV_SLOTS; i++) {
+		if (!srv[i].used)
+			continue;
+		if (srv[i].state == SRV_CLOSING &&
+		    now - srv[i].last_ms >= TCP_SRV_CLOSE_MS) {
+			srv_clear(i);
+			if (srv_active == i)
+				srv_active = -1;
+		} else if (srv[i].state == SRV_BACKLOG &&
+			   now - srv[i].last_ms >= TCP_SRV_BACKLOG_MS) {
+			srv_clear(i);
+		}
+	}
+}
+
+static unsigned int srv_isn(void)
+{
+	return (get_ticks_ms() * 1103515245u) ^ 0x5EED0000u;
+}
+
+static void srv_resend_synack(struct tcp_srv *e)
+{
+	tcp_send_segment(&e->c, TCP_SYN | TCP_ACK, e->c.snd_una - 1,
+			 e->c.rcv_nxt, 0, 0, 1);
+}
+
+/* Build a connection from a SYN and answer SYN-ACK. */
+static int srv_new(const struct tcp_rx *s)
+{
+	struct tcp_srv *e;
+	unsigned int mss = 536, i;
+	int slot = -1;
+
+	/* Retransmitted SYN: answer with the same ISN. */
+	for (i = 0; i < TCP_SRV_SLOTS; i++) {
+		if (!srv[i].used || srv[i].state == SRV_CLOSING)
+			continue;
+		if (srv_match(&srv[i].c, s)) {
+			srv_resend_synack(&srv[i]);
+			return 1;
+		}
+	}
+
+	srv_expire();
+	for (i = 0; i < TCP_SRV_SLOTS; i++) {
+		/* A connection that already sent its response is finished
+		 * as far as new clients are concerned: reuse the slot rather
+		 * than make the next SYN wait for the linger to expire. */
+		if (!srv[i].used || srv[i].state == SRV_CLOSING) {
+			slot = (int)i;
+			break;
+		}
+	}
+	if (slot < 0)
+		return 1;                 /* no room: drop, the client retries */
+
+	e = &srv[slot];
+	for (i = 0; i < 6; i++)
+		e->c.dst_mac[i] = s->src_mac[i];
+	for (i = 0; i < 4; i++)
+		e->c.dst_ip[i] = s->src_ip[i];
+	e->c.sport = srv_port;
+	e->c.dport = s->sport;
+	e->c.snd_una = e->c.snd_nxt = srv_isn();
+	e->c.rcv_nxt = s->seq + 1;
+	e->c.peer_fin = 0;
+	e->c.peer_mss = 536;
+	if (tcp_parse_mss(s->tcp, s->doff, &mss) &&
+	    mss >= 64 && mss <= TCP_MSS_OURS)
+		e->c.peer_mss = mss;
+	e->used = 1;
+	e->state = SRV_BACKLOG;
+	e->last_ms = get_ticks_ms();
+
+	tcp_send_segment(&e->c, TCP_SYN | TCP_ACK, e->c.snd_nxt, e->c.rcv_nxt,
+			 0, 0, 1);
+	/* The SYN consumed one sequence number. */
+	e->c.snd_nxt++;
+	e->c.snd_una = e->c.snd_nxt;
+	return 1;
+}
+
+static void srv_send_rst(const struct tcp_rx *s)
+{
+	struct tcp_conn c;
+	unsigned int ack = s->seq + s->len;
+	unsigned int i;
+
+	if (s->flags & TCP_SYN)
+		ack++;
+	if (s->flags & TCP_FIN)
+		ack++;
+
+	for (i = 0; i < 6; i++)
+		c.dst_mac[i] = s->src_mac[i];
+	for (i = 0; i < 4; i++)
+		c.dst_ip[i] = s->src_ip[i];
+	c.sport = s->dport;
+	c.dport = s->sport;
+	c.snd_una = c.snd_nxt = s->ack;
+	c.rcv_nxt = ack;
+	c.peer_mss = 536;
+	c.peer_fin = 0;
+	tcp_send_segment(&c, TCP_RST | TCP_ACK, s->ack, ack, 0, 0, 0);
+}
+
+static void srv_rx_data(struct tcp_conn *c, const struct tcp_rx *r)
+{
+	struct tcp_seg s;
+
+	s.seq = r->seq;
+	s.ack = r->ack;
+	s.flags = r->flags;
+	s.data = r->data;
+	s.len = r->len;
+	s.tcp = r->tcp;
+	s.doff = r->doff;
+	tcp_rx_data(c, &s);
+}
+
+void tcp_srv_init(unsigned int port)
+{
+	int i;
+
+	for (i = 0; i < TCP_SRV_SLOTS; i++)
+		srv[i].used = 0, srv[i].state = SRV_FREE;
+	srv_active = -1;
+	srv_port = port;
+}
+
+void tcp_srv_reset(void)
+{
+	tcp_srv_init(0);
+	rxq_head = rxq_tail = 0;
+}
+
+int tcp_srv_input(const unsigned char *f, unsigned int len)
+{
+	struct tcp_rx s;
+	int i;
+
+	if (!srv_port || !tcp_parse_any(f, len, &s))
+		return 0;
+
+	/* The accepted connection. */
+	if (srv_active >= 0 && srv_match(&srv[srv_active].c, &s)) {
+		struct tcp_conn *c = &srv[srv_active].c;
+
+		if (s.flags & TCP_RST) {
+			srv_clear(srv_active);
+			srv_active = -1;
+			return 1;
+		}
+		if ((unsigned)(s.ack - c->snd_una) <=
+		    (unsigned)(c->snd_nxt - c->snd_una))
+			c->snd_una = s.ack;
+		srv_rx_data(c, &s);
+		srv[srv_active].last_ms = get_ticks_ms();
+		return 1;
+	}
+
+	/* A pending, closing or duplicate connection. */
+	for (i = 0; i < TCP_SRV_SLOTS; i++) {
+		if (!srv[i].used || !srv_match(&srv[i].c, &s))
+			continue;
+		if (srv[i].state == SRV_CLOSING) {
+			if (s.flags & TCP_FIN) {
+				srv[i].c.rcv_nxt++;
+				tcp_send_segment(&srv[i].c, TCP_ACK,
+						 srv[i].c.snd_nxt,
+						 srv[i].c.rcv_nxt, 0, 0, 0);
+			}
+			if (s.flags & TCP_RST)
+				srv_clear(i);
+			return 1;
+		}
+		if (s.flags & TCP_RST) {
+			srv_clear(i);
+			return 1;
+		}
+		if ((s.flags & (TCP_SYN | TCP_ACK | TCP_RST)) == TCP_SYN) {
+			srv_resend_synack(&srv[i]);
+			return 1;
+		}
+		/* Early data on a not-yet-accepted connection.  Do not ACK
+		 * it: the client retransmits after tcp_srv_accept(). */
+		if (s.flags & TCP_ACK)
+			srv[i].last_ms = get_ticks_ms();
+		return 1;
+	}
+
+	/* A new connection. */
+	if ((s.flags & (TCP_SYN | TCP_ACK | TCP_RST)) == TCP_SYN &&
+	    s.dport == srv_port)
+		return srv_new(&s);
+
+	/* TCP for us on a port we do not serve: refuse it. */
+	srv_send_rst(&s);
+	return 1;
+}
+
+struct tcp_conn *tcp_srv_accept(void)
+{
+	int i, best = -1;
+
+	if (srv_active >= 0)
+		return &srv[srv_active].c;
+
+	srv_expire();
+	for (i = 0; i < TCP_SRV_SLOTS; i++) {
+		if (!srv[i].used || srv[i].state != SRV_BACKLOG)
+			continue;
+		if (best < 0 ||
+		    (int)(srv[i].last_ms - srv[best].last_ms) < 0)
+			best = i;
+	}
+	if (best < 0)
+		return 0;
+
+	srv[best].state = SRV_ACTIVE;
+	srv_active = best;
+	rxq_head = rxq_tail = 0;
+	return &srv[best].c;
+}
+
+int tcp_srv_send(struct tcp_conn *c, const void *data, unsigned int len)
+{
+	const unsigned char *p = data;
+
+	if (!c)
+		return -3;
+	if (c->peer_mss < 64)
+		c->peer_mss = 64;
+
+	while (len) {
+		unsigned int n = len > c->peer_mss ? c->peer_mss : len;
+		int r = tcp_send(c, p, n);
+
+		if (r != 0)
+			return r;
+		p += n;
+		len -= n;
+	}
+	return 0;
+}
+
+void tcp_srv_close(struct tcp_conn *c)
+{
+	int i;
+
+	if (!c)
+		return;
+	for (i = 0; i < TCP_SRV_SLOTS; i++) {
+		if (!srv[i].used || &srv[i].c != c)
+			continue;
+		tcp_send_segment(c, TCP_FIN | TCP_ACK, c->snd_nxt, c->rcv_nxt,
+				 0, 0, 0);
+		c->snd_nxt++;
+		srv[i].state = SRV_CLOSING;
+		srv[i].last_ms = get_ticks_ms();
+		if (srv_active == i)
+			srv_active = -1;
+		return;
 	}
 }

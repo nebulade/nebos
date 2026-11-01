@@ -8,6 +8,11 @@
  * stays reachable without running a command. */
 int netkexec_pending(void);
 
+/* Feed one frame received by another poller (the WebDAV server).  Returns 1
+ * when it was a KXNU/KXNP header; netkexec_pending() then reports it without
+ * polling the NIC again. */
+int netkexec_capture_frame(const unsigned char *frame, unsigned int len);
+
 /* Process entry: receive the pending image into the kexec staging buffer,
  * verify it and jump.  Never returns on success. */
 void program_netkexec_main(void);
