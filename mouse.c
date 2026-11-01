@@ -43,6 +43,7 @@ static const unsigned short mouse_pointer_bits[MOUSE_CUR_H] = {
 
 static int mouse_present_flag;
 static int mouse_streaming_flag;
+static int mouse_auto_draw = 1;   /* 0 while a WM frame owns the shadow */
 static unsigned int mouse_id;
 static int mouse_cursor_flag;
 static unsigned int mouse_pkt_size;
@@ -287,6 +288,11 @@ static void mouse_move(int dx, int dy)
 			radeon_cursor_move(cur_x, cur_y);
 		else
 			cirrus_cursor_move(cur_x, cur_y);
+	} else if (!mouse_auto_draw) {
+		/* A WM frame is between BEGIN and PRESENT: it erased the
+		 * software cursor and will redraw it at the new position. */
+		cur_x = (unsigned int)nx;
+		cur_y = (unsigned int)ny;
 	} else {
 		vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
 			cur_saved);
@@ -426,4 +432,9 @@ void mouse_cursor_erase(void)
 	if (!mouse_cursor_flag || mouse_hw_cursor)
 		return;
 	vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H, cur_saved);
+}
+
+void mouse_set_auto_draw(int on)
+{
+	mouse_auto_draw = on ? 1 : 0;
 }

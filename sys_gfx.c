@@ -14,7 +14,7 @@
 #include "wm.h"
 
 #define GFX_MAX_SESSIONS MAX_WINDOWS
-#define GFX_USER_BASE    0x50000000   /* canvas mapping for the owner */
+#define GFX_USER_BASE    USER_GFX_BASE   /* canvas mapping for the owner */
 #define GFX_KEY_RING     16
 
 struct gfx_session {
@@ -141,6 +141,8 @@ int sys_gfx_begin(struct sys_gfx_info *info)
 	s->term = t;
 	s->key_head = s->key_tail = 0;
 
+	wm_content_changed(&t->screen);   /* the WM switches to the canvas */
+
 	info->width = w;
 	info->height = h;
 	info->fb = (void *)GFX_USER_BASE;
@@ -180,10 +182,10 @@ int sys_gfx_end(void)
 	if (!s)
 		return -1;
 	unmap_all(s);
-	gfx_free(&s->c);
-	free_back(s);
-	s->used = 0;
-	wm_request_redraw();       /* the window falls back to its text cells */
+	/* The front canvas is still mapped into the WM.  Mark the session dead
+	 * and let sys_gfx_collect() unmap it from the WM before freeing it. */
+	s->dead = 1;
+	wm_content_changed(&s->term->screen);
 	return 0;
 }
 
@@ -192,7 +194,9 @@ int sys_gfx_key_poll(void)
 	struct gfx_session *s = by_pid(procs[current_pid].pid);
 	int k;
 
-	if (!s || s->key_tail == s->key_head)
+	if (!s)
+		return wm_server_key_poll();   /* generic canvas window */
+	if (s->key_tail == s->key_head)
 		return 0;
 	k = s->keys[s->key_tail];
 	s->key_tail = (s->key_tail + 1) % GFX_KEY_RING;
@@ -232,6 +236,7 @@ void sys_gfx_kill_for_screen(struct text_screen *screen)
 		return;
 	process_kill(s->pid);
 	s->dead = 1;   /* freed by the next sys_gfx_collect() */
+	wm_content_changed(screen);
 }
 
 /* Reaper hook (schedule(), IRQ context): only flag the session. */
@@ -251,11 +256,23 @@ void sys_gfx_collect(void)
 	unsigned int i;
 	int freed = 0;
 
+	/* The WM may still be composing the front canvas we are about to free.
+	 * It calls back after PRESENT; the idle loop also retries. */
+	if (wm_server_frame_active())
+		return;
+
 	for (i = 0; i < GFX_MAX_SESSIONS; i++) {
 		if (sessions[i].used && sessions[i].dead) {
+			struct text_screen *screen = &sessions[i].term->screen;
+
+			/* Drop the WM's read-only mapping before the canvas pages
+			 * can be reused.  Only this session's canvas: a newer
+			 * session may already be mapped for the same screen. */
+			wm_server_unmap_canvas(screen, sessions[i].c.px);
 			gfx_free(&sessions[i].c);
 			free_back(&sessions[i]);
 			sessions[i].used = 0;
+			wm_content_changed(screen);
 			freed = 1;
 		}
 	}

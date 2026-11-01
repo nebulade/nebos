@@ -4,6 +4,7 @@
 #define UCMD_LIB_H
 
 #include "syscall.h"
+#include "wm_abi.h"
 
 static inline int u_syscall1(int num, int a1)
 {
@@ -184,6 +185,146 @@ static inline void u_exit(int code)
 static inline int u_rtc_hms(struct sys_time *t)
 {
 	return u_syscall1(SYS_RTC_HMS, (int)t);
+}
+
+static inline int u_rtc_datetime(char *buf, unsigned int max)
+{
+	return u_syscall2(SYS_RTC_DATETIME, (int)buf, (int)max);
+}
+
+/* Window-manager service (only the kernel-spawned /ramfs/bin/wm may use it). */
+static inline int u_wm_attach(struct wm_screen_info *out)
+{
+	return u_syscall1(SYS_WM_ATTACH, (int)out);
+}
+
+static inline int u_wm_info(unsigned int index, struct wm_window_info *out)
+{
+	return u_syscall2(SYS_WM_INFO, (int)index, (int)out);
+}
+
+static inline int u_wm_map(unsigned int index, struct wm_map_info *out)
+{
+	return u_syscall2(SYS_WM_MAP, (int)index, (int)out);
+}
+
+static inline int u_wm_ack(unsigned int index, unsigned int seq)
+{
+	return u_syscall2(SYS_WM_ACK, (int)index, (int)seq);
+}
+
+static inline int u_wm_focus(unsigned int index)
+{
+	return u_syscall1(SYS_WM_FOCUS, (int)index);
+}
+
+static inline int u_wm_set_geom(unsigned int index, int x, int y)
+{
+	struct wm_geom g;
+
+	g.x = x;
+	g.y = y;
+	return u_syscall2(SYS_WM_SET_GEOM, (int)index, (int)&g);
+}
+
+static inline int u_wm_create_term(void)
+{
+	return u_syscall0(SYS_WM_CREATE_TERM);
+}
+
+static inline int u_wm_close(unsigned int index)
+{
+	return u_syscall1(SYS_WM_CLOSE, (int)index);
+}
+
+static inline int u_wm_poll(struct wm_status *out)
+{
+	return u_syscall1(SYS_WM_POLL, (int)out);
+}
+
+static inline int u_wm_begin(void)
+{
+	return u_syscall0(SYS_WM_BEGIN);
+}
+
+static inline int u_wm_present(struct wm_present_info *in)
+{
+	return u_syscall1(SYS_WM_PRESENT, (int)in);
+}
+
+static inline int u_wm_sync(void)
+{
+	return u_syscall0(SYS_WM_SYNC);
+}
+
+/* Generic canvas window (gfx commands own a window instead of replacing a
+ * terminal's content). */
+static inline int u_win_create(unsigned int w, unsigned int h, const char *title,
+			       struct win_info *out)
+{
+	struct win_create in;
+	unsigned int i = 0;
+
+	in.w = w;
+	in.h = h;
+	while (title && title[i] && i < sizeof(in.title) - 1) {
+		in.title[i] = title[i];
+		i++;
+	}
+	in.title[i] = '\0';
+	return u_syscall2(SYS_WIN_CREATE, (int)&in, (int)out);
+}
+
+static inline int u_win_present(void)
+{
+	return u_syscall0(SYS_WIN_PRESENT);
+}
+
+static inline int u_win_close(void)
+{
+	return u_syscall0(SYS_WIN_CLOSE);
+}
+
+static inline int u_tty_create(void)
+{
+	return u_syscall0(SYS_TTY_CREATE);
+}
+
+static inline int u_tty_read(int id, char *buf, unsigned int max)
+{
+	return u_syscall3(SYS_TTY_READ, id, (int)buf, (int)max);
+}
+
+static inline int u_spawn(const char *path, const char *arg, int tty,
+			  const char *cwd)
+{
+	struct sys_spawn s;
+
+	s.path = path;
+	s.arg = arg;
+	s.cwd = cwd;
+	s.tty = (unsigned int)tty;
+	return u_syscall1(SYS_SPAWN, (int)&s);
+}
+
+static inline int u_spawn_kcmd(const char *name, const char *arg, int tty)
+{
+	return u_syscall3(SYS_SPAWN_KCMD, (int)name, (int)arg, tty);
+}
+
+static inline int u_alive(unsigned int pid)
+{
+	return u_syscall1(SYS_ALIVE, (int)pid);
+}
+
+static inline int u_kill(unsigned int pid)
+{
+	return u_syscall1(SYS_KILL, (int)pid);
+}
+
+static inline int u_chdir(const char *path)
+{
+	return u_syscall1(SYS_CHDIR, (int)path);
 }
 
 static inline int u_gfx_begin(struct sys_gfx_info *info)

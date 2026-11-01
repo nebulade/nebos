@@ -193,6 +193,21 @@ int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
 	return 1;
 }
 
+unsigned int paging_page_phys(unsigned int cr3, unsigned int va)
+{
+	unsigned int *pd = (unsigned int *)cr3;
+	unsigned int pde = pd[va >> 22];
+	unsigned int pte = (va >> 12) & 0x3FF;
+
+	if (!(pde & PDE_PRESENT) || (pde & PDE_PS))
+		return 0;
+	{
+		unsigned int e = ((unsigned int *)(pde & 0xFFFFF000))[pte];
+
+		return (e & PTE_PRESENT) ? (e & 0xFFFFF000) : 0;
+	}
+}
+
 void paging_unmap_page(unsigned int cr3, unsigned int va)
 {
 	unsigned int *pd = (unsigned int *)cr3;
@@ -202,6 +217,82 @@ void paging_unmap_page(unsigned int cr3, unsigned int va)
 	if (!(pd[pde] & PDE_PRESENT))
 		return;
 	((unsigned int *)(pd[pde] & 0xFFFFF000))[pte] = 0;
+}
+
+int paging_user_range_ok(unsigned int cr3, unsigned int va,
+			 unsigned int size, int write)
+{
+	unsigned int *pd = (unsigned int *)cr3;
+	unsigned int end = va + size;
+	unsigned int p;
+
+	if (!pd || size == 0 || end < va)
+		return 0;
+	for (p = va & 0xFFFFF000u; p < end; p += PAGE_SIZE) {
+		unsigned int pde = pd[p >> 22];
+		unsigned int *pt;
+		unsigned int pte;
+
+		if (!(pde & PDE_PRESENT) || (pde & PDE_PS) || !(pde & PDE_USER))
+			return 0;
+		pt = (unsigned int *)(pde & 0xFFFFF000);
+		pte = pt[(p >> 12) & 0x3FF];
+		if (!(pte & PTE_PRESENT) || !(pte & PTE_USER))
+			return 0;
+		if (write && !(pte & PTE_WRITABLE))
+			return 0;
+	}
+	return 1;
+}
+
+void paging_release_user_range(unsigned int cr3, unsigned int va,
+			       unsigned int size, int free_phys)
+{
+	unsigned int *pd = (unsigned int *)cr3;
+	unsigned int end = va + size;
+	unsigned int first, last, i, j;
+
+	if (!pd || size == 0 || end < va)
+		return;
+	first = va >> 22;
+	last = (end - 1) >> 22;
+
+	for (i = first; i <= last && i < 1024; i++) {
+		unsigned int pde = pd[i];
+		unsigned int *pt;
+		int empty = 1;
+
+		/* Kernel identity mappings are 4 MB pages and must never be
+		 * touched here. */
+		if (!(pde & PDE_PRESENT) || (pde & PDE_PS))
+			continue;
+		pt = (unsigned int *)(pde & 0xFFFFF000);
+
+		for (j = 0; j < 1024; j++) {
+			unsigned int pva = (i << 22) | (j << 12);
+
+			if (pva < va || pva >= end)
+				continue;
+			if (pt[j] & PTE_PRESENT) {
+				/* Only user pages are owned by the process; a
+				 * supervisor mapping in this range is left for
+				 * its owner. */
+				if (free_phys && (pt[j] & PTE_USER))
+					mm_free_page(pt[j] & 0xFFFFF000);
+				pt[j] = 0;
+			}
+		}
+
+		for (j = 0; j < 1024; j++)
+			if (pt[j] & PTE_PRESENT) {
+				empty = 0;
+				break;
+			}
+		if (empty) {
+			mm_free_page(pde & 0xFFFFF000);
+			pd[i] = 0;
+		}
+	}
 }
 
 /* Identity-map an MMIO range uncacheable into one page directory (4 MB pages;

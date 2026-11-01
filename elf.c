@@ -68,7 +68,7 @@ unsigned int elf_load(unsigned int cr3, const void *image, unsigned int size)
 	ph = (const struct elf32_phdr *)((const char *)image + h->phoff);
 
 	for (i = 0; i < h->phnum; i++) {
-		unsigned int va, memsz, filesz, off, npages;
+		unsigned int va, memsz, filesz, off, pbase, npages;
 
 		if (ph[i].type != PT_LOAD || ph[i].memsz == 0)
 			continue;
@@ -77,26 +77,47 @@ unsigned int elf_load(unsigned int cr3, const void *image, unsigned int size)
 		memsz = ph[i].memsz;
 		filesz = ph[i].filesz;
 		off = ph[i].offset;
-		npages = (memsz + 0xFFF) >> 12;
+		pbase = va & 0xFFFFF000u;
+		npages = ((va - pbase) + memsz + 0xFFF) >> 12;
 
 		for (p = 0; p < npages; p++) {
-			unsigned int phys = mm_alloc_page();
-			unsigned int src = p * 0x1000;
-			unsigned int n;
+			unsigned int pva = pbase + p * 0x1000;
+			unsigned int phys = paging_page_phys(cr3, pva);
+			unsigned int start, end, dst, src, n;
 
-			if (!phys)
-				return 0;
-			memzero((void *)phys, 0x1000);
-			if (src < filesz) {
-				n = filesz - src;
-				if (n > 0x1000)
-					n = 0x1000;
-				memcopy((void *)phys,
-					(const char *)image + off + src, n);
+			if (!phys) {
+				phys = mm_alloc_page();
+				if (!phys)
+					return 0;
+				memzero((void *)phys, 0x1000);
+				if (!paging_map_page(cr3, pva, phys,
+						     PTE_USER | PTE_WRITABLE | PTE_PRESENT))
+					return 0;
 			}
-			if (!paging_map_page(cr3, va + src, phys,
-					     PTE_USER | PTE_WRITABLE | PTE_PRESENT))
-				return 0;
+
+			/* Copy the file-backed part that falls in this page. */
+			start = (va + filesz > pva) ? ((va > pva) ? va : pva) : 0;
+			end = va + filesz;
+			if (end > pva + 0x1000)
+				end = pva + 0x1000;
+			if (start && end > start) {
+				dst = start - pva;
+				src = off + (start - va);
+				n = end - start;
+				memcopy((void *)(phys + dst),
+					(const char *)image + src, n);
+			}
+
+			/* Zero the BSS tail of this segment in this page. */
+			start = va + filesz;
+			end = va + memsz;
+			if (start < pva)
+				start = pva;
+			if (end > pva + 0x1000)
+				end = pva + 0x1000;
+			if (end > start)
+				memzero((void *)(phys + (start - pva)),
+					end - start);
 		}
 	}
 

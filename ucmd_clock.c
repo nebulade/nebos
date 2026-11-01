@@ -157,12 +157,12 @@ static void draw_hands(unsigned int h, unsigned int m, unsigned int s)
 
 void _start(const char *arg)
 {
-	struct sys_gfx_info info;
+	struct win_info info;
 	struct sys_time tm;
 	unsigned int last_sec = 99;
 
 	(void)arg;
-	if (u_gfx_begin(&info) != 0) {
+	if (u_win_create(512, 320, "clock", &info) != 0) {
 		u_puts("clock: no graphics window\n");
 		u_exit(1);
 	}
@@ -185,7 +185,7 @@ void _start(const char *arg)
 	for (;;) {
 		int k = u_key_poll();
 
-		if (k == 0x1B)
+		if (k == 0x1B || k == 0x03)
 			break;
 		u_rtc_hms(&tm);
 		if (tm.hour > 23 || tm.minute > 59 || tm.second > 59) {
@@ -198,10 +198,10 @@ void _start(const char *arg)
 			draw_face();
 			draw_hands(tm.hour, tm.minute, tm.second);
 			last_sec = tm.second;
-			u_gfx_present();
+			u_win_present();
 		}
 		u_sleep_ms(50);
 	}
-	u_gfx_end();
+	u_win_close();
 	u_exit(0);
 }

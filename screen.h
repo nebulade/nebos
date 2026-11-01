@@ -22,6 +22,7 @@ struct text_screen {
 	int dirty;                    /* content changed since last WM render */
 	unsigned int dmg_col0, dmg_col1;
 	unsigned int dmg_row0, dmg_row1;
+	unsigned int damage_seq;      /* bumped on every damage mark (WM ACK) */
 	int scrolled;                 /* one-shot, replaces io_did_scroll */
 };
 

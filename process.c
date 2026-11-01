@@ -13,6 +13,9 @@
 #include "sys_net.h"
 #include "syscall.h"
 #include "timer.h"
+#include "tty.h"
+#include "vga.h"
+#include "wm_abi.h"
 
 struct process *procs;               /* dynamically-sized process table */
 volatile unsigned int current_pid;
@@ -28,7 +31,7 @@ extern char __boot_stack_top[];
 
 /* switch.S addresses the table entries with an immediate PCB_SIZE/PCB_CPU_TICKS
  * and cannot see this struct; keep the two in sync. */
-_Static_assert(sizeof(struct process) == 120,
+_Static_assert(sizeof(struct process) == 124,
 	       "struct process layout changed: update PCB_SIZE/PCB_CPU_TICKS in switch.S");
 
 /* ---- interrupt flag save/restore (for short critical sections) ---- */
@@ -89,6 +92,15 @@ static void name_copy(char *dst, const char *src)
 	dst[i] = '\0';
 }
 
+static void inherit_cwd(struct process *p)
+{
+	unsigned int i;
+
+	for (i = 0; i + 1 < sizeof(p->cwd) && procs[current_pid].cwd[i]; i++)
+		p->cwd[i] = procs[current_pid].cwd[i];
+	p->cwd[i] = '\0';
+}
+
 /* Double the process table.  Called with interrupts disabled. */
 static int grow_proc_table(void)
 {
@@ -110,7 +122,7 @@ static int grow_proc_table(void)
 }
 
 /* Find a free process slot (1..proc_cap-1), growing the table if needed.
- * Slot 0 is the window manager and is never returned.  Called with interrupts
+ * Slot 0 is the kernel idle process and is never returned.  Called with interrupts
  * disabled.  Returns the slot index, or -1 on failure. */
 static int alloc_slot(void)
 {
@@ -149,7 +161,7 @@ void process_init(void)
 	procs[0].kstack_top = (unsigned int)__boot_stack_top;
 	procs[0].cpu_ticks  = 0;
 	procs[0].start_ticks = 0;  /* the WM "starts" at boot */
-	name_copy(procs[0].name, "wm");
+	name_copy(procs[0].name, "idle");
 	current_pid = 0;
 }
 
@@ -240,9 +252,11 @@ static int setup_process(const char *name, unsigned int entry,
 	procs[slot].cpu_ticks  = 0;
 	procs[slot].start_ticks = get_ticks_ms();
 	name_copy(procs[slot].name, name);
-	/* Child inherits the parent's output screen (command output lands in the
-	   terminal that spawned it). */
+	/* Child inherits the parent's output screen/tty (command output lands
+	   in the terminal that spawned it). */
 	procs[slot].screen = procs[current_pid].screen;
+	procs[slot].tty = procs[current_pid].tty;
+	inherit_cwd(&procs[slot]);
 
 	irq_restore(flags);
 	return (int)procs[slot].pid;
@@ -307,13 +321,15 @@ int process_create_ptr(const char *name, void (*entry)(void *), void *arg)
 	procs[slot].start_ticks = get_ticks_ms();
 	name_copy(procs[slot].name, name);
 	procs[slot].screen = procs[current_pid].screen;
+	procs[slot].tty = procs[current_pid].tty;
+	inherit_cwd(&procs[slot]);
 	irq_restore(flags);
 	return (int)procs[slot].pid;
 }
 
 /* Load an ELF image into a fresh address space and run it as a ring-3 process. */
-int process_create_user(const char *name, const void *image, unsigned int size,
-			const char *arg, const char *cwd)
+int process_create_user_tty(const char *name, const void *image, unsigned int size,
+			    const char *arg, const char *cwd, unsigned int tty)
 {
 	int slot, owned;
 	unsigned int base, top, *sp, cr3, entry;
@@ -419,6 +435,7 @@ int process_create_user(const char *name, const void *image, unsigned int size,
 	procs[slot].start_ticks = get_ticks_ms();
 	name_copy(procs[slot].name, name);
 	procs[slot].screen = procs[current_pid].screen;
+	procs[slot].tty = tty ? (int)tty : procs[current_pid].tty;
 	{
 		unsigned int k;
 
@@ -429,6 +446,12 @@ int process_create_user(const char *name, const void *image, unsigned int size,
 
 	irq_restore(flags);
 	return (int)procs[slot].pid;
+}
+
+int process_create_user(const char *name, const void *image, unsigned int size,
+			const char *arg, const char *cwd)
+{
+	return process_create_user_tty(name, image, size, arg, cwd, 0);
 }
 
 /* Set the output screen of the currently-running process (used by a terminal
@@ -491,20 +514,41 @@ void schedule(void)
 		if (procs[i].state == PROC_DEAD && i != current_pid) {
 			sys_net_reap(procs[i].pid);   /* release a held NIC */
 			sys_gfx_reap(procs[i].pid);   /* flag a gfx session dead */
+			tty_reap(procs[i].pid);       /* drop its terminal queue */
 			if (procs[i].stack_base)
 				mm_free_page(procs[i].stack_base);
-			if (procs[i].cr3 && procs[i].cr3 != paging_current_cr3())
+			if (procs[i].cr3 &&
+			    procs[i].cr3 != paging_current_cr3()) {
+				/* User code/stack pages belong to the process.
+				 * The gfx canvas mapping is only a window into
+				 * pages owned by the session: release the PTEs
+				 * and page tables, not the pages. */
+				paging_release_user_range(procs[i].cr3,
+					USER_BASE, USER_STACK_TOP - USER_BASE, 1);
+				paging_release_user_range(procs[i].cr3,
+					USER_GFX_BASE, USER_GFX_RANGE, 0);
+				/* WM surface mappings: page tables only; the
+				 * shadow/terminal/canvas pages belong to the
+				 * window server. */
+				paging_release_user_range(procs[i].cr3,
+					WM_SHADOW_VA, 0x00800000, 0);
+				paging_release_user_range(procs[i].cr3,
+					WM_CONTENT_VA_BASE,
+					WM_CONTENT_SLOT * WM_MAX_WINDOWS, 0);
 				mm_free_page(procs[i].cr3);
+			}
 			procs[i].stack_base = 0;
 			procs[i].cr3 = 0;
 			procs[i].state = PROC_UNUSED;
 		}
 	}
 
-	/* A file syscall is in progress: stay on the current process so the FAT
-	 * driver's static state is never touched concurrently (see sys_fs.c).
-	 * Interrupts stay enabled, so the disk's IRQs are still serviced. */
-	if (sys_fs_busy) {
+	/* A file syscall or a shadow-buffer flush is in progress: stay on the
+	 * current process.  The FAT driver has static state, and the flush walks
+	 * and trims a shared damage list (and must not be abandoned halfway
+	 * through by a context switch).  Interrupts stay enabled, so IRQs are
+	 * still serviced. */
+	if (sys_fs_busy || vga_present_busy()) {
 		if (procs[current_pid].state == PROC_READY)
 			procs[current_pid].state = PROC_RUNNING;
 		return;
@@ -538,7 +582,7 @@ void schedule(void)
 		return;
 	}
 
-	/* Everything dead: fall back to slot 0 (window manager). */
+	/* Everything dead: fall back to slot 0 (kernel idle). */
 	procs[0].state = PROC_RUNNING;
 	current_pid = 0;
 }
@@ -649,7 +693,7 @@ int process_kill(unsigned int pid)
 {
 	unsigned int i;
 	if (pid == 0)
-		return -1; /* cannot kill window manager */
+		return -1; /* cannot kill the kernel idle process */
 	for (i = 1; i < proc_cap; i++) {
 		if (procs[i].state != PROC_UNUSED && procs[i].state != PROC_DEAD &&
 		    procs[i].pid == pid) {
@@ -671,6 +715,25 @@ int process_is_alive(unsigned int pid)
 		     procs[i].state == PROC_SLEEPING))
 			return 1;
 	return 0;
+}
+
+int process_is_sleeping(unsigned int pid)
+{
+	unsigned int i;
+	for (i = 0; i < proc_cap; i++)
+		if (procs[i].pid == pid)
+			return procs[i].state == PROC_SLEEPING;
+	return 0;
+}
+
+void process_set_tty(unsigned int pid, int tty)
+{
+	unsigned int i;
+	for (i = 0; i < proc_cap; i++)
+		if (procs[i].pid == pid && procs[i].state != PROC_UNUSED) {
+			procs[i].tty = tty;
+			return;
+		}
 }
 
 /* Block the current process for `ms` milliseconds.  Marks it sleeping and

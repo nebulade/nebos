@@ -38,8 +38,28 @@ struct damage_rect {
 static struct damage_rect damage_rects[DAMAGE_SLOTS];
 static unsigned int damage_count;
 
-static void damage_add(unsigned int x0, unsigned int y0,
-		       unsigned int x1, unsigned int y1)
+/* Set while a process is inside shadow_copy_damage(): the flush walks and
+ * trims the shared damage list, so it must not be entered twice and the
+ * scheduler must not switch away from it halfway.  Marks made while a flush
+ * is active are deferred to one full-screen rect. */
+static int present_busy;
+static int damage_deferred;
+
+static inline unsigned int irq_save_disable(void)
+{
+	unsigned int flags;
+
+	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
+	return flags;
+}
+
+static inline void irq_restore(unsigned int flags)
+{
+	__asm__ volatile ("pushl %0; popfl" :: "r"(flags));
+}
+
+static void damage_add_locked(unsigned int x0, unsigned int y0,
+			      unsigned int x1, unsigned int y1)
 {
 	unsigned int i;
 
@@ -124,6 +144,22 @@ static void damage_add(unsigned int x0, unsigned int y0,
 	}
 }
 
+static void damage_add(unsigned int x0, unsigned int y0,
+		       unsigned int x1, unsigned int y1)
+{
+	unsigned int flags = irq_save_disable();
+
+	if (present_busy) {
+		/* The flush owns the list right now.  Re-mark the whole screen
+		 * once it finishes so the new pixels are not lost. */
+		damage_deferred = 1;
+		irq_restore(flags);
+		return;
+	}
+	damage_add_locked(x0, y0, x1, y1);
+	irq_restore(flags);
+}
+
 static int damage_any(void)
 {
 	return damage_count != 0;
@@ -132,6 +168,7 @@ static int damage_any(void)
 static void damage_clear(void)
 {
 	damage_count = 0;
+	damage_deferred = 0;
 }
 
 static void mark_dirty_rect_xy(unsigned int y, unsigned int h,
@@ -607,26 +644,12 @@ static unsigned int shadow_copy_damage(unsigned int max_bytes)
 	return bytes;
 }
 
-/* Set while a process is inside shadow_copy_damage().  The flush walks and
- * trims a shared damage list, so it must not be entered twice: a process can
- * be preempted mid-flush (a full-screen copy takes several milliseconds) and
- * the scheduler may well run another process that flushes too. */
-static int present_busy;
-
 /* Bytes copied by the presenter so far (see vga.h). */
 unsigned int vga_present_copied;
 
-static inline unsigned int irq_save_disable(void)
+int vga_present_busy(void)
 {
-	unsigned int flags;
-
-	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
-	return flags;
-}
-
-static inline void irq_restore(unsigned int flags)
-{
-	__asm__ volatile ("pushl %0; popfl" :: "r"(flags));
+	return present_busy;
 }
 
 /* Copy up to `max_bytes` of the pending damage to VRAM.  Called by the main
@@ -652,7 +675,13 @@ void vga_present_shadow(unsigned int max_bytes)
 	present_busy = 1;
 	irq_restore(flags);
 	vga_present_copied += shadow_copy_damage(max_bytes);
+	flags = irq_save_disable();
 	present_busy = 0;
+	if (damage_deferred) {
+		damage_deferred = 0;
+		damage_add_locked(0, 0, vga_fb_w, vga_fb_h);
+	}
+	irq_restore(flags);
 }
 
 /* Make drawn content visible: the backend's present() (the software one copies

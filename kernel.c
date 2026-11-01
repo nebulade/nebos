@@ -12,6 +12,7 @@
 #include "paging.h"
 #include "process.h"
 #include "ramfs.h"
+#include "sys_gfx.h"
 #include "timer.h"
 #include "tss.h"
 #include "usbhid.h"
@@ -161,6 +162,27 @@ static void timer_init(void)
 
 extern unsigned char __bss_start[], __bss_end[];
 
+/* The idle process: keeps the parts of the system that must not depend on
+ * the window manager running.  Input routing, cursor blink, kexec recovery,
+ * netlog flushing and gfx-session cleanup live here; the WM process only
+ * handles window state and drawing. */
+static void kernel_idle_loop(void)
+{
+	for (;;) {
+		mouse_poll_update();
+		wm_pump_keyboard();
+		wm_blink_cursor();
+		netlog_flush();
+		wm_handle_kexec();
+		wm_server_supervise();
+		if (wm_server_can_reap())
+			sys_gfx_collect();
+		if (!wm_server_frame_active())
+			vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
+		cpu_idle();
+	}
+}
+
 void kernel_main(void);
 void kernel_main(void)
 {
@@ -217,5 +239,9 @@ void kernel_main(void)
 	/* With a NIC present, try DHCP; on failure the static default stays. */
 	if (netdev_active())
 		dhcp_run(3000);
-	wm_run();
+	/* Slot 0 is the idle loop; the window server is initialized before the
+	 * ring-3 WM is spawned from /ramfs/bin/wm. */
+	wm_server_init();
+	wm_server_start();
+	kernel_idle_loop();
 }

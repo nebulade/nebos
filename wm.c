@@ -1,5 +1,7 @@
 /* Window manager: fixed-size draggable terminal windows + a system bar.
-   Slot 0 runs wm_run(); each terminal window is a separate process. */
+ * wm_run() is a normal kernel process; the idle loop keeps input routing,
+ * cursor blinking, kexec detection and gfx session cleanup running even when
+ * the WM process is not scheduled. */
 
 #include "wm.h"
 #include "blit.h"
@@ -7,27 +9,93 @@
 #include "idle.h"
 #include "io.h"
 #include "kexec.h"
+#include "mm.h"
 #include "mouse.h"
 #include "netkexec.h"
 #include "netlog.h"
+#include "paging.h"
 #include "payload.h"
 #include "process.h"
 #include "rtc.h"
+#include "serial.h"
 #include "sys_gfx.h"
 #include "timer.h"
 #include "version.h"
 #include "vga.h"
+#include "vfs.h"
 
 static struct window windows[MAX_WINDOWS];
-static struct term terms[MAX_WINDOWS];
+/* The terminal state is large and only needed for live windows.  Allocate it
+ * from the frame allocator (page-aligned) instead of carrying it in BSS: the
+ * cell grid is exactly one page, so a ring-3 WM can map just that page. */
+#define TERM_STRIDE (2 * PAGE_SIZE)
+static struct term *terms[MAX_WINDOWS];
 static unsigned int term_counter;
 static int wm_full_redraw;
+
+_Static_assert(sizeof(struct term) <= TERM_STRIDE,
+	       "struct term no longer fits two pages");
+_Static_assert(__builtin_offsetof(struct term, screen) == 0,
+	       "term->screen must be the first field");
+_Static_assert(__builtin_offsetof(struct text_screen, cells) == 0,
+	       "text_screen.cells must be the first field");
+_Static_assert(sizeof(((struct text_screen *)0)->cells) == PAGE_SIZE,
+	       "the cell grid must be exactly one page");
+
+static int wm_terms_init(void)
+{
+	unsigned int base = mm_alloc_pages(MAX_WINDOWS * (TERM_STRIDE / PAGE_SIZE));
+	unsigned char *p;
+	unsigned int i;
+
+	if (!base)
+		return -1;
+	p = (unsigned char *)base;
+	for (i = 0; i < MAX_WINDOWS * TERM_STRIDE; i++)
+		p[i] = 0;
+	for (i = 0; i < MAX_WINDOWS; i++)
+		terms[i] = (struct term *)(base + i * TERM_STRIDE);
+	return 0;
+}
 
 /* Mouse drag state. */
 static int drag_active;
 static int drag_window;      /* index into windows[] */
 static int drag_dx, drag_dy; /* mouse offset from window origin */
 static unsigned int prev_buttons;
+
+/* Ring-3 WM lifecycle.  The kernel only admits the process it spawned; a
+ * stale pid cannot keep drawing after a restart. */
+static unsigned int wm_expected_pid;
+static unsigned int wm_pid;
+static unsigned int wm_cr3;
+static int wm_attached;
+static int wm_frame_active;
+static unsigned int wm_last_start;
+static unsigned int wm_last_seen;
+
+static inline unsigned int irq_save_disable(void)
+{
+	unsigned int flags;
+	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
+	return flags;
+}
+
+static inline void irq_restore(unsigned int flags)
+{
+	__asm__ volatile ("pushl %0; popfl" :: "r"(flags));
+}
+
+static inline void invlpg_va(unsigned int va)
+{
+	__asm__ volatile ("invlpg (%0)" : : "r"(va) : "memory");
+}
+
+static void wm_focus_index(unsigned int idx);
+static void wm_focus_top(void);
+static void wm_close_window(unsigned int idx);
+static void wm_clamp_window(struct window *w, int nx, int ny);
+static void wm_server_unmap_index(unsigned int idx);
 
 void wm_request_redraw(void)
 {
@@ -76,6 +144,749 @@ int wm_content_size(struct term *t, unsigned int *w, unsigned int *h)
 	return -1;
 }
 
+/* ---- Ring-3 WM ABI ---------------------------------------------------- */
+
+int wm_server_is_wm(void)
+{
+	return wm_attached && procs[current_pid].pid == wm_pid;
+}
+
+int wm_server_frame_active(void)
+{
+	return wm_frame_active;
+}
+
+/* Safe point for freeing another window's canvas: the WM is not between
+ * SYS_WM_INFO/MAP and PRESENT.  A ring-3 WM sleeps at the end of every loop;
+ * the kernel fallback has no cached mappings. */
+int wm_server_can_reap(void)
+{
+	if (wm_frame_active)
+		return 0;
+	return !wm_attached || process_is_sleeping(wm_pid);
+}
+
+static void wm_server_unmap_index(unsigned int idx)
+{
+	struct window *w = &windows[idx];
+	unsigned int va, i;
+
+	if (!wm_cr3 || idx >= MAX_WINDOWS || !w->mapped_pages)
+		return;
+	va = WM_CONTENT_VA_BASE + idx * WM_CONTENT_SLOT;
+	paging_release_user_range(wm_cr3, va, WM_CONTENT_SLOT, 0);
+	for (i = 0; i < w->mapped_pages; i++)
+		invlpg_va(va + i * PAGE_SIZE);
+	w->mapped_kind = WM_KIND_NONE;
+	w->mapped_gen = 0;
+	w->mapped_pages = 0;
+	w->mapped_src = 0;
+}
+
+void wm_server_unmap_screen(struct text_screen *screen)
+{
+	unsigned int i;
+
+	for (i = 0; i < MAX_WINDOWS; i++)
+		if (windows[i].used && windows[i].term &&
+		    &windows[i].term->screen == screen)
+			wm_server_unmap_index(i);
+}
+
+/* A dead gfx session can coexist with a newer session on the same screen (the
+ * old canvas is freed later).  Only drop the WM mapping when it still points
+ * at *this* canvas, so collecting the old session cannot unmap the new one. */
+void wm_server_unmap_canvas(struct text_screen *screen, const void *canvas)
+{
+	unsigned int i;
+
+	for (i = 0; i < MAX_WINDOWS; i++)
+		if (windows[i].used && windows[i].term &&
+		    &windows[i].term->screen == screen &&
+		    windows[i].mapped_kind == WM_KIND_GFX &&
+		    windows[i].mapped_src == canvas)
+			wm_server_unmap_index(i);
+}
+
+static int wm_window_for_pid(unsigned int pid)
+{
+	unsigned int i;
+
+	for (i = 0; i < MAX_WINDOWS; i++)
+		if (windows[i].used && windows[i].pid == pid)
+			return (int)i;
+	return -1;
+}
+
+static void wm_unmap_back(struct window *w, unsigned int pages)
+{
+	unsigned int i;
+
+	if (w->owner_cr3 && pages) {
+		paging_release_user_range(w->owner_cr3, USER_GFX_BASE,
+					  pages * PAGE_SIZE, 0);
+		for (i = 0; i < pages; i++)
+			invlpg_va(USER_GFX_BASE + i * PAGE_SIZE);
+	}
+	w->owner_cr3 = 0;
+}
+
+static void wm_free_canvas_window(unsigned int idx)
+{
+	struct window *w = &windows[idx];
+	unsigned int i;
+
+	if (!w->canvas_window)
+		return;
+	wm_unmap_back(w, w->back_pages);
+	if (w->back) {
+		for (i = 0; i < w->back_pages; i++)
+			mm_free_page((unsigned int)w->back + i * PAGE_SIZE);
+		w->back = 0;
+	}
+	w->back_pages = 0;
+	gfx_free(&w->canvas);
+	w->canvas_window = 0;
+}
+
+int wm_server_win_create(const struct win_create *in, struct win_info *out)
+{
+	struct window *w;
+	struct gfx_canvas *c;
+	unsigned short *back;
+	unsigned int i, j, pages, cw, ch, base;
+	unsigned int flags;
+
+	if (!in || !out)
+		return -1;
+	if (procs[current_pid].pid == 0 ||
+	    wm_window_for_pid(procs[current_pid].pid) >= 0)
+		return -1;
+	cw = in->w;
+	ch = in->h;
+	if (cw == 0 || ch == 0 || cw > 1024 || ch > 1024)
+		return -1;
+	if (cw + 2 > vga_fb_width() || ch + WM_TITLE_H + 2 > vga_fb_height())
+		return -1;
+	for (i = 0; i < MAX_WINDOWS; i++)
+		if (!windows[i].used)
+			break;
+	if (i == MAX_WINDOWS)
+		return -1;
+	w = &windows[i];
+	c = &w->canvas;
+	if (gfx_alloc(c, cw, ch) != 0)
+		return -1;
+	pages = (cw * ch * 2 + PAGE_SIZE - 1) / PAGE_SIZE;
+	back = (unsigned short *)mm_alloc_pages(pages);
+	if (!back) {
+		gfx_free(c);
+		return -1;
+	}
+	for (j = 0; j < cw * ch; j++)
+		back[j] = 0;
+
+	flags = irq_save_disable();
+	base = procs[current_pid].cr3;
+	for (j = 0; j < pages; j++) {
+		if (!paging_map_page(base, USER_GFX_BASE + j * PAGE_SIZE,
+				     (unsigned int)back + j * PAGE_SIZE,
+				     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
+			irq_restore(flags);
+			paging_release_user_range(base, USER_GFX_BASE,
+						  (j ? j : 1) * PAGE_SIZE, 0);
+			for (i = 0; i < pages; i++)
+				mm_free_page((unsigned int)back + i * PAGE_SIZE);
+			gfx_free(c);
+			return -1;
+		}
+		invlpg_va(USER_GFX_BASE + j * PAGE_SIZE);
+	}
+	irq_restore(flags);
+
+	w->used = 1;
+	w->canvas_window = 1;
+	w->term = 0;
+	w->pid = procs[current_pid].pid;
+	w->owner_cr3 = base;
+	w->back = back;
+	w->back_pages = pages;
+	w->canvas.seq = 1;
+	w->canvas.drawn = 0;
+	w->pw = cw + 2;
+	w->ph = ch + WM_TITLE_H + 2;
+	w->x = 24 + i * 32;
+	w->y = WM_BAR_H + 12 + i * 28;
+	if (w->x + w->pw > vga_fb_width())
+		w->x = (vga_fb_width() > w->pw) ? vga_fb_width() - w->pw : 0;
+	if (w->y + w->ph > vga_fb_height())
+		w->y = WM_BAR_H + 4;
+	w->focused = 0;
+	w->content_gen = 1;
+	w->mapped_kind = WM_KIND_NONE;
+	w->mapped_gen = 0;
+	w->mapped_pages = 0;
+	w->mapped_src = 0;
+	w->key_head = w->key_tail = 0;
+	for (j = 0; j < sizeof(w->title) - 1 && in->title[j]; j++)
+		w->title[j] = in->title[j];
+	w->title[j] = '\0';
+
+	for (j = 0; j < MAX_WINDOWS; j++)
+		if (windows[j].used)
+			windows[j].focused = (j == i);
+	wm_request_redraw();
+
+	out->fb = (void *)USER_GFX_BASE;
+	out->width = cw;
+	out->height = ch;
+	out->id = i;
+	return 0;
+}
+
+int wm_server_win_present(void)
+{
+	int idx = wm_window_for_pid(procs[current_pid].pid);
+	struct window *w;
+	const unsigned short *src;
+	unsigned int n, i;
+
+	if (idx < 0)
+		return -1;
+	w = &windows[idx];
+	if (!w->canvas_window || !w->back || !w->canvas.px)
+		return -1;
+	src = (const unsigned short *)USER_GFX_BASE;
+	n = w->canvas.w * w->canvas.h;
+	for (i = 0; i + 1 < n; i += 2)
+		((unsigned int *)w->canvas.px)[i / 2] = ((const unsigned int *)src)[i / 2];
+	if (n & 1)
+		w->canvas.px[n - 1] = src[n - 1];
+	w->canvas.seq++;
+	return 0;
+}
+
+int wm_server_win_close(void)
+{
+	int idx = wm_window_for_pid(procs[current_pid].pid);
+
+	if (idx < 0 || !wm_server_can_reap())
+		return -1;
+	wm_server_unmap_index((unsigned int)idx);
+	wm_free_canvas_window((unsigned int)idx);
+	windows[idx].used = 0;
+	windows[idx].pid = 0;
+	windows[idx].focused = 0;
+	windows[idx].content_gen++;
+	wm_focus_top();
+	wm_request_redraw();
+	return 0;
+}
+
+int wm_server_key_poll(void)
+{
+	int idx = wm_window_for_pid(procs[current_pid].pid);
+	struct window *w;
+	int k;
+
+	if (idx < 0)
+		return 0;
+	w = &windows[idx];
+	if (w->key_tail == w->key_head)
+		return 0;
+	k = w->keys[w->key_tail];
+	w->key_tail = (w->key_tail + 1) % 16;
+	return k;
+}
+
+void wm_content_changed(struct text_screen *screen)
+{
+	unsigned int i;
+
+	for (i = 0; i < MAX_WINDOWS; i++)
+		if (windows[i].used && windows[i].term &&
+		    &windows[i].term->screen == screen)
+			windows[i].content_gen++;
+	wm_request_redraw();
+}
+
+int wm_server_attach(struct wm_screen_info *out)
+{
+	struct surface *s;
+	unsigned int pages, i, bytes;
+
+	if (!out || !wm_expected_pid ||
+	    procs[current_pid].pid != wm_expected_pid || wm_attached) {
+		serial_puts(SERIAL_COM1, "wm: attach rejected (expected ");
+		serial_puthex(SERIAL_COM1, wm_expected_pid);
+		serial_puts(SERIAL_COM1, " current ");
+		serial_puthex(SERIAL_COM1, procs[current_pid].pid);
+		serial_puts(SERIAL_COM1, ")\n");
+		return -1;
+	}
+	if (!vga_shadow_is_active()) {
+		serial_puts(SERIAL_COM1, "wm: attach: no shadow buffer\n");
+		return -1;
+	}
+	s = vga_screen_surface();
+	if (!s || !s->px)
+		return -1;
+
+	bytes = s->pitch * s->h;
+	pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+	wm_cr3 = procs[current_pid].cr3;
+	for (i = 0; i < pages; i++) {
+		unsigned int va = WM_SHADOW_VA + i * PAGE_SIZE;
+
+		if (!paging_map_page(wm_cr3, va,
+				     (unsigned int)s->px + i * PAGE_SIZE,
+				     PTE_USER | PTE_WRITABLE | PTE_PRESENT)) {
+			paging_release_user_range(wm_cr3, WM_SHADOW_VA,
+						  i * PAGE_SIZE, 0);
+			wm_cr3 = 0;
+			return -1;
+		}
+		invlpg_va(va);
+	}
+
+	for (i = 0; i < MAX_WINDOWS; i++) {
+		windows[i].mapped_kind = WM_KIND_NONE;
+		windows[i].mapped_gen = 0;
+		windows[i].mapped_pages = 0;
+		windows[i].mapped_src = 0;
+	}
+
+	wm_pid = procs[current_pid].pid;
+	wm_attached = 1;
+	wm_frame_active = 0;
+	wm_last_seen = get_ticks_ms();
+	mouse_set_auto_draw(1);
+	wm_full_redraw = 1;
+
+	out->width = s->w;
+	out->height = s->h;
+	out->pitch = s->pitch;
+	out->bpp = s->bpp;
+	out->bytes = bytes;
+	out->fb = (void *)WM_SHADOW_VA;
+	serial_puts(SERIAL_COM1, "wm: ring-3 WM attached\n");
+	return 0;
+}
+
+int wm_server_info(unsigned int index, struct wm_window_info *out)
+{
+	struct window *w;
+	struct gfx_canvas *g = 0;
+	struct text_screen *s = 0;
+	unsigned int i;
+
+	if (!wm_server_is_wm() || !out || index >= MAX_WINDOWS)
+		return -1;
+	w = &windows[index];
+	if (!w->used)
+		return 0;
+
+	out->used = 1;
+	out->kind = WM_KIND_NONE;
+	out->focused = w->focused ? 1 : 0;
+	out->pid = w->pid;
+	out->x = (int)w->x;
+	out->y = (int)w->y;
+	out->w = w->pw;
+	out->h = w->ph;
+	out->cols = 0;
+	out->rows = 0;
+	out->cursor = 0;
+	out->cursor_visible = 0;
+	out->dirty = 0;
+	out->dirty_seq = 0;
+	out->dmg_col0 = out->dmg_row0 = 0;
+	out->dmg_cols = out->dmg_rows = 0;
+	out->content_gen = w->content_gen;
+	for (i = 0; i < sizeof(out->title) - 1 && w->title[i]; i++)
+		out->title[i] = w->title[i];
+	out->title[i] = '\0';
+
+	if (w->canvas_window) {
+		g = &w->canvas;
+	} else if (w->term) {
+		s = &w->term->screen;
+		g = sys_gfx_canvas_for(s);
+	} else {
+		return 1;
+	}
+
+	if (g) {
+		out->kind = WM_KIND_GFX;
+		out->content_w = g->w;
+		out->content_h = g->h;
+		out->dirty = (g->seq != g->drawn);
+		out->dirty_seq = g->seq;
+	} else if (s) {
+		unsigned int c0, r0, nc, nr;
+
+		out->kind = WM_KIND_TEXT;
+		out->content_w = w->pw - 2;
+		out->content_h = SCREEN_ROWS * 10;
+		out->cols = s->cols;
+		out->rows = s->rows;
+		out->cursor = s->cursor;
+		out->cursor_visible = s->cursor_visible;
+		out->dirty_seq = s->damage_seq;
+		if (screen_damage_block(s, &c0, &r0, &nc, &nr)) {
+			out->dirty = 1;
+			out->dmg_col0 = c0;
+			out->dmg_row0 = r0;
+			out->dmg_cols = nc;
+			out->dmg_rows = nr;
+		}
+	}
+	return 1;
+}
+
+int wm_server_map(unsigned int index, struct wm_map_info *out)
+{
+	struct window *w;
+	struct gfx_canvas *g = 0;
+	struct text_screen *s = 0;
+	const void *src;
+	unsigned int kind, pages, i, va;
+	unsigned int wpx, hpx, stride;
+
+	if (!wm_server_is_wm() || !out || index >= MAX_WINDOWS || !wm_cr3)
+		return -1;
+	w = &windows[index];
+	if (!w->used)
+		return -1;
+	if (w->canvas_window) {
+		g = &w->canvas;
+	} else if (w->term) {
+		s = &w->term->screen;
+		g = sys_gfx_canvas_for(s);
+	} else {
+		return -1;
+	}
+	kind = g ? WM_KIND_GFX : WM_KIND_TEXT;
+	src = g ? (const void *)g->px : (const void *)w->term;
+
+	if (w->mapped_kind == kind && w->mapped_gen == w->content_gen &&
+	    w->mapped_src == src) {
+		out->va = (void *)(WM_CONTENT_VA_BASE + index * WM_CONTENT_SLOT);
+		out->kind = kind;
+		out->generation = w->content_gen;
+		if (g) {
+			out->w = g->w;
+			out->h = g->h;
+			out->stride = g->w * 2;
+		} else {
+			out->w = s->cols;
+			out->h = s->rows;
+			out->stride = s->cols * 2;
+		}
+		return 0;
+	}
+
+	wm_server_unmap_index(index);
+	if (g) {
+		wpx = g->w;
+		hpx = g->h;
+		stride = g->w * 2;
+		pages = (wpx * hpx * 2 + PAGE_SIZE - 1) / PAGE_SIZE;
+		if (pages * PAGE_SIZE > WM_CONTENT_SLOT)
+			return -1;
+	} else {
+		wpx = s->cols;
+		hpx = s->rows;
+		stride = s->cols * 2;
+		pages = 1;
+	}
+	va = WM_CONTENT_VA_BASE + index * WM_CONTENT_SLOT;
+	for (i = 0; i < pages; i++) {
+		if (!paging_map_page(wm_cr3, va + i * PAGE_SIZE,
+				     (unsigned int)src + i * PAGE_SIZE,
+				     PTE_USER | PTE_PRESENT)) {
+			paging_release_user_range(wm_cr3, va,
+						  (i ? i : 1) * PAGE_SIZE, 0);
+			return -1;
+		}
+		invlpg_va(va + i * PAGE_SIZE);
+	}
+	w->mapped_kind = kind;
+	w->mapped_gen = w->content_gen;
+	w->mapped_pages = pages;
+	w->mapped_src = src;
+
+	out->va = (void *)va;
+	out->kind = kind;
+	out->w = wpx;
+	out->h = hpx;
+	out->stride = stride;
+	out->generation = w->content_gen;
+	return 0;
+}
+
+int wm_server_ack(unsigned int index, unsigned int seq)
+{
+	struct window *w;
+	struct gfx_canvas *g;
+
+	if (!wm_server_is_wm() || index >= MAX_WINDOWS)
+		return -1;
+	w = &windows[index];
+	if (!w->used)
+		return -1;
+	if (w->canvas_window) {
+		if (seq == w->canvas.seq)
+			w->canvas.drawn = seq;
+		return 0;
+	}
+	if (!w->term)
+		return -1;
+	g = sys_gfx_canvas_for(&w->term->screen);
+	if (g) {
+		if (seq == g->seq)
+			g->drawn = seq;
+	} else if (seq == w->term->screen.damage_seq) {
+		screen_clear_damage(&w->term->screen);
+	}
+	return 0;
+}
+
+int wm_server_focus(unsigned int index)
+{
+	if (!wm_server_is_wm() || index >= MAX_WINDOWS ||
+	    !windows[index].used)
+		return -1;
+	wm_focus_index(index);
+	return 0;
+}
+
+int wm_server_set_geom(unsigned int index, int x, int y)
+{
+	if (!wm_server_is_wm() || index >= MAX_WINDOWS ||
+	    !windows[index].used)
+		return -1;
+	wm_clamp_window(&windows[index], x, y);
+	return 0;
+}
+
+int wm_server_create_term(void)
+{
+	int idx;
+
+	if (!wm_server_is_wm())
+		return -1;
+	idx = wm_spawn_terminal();
+	return idx;
+}
+
+int wm_server_close(unsigned int index)
+{
+	if (!wm_server_is_wm() || wm_frame_active ||
+	    index >= MAX_WINDOWS || !windows[index].used)
+		return -1;
+	wm_close_window(index);
+	return 0;
+}
+
+int wm_server_poll(struct wm_status *out)
+{
+	if (!wm_server_is_wm() || !out)
+		return -1;
+	wm_last_seen = get_ticks_ms();
+	out->mouse.x = mouse_get_x();
+	out->mouse.y = mouse_get_y();
+	out->mouse.buttons = mouse_buttons_state();
+	out->full_redraw = wm_full_redraw ? 1 : 0;
+	out->kexec_busy = kexec_busy ? 1 : 0;
+	out->kexec_progress = kexec_progress;
+	out->kexec_total = kexec_total;
+	wm_full_redraw = 0;
+	return 0;
+}
+
+int wm_server_begin(void)
+{
+	if (!wm_server_is_wm() || wm_frame_active)
+		return -1;
+	mouse_cursor_erase();
+	mouse_set_auto_draw(0);
+	wm_frame_active = 1;
+	return 0;
+}
+
+int wm_server_present(const struct wm_present_info *in)
+{
+	unsigned int i;
+
+	if (!wm_server_is_wm() || !wm_frame_active || !in)
+		return -1;
+	for (i = 0; i < in->count && i < 4; i++) {
+		int x0 = in->rect[i].x;
+		int y0 = in->rect[i].y;
+		int x1 = x0 + (int)in->rect[i].w;
+		int y1 = y0 + (int)in->rect[i].h;
+
+		if (x0 < 0) x0 = 0;
+		if (y0 < 0) y0 = 0;
+		if (x1 < 0) x1 = 0;
+		if (y1 < 0) y1 = 0;
+		if (x1 > (int)vga_fb_width()) x1 = (int)vga_fb_width();
+		if (y1 > (int)vga_fb_height()) y1 = (int)vga_fb_height();
+		if (x1 > x0 && y1 > y0)
+			vga_fb_mark_dirty_rect_xy((unsigned int)y0,
+				(unsigned int)(y1 - y0),
+				(unsigned int)x0, (unsigned int)x1);
+	}
+	mouse_redraw_cursor();
+	mouse_set_auto_draw(1);
+	wm_frame_active = 0;
+	/* The copy can be long; let IRQs run.  vga_present_shadow() keeps the
+	 * scheduler from switching away while it owns the damage list. */
+	__asm__ volatile ("sti" ::: "memory");
+	if (in->immediate)
+		vga_fb_flush();
+	else
+		vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
+	sys_gfx_collect();
+	return 0;
+}
+
+int wm_server_sync(void)
+{
+	if (wm_frame_active)
+		return -1;
+	sys_gfx_collect();
+	return 0;
+}
+
+static void wm_server_wm_died(void)
+{
+	unsigned int i;
+
+	if (wm_frame_active) {
+		mouse_set_auto_draw(1);
+		mouse_redraw_cursor();
+	}
+	wm_frame_active = 0;
+	wm_attached = 0;
+	wm_pid = 0;
+	wm_cr3 = 0;
+	for (i = 0; i < MAX_WINDOWS; i++) {
+		windows[i].mapped_kind = WM_KIND_NONE;
+		windows[i].mapped_gen = 0;
+		windows[i].mapped_pages = 0;
+		windows[i].mapped_src = 0;
+	}
+	wm_full_redraw = 1;
+	serial_puts(SERIAL_COM1, "wm: ring-3 WM stopped; restarting\n");
+}
+
+void wm_server_start(void)
+{
+	struct vfs_file f;
+	struct vfs_mount *m = 0;
+	unsigned int flags;
+	int pid;
+
+	if (wm_expected_pid && process_is_alive(wm_expected_pid))
+		return;
+	if (wm_last_start && get_ticks_ms() - wm_last_start < 1000)
+		return;
+	wm_last_start = get_ticks_ms();
+
+	if (vfs_load_file("/ramfs/bin/wm", &f, &m) == 0) {
+		flags = irq_save_disable();
+		pid = process_create_user("wm", f.data, f.size, "", "/");
+		if (pid > 0)
+			wm_expected_pid = (unsigned int)pid;
+		irq_restore(flags);
+		vfs_release_file(m, &f);
+		if (pid > 0) {
+			serial_puts(SERIAL_COM1, "wm: ring-3 WM started\n");
+			return;
+		}
+		serial_puts(SERIAL_COM1, "wm: cannot load /ramfs/bin/wm\n");
+	} else {
+		serial_puts(SERIAL_COM1, "wm: /ramfs/bin/wm not found\n");
+	}
+
+	/* Temporary fallback during the transition: the old kernel WM. */
+	flags = irq_save_disable();
+	pid = process_create("wm", wm_run);
+	if (pid > 0)
+		wm_expected_pid = (unsigned int)pid;
+	irq_restore(flags);
+	if (pid > 0)
+		serial_puts(SERIAL_COM1, "wm: kernel WM fallback\n");
+}
+
+void wm_server_supervise(void)
+{
+	unsigned int i, now = get_ticks_ms();
+
+	/* Watchdog: a WM that never attaches, or stops polling for several
+	 * seconds, is treated like a crash so a wedged UI can recover. */
+	if (wm_expected_pid && process_is_alive(wm_expected_pid)) {
+		if ((wm_attached && now - wm_last_seen > 5000) ||
+		    (!wm_attached && now - wm_last_start > 3000)) {
+			serial_puts(SERIAL_COM1, "wm: watchdog, killing WM\n");
+			process_kill(wm_expected_pid);
+		}
+	}
+
+	if (wm_expected_pid && !process_is_alive(wm_expected_pid)) {
+		wm_server_wm_died();
+		wm_expected_pid = 0;
+	}
+
+	/* Owner processes that exited close their windows.  Only at a safe
+	 * point: the WM may still be between INFO/MAP and PRESENT. */
+	if (wm_server_can_reap()) {
+		for (i = 0; i < MAX_WINDOWS; i++) {
+			struct window *w = &windows[i];
+
+			if (!w->used || !w->pid || process_is_alive(w->pid))
+				continue;
+			if (w->canvas_window)
+				w->owner_cr3 = 0;  /* cr3 is gone/reaped */
+			wm_close_window(i);
+		}
+	}
+
+	if (wm_expected_pid && process_is_alive(wm_expected_pid))
+		return;
+	wm_server_start();
+}
+
+void wm_server_init(void)
+{
+	unsigned int i;
+	int have_terms = (wm_terms_init() == 0);
+
+	if (!have_terms)
+		serial_puts(SERIAL_COM1, "wm: no memory for terminal state\n");
+	for (i = 0; i < MAX_WINDOWS; i++) {
+		windows[i].used = 0;
+		windows[i].term = terms[i];
+		windows[i].mapped_kind = WM_KIND_NONE;
+		windows[i].mapped_gen = 0;
+		windows[i].mapped_pages = 0;
+		windows[i].mapped_src = 0;
+	}
+	term_counter = 0;
+	wm_full_redraw = 1;
+	drag_active = 0;
+	prev_buttons = 0;
+	wm_expected_pid = 0;
+	wm_pid = 0;
+	wm_cr3 = 0;
+	wm_attached = 0;
+	wm_frame_active = 0;
+	if (have_terms)
+		wm_spawn_terminal();
+}
+
 static int wm_point_in_rect(unsigned int px, unsigned int py,
 	unsigned int rx, unsigned int ry, unsigned int rw, unsigned int rh)
 {
@@ -105,14 +916,36 @@ int wm_spawn_terminal(void)
 	int pid;
 	unsigned int n;
 
+	/* Preferred path: the ring-3 terminal owns a canvas window and creates
+	 * its own tty.  The in-kernel cell terminal below is only a fallback for
+	 * a pack without /ramfs/bin/term. */
+	{
+		struct vfs_file f;
+		struct vfs_mount *m = 0;
+
+		if (vfs_load_file("/ramfs/bin/term", &f, &m) == 0) {
+			unsigned int flags = irq_save_disable();
+
+			pid = process_create_user_tty("term", f.data, f.size,
+						      "", "/", 0);
+			irq_restore(flags);
+			vfs_release_file(m, &f);
+			if (pid > 0) {
+				wm_request_redraw();
+				return 0;
+			}
+			serial_puts(SERIAL_COM1, "wm: cannot start ring-3 term\n");
+		}
+	}
+
 	for (i = 0; i < MAX_WINDOWS; i++)
-		if (!windows[i].used)
+		if (!windows[i].used && terms[i])
 			break;
 	if (i == MAX_WINDOWS)
 		return -1;
 
 	w = &windows[i];
-	t = &terms[i];
+	t = terms[i];
 
 	screen_init(&t->screen);
 	t->screen.cursor_visible = 1;
@@ -124,10 +957,23 @@ int wm_spawn_terminal(void)
 
 	w->used = 1;
 	w->term = t;
+	w->canvas_window = 0;
+	w->canvas.px = 0;
+	w->canvas.w = w->canvas.h = 0;
+	w->canvas.seq = w->canvas.drawn = 0;
+	w->back = 0;
+	w->back_pages = 0;
+	w->owner_cr3 = 0;
+	w->key_head = w->key_tail = 0;
 	w->pid = 0;
 	w->focused = 0;
 	w->pw = SCREEN_COLS * 8 + 2;
 	w->ph = WM_TITLE_H + SCREEN_ROWS * 10 + 2;
+	w->content_gen = 1;
+	w->mapped_kind = WM_KIND_NONE;
+	w->mapped_gen = 0;
+	w->mapped_pages = 0;
+	w->mapped_src = 0;
 
 	/* Cascade position, clamped to the desktop area. */
 	n = term_counter % 5;
@@ -153,7 +999,7 @@ int wm_spawn_terminal(void)
 			windows[j].focused = (j == i);
 
 	wm_request_redraw();
-	return pid;
+	return (int)i;
 }
 
 static void wm_focus_index(unsigned int idx)
@@ -180,12 +1026,32 @@ static void wm_focus_top(void)
 static void wm_close_window(unsigned int idx)
 {
 	struct window *w = &windows[idx];
-	sys_gfx_kill_for_screen(&w->term->screen);   /* stop a running demo */
-	if (w->pid)
+
+	if (w->term) {
+		sys_gfx_kill_for_screen(&w->term->screen); /* stop a demo */
+		if (w->pid)
+			process_kill(w->pid);
+		/* Free the dead session before this term/window slot can be
+		 * reused, so a late collect cannot unmap a new window that
+		 * lands on the same screen. */
+		sys_gfx_collect();
+	} else if (w->canvas_window) {
+		if (w->pid)
+			process_kill(w->pid);
+		wm_server_unmap_index(idx);
+		wm_free_canvas_window(idx);
+	} else if (w->pid) {
 		process_kill(w->pid);
+	}
+	wm_server_unmap_index(idx);
 	w->used = 0;
 	w->pid = 0;
 	w->focused = 0;
+	w->content_gen++;
+	w->mapped_kind = WM_KIND_NONE;
+	w->mapped_gen = 0;
+	w->mapped_pages = 0;
+	w->mapped_src = 0;
 	wm_focus_top();
 	wm_request_redraw();
 }
@@ -357,7 +1223,7 @@ static void wm_handle_mouse(void)
 	prev_buttons = buttons;
 }
 
-static void wm_handle_keyboard(void)
+void wm_pump_keyboard(void)
 {
 	struct window *fw = wm_focused_window();
 	static unsigned int last_hw_poll;
@@ -367,7 +1233,7 @@ static void wm_handle_keyboard(void)
 	if (io_keyboard_raw())
 		return;   /* an inline command is polling for keys itself */
 
-	if (!fw || !fw->term)
+	if (!fw)
 		return;
 
 	for (n = 0; n < 8; n++) {
@@ -381,12 +1247,21 @@ static void wm_handle_keyboard(void)
 		}
 		if (!k)
 			break;
-		/* A graphics command owns its window's keys (ESC etc.);
-		 * Ctrl+C always reaches the terminal so its foreground kill
-		 * keeps working. */
-		if (k == IO_KEY_CTRL_C ||
-		    !sys_gfx_push_key(&fw->term->screen, k))
-			term_key_push(fw->term, k);
+		if (fw->term) {
+			/* A graphics command owns its window's keys (ESC etc.);
+			 * Ctrl+C always reaches the terminal so its foreground
+			 * kill keeps working. */
+			if (k == IO_KEY_CTRL_C ||
+			    !sys_gfx_push_key(&fw->term->screen, k))
+				term_key_push(fw->term, k);
+		} else if (fw->canvas_window) {
+			unsigned int next = (fw->key_head + 1) % 16;
+
+			if (next != fw->key_tail) {
+				fw->keys[fw->key_head] = k;
+				fw->key_head = next;
+			}
+		}
 	}
 }
 
@@ -431,8 +1306,13 @@ static void wm_draw_bar(void)
 static void wm_draw_window_clip(struct window *w, unsigned int cx, unsigned int cy,
 				unsigned int cw, unsigned int ch)
 {
-	struct text_screen *s = &w->term->screen;
-	struct gfx_canvas *g = sys_gfx_canvas_for(&w->term->screen);
+	struct text_screen *s;
+	struct gfx_canvas *g;
+
+	if (!w->term)
+		return;   /* generic canvas windows are drawn by the ring-3 WM */
+	s = &w->term->screen;
+	g = sys_gfx_canvas_for(s);
 	unsigned int bx = w->x + w->pw - 1 - WM_CLOSE_W;
 	unsigned int cony = w->y + 1 + WM_TITLE_H;
 
@@ -535,14 +1415,14 @@ static void wm_redraw_if_needed(void)
 		unsigned int seq_before[MAX_WINDOWS];
 
 		for (i = 0; i < MAX_WINDOWS; i++) {
-			struct gfx_canvas *g = windows[i].used ?
+			struct gfx_canvas *g = (windows[i].used && windows[i].term) ?
 				sys_gfx_canvas_for(&windows[i].term->screen) : 0;
 
 			seq_before[i] = g ? g->seq : 0;
 		}
 		wm_render_full();
 		for (i = 0; i < MAX_WINDOWS; i++)
-			if (windows[i].used) {
+			if (windows[i].used && windows[i].term) {
 				struct gfx_canvas *g = sys_gfx_canvas_for(&windows[i].term->screen);
 
 				screen_clear_damage(&windows[i].term->screen);
@@ -564,12 +1444,13 @@ static void wm_redraw_if_needed(void)
 	   damaged cell block (a canvas window repaints its whole content)
 	   through the damage-rect compositor. */
 	for (i = 0; i < MAX_WINDOWS; i++) {
-		struct text_screen *s = &windows[i].term->screen;
+		struct text_screen *s;
 		struct gfx_canvas *g;
 		unsigned int seq, col0, row0, ncols, nrows;
 
-		if (!windows[i].used)
+		if (!windows[i].used || !windows[i].term)
 			continue;
+		s = &windows[i].term->screen;
 		g = sys_gfx_canvas_for(s);
 		if (!screen_damage_block(s, &col0, &row0, &ncols, &nrows) &&
 		    !(g && g->seq != g->drawn))
@@ -591,21 +1472,7 @@ static void wm_redraw_if_needed(void)
 	}
 }
 
-static void wm_init(void)
-{
-	unsigned int i;
-	for (i = 0; i < MAX_WINDOWS; i++) {
-		windows[i].used = 0;
-		windows[i].term = &terms[i];
-	}
-	term_counter = 0;
-	wm_full_redraw = 1;
-	drag_active = 0;
-	prev_buttons = 0;
-	wm_spawn_terminal();
-}
-
-static void wm_blink_cursor(void)
+void wm_blink_cursor(void)
 {
 	static unsigned int last_cursor_tick;
 	struct window *fw = wm_focused_window();
@@ -622,7 +1489,7 @@ static void wm_blink_cursor(void)
 	}
 }
 
-static void wm_handle_kexec(void)
+void wm_handle_kexec(void)
 {
 	if (kexec_busy)
 		return;
@@ -650,15 +1517,8 @@ static void wm_handle_kexec(void)
 
 void wm_run(void)
 {
-	wm_init();
 	for (;;) {
-		mouse_poll_update();
 		wm_handle_mouse();
-		wm_handle_keyboard();
-		wm_blink_cursor();
-		netlog_flush();
-		wm_handle_kexec();
-		sys_gfx_collect();
 		wm_redraw_if_needed();
 		vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
 		cpu_idle();

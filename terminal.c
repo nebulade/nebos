@@ -4,6 +4,8 @@
 #include "io.h"
 #include "dbg.h"
 #include "kexec.h"
+#include "kmalloc.h"
+#include "mm.h"
 #include "process.h"
 #include "terminal.h"
 #include "timer.h"
@@ -1289,6 +1291,102 @@ void term_run(struct term *t)
 		}
 	}
 }
+}
+
+struct kcmd_ctx {
+	char name[16];
+	char args[VFS_PATH_MAX];
+};
+
+static const struct kcmd *kcmd_find(const char *name)
+{
+	unsigned int i;
+
+	for (i = 0; i < NCMDS; i++)
+		if (cmds[i].name[0] == name[0]) {
+			unsigned int j = 0;
+			while (cmds[i].name[j] && name[j] && cmds[i].name[j] == name[j])
+				j++;
+			if (!cmds[i].name[j] && !name[j])
+				return &cmds[i];
+		}
+	return 0;
+}
+
+static void kcmd_entry(void *arg)
+{
+	struct kcmd_ctx *ctx = (struct kcmd_ctx *)arg;
+	const struct kcmd *c = kcmd_find(ctx->name);
+
+	if (c) {
+		if (c->kind == CK_CUSTOM) {
+			struct term *t = (struct term *)mm_alloc_pages(2);
+			unsigned int i;
+
+			if (!t) {
+				io_putstr("kcmd: out of memory\n");
+			} else {
+				unsigned char *p = (unsigned char *)t;
+
+				for (i = 0; i < 2 * PAGE_SIZE; i++)
+					p[i] = 0;
+				t->fg_pid = -1;
+				for (i = 0; i + 1 < sizeof(t->cwd) &&
+					    procs[current_pid].cwd[i]; i++)
+					t->cwd[i] = procs[current_pid].cwd[i];
+				t->cwd[i] = '\0';
+				{
+					const char *def = "/ramfs/bin";
+					for (i = 0; def[i] && i + 1 < sizeof(t->path); i++)
+						t->path[i] = def[i];
+					t->path[i] = '\0';
+				}
+				c->custom(t, ctx->args);
+				mm_free_page((unsigned int)t);
+				mm_free_page((unsigned int)t + PAGE_SIZE);
+			}
+		} else if (c->kind == CK_SPAWN) {
+			if (c->fixed)
+				c->fn_arg(c->fixed);
+			else
+				c->fn();
+		} else if (c->kind == CK_SPAWN_ARG) {
+			c->fn_arg(ctx->args);
+		}
+	} else {
+		io_putstr(ctx->name);
+		io_putstr(": no such kernel command\n");
+	}
+	kfree(ctx);
+	process_exit();
+}
+
+int term_kcmd_spawn(const char *name, const char *args, unsigned int tty)
+{
+	const struct kcmd *c = kcmd_find(name);
+	struct kcmd_ctx *ctx;
+	unsigned int i;
+	int pid;
+
+	if (!c || (c->flags & CMD_BUILTIN))
+		return -1;
+	ctx = (struct kcmd_ctx *)kmalloc(sizeof(*ctx));
+	if (!ctx)
+		return -1;
+	for (i = 0; i + 1 < sizeof(ctx->name) && name[i]; i++)
+		ctx->name[i] = name[i];
+	ctx->name[i] = '\0';
+	for (i = 0; i + 1 < sizeof(ctx->args) && args[i]; i++)
+		ctx->args[i] = args[i];
+	ctx->args[i] = '\0';
+	pid = process_create_ptr("kcmd", kcmd_entry, ctx);
+	if (pid < 0) {
+		kfree(ctx);
+		return -1;
+	}
+	if (tty)
+		process_set_tty((unsigned int)pid, (int)tty);
+	return pid;
 }
 
 void term_entry(void *arg)

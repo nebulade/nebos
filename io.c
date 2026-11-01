@@ -7,6 +7,7 @@
 #include "process.h"
 #include "screen.h"
 #include "timer.h"
+#include "tty.h"
 
 #define VGA_ATTR 0x0A
 
@@ -158,57 +159,125 @@ void io_init(void)
 	io_drain_keyboard();
 }
 
+/* A process with a tty writes there; the kernel terminal/boot fallback keeps
+ * the old cell-screen path until the ring-3 terminal is running. */
+static int io_tty(void)
+{
+	int id = procs[current_pid].tty;
+
+	return tty_valid(id) ? id : 0;
+}
+
 void io_clear_screen(void)
 {
+	int id = io_tty();
+
+	if (id) {
+		tty_write_str(id, "\x1b[2J\x1b[H");
+		return;
+	}
 	screen_clear(io_current_screen());
 }
 
 int io_did_scroll(void)
 {
+	if (io_tty())
+		return 0;
 	return screen_did_scroll(io_current_screen());
 }
 
 void io_putchar(char c)
 {
+	int id = io_tty();
+
+	if (id) {
+		tty_write(id, &c, 1);
+		return;
+	}
 	screen_putchar(io_current_screen(), c);
 }
 
 void io_putstr(const char *s)
 {
+	int id = io_tty();
+
+	if (id) {
+		tty_write_str(id, s);
+		return;
+	}
 	screen_putstr(io_current_screen(), s);
 }
 
 void io_puthex(unsigned int n)
 {
+	if (io_tty()) {
+		static const char hex[] = "0123456789ABCDEF";
+		char buf[9];
+		unsigned int i = 8;
+
+		buf[8] = '\0';
+		do {
+			buf[--i] = hex[n & 0xF];
+			n >>= 4;
+		} while (i > 0);
+		io_putstr(buf);
+		return;
+	}
 	screen_puthex(io_current_screen(), n);
 }
 
 unsigned int io_get_cursor(void)
 {
+	if (io_tty())
+		return 0;
 	return screen_get_cursor(io_current_screen());
 }
 
 void io_set_cursor(unsigned int pos)
 {
+	if (io_tty()) {
+		char buf[16];
+		unsigned int row = pos / 64 + 1, col = pos % 64 + 1, i = 0;
+
+		buf[i++] = 0x1B; buf[i++] = '[';
+		buf[i++] = (char)('0' + row / 10);
+		buf[i++] = (char)('0' + row % 10);
+		buf[i++] = ';';
+		buf[i++] = (char)('0' + col / 10);
+		buf[i++] = (char)('0' + col % 10);
+		buf[i++] = 'H'; buf[i] = '\0';
+		io_putstr(buf);
+		return;
+	}
 	screen_set_cursor(io_current_screen(), pos);
 }
 
 void io_cursor_show_block(void)
 {
-	struct text_screen *s = io_current_screen();
+	struct text_screen *s;
+
+	if (io_tty())
+		return;
+	s = io_current_screen();
 	s->cursor_visible = 1;
 	screen_damage_cursor(s);
 }
 
 void io_cursor_hide_block(void)
 {
-	struct text_screen *s = io_current_screen();
+	struct text_screen *s;
+
+	if (io_tty())
+		return;
+	s = io_current_screen();
 	s->cursor_visible = 0;
 	screen_damage_cursor(s);
 }
 
 void io_vga_write(unsigned int pos, unsigned short value)
 {
+	if (io_tty())
+		return;
 	screen_put_at(io_current_screen(), pos, value);
 }
 

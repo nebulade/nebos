@@ -26,7 +26,10 @@ kernel.o: kernel.c idle.h io.h mouse.h panic.h process.h terminal.h timer.h seri
 screen.o: screen.c screen.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-io.o: io.c io.h fbtext.h process.h screen.h
+io.o: io.c io.h fbtext.h process.h screen.h tty.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+tty.o: tty.c tty.h process.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 font_8x8.o: font_8x8.c font_8x8.h
@@ -38,7 +41,10 @@ fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 terminal.o: terminal.c terminal.h screen.h vfs.h fat.h blkdev.h io.h dbg.h kexec.h process.h timer.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-wm.o: wm.c wm.h terminal.h screen.h fbtext.h idle.h io.h mouse.h process.h rtc.h timer.h version.h vga.h
+wm.o: wm.c wm.h wm_abi.h terminal.h screen.h fbtext.h idle.h io.h mouse.h process.h paging.h rtc.h timer.h version.h vga.h vfs.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+sys_wm.o: sys_wm.c sys_wm.h wm_abi.h wm.h paging.h process.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 hello.o: hello.c
@@ -242,7 +248,7 @@ elf.o: elf.c elf.h mm.h paging.h
 tss.o: tss.c tss.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-syscall.o: syscall.c syscall.h io.h process.h timer.h
+syscall.o: syscall.c syscall.h io.h process.h timer.h sys_wm.h wm_abi.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 sys_fs.o: sys_fs.c sys_fs.h syscall.h fat.h vfs.h
@@ -257,7 +263,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o screen.o io.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o prog_embed.o space_embed.o cmds_pack.o ramfs.o payload.o
+kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o prog_embed.o space_embed.o cmds_pack.o ramfs.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -295,35 +301,35 @@ BPB_TOTAL_OFFSET = 32
 
 floppy.img: boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
-	cp boot.bin boot.bin.patched; \
-	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
-	cat boot.bin.patched kernel.bin > $@; \
+	cp boot.bin $@.boot.tmp; \
+	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=$@.boot.tmp bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	cat $@.boot.tmp kernel.bin > $@; \
 	truncate -s 1474560 $@; \
-	rm -f boot.bin.patched
+	rm -f $@.boot.tmp
 
 usb.img: mbr.bin boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
-	cp boot.bin boot.bin.patched; \
-	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
-	printf '\x40' | dd of=boot.bin.patched bs=1 seek=$(BOOT_SECTOR_START_OFFSET) conv=notrunc 2>/dev/null; \
-	printf '\xff\x00' | dd of=boot.bin.patched bs=1 seek=$(BPB_HEADS_OFFSET) conv=notrunc 2>/dev/null; \
-	printf '\x3f\x00\x00\x00' | dd of=boot.bin.patched bs=1 seek=$(BPB_HIDDEN_OFFSET) conv=notrunc 2>/dev/null; \
-	printf '\x08\xb7\x01\x00' | dd of=boot.bin.patched bs=1 seek=$(BPB_TOTAL_OFFSET) conv=notrunc 2>/dev/null; \
+	cp boot.bin $@.boot.tmp; \
+	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=$@.boot.tmp bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\x40' | dd of=$@.boot.tmp bs=1 seek=$(BOOT_SECTOR_START_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\xff\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_HEADS_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\x3f\x00\x00\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_HIDDEN_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\x08\xb7\x01\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_TOTAL_OFFSET) conv=notrunc 2>/dev/null; \
 	cat mbr.bin > $@; \
 	dd if=/dev/zero bs=512 count=62 2>/dev/null >> $@; \
-	cat boot.bin.patched kernel.bin >> $@; \
+	cat $@.boot.tmp kernel.bin >> $@; \
 	truncate -s 64M $@; \
-	rm -f boot.bin.patched
+	rm -f $@.boot.tmp
 
 image.bin: floppy.img
 	cp floppy.img image.bin
 
 final.bin: boot.bin kernel.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
-	cp boot.bin boot.bin.patched; \
-	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=boot.bin.patched bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
-	cat boot.bin.patched kernel.bin > $@; \
-	rm -f boot.bin.patched
+	cp boot.bin $@.boot.tmp; \
+	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=$@.boot.tmp bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	cat $@.boot.tmp kernel.bin > $@; \
+	rm -f $@.boot.tmp
 
 prog.o: prog.c run_api.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -343,7 +349,7 @@ prog: prog.bin
 # ucmd_<name>.c to UCMDS; the pack is rebuilt automatically.
 UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
         ucmd_meminfo ucmd_mouseinfo ucmd_storage ucmd_top \
-        ucmd_clock ucmd_colors ucmd_edit \
+        ucmd_clock ucmd_colors ucmd_edit ucmd_wm ucmd_term \
         ucmd_netinfo ucmd_netip ucmd_netdns ucmd_host ucmd_dhcp \
         ucmd_netsend ucmd_netrecv ucmd_ping ucmd_pong ucmd_netlog \
         ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_curl
@@ -356,7 +362,7 @@ ucmd_%.o: ucmd_%.c ucmd_lib.h syscall.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 ucmd_%.elf: ucmd_%.o ucmd.ld
-	$(LD) -T ucmd.ld -nostdlib -m elf_i386 -o $@ $<
+	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $<
 	$(OBJCOPY) --strip-all $@ $@
 
 # edit draws text itself, so it links the kernel's 8x8 font into its ELF.
@@ -364,7 +370,25 @@ ucmd_edit.o: ucmd_edit.c ucmd_lib.h syscall.h font_8x8.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 ucmd_edit.elf: ucmd_edit.o font_8x8.o ucmd.ld
-	$(LD) -T ucmd.ld -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+	$(OBJCOPY) --strip-all $@ $@
+
+# The ring-3 WM draws its own chrome and terminal cells.
+ucmd_wm.o: ucmd_wm.c ucmd_lib.h syscall.h wm_abi.h uwm_lib.h version.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+uwm_lib.o: uwm_lib.c uwm_lib.h font_8x8.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+ucmd_wm.elf: ucmd_wm.o uwm_lib.o font_8x8.o ucmd.ld
+	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+	$(OBJCOPY) --strip-all $@ $@
+
+ucmd_term.o: ucmd_term.c ucmd_lib.h syscall.h wm_abi.h uwm_lib.h io.h vfs.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x8.o ucmd.ld
+	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # TLS 1.3 client library (ring-3, linked into ucmd_curl; see tls.h).  The
@@ -373,7 +397,7 @@ ucmd_edit.elf: ucmd_edit.o font_8x8.o ucmd.ld
 TLSLIB_OBJS = tls_sha256.o tls_chacha20.o tls_x25519.o tls_rng.o tls.o
 
 ucmd_curl.elf: ucmd_curl.o $(TLSLIB_OBJS) ucmd.ld
-	$(LD) -T ucmd.ld -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
+	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 tls_sha256.o: tls_sha256.c tls_sha256.h
@@ -600,4 +624,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o syscall_stub.o screen.o io.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack.o ramfs.o payload.o mkpack $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack.o ramfs.o payload.o mkpack uwm_lib.o *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

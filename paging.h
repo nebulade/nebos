@@ -30,9 +30,26 @@ unsigned int paging_new_directory(void);
 int paging_map_page(unsigned int cr3, unsigned int va, unsigned int phys,
 		    unsigned int flags);
 
+/* Physical address mapped at `va`, or 0 when the page is not present. */
+unsigned int paging_page_phys(unsigned int cr3, unsigned int va);
+
 /* Clear one 4 KB page (va) in page directory `cr3` (no-op when the page
  * table is absent). */
 void paging_unmap_page(unsigned int cr3, unsigned int va);
+
+/* Release the user mappings in [va, va+size): clear the PTEs, free empty page
+ * tables and, when `free_phys` is set, free the mapped physical pages.  With
+ * `free_phys` clear the pages belong to someone else (e.g. a mapped window
+ * canvas) and only the mapping/page tables are released.  Used by the process
+ * reaper; ranges should cover the user-owned mappings only. */
+void paging_release_user_range(unsigned int cr3, unsigned int va,
+			       unsigned int size, int free_phys);
+
+/* 1 when every page in [va, va+size) is a user-accessible 4 KB mapping in
+ * `cr3` (and writable when `write` is set).  Syscall services use this before
+ * touching a pointer supplied by ring 3. */
+int paging_user_range_ok(unsigned int cr3, unsigned int va,
+			 unsigned int size, int write);
 
 /* Identity-map an MMIO range (e.g. a GPU register aperture) uncacheable into
  * the current page directory.  Uses 4 MB pages; the range is rounded up to a

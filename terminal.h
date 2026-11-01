@@ -33,6 +33,10 @@ struct term {
 void term_entry(void *arg);
 void term_run(struct term *t);
 
+/* Ring-3 terminal: run a privileged kernel command as a kernel process with
+ * output on `tty` (the command table and handlers stay in terminal.c). */
+int term_kcmd_spawn(const char *name, const char *args, unsigned int tty);
+
 /* Single-producer (WM) / single-consumer (terminal) key queue. */
 static inline void term_key_push(struct term *t, int k)
 {

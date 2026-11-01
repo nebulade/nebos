@@ -42,14 +42,21 @@ struct process {
 	unsigned int start_ticks;    /* get_ticks_ms() at creation */
 	/* Render target override: 0 = the screen.  Set while the window manager
 	 * draws into a layer, so another process's drawing can never land in
-	 * it.  Kept last so the PIT hot path offsets stay put. */
+	 * it.  Kept before tty so the PIT hot path offsets stay put. */
 	struct surface *target;
+	/* TTY output id inherited by children (0 = none, use the old screen). */
+	int tty;
 };
 
 /* User-mode virtual address layout (ring-3 processes). */
 #define USER_BASE        0x40000000   /* user program link/load address */
 #define USER_STACK_TOP   0x40200000   /* user stack top (grows down) */
 #define USER_STACK_PAGES 2            /* user stack size in 4 KB pages */
+/* Where sys_gfx maps a command's canvas back buffer (see sys_gfx.c).  The
+ * mapping is released by the reaper without freeing the canvas pages: the
+ * gfx session owns those. */
+#define USER_GFX_BASE    0x50000000
+#define USER_GFX_RANGE   0x00400000   /* one 4 MB slot */
 
 /* Dynamically-sized process table (grown on demand; see process.c). */
 extern struct process *procs;
@@ -66,6 +73,10 @@ int  process_create_ptr(const char *name, void (*entry)(void *), void *arg);
  * loadable ELF. */
 int process_create_user(const char *name, const void *image, unsigned int size,
 			const char *arg, const char *cwd);
+/* Same, but with an explicit tty id (0 = inherit the caller's tty). */
+int process_create_user_tty(const char *name, const void *image,
+			unsigned int size, const char *arg, const char *cwd,
+			unsigned int tty);
 void process_set_screen(struct text_screen *screen);
 /* Render target override for the running process (0 = the screen). */
 struct surface *process_render_target(void);
@@ -86,6 +97,10 @@ void process_ps(void);
 int  process_procinfo(unsigned int index, struct sys_procinfo *out);
 int  process_kill(unsigned int pid);
 int  process_is_alive(unsigned int pid);
+/* 1 while the process is in PROC_SLEEPING (the WM uses this to tell when it
+ * is safe to reap another window's canvas). */
+int  process_is_sleeping(unsigned int pid);
+void process_set_tty(unsigned int pid, int tty);
 void process_wait(unsigned int pid);
 
 /* Block the current process for `ms` milliseconds (yields the CPU). */

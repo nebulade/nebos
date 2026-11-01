@@ -137,13 +137,13 @@ static void format_fps(unsigned int fps, char *buf)
 
 void _start(const char *arg)
 {
-	struct sys_gfx_info info;
+	struct win_info info;
 	unsigned short *px;
 	unsigned int w, h, phase = 0, frames = 0, last_fps, displayed = 0;
 	char fps_buf[8];
 
 	(void)arg;
-	if (u_gfx_begin(&info) != 0) {
+	if (u_win_create(512, 320, "colors", &info) != 0) {
 		u_puts("colors: no graphics window\n");
 		u_exit(1);
 	}
@@ -156,8 +156,11 @@ void _start(const char *arg)
 	for (;;) {
 		unsigned int frame_start, elapsed;
 
-		if (u_key_poll() == 0x1B)
-			break;
+		{
+			int k = u_key_poll();
+			if (k == 0x1B || k == 0x03)
+				break;
+		}
 		frame_start = u_ticks_ms();
 
 		draw_frame(px, w, h, phase);
@@ -171,12 +174,12 @@ void _start(const char *arg)
 		}
 		format_fps(displayed, fps_buf);
 		draw_string(px, w, h, 0, 0, fps_buf);
-		u_gfx_present();
+		u_win_present();
 
 		elapsed = u_ticks_ms() - frame_start;
 		if (elapsed < FRAME_MS)
 			u_sleep_ms(FRAME_MS - elapsed);
 	}
-	u_gfx_end();
+	u_win_close();
 	u_exit(0);
 }

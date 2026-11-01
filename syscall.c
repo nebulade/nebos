@@ -2,6 +2,7 @@
 
 #include "syscall.h"
 #include "io.h"
+#include "paging.h"
 #include "process.h"
 #include "rtc.h"
 #include "serial.h"
@@ -9,7 +10,25 @@
 #include "sys_gfx.h"
 #include "sys_info.h"
 #include "sys_net.h"
+#include "sys_wm.h"
+#include "terminal.h"
 #include "timer.h"
+#include "tty.h"
+#include "vfs.h"
+
+static int copy_user_string(char *dst, unsigned int max, const char *src)
+{
+	unsigned int i;
+
+	if (!src || !max ||
+	    !paging_user_range_ok(procs[current_pid].cr3, (unsigned int)src,
+				  max, 0))
+		return -1;
+	for (i = 0; i + 1 < max && src[i]; i++)
+		dst[i] = src[i];
+	dst[i] = '\0';
+	return 0;
+}
 
 int syscall_dispatch(int num, int a1, int a2, int a3)
 {
@@ -163,6 +182,132 @@ int syscall_dispatch(int num, int a1, int a2, int a3)
 		out->hour = h;
 		out->minute = m;
 		out->second = s;
+		return 0;
+	}
+	case SYS_RTC_DATETIME: {
+		char buf[20];
+		char *out = (char *)a1;
+		unsigned int i;
+
+		if ((unsigned int)a2 < sizeof(buf) ||
+		    !paging_user_range_ok(procs[current_pid].cr3,
+					  (unsigned int)out, sizeof(buf), 1))
+			return -1;
+		rtc_read_datetime(buf);
+		for (i = 0; i < sizeof(buf); i++)
+			out[i] = buf[i];
+		return 0;
+	}
+	case SYS_WM_ATTACH:
+		return sys_wm_attach((struct wm_screen_info *)a1);
+	case SYS_WM_INFO:
+		return sys_wm_info((unsigned int)a1,
+				   (struct wm_window_info *)a2);
+	case SYS_WM_MAP:
+		return sys_wm_map((unsigned int)a1,
+				  (struct wm_map_info *)a2);
+	case SYS_WM_ACK:
+		return sys_wm_ack((unsigned int)a1, (unsigned int)a2);
+	case SYS_WM_FOCUS:
+		return sys_wm_focus((unsigned int)a1);
+	case SYS_WM_SET_GEOM:
+		return sys_wm_set_geom((unsigned int)a1,
+				       (const struct wm_geom *)a2);
+	case SYS_WM_CREATE_TERM:
+		return sys_wm_create_term();
+	case SYS_WM_CLOSE:
+		return sys_wm_close((unsigned int)a1);
+	case SYS_WM_POLL:
+		return sys_wm_poll((struct wm_status *)a1);
+	case SYS_WM_BEGIN:
+		return sys_wm_begin();
+	case SYS_WM_PRESENT:
+		return sys_wm_present((const struct wm_present_info *)a1);
+	case SYS_WM_SYNC:
+		return sys_wm_sync();
+	case SYS_WIN_CREATE:
+		return sys_win_create((const struct win_create *)a1,
+				      (struct win_info *)a2);
+	case SYS_WIN_PRESENT:
+		return sys_win_present();
+	case SYS_WIN_CLOSE:
+		return sys_win_close();
+	case SYS_TTY_CREATE:
+		return tty_create();
+	case SYS_TTY_READ: {
+		int id = a1;
+		char *buf = (char *)a2;
+		unsigned int max = (unsigned int)a3;
+
+		if (!tty_valid(id) || !buf || !max ||
+		    !paging_user_range_ok(procs[current_pid].cr3,
+					  (unsigned int)buf, max, 1))
+			return -1;
+		return tty_read(id, buf, max);
+	}
+	case SYS_SPAWN: {
+		struct sys_spawn in;
+		struct vfs_file f;
+		struct vfs_mount *m = 0;
+		char path[VFS_PATH_MAX], arg[VFS_PATH_MAX], cwd[VFS_PATH_MAX];
+		int pid;
+
+		if (!paging_user_range_ok(procs[current_pid].cr3,
+					  (unsigned int)a1, sizeof(in), 0))
+			return -1;
+		{
+			const char *p = (const char *)a1;
+			unsigned int i;
+			unsigned char *d = (unsigned char *)&in;
+
+			for (i = 0; i < sizeof(in); i++)
+				d[i] = (unsigned char)p[i];
+		}
+		if (in.tty && !tty_valid((int)in.tty))
+			return -1;
+		if (copy_user_string(path, sizeof(path), in.path) != 0 ||
+		    copy_user_string(arg, sizeof(arg), in.arg) != 0 ||
+		    copy_user_string(cwd, sizeof(cwd), in.cwd) != 0)
+			return -1;
+		if (vfs_load_file(path, &f, &m) != 0)
+			return -1;
+		pid = process_create_user_tty(path, f.data, f.size, arg, cwd,
+					      in.tty);
+		vfs_release_file(m, &f);
+		return pid;
+	}
+	case SYS_SPAWN_KCMD: {
+		char name[16], arg[VFS_PATH_MAX];
+
+		if (copy_user_string(name, sizeof(name), (const char *)a1) != 0 ||
+		    copy_user_string(arg, sizeof(arg), (const char *)a2) != 0)
+			return -1;
+		if (a3 && !tty_valid(a3))
+			return -1;
+		return term_kcmd_spawn(name, arg, (unsigned int)a3);
+	}
+	case SYS_ALIVE:
+		return process_is_alive((unsigned int)a1);
+	case SYS_KILL:
+		return process_kill((unsigned int)a1);
+	case SYS_CHDIR: {
+		char arg[VFS_PATH_MAX], abs[VFS_PATH_MAX];
+		unsigned int size;
+		int is_dir;
+
+		if (copy_user_string(arg, sizeof(arg), (const char *)a1) != 0)
+			return -1;
+		if (vfs_join_path(procs[current_pid].cwd, arg[0] ? arg : ".",
+				  abs, sizeof(abs)) != 0)
+			return -1;
+		if (vfs_stat(abs, &size, &is_dir) != 0 || !is_dir)
+			return -1;
+		{
+			unsigned int i;
+			for (i = 0; abs[i] && i + 1 < sizeof(procs[current_pid].cwd); i++)
+				procs[current_pid].cwd[i] = abs[i];
+			procs[current_pid].cwd[i] = '\0';
+		}
 		return 0;
 	}
 	default:

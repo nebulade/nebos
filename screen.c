@@ -15,6 +15,7 @@
  */
 static void screen_damage_cell(struct text_screen *s, unsigned int col, unsigned int row)
 {
+	s->damage_seq++;
 	if (!s->dirty) {
 		s->dirty = 1;
 		s->dmg_col0 = s->dmg_col1 = col;
@@ -33,6 +34,7 @@ static void screen_damage_cell(struct text_screen *s, unsigned int col, unsigned
 
 static void screen_damage_all(struct text_screen *s)
 {
+	s->damage_seq++;
 	s->dirty = 1;
 	s->dmg_col0 = 0;
 	s->dmg_col1 = s->cols - 1;
@@ -76,6 +78,7 @@ void screen_init(struct text_screen *s)
 	s->cursor_attr = (SCREEN_ATTR << 8);
 	s->cursor_visible = 0;
 	s->scrolled = 0;
+	s->damage_seq = 0;
 	screen_clear(s);
 }
 

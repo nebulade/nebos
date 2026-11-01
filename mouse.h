@@ -29,4 +29,9 @@ void mouse_cursor_erase(void);
    redraws windows underneath a stationary cursor). */
 void mouse_redraw_cursor(void);
 
+/* While a WM frame owns the shadow buffer, movement must update the position
+ * and buttons without drawing a software cursor underneath the frame.  The
+ * WM erases/redraws the cursor itself at BEGIN/PRESENT. */
+void mouse_set_auto_draw(int on);
+
 #endif

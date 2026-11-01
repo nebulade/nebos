@@ -499,7 +499,7 @@ static void redraw(void)
 	draw_text_area();
 	draw_cursor(line, disp);
 	draw_status(line, disp);
-	u_gfx_present();
+	u_win_present();
 }
 
 /* ---- input ---- */
@@ -568,7 +568,7 @@ static int handle_key(int k)
 
 void _start(const char *arg)
 {
-	struct sys_gfx_info info;
+	struct win_info info;
 	int r, new_file;
 
 	if (parse_arg(arg) != 0) {
@@ -587,7 +587,7 @@ void _start(const char *arg)
 	}
 	new_file = (r == 1);
 
-	if (u_gfx_begin(&info) != 0) {
+	if (u_win_create(512, 320, "edit", &info) != 0) {
 		u_puts("edit: no graphics window\n");
 		u_exit(1);
 	}
@@ -597,7 +597,7 @@ void _start(const char *arg)
 	cols = fb_w / CELL_W;
 	rows = fb_h / CELL_H;
 	if (cols == 0 || rows < 2) {
-		u_gfx_end();
+		u_win_close();
 		u_puts("edit: window too small\n");
 		u_exit(1);
 	}
@@ -637,6 +637,6 @@ void _start(const char *arg)
 		u_sleep_ms(15);
 	}
 
-	u_gfx_end();
+	u_win_close();
 	u_exit(0);
 }

@@ -100,6 +100,10 @@ void vga_fb_flush(void);
  * within one loop, large ones are chunked so they cannot stall input. */
 void vga_fb_flush_budget(unsigned int max_bytes);
 
+/* 1 while the presenter is copying damage to VRAM.  The scheduler must not
+ * switch away from that context: the flush trims a shared damage list. */
+int vga_present_busy(void);
+
 /* Low-level row helpers from vga_copy.S (the blit backend uses the fill). */
 void vga_fb_copy_row(void *dst, const void *src, unsigned int dwords);
 void vga_fb_copy_row_nt(void *dst, const void *src, unsigned int dwords);

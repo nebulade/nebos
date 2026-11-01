@@ -85,6 +85,41 @@
 #define SYS_KEY_POLL     55  /* () -> 0 none, ASCII, or IO_KEY_*; gfx session only */
 #define SYS_RTC_HMS      56  /* (struct sys_time *out) -> 0/-1 */
 
+/* Window-manager service (see wm_abi.h).  Only the kernel-spawned WM process
+ * may call the WM_* entries; ordinary commands get -1. */
+#define SYS_WM_ATTACH      57  /* (struct wm_screen_info *out) -> 0/-1 */
+#define SYS_WM_INFO        58  /* (index, struct wm_window_info *out) -> 1/0/-1 */
+#define SYS_WM_MAP         59  /* (index, struct wm_map_info *out) -> 0/-1 */
+#define SYS_WM_ACK         60  /* (index, dirty_seq) -> 0/-1 */
+#define SYS_WM_FOCUS       61  /* (index) -> 0/-1 */
+#define SYS_WM_SET_GEOM    62  /* (index, struct wm_geom *in) -> 0/-1 */
+#define SYS_WM_CREATE_TERM 63  /* () -> index / -1 */
+#define SYS_WM_CLOSE       64  /* (index) -> 0/-1 */
+#define SYS_WM_POLL        65  /* (struct wm_status *out) -> 0/-1 */
+#define SYS_WM_BEGIN       66  /* () -> 0/-1; erase cursor, frame active */
+#define SYS_WM_PRESENT     67  /* (struct wm_present_info *in) -> 0/-1 */
+#define SYS_WM_SYNC        68  /* () -> 0/-1; run deferred gfx cleanup */
+#define SYS_RTC_DATETIME   69  /* (char *buf, unsigned max) -> 0/-1 */
+#define SYS_WIN_CREATE     70  /* (struct win_create *in, struct win_info *out) */
+#define SYS_WIN_PRESENT    71  /* () -> 0/-1; publish the back canvas */
+#define SYS_WIN_CLOSE      72  /* () -> 0/-1; close the caller's window */
+
+/* Terminal / process services used by the ring-3 shell. */
+#define SYS_TTY_CREATE     73  /* () -> tty id 1..TTY_MAX / -1 */
+#define SYS_TTY_READ       74  /* (id, buf, max) -> bytes / 0 / -1 */
+#define SYS_SPAWN          75  /* (path, arg, tty, cwd) -> pid / <0 */
+#define SYS_SPAWN_KCMD     76  /* (name, arg, tty) -> pid / <0 */
+#define SYS_ALIVE          77  /* (pid) -> 1/0 */
+#define SYS_KILL           78  /* (pid) -> 0/-1 */
+#define SYS_CHDIR          79  /* (path) -> 0/-1 */
+
+struct sys_spawn {
+	const char *path;
+	const char *arg;
+	const char *cwd;
+	unsigned int tty;
+};
+
 struct sys_netinfo {
 	unsigned int present;
 	unsigned char mac[6];
