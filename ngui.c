@@ -249,7 +249,11 @@ void ngui_end_ex(struct ngui *ui, int present)
 
 	if (ui->clicked && !ui->focus_claimed)
 		ui->focus = 0;
-	if (ui->released || !ui->buttons)
+	/* Only the release edge ends a press.  The sampled button state is not
+	 * synchronized with the event queue: it can read 0 for a frame before
+	 * the release event is delivered.  Clearing active on "!buttons" made
+	 * clicks fire only when the two happened to land in the same frame. */
+	if (ui->released)
 		ui->active = 0;
 
 	ui->pressed = ui->released = 0;
