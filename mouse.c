@@ -52,6 +52,7 @@ static int mouse_hw_cursor;         /* 1 = Cirrus, 2 = Radeon hardware cursor */
 
 static unsigned int fbw, fbh;
 static unsigned int cur_x, cur_y;
+static unsigned int saved_x, saved_y, saved_w, saved_h;
 static unsigned char cur_saved[MOUSE_CUR_W * MOUSE_CUR_H * 4];
 static unsigned char pkt[3];
 static unsigned int pkt_idx;
@@ -134,6 +135,22 @@ static int mouse_bit_at(int r, int c)
 	return (mouse_pointer_bits[(unsigned int)r] & (0x8000u >> c)) != 0;
 }
 
+static void cursor_save_under(void)
+{
+	saved_x = cur_x;
+	saved_y = cur_y;
+	saved_w = (cur_x + MOUSE_CUR_W <= fbw) ? MOUSE_CUR_W : fbw - cur_x;
+	saved_h = (cur_y + MOUSE_CUR_H <= fbh) ? MOUSE_CUR_H : fbh - cur_y;
+	if (saved_w && saved_h)
+		vga_fb_read_rect(saved_x, saved_y, saved_w, saved_h, cur_saved);
+}
+
+static void cursor_restore_under(void)
+{
+	if (saved_w && saved_h)
+		vga_fb_write_rect(saved_x, saved_y, saved_w, saved_h, cur_saved);
+}
+
 static void mouse_draw_cursor(unsigned int x0, unsigned int y0)
 {
 	unsigned int r, c;
@@ -149,8 +166,8 @@ static void mouse_draw_cursor(unsigned int x0, unsigned int y0)
 
 static void mouse_clamp_ptr(long *nx, long *ny)
 {
-	long maxx = (long)fbw - (long)MOUSE_CUR_W;
-	long maxy = (long)fbh - (long)MOUSE_CUR_H;
+	long maxx = (long)fbw - 1;
+	long maxy = (long)fbh - 1;
 
 	if (maxx < 0)
 		maxx = 0;
@@ -211,7 +228,7 @@ static void mouse_cursor_setup(void)
 		cur_x = (unsigned int)nx;
 		cur_y = (unsigned int)ny;
 	}
-	vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H, cur_saved);
+	cursor_save_under();
 	mouse_draw_cursor(cur_x, cur_y);
 	mouse_cursor_flag = 1;
 }
@@ -294,12 +311,10 @@ static void mouse_move(int dx, int dy)
 		cur_x = (unsigned int)nx;
 		cur_y = (unsigned int)ny;
 	} else {
-		vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
-			cur_saved);
+		cursor_restore_under();
 		cur_x = (unsigned int)nx;
 		cur_y = (unsigned int)ny;
-		vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H,
-			cur_saved);
+		cursor_save_under();
 		mouse_draw_cursor(cur_x, cur_y);
 	}
 }
@@ -423,7 +438,7 @@ void mouse_redraw_cursor(void)
 {
 	if (!mouse_cursor_flag || mouse_hw_cursor)
 		return;
-	vga_fb_read_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H, cur_saved);
+	cursor_save_under();
 	mouse_draw_cursor(cur_x, cur_y);
 }
 
@@ -431,7 +446,7 @@ void mouse_cursor_erase(void)
 {
 	if (!mouse_cursor_flag || mouse_hw_cursor)
 		return;
-	vga_fb_write_rect(cur_x, cur_y, MOUSE_CUR_W, MOUSE_CUR_H, cur_saved);
+	cursor_restore_under();
 }
 
 void mouse_set_auto_draw(int on)
