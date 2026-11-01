@@ -5,10 +5,13 @@
  * Protocol (little-endian; UDP to NETKEXEC_PORT; the board replies to the
  * sender's IP/MAC/port):
  *
- *   host -> board  header   "KXNU" entry size csum          (16 bytes)
+ *   host -> board  header   "KXN2" entry kernel_size pack_size csum (20 bytes)
  *   host -> board  data     "KXND" offset len payload...    (12 + len)
  *   board -> host  ack      "KXNA" next_offset status       (12 bytes)
  *                           status 0 = keep going, 1 = done, 2 = bad checksum
+ *
+ * The runtime pack replacement keeps the old 16-byte "KXNP" header
+ * (magic, entry, size, csum) with the raw NBPAK1 pack as data.
  *
  * The board auto-detects the header from the WM loop (netkexec_pending());
  * program_netkexec_main() then runs stop-and-wait: every datagram is acked
@@ -31,7 +34,7 @@
 #define NETKEXEC_PORT       19288
 #define NETKEXEC_DATA_MAX   1400
 
-#define X_MAGIC_HDR   0x554E584Bu   /* "KXNU" */
+#define X_MAGIC_HDR   0x324E584Bu   /* "KXN2": kernel + rootfs */
 #define X_MAGIC_PAY   0x504E584Bu   /* "KXNP": a command pack for /ramfs */
 #define X_MAGIC_DATA  0x444E584Bu   /* "KXND" */
 #define X_MAGIC_ACK   0x414E584Bu   /* "KXNA" */
@@ -68,6 +71,7 @@ static void net_payload_free(void)
 static int have_header;
 static int payload_mode;         /* header was KXNP: replace the ramfs instead */
 static unsigned int x_entry, x_size, x_csum;
+static unsigned int x_kernel_size, x_pack_size;
 static unsigned char peer_mac[6], peer_ip[4];
 static unsigned int peer_port;
 
@@ -173,7 +177,7 @@ int netkexec_pending(void)
 	return 0;
 }
 
-/* Validate one received frame as a KXNU/KXNP header and stash the transfer.
+/* Validate one received frame as a KXN2/KXNP header and stash the transfer.
  * Returns 1 when it was captured.  The WebDAV server calls this while it
  * owns the receiver, so `make net-dev` hands the NIC back without waiting
  * for the host's header retransmits. */
@@ -195,12 +199,26 @@ int netkexec_capture_frame(const unsigned char *frame, unsigned int len)
 		return 0;
 
 	x_entry = rd32(payload + 4);
-	x_size = rd32(payload + 8);
-	x_csum = rd32(payload + 12);
+	if (magic == X_MAGIC_PAY) {
+		x_size = rd32(payload + 8);
+		x_csum = rd32(payload + 12);
+		x_kernel_size = 0;
+		x_pack_size = 0;
+		payload_mode = 1;
+	} else {
+		if (plen < 20)
+			return 0;
+		x_kernel_size = rd32(payload + 8);
+		x_pack_size = rd32(payload + 12);
+		x_csum = rd32(payload + 16);
+		x_size = x_kernel_size + x_pack_size;
+		if (x_kernel_size == 0 || x_pack_size > KEXEC_MAX ||
+		    x_size < x_kernel_size || x_size > KEXEC_MAX)
+			return 0;
+		payload_mode = 0;
+	}
 	if (x_size == 0 || x_size > KEXEC_MAX)
 		return 0;
-
-	payload_mode = (magic == X_MAGIC_PAY);
 	for (i = 0; i < 6; i++)
 		peer_mac[i] = p_mac[i];
 	for (i = 0; i < 4; i++)
@@ -346,11 +364,14 @@ void program_netkexec_main(void)
 		return;
 	}
 
-	io_putstr("\nnetkexec: received ");
-	io_puthex(x_size);
+	io_putstr("\nnetkexec: received kernel ");
+	io_puthex(x_kernel_size);
+	io_putstr(" bytes, rootfs ");
+	io_puthex(x_pack_size);
 	io_putstr(" bytes, entry ");
 	io_puthex(x_entry);
 	io_putstr(" -> jumping\n");
 
-	kexec_jump(x_entry, x_size);     /* never returns */
+	kexec_jump(x_entry, x_kernel_size, kexec_stage + x_kernel_size,
+		   x_pack_size);          /* never returns */
 }

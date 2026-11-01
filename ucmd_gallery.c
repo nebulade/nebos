@@ -1,12 +1,15 @@
-/* gallery launcher: the real app is a disk image (GALLERY) because the
- * kernel's embedded command pack is close to its low-memory wall.  This tiny
- * command keeps `gallery` on PATH; the app itself links ngui and the font. */
+/* gallery launcher: the real app ships in the rootfs pack as
+ * bin/gallery.app (and can be overridden by /share/GALLERY or a FAT mount).
+ * This tiny command keeps `gallery` on PATH; the app links ngui and the
+ * font. */
 
 #include "ucmd_lib.h"
 
 static const char *const candidates[] = {
 	"/share/GALLERY",
 	"/share/GALLERY.ELF",
+	/* The copy shipped in the command-pack rootfs. */
+	"/ramfs/bin/gallery.app",
 	"/floppy1/GALLERY",
 	"/floppy1/GALLERY.ELF",
 	"/ide0p1/GALLERY",
@@ -44,7 +47,7 @@ void _start(const char *arg)
 			u_exit(0);
 		}
 	}
-	u_puts("gallery: GALLERY is not installed on a mounted disk\n");
+	u_puts("gallery: GALLERY is not installed in the pack or on a disk\n");
 	u_puts("  put gallery.elf on the root floppy or /share\n");
 	u_exit(1);
 }

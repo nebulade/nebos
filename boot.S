@@ -40,7 +40,14 @@ kernel_sectors:
 kernel_lba:
 	.word 1
 
+	/* Rootfs image LBA (see rootfs.h).  Patched by the image builders:
+	 * floppy/final.bin point it just past the padded kernel, usb.img at
+	 * its rootfs partition. */
 	.org 0x42
+pack_lba:
+	.long 1
+
+	.org 0x46
 loader_start:
 	xorw  %ax, %ax
 	movw  %ax, %ds

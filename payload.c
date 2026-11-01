@@ -40,11 +40,11 @@ int payload_pending(void)
 		    serial_ring_peek(3, &p)) {
 			if (x == 'X' && n == 'N' && p == 'P')
 				return 1;
-			/* A kernel image ("KXEC") belongs to kexec_pending():
-			 * leave it untouched (the WM checks this detector
-			 * first, so consuming the 'K' here would eat the
-			 * reload stream). */
-			if (x == 'X' && n == 'E' && p == 'C')
+			/* A kernel image ("KXE2", formerly "KXEC")
+			 * belongs to kexec_pending(): leave it untouched
+			 * (the WM checks this detector first, so consuming
+			 * the 'K' here would eat the reload stream). */
+			if (x == 'X' && n == 'E' && (p == '2' || p == 'C'))
 				return 0;
 			(void)serial_ring_getc();
 			continue;

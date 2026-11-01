@@ -3,6 +3,7 @@
 #include "acpi.h"
 #include "asix.h"
 #include "bootcon.h"
+#include "bootinfo.h"
 #include "cpu.h"
 #include "idle.h"
 #include "io.h"
@@ -399,27 +400,38 @@ void kernel_main(void)
 	boot_trace("vga");
 	bootcon_fb_info();
 
-	/* The command pack: read-only, mounted at /ramfs (see ramfs.c).  This
-	 * happens before the block-device scan because the WM and terminal are
-	 * loaded from /ramfs, not from a disk. */
+	/* The command pack: read-only, mounted at /ramfs (see ramfs.c).  The
+	 * boot path copied it into high RAM (the legacy stage, the UEFI loader
+	 * or kexec); ramfs_init takes its own copy so the boot region can be
+	 * released.  The mount is created even without a pack, so a running
+	 * board can be recovered with `make cmds-dev`/`make net-cmds`. */
 	{
-		extern unsigned char _binary_cmds_pack_gz_bin_start[];
-		extern unsigned char _binary_cmds_pack_gz_bin_end[];
-		unsigned int pack_len =
-			(unsigned int)(_binary_cmds_pack_gz_bin_end -
-				       _binary_cmds_pack_gz_bin_start);
-		if (ramfs_init(_binary_cmds_pack_gz_bin_start, pack_len) != 0)
-			serial_puts(SERIAL_COM1, "ramfs: bad pack\n");
+		unsigned int pack_addr = bootinfo_pack_addr();
+		unsigned int pack_len = bootinfo_pack_size();
+		int ok = 0;
+
+		if (!pack_addr || !pack_len)
+			serial_puts(SERIAL_COM1, "ramfs: no boot pack\n");
 		else {
-			serial_puts(SERIAL_COM1, "ramfs: pack ok, ");
-			serial_putdec(SERIAL_COM1, ramfs_count());
-			serial_puts(SERIAL_COM1, " files, ");
+			serial_puts(SERIAL_COM1, "ramfs: boot pack at ");
+			serial_puthex(SERIAL_COM1, pack_addr);
+			serial_puts(SERIAL_COM1, ", ");
 			serial_putdec(SERIAL_COM1, pack_len);
-			serial_puts(SERIAL_COM1, " -> ");
-			serial_putdec(SERIAL_COM1, ramfs_pack_size());
 			serial_puts(SERIAL_COM1, " bytes\n");
-			vfs_mount_ramfs();
+			ok = ramfs_init((const void *)pack_addr, pack_len) == 0;
+			if (!ok)
+				serial_puts(SERIAL_COM1, "ramfs: bad boot pack\n");
+			else {
+				serial_puts(SERIAL_COM1, "ramfs: pack ok, ");
+				serial_putdec(SERIAL_COM1, ramfs_count());
+				serial_puts(SERIAL_COM1, " files, ");
+				serial_putdec(SERIAL_COM1, ramfs_pack_size());
+				serial_puts(SERIAL_COM1, " bytes\n");
+			}
+			mm_free_range(pack_addr, pack_len);
 		}
+		(void)ok;
+		vfs_mount_ramfs();
 	}
 	boot_trace("ramfs");
 	boot_val("ramfs files", ramfs_count());

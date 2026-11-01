@@ -8,18 +8,23 @@
  * directly from our own code without a relocated trampoline.
  *
  * Wire protocol (host -> us), after we emit 'R':
- *   4 bytes: magic "KXEC" (LE)
+ *   4 bytes: magic "KXE2" (LE)
  *   4 bytes: entry address (LE)
- *   4 bytes: size (LE)
+ *   4 bytes: kernel_size (LE)
+ *   4 bytes: pack_size (LE)      -- consumed but not stored (see below)
  *   N bytes: kernel.bin data
- *   1 byte:  checksum (sum of data bytes mod 256)
+ *   M bytes: rootfs pack data
+ *   1 byte:  checksum (sum of both payloads mod 256)
+ *
+ * The bootstrap only installs the kernel; the rootfs pack arrives with the
+ * next normal `make dev`/`make net-dev` (or `make cmds-dev`).
  */
 
 #define UART_BASE        0x3F8
 #define STAGE_ADDR       0x58000
 #define KERNEL_LOAD_ADDR 0x7E00
 #define BOOT_STACK       0x49800
-#define MAGIC            0x4345584B /* "KXEC" little-endian */
+#define MAGIC            0x3245584B /* "KXE2" little-endian */
 #define MAX_SIZE         0x3C200
 
 static inline void outb(unsigned short port, unsigned char v)
@@ -104,7 +109,7 @@ static void setup_flat_gdt(void)
 void _start(void)
 {
 	unsigned char c, sum = 0, chk;
-	unsigned int magic, entry, size, i;
+	unsigned int magic, entry, size, pack_size, i;
 
 	/* Stop the PIT (and all IRQs) so the kernel's serial_poll stops
 	 * competing with us for UART bytes. */
@@ -129,8 +134,10 @@ void _start(void)
 	magic = read32le();
 	entry = read32le();
 	size  = read32le();
+	pack_size = read32le();
 
-	if (magic != MAGIC || size == 0 || size > MAX_SIZE) {
+	if (magic != MAGIC || size == 0 || size > MAX_SIZE ||
+	    pack_size > 0x400000) {
 		outb(UART_BASE + 0, 'E');
 		halt();
 	}
@@ -140,6 +147,10 @@ void _start(void)
 		((volatile unsigned char *)STAGE_ADDR)[i] = c;
 		sum += c;
 	}
+
+	/* Consume the rootfs bytes; the kernel gets them on the next reload. */
+	for (i = 0; i < pack_size; i++)
+		sum += read_byte();
 
 	chk = read_byte();
 	if (chk != sum) {

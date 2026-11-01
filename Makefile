@@ -24,7 +24,7 @@ EFI_LDFLAGS = -nostdlib -Wl,--subsystem,10 -Wl,-e,efi_main \
               -Wl,--image-base,0x0 -Wl,--dynamicbase \
               -Wl,--enable-reloc-section -Wl,--no-insert-timestamp
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan kernel-dev kernel-net-dev rootfs
 
 all: floppy.img usb.img final.bin root.img
 
@@ -142,7 +142,7 @@ mtrr.o: mtrr.c mtrr.h serial.h
 gfx.o: gfx.c gfx.h mm.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-sys_gfx.o: sys_gfx.c sys_gfx.h gfx.h paging.h process.h wm.h syscall.h
+sys_gfx.o: sys_gfx.c sys_gfx.h gfx.h paging.h process.h wm.h wm_abi.h syscall.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 display.o: display.c io.h vga.h gpu.h ati.h nvidia.h radeon.h mouse.h fbtext.h
@@ -286,7 +286,7 @@ ap_tramp.bin: ap_tramp.elf
 ap_tramp_embed.o: ap_tramp.bin
 	$(LD) -m elf_i386 -r -b binary -o ap_tramp_embed.o ap_tramp.bin
 
-process.o: process.c process.h sched.h io.h kmalloc.h mm.h serial.h smp.h idle.h timer.h
+process.o: process.c process.h sched.h io.h kmalloc.h mm.h serial.h smp.h idle.h timer.h wm_abi.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 mm.o: mm.c mm.h
@@ -325,7 +325,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h pr
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o cmds_pack.o ramfs.o share.o payload.o
+kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o ramfs.o share.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -353,27 +353,51 @@ kernel.bin: kernel.elf
 # the 2>/dev/null below.
 # 62 = kernel_sectors field (0x3E)
 # 64 = kernel_lba field (0x40, word; LBA 64 fits in the low byte)
+# 66 = pack_lba field (0x42, dword; rootfs image LBA)
 # 26/28/32 = BPB: heads (0x1A, word), hidden sectors (0x1C, dword),
 #            total sectors 32-bit (0x20, dword)
 KERNEL_SECTORS_OFFSET = 62
 BOOT_SECTOR_START_OFFSET = 64
+PACK_LBA_OFFSET = 66
 BPB_HEADS_OFFSET = 26
 BPB_HIDDEN_OFFSET = 28
 BPB_TOTAL_OFFSET = 32
 
-floppy.img: boot.bin kernel.bin
+# USB rootfs partition (type 0x7F) and UEFI ESP (type 0xEF).
+ROOTFS_LBA     = 131072
+ROOTFS_SECTORS = 16384
+ESP_LBA        = 147456
+
+# Patch a little-endian 16/32-bit value into a boot-sector copy.  Usage:
+#   $(call patch16,file,offset,value)
+# (shell snippets are inlined below because make functions cannot easily
+# expand `$$(...)` arithmetic; the helpers keep the rules readable.)
+patch32 = printf "$$(printf '\\x%02x\\x%02x\\x%02x\\x%02x' \
+	$$(( ( ($(2)) >> 0) & 0xFF )) $$(( ( ($(2)) >> 8) & 0xFF )) \
+	$$(( ( ($(2)) >> 16) & 0xFF )) $$(( ( ($(2)) >> 24) & 0xFF )))" | \
+	dd of=$(1) bs=1 seek=$(3) conv=notrunc 2>/dev/null
+patch16 = printf "$$(printf '\\x%02x\\x%02x' \
+	$$(( ( ($(2)) >> 0) & 0xFF )) $$(( ( ($(2)) >> 8) & 0xFF )))" | \
+	dd of=$(1) bs=1 seek=$(3) conv=notrunc 2>/dev/null
+
+floppy.img: boot.bin kernel.bin rootfs.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
 	cp boot.bin $@.boot.tmp; \
-	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=$@.boot.tmp bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	$(call patch16,$@.boot.tmp,$$SECTORS,$(KERNEL_SECTORS_OFFSET)); \
+	$(call patch32,$@.boot.tmp,1 + SECTORS,$(PACK_LBA_OFFSET)); \
 	cat $@.boot.tmp kernel.bin > $@; \
+	PAD=$$(( SECTORS * 512 - $$(stat -c%s kernel.bin) )); \
+	dd if=/dev/zero bs=1 count=$$PAD 2>/dev/null >> $@; \
+	cat rootfs.bin >> $@; \
 	truncate -s 1474560 $@; \
 	rm -f $@.boot.tmp
 
-usb.img: mbr.bin boot.bin kernel.bin
+usb.img: mbr.bin boot.bin kernel.bin cmds.img
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
 	cp boot.bin $@.boot.tmp; \
-	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=$@.boot.tmp bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	$(call patch16,$@.boot.tmp,$$SECTORS,$(KERNEL_SECTORS_OFFSET)); \
 	printf '\x40' | dd of=$@.boot.tmp bs=1 seek=$(BOOT_SECTOR_START_OFFSET) conv=notrunc 2>/dev/null; \
+	$(call patch32,$@.boot.tmp,$(ROOTFS_LBA),$(PACK_LBA_OFFSET)); \
 	printf '\xff\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_HEADS_OFFSET) conv=notrunc 2>/dev/null; \
 	printf '\x3f\x00\x00\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_HIDDEN_OFFSET) conv=notrunc 2>/dev/null; \
 	printf '\x08\xb7\x01\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_TOTAL_OFFSET) conv=notrunc 2>/dev/null; \
@@ -381,16 +405,24 @@ usb.img: mbr.bin boot.bin kernel.bin
 	dd if=/dev/zero bs=512 count=62 2>/dev/null >> $@; \
 	cat $@.boot.tmp kernel.bin >> $@; \
 	truncate -s 64M $@; \
+	dd if=cmds.img of=$@ bs=512 seek=$(ROOTFS_LBA) conv=notrunc 2>/dev/null; \
+	truncate -s 72M $@; \
+	printf '\x00\xfe\xff\xff\x7f\xfe\xff\xff\x00\x00\x02\x00\x00\x40\x00\x00' | \
+		dd of=$@ bs=1 seek=462 conv=notrunc 2>/dev/null; \
 	rm -f $@.boot.tmp
 
 image.bin: floppy.img
 	cp floppy.img image.bin
 
-final.bin: boot.bin kernel.bin
+final.bin: boot.bin kernel.bin rootfs.bin
 	SECTORS=$$(( ($$(stat -c%s kernel.bin) + 511) / 512 )); \
 	cp boot.bin $@.boot.tmp; \
-	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=$@.boot.tmp bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
+	$(call patch16,$@.boot.tmp,$$SECTORS,$(KERNEL_SECTORS_OFFSET)); \
+	$(call patch32,$@.boot.tmp,1 + SECTORS,$(PACK_LBA_OFFSET)); \
 	cat $@.boot.tmp kernel.bin > $@; \
+	PAD=$$(( SECTORS * 512 - $$(stat -c%s kernel.bin) )); \
+	dd if=/dev/zero bs=1 count=$$PAD 2>/dev/null >> $@; \
+	cat rootfs.bin >> $@; \
 	rm -f $@.boot.tmp
 
 # ---- UEFI loader and dual-boot USB image -------------------------------
@@ -409,7 +441,7 @@ efi/efi_entry.h: kernel.elf
 efi/main.o: efi/main.c efi/efi.h bootinfo.h vga.h efi/efi_entry.h
 	$(EFI_CC) $(EFI_CFLAGS) -c -o $@ $<
 
-efi/payload.o: efi/payload.S kernel.bin efi/tramp.bin
+efi/payload.o: efi/payload.S kernel.bin cmds_pack_gz.bin efi/tramp.bin
 	$(EFI_AS) --64 -o $@ $<
 
 efi/tramp.o: efi/tramp.S
@@ -424,7 +456,7 @@ efi/tramp.bin: efi/tramp.elf
 BOOTX64.EFI: efi/main.o efi/payload.o
 	$(EFI_CC) $(EFI_LDFLAGS) -o $@ efi/main.o efi/payload.o
 
-ESP_LBA     = 131072
+ESP_LBA     = 147456
 ESP_SECTORS = 16384
 
 esp.img: BOOTX64.EFI
@@ -442,7 +474,9 @@ usb-efi.img: usb.img esp.img
 	# the kernel at LBA 64.  Clear BPB FATSize16 so the firmware rejects the
 	# fake volume; boot.S and the BIOS never read that field.
 	printf '\x00\x00' | dd of=$@ bs=1 seek=$$((63 * 512 + 0x16)) conv=notrunc 2>/dev/null
-	printf '\x00\x28\x21\x08\xef\x2d\x24\x09\x00\x00\x02\x00\x00\x40\x00\x00' | \
+	# Partition 3: ESP at LBA 147456, type 0xEF, 8 MB (partition 2 is the
+	# rootfs at LBA 131072 written by usb.img).
+	printf '\x00\xfe\xff\xff\xef\xfe\xff\xff\x00\x40\x02\x00\x00\x40\x00\x00' | \
 		dd of=$@ bs=1 seek=478 conv=notrunc 2>/dev/null
 	dd if=esp.img of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc 2>/dev/null
 	truncate -s $$(( ($(ESP_LBA) + $(ESP_SECTORS)) * 512 )) $@
@@ -555,9 +589,9 @@ ucmd_mines.elf: ucmd_mines.o ngui.o font_8x16.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
-# gallery: a live showcase of every ngui widget and primitive.  It is a disk
-# app because the embedded command pack sits close to its low-memory wall;
-# ucmd_gallery.c (in UCMDS) is the tiny PATH launcher for it.
+# gallery: a live showcase of every ngui widget and primitive.  The real ELF
+# ships in the rootfs pack as bin/gallery.app; ucmd_gallery.c (in UCMDS) is
+# the tiny PATH launcher (which also accepts /share/GALLERY).
 gallery.o: gallery.c ucmd_lib.h syscall.h wm_abi.h ngui.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -652,21 +686,35 @@ test-images-asan: $(IMGTEST_SRCS) $(IMGTEST_DEPS)
 mkpack: mkpack.c
 	gcc -O2 -o $@ $<
 
-# Command pack: the ring-3 command ELFs plus hello, embedded in the kernel and
-# mounted at /ramfs (bin/).  See mkpack.c and ramfs.h.
+# Command pack (the system rootfs): the ring-3 command ELFs plus hello and the
+# browser/gallery apps, packed into bin/<name>.  See mkpack.c, rootfs.h and
+# ramfs.h.
 PACK_FILES = $(foreach f,$(UCMDS),bin/$(patsubst ucmd_%,%,$(f))=$(f).elf) \
-             bin/hello=hello.elf
+             bin/hello=hello.elf \
+             bin/browser.app=browser.elf \
+             bin/gallery.app=gallery.elf
 
-cmds.pack: $(addsuffix .elf,$(UCMDS)) hello.elf mkpack
+cmds.pack: $(addsuffix .elf,$(UCMDS)) hello.elf browser.elf gallery.elf mkpack
 	./mkpack $@ $(PACK_FILES)
 
-# The embedded pack is gzip-compressed to stay inside the kernel's low-memory
-# window; the raw cmds.pack is still what cmds-dev/net-cmds send.
+# The boot-time rootfs is gzip-compressed; the raw cmds.pack is still what
+# cmds-dev/net-cmds send for a runtime replacement.
 cmds_pack_gz.bin: cmds.pack
 	gzip -9 -n -c $< > $@
 
-cmds_pack.o: cmds_pack_gz.bin
-	$(LD) -m elf_i386 -r -b binary -o cmds_pack.o cmds_pack_gz.bin
+mkrootfs: mkrootfs.c rootfs.h
+	gcc -O2 -o $@ $<
+
+# Rootfs image: one NBROOT1 header sector + the gzip pack (rootfs.h).
+# rootfs.bin is appended directly to the floppy images; cmds.img is the
+# 8 MB image flashed into the USB rootfs partition.
+rootfs.bin: cmds_pack_gz.bin mkrootfs
+	./mkrootfs $@ cmds_pack_gz.bin
+
+rootfs: cmds.img
+
+cmds.img: cmds_pack_gz.bin mkrootfs
+	./mkrootfs $@ cmds_pack_gz.bin $$(( $(ROOTFS_SECTORS) * 512 ))
 
 payload.o: payload.c payload.h io.h mm.h ramfs.h serial.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -862,10 +910,17 @@ netmonitor: netmonitor.c
 
 bootstrap: bootstrap.bin
 
-dev: kernel.bin kexec_send
+dev: kernel.bin cmds_pack_gz.bin kexec_send
 	@entry=$$(nm kernel.elf | awk '/ T kernel_entry$$/{print $$1}'); \
 	if [ -z "$$entry" ]; then echo "error: kernel_entry symbol not found"; exit 1; fi; \
-	echo "Sending kernel.bin (entry 0x$$entry) via $(SERIAL_DEV) @ $(SERIAL_BAUD)..."; \
+	echo "Sending kernel.bin + cmds_pack_gz.bin (entry 0x$$entry) via $(SERIAL_DEV) @ $(SERIAL_BAUD)..."; \
+	./kexec_send $(SERIAL_DEV) $(SERIAL_BAUD) $$entry kernel.bin cmds_pack_gz.bin
+
+# Kernel-only fast path: the board keeps its running rootfs.
+kernel-dev: kernel.bin kexec_send
+	@entry=$$(nm kernel.elf | awk '/ T kernel_entry$$/{print $$1}'); \
+	if [ -z "$$entry" ]; then echo "error: kernel_entry symbol not found"; exit 1; fi; \
+	echo "Sending kernel.bin only (entry 0x$$entry) via $(SERIAL_DEV) @ $(SERIAL_BAUD)..."; \
 	./kexec_send $(SERIAL_DEV) $(SERIAL_BAUD) $$entry kernel.bin
 
 # Push just the command pack (cmds.pack) to a running board: no kernel
@@ -879,14 +934,15 @@ net-cmds: cmds.pack netkexec_send
 	@echo "Sending cmds.pack to $(BOARD_IP):$(NETKEXEC_PORT)..."
 	./netkexec_send --payload $(BOARD_IP) $(NETKEXEC_PORT) cmds.pack
 
-# The browser is a disk app, not part of the pack.  Upload it to the board's
-# writable /share (the board must be running `websrv`; stop it before browsing
-# HTTP, since the WebDAV server owns the NIC).
+# Development override: upload the real browser to the board's writable
+# /share; the bin/browser launcher prefers it over the pack copy.  The board
+# must be running `websrv`; stop it before browsing HTTP, since the WebDAV
+# server owns the NIC.
 browser-dev: browser.elf
 	@echo "Uploading browser.elf to http://$(BOARD_IP):8080/share/BROWSER..."
 	curl -f -T browser.elf http://$(BOARD_IP):8080/share/BROWSER
 
-# gallery follows the same disk-app model as the browser.
+# gallery follows the same development-override model.
 gallery-dev: gallery.elf
 	@echo "Uploading gallery.elf to http://$(BOARD_IP):8080/share/GALLERY..."
 	curl -f -T gallery.elf http://$(BOARD_IP):8080/share/GALLERY
@@ -903,11 +959,18 @@ BOARD_IP ?= 192.168.178.240
 NETLOG_PORT ?= 19290
 NETKEXEC_PORT ?= 19288
 
-net-dev: kernel.bin netkexec_send
+net-dev: kernel.bin cmds_pack_gz.bin netkexec_send
 	@entry=$$(nm kernel.elf | awk '/ T kernel_entry$$/{print $$1}'); \
 	if [ -z "$$entry" ]; then echo "error: kernel_entry symbol not found"; exit 1; fi; \
-	echo "Sending kernel.bin (entry 0x$$entry) to $(BOARD_IP):$(NETKEXEC_PORT)..."; \
+	echo "Sending kernel.bin + cmds_pack_gz.bin (entry 0x$$entry) to $(BOARD_IP):$(NETKEXEC_PORT)..."; \
+	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin cmds_pack_gz.bin
+
+# Kernel-only fast path: the board keeps its running rootfs.
+kernel-net-dev: kernel.bin netkexec_send
+	@entry=$$(nm kernel.elf | awk '/ T kernel_entry$$/{print $$1}'); \
+	if [ -z "$$entry" ]; then echo "error: kernel_entry symbol not found"; exit 1; fi; \
+	echo "Sending kernel.bin only (entry 0x$$entry) to $(BOARD_IP):$(NETKEXEC_PORT)..."; \
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h

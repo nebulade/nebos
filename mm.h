@@ -50,6 +50,9 @@ void mm_init(void);
 unsigned int mm_alloc_page(void);
 void mm_free_page(unsigned int addr);
 
+/* Free a page-aligned boot-time reservation (never low 1 MB / the shadow). */
+void mm_free_range(unsigned int base, unsigned int size);
+
 /* Return n contiguous pages (base address), or 0 if unavailable. */
 unsigned int mm_alloc_pages(unsigned int n);
 

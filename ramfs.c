@@ -134,16 +134,23 @@ int ramfs_init(const void *pack, unsigned int size)
 {
 	const struct ramfs_hdr *h;
 	const unsigned char *p = (const unsigned char *)pack;
+	unsigned int pages;
+
+	if (!pack || size < sizeof(struct ramfs_hdr) ||
+	    size > RAMFS_MAX_DECOMPRESSED)
+		return -1;
 
 	/* The embedded pack is gzip-compressed (the same inflate code that the
-	 * PNG decoder uses); a raw pack is still accepted, which is what the
-	 * cmds-dev path passes to ramfs_replace(). */
+	 * PNG decoder uses); a raw pack is still accepted, which is what a
+	 * kexec reload passes when it carries the running rootfs over.  Either
+	 * way the pack is copied into page-allocated memory, so the boot-time
+	 * region can be released. */
 	if (size >= 18 && p[0] == 0x1F && p[1] == 0x8B) {
 		unsigned int isize = (unsigned int)p[size - 4] |
 				     ((unsigned int)p[size - 3] << 8) |
 				     ((unsigned int)p[size - 2] << 16) |
 				     ((unsigned int)p[size - 1] << 24);
-		unsigned int pages, wpages, olen = 0;
+		unsigned int wpages, olen = 0;
 		unsigned char *out, *ws;
 
 		if (isize == 0 || isize > RAMFS_MAX_DECOMPRESSED)
@@ -192,13 +199,27 @@ int ramfs_init(const void *pack, unsigned int size)
 		return 0;
 	}
 
-	h = ramfs_validate(pack, size);
-	if (!h)
-		return -1;
-	pack_base = (const unsigned char *)pack;
+	/* Raw pack: copy it so the caller can release the boot region. */
+	pages = (size + 0xFFF) >> 12;
+	{
+		unsigned char *copy = (unsigned char *)mm_alloc_pages(pages);
+		unsigned int i;
+
+		if (!copy)
+			return -1;
+		for (i = 0; i < size; i++)
+			copy[i] = p[i];
+		h = ramfs_validate(copy, size);
+		if (!h) {
+			for (i = 0; i < pages; i++)
+				mm_free_page((unsigned int)copy + i * 0x1000);
+			return -1;
+		}
+		pack_base = copy;
+	}
 	pack_size = size;
 	pack_hdr = h;
-	pack_pages = 0;
+	pack_pages = pages;
 	return 0;
 }
 
@@ -310,4 +331,12 @@ unsigned int ramfs_count(void)
 unsigned int ramfs_pack_size(void)
 {
 	return pack_hdr ? pack_size : 0;
+}
+
+/* Base of the owned pack (NULL when there is no pack or it is not ours).
+ * A kexec reload passes this to the new kernel so a kernel-only update can
+ * keep the commands. */
+const void *ramfs_pack_base(void)
+{
+	return pack_pages ? pack_base : 0;
 }

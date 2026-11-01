@@ -19,6 +19,11 @@ make run-ahci   # like `make run` + an ICH9 AHCI controller and a 512 MB SATA di
 make uefi       # build BOOTX64.EFI and the dual-boot usb-efi.img
 make run-uefi   # boot usb-efi.img under OVMF (x86-64 UEFI; serial log in /tmp/opencode)
 make test-uefi  # headless OVMF boot test (greps the serial log for the boot line)
+make rootfs     # build cmds.img (the 8 MB rootfs partition image)
+make dev        # serial kernel + rootfs reload (KXE2)
+make kernel-dev # serial kernel-only reload (keeps the running rootfs)
+make net-dev    # network kernel + rootfs reload (KXN2)
+make kernel-net-dev
 make flash      # write the dual-boot image (legacy BIOS + UEFI) to a USB stick
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make test-images  # host image-decoder + blit tests (ASan variant: test-images-asan)
@@ -27,24 +32,32 @@ make clean
 
 - Build flags (in `Makefile`): `-m32 -march=i586 -ffreestanding -fno-pie -nostdlib
   -fno-stack-protector -mno-sse -mno-sse2 -mno-mmx -O2`.
+- The command pack is the system rootfs: `cmds.pack` (NBPAK1), gzip-compressed
+  to `cmds_pack_gz.bin`, wrapped by `mkrootfs` with a one-sector `NBROOT1`
+  header into `rootfs.bin` (floppy append) and `cmds.img` (the 8 MB USB
+  partition image).  The kernel itself no longer carries the pack; the boot
+  path loads it into RAM and `ramfs_init` takes a private copy (`bin/<name>`
+  mounted at `/ramfs`).
 - `root.img` is a second FAT12 floppy holding user binaries (`PROG.BIN`, `SPACE.BIN`),
-  the external browser (`BROWSER`) and its `DEMO.HTM`/`PIC.BMP` test page, plus
-  a few test files; it requires `mtools` to build.
+  the disk fallback copies of the browser/gallery (`BROWSER`, `GALLERY`) and
+  its `DEMO.HTM`/`PIC.BMP` test page, plus a few test files; it requires
+  `mtools` to build.
 - `make send PROGRAM=prog` transfers a binary to a real machine over serial.
 - UEFI needs `x86_64-w64-mingw32-gcc` (the 64-bit loader) and, for the QEMU
   targets, an OVMF firmware (`OVMF=/path/to/OVMF.4m.fd` overrides the default).
   `make all` does not build the UEFI image, so a machine without mingw still
   builds the legacy floppy/USB images normally.
-- `usb.img` remains the legacy-only image.  `make flash` uses `usb-efi.img`,
-  which is `usb.img` plus an 8 MB FAT16 ESP in a new third MBR partition
-  (type `0xEF`, LBA 131072).  The MBR boot code, partition entries 1/2 and the
-  active partition 1 are unchanged except for one BPB byte: FATSize16 is
-  cleared in the dual image (disk offset `0x7E16`).  Without that, UEFI
-  firmware scans the partition, sees the FAT16-looking boot sector and mounts
-  the raw kernel blob as a volume, writing FAT/root pages over the kernel at
-  LBA 64.  `boot.S` and the BIOS never read FATSize16.  Legacy boot from the
-  patched image is tested; `make flash FLASH_IMG=usb.img` flashes the
-  untouched legacy-only image.  `make flash` needs the mingw toolchain because
+- `usb.img` is 72 MB: partition 1 (type `0x06`, LBA 63) is the raw kernel
+  blob and partition 2 (type `0x7F`, LBA 131072) is the 8 MB rootfs image
+  (`cmds.img`).  The boot sector's `pack_lba` field points the VESA stage at
+  partition 2.  `usb-efi.img` (80 MB) adds an 8 MB FAT16 ESP as partition 3
+  (type `0xEF`, LBA 147456); `BOOTX64.EFI` embeds the kernel + gz pack.
+  `make flash` writes the dual image; `make flash FLASH_IMG=usb.img` writes
+  the legacy-only image.  One BPB byte is cleared in the dual image (disk
+  offset `0x7E16`, FATSize16): without that, UEFI firmware scans partition 1,
+  sees the FAT16-looking boot sector and mounts the raw kernel blob as a
+  volume, writing FAT/root pages over the kernel at LBA 64.  `boot.S` and the
+  BIOS never read FATSize16.  `make flash` needs the mingw toolchain because
   it builds `usb-efi.img`.
 
 ## Boot chain
@@ -52,9 +65,13 @@ make clean
 1. `boot.S` — 512-byte boot sector (FAT16 BPB). Loads contiguous kernel sectors
    to `0x7E00` (CHS for floppy, INT 13h AH=42h LBA for hard disk), jumps there.
 2. `vesa_stage.S` — real-mode VESA stage. Probes INT 15h E820 into `0x1000`,
-   picks best VBE mode (≥16 bpp, LFB, fits VRAM, ≤1280px), writes mode info to
-   `0x600`, enables A20, enters protected mode, jumps to `kernel_entry`
-   (`entry.S`, re-points ESP to the current stack top, then `kernel_main`).
+   enables A20, reads the `NBROOT1` rootfs header at the boot sector's
+   `pack_lba` field and copies the gzip pack to the top of RAM below 16 MB
+   with INT 15h AH=87h (no mode switching), picks the best VBE mode
+   (≥16 bpp, LFB, fits VRAM, ≤1280px), writes mode info to `0x600` and the
+   12-dword `struct boot_info` (magic/checksum/rsdp/flags/pack range) to
+   `0x500`, enters protected mode and jumps to `kernel_entry` (`entry.S`,
+   re-points ESP to the current stack top, then `kernel_main`).
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → memory/paging →
    ACPI/MADT → I/O → idle → processes → timer (PIT; 1 kHz busy, 100 Hz idle + IDT) → SMP AP
    bring-up → mouse → VGA shadow buffer → terminal.
@@ -63,11 +80,12 @@ make clean
 5. **UEFI (`efi/`)** — an x86-64 PE32+ `BOOTX64.EFI` loads from the ESP. It
    picks a GOP mode, converts `GetMemoryMap` into the E820 map at `0x1000`,
    stages `kernel.bin` below 4 GB, fills `0x500` (boot info) and `0x600`
-   (framebuffer), calls `ExitBootServices`, copies a 192-byte trampoline to
-   `0x800`, leaves IA-32e mode (`CR0.PG`, `EFER.LME`, `CR4.PAE/PGE/PCIDE/
-   SMEP/SMAP/LA57`), copies the kernel to `0x7E00` and jumps to
-   `kernel_entry`.  The BIOS boot sector / VESA stage are not executed on this
-   path; the legacy chain is unchanged.
+   (framebuffer), calls `ExitBootServices`, copies the embedded gz rootfs to
+   the top of RAM below 128 MB, copies a 192-byte trampoline to `0x800`,
+   leaves IA-32e mode (`CR0.PG`, `EFER.LME`, `CR4.PAE/PGE/PCIDE/SMEP/SMAP/
+   LA57`), copies the kernel to `0x7E00` and jumps to `kernel_entry`.  The
+   BIOS boot sector / VESA stage are not executed on this path; the legacy
+   chain is separate (it loads the same gz pack from the rootfs image).
 
 SMP is ACPI-only: RSDP → RSDT/XSDT → MADT, then `LAPIC` + `INIT-SIPI-SIPI`.
 There is deliberately no Intel MP-table parser.  If ACPI, a usable MADT, the
@@ -79,7 +97,7 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 
 | Address    | Purpose |
 |-----------|---------|
-| `0x500`   | UEFI boot info (`struct boot_info`, `bootinfo.h`): magic/checksum, ACPI RSDP, EFI/RGBX flags; `vesa_stage.S` clears the magic on BIOS boot |
+| `0x500`   | Boot info (`struct boot_info`, `bootinfo.h`, 12 dwords): magic/checksum, ACPI RSDP, EFI/RGBX flags, and the boot-time rootfs pack `addr`/`size`; written by `vesa_stage.S`, the UEFI loader or kexec |
 | `0x600`   | Boot framebuffer info (`struct vga_boot_fb_info`, see `vga.h`; written by `vesa_stage.S` or the UEFI loader) |
 | `0x7C00`  | Boot sector load address; also the UEFI handoff stack top |
 | `0x7E00`  | Kernel load / VESA-stage entry (`kernel.ld`); the UEFI loader copies the kernel here and jumps to `kernel_entry` |
@@ -91,11 +109,19 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 | `0x6000`  | AP real/protected-mode trampoline (`ap_tramp.S`/`ap_tramp.ld`; SIPI vector 0x06, image ends below `0x6C00`) |
 | `0x6C00`  | AP trampoline real-mode stack top (grows down) |
 | `0x6F00`  | AP startup info block (CR3, stack top, C entry, CPU index) |
-| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs it stays below `0x7F000`) |
+| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs it stays below `0x7F000`); the command pack is no longer in the image, so this has ~130 KB of headroom |
 | (in-image) | Bootstrap/protected-mode stack: 8 KB `.stack` NOLOAD section, `__boot_stack_top`/`__boot_stack_bottom` (travels with the kernel) |
 | `0x7FF00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
 | `0x80000` | Legacy ring-0 program load area (`run.c`, `serial_recv.c`, `user.ld`; max 0x6000, inside the reserved low 1 MB) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
+
+The boot-time rootfs pack is also dynamic: the legacy stage puts it at the
+top of RAM below 16 MB (the AH=87h 24-bit descriptor limit), the UEFI loader
+at the top of RAM below 128 MB, and kexec leaves it in the staging buffer
+(≥ `0x900000`).  `mm_init` reserves `[pack_addr, pack_addr+pack_size)` from
+boot info; `ramfs_init` copies/inflates it into fresh pages and
+`mm_free_range()` releases the boot region.  The placement is always above
+the 1..9 MB VGA shadow reserve.
 
 Everything else is dynamic: process stacks and the kexec staging buffer come
 from the frame allocator (≥ `0x900000`), and the fallback stack pool is a
@@ -153,14 +179,15 @@ run area), so adding code no longer moves any address.
   fallback pool (a static BSS array; no fixed address).
 - **UEFI boot**: `bootinfo.h` (the `0x500` block and its checksum/accessors),
   `efi/efi.h` (minimal UEFI types and table/protocol layouts), `efi/main.c`
-  (GOP mode choice, `GetMemoryMap` → E820, staging below 4 GB, boot-info/
-  framebuffer blocks, `ExitBootServices`), `efi/tramp.S` + `efi/tramp.ld` (the
-  `0x800` long-mode exit, kernel copy and jump) and `efi/payload.S` (embeds
-  `kernel.bin` and the trampoline in `BOOTX64.EFI`).  `vesa_stage.S` clears
-  the boot-info magic; `vga.c`/`panic.c` honour the RGBX flag and skip the
-  VBE-only ATI CRTC reset / NVIDIA stolen-VRAM alias under EFI; `mouse.c`
-  forces the software cursor; `acpi.c` prefers the passed RSDP and maps its
-  page before validating it.
+  (GOP mode choice, `GetMemoryMap` → E820, staging below 4 GB, rootfs copy,
+  boot-info/framebuffer blocks, `ExitBootServices`), `efi/tramp.S` +
+  `efi/tramp.ld` (the `0x800` long-mode exit, kernel copy and jump) and
+  `efi/payload.S` (embeds `kernel.bin`, `cmds_pack_gz.bin` and the trampoline
+  in `BOOTX64.EFI`).  The legacy `vesa_stage.S` writes the same v2 boot info
+  (with `pack_addr`/`pack_size`); `vga.c`/`panic.c` honour the RGBX flag and
+  skip the VBE-only ATI CRTC reset / NVIDIA stolen-VRAM alias under EFI;
+  `mouse.c` forces the software cursor; `acpi.c` prefers the passed RSDP and
+  maps its page before validating it.
 - **Paging**: `paging.c/h` — identity-maps RAM (4 MB pages via CR4.PSE) + the
   LFB (uncacheable) and enables CR0.PG/WP. Each process gets a page directory
   cloned from the kernel identity map (kernel stacks are mapped everywhere, so
@@ -390,9 +417,9 @@ run area), so adding code no longer moves any address.
   and show whether the fans turn.  Nothing is written to the fan control.
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
   `0x80000`, API function-pointer struct at `0x7FF00`.  `prog`/`space` are
-  **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`, like
-  `hello.elf`), so `make dev`/`make net-dev` update them too and a board with
-  no readable filesystem can still run them: `run <name>` and the `prog`/
+  **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`), so
+  `make dev`/`make net-dev` update them too and a board with no readable
+  filesystem can still run them: `run <name>` and the `prog`/
   `space` commands use the embedded copy, `run /<device>/<file>` still loads
   from FAT.  Rebuilds are wired (`space.c` -> `space.bin` -> `space_embed.o` ->
   `kernel.elf`).  Note: `run`/`prog`/`space` still draw over the WM (which keeps
@@ -409,13 +436,18 @@ run area), so adding code no longer moves any address.
   canvas mapping at `USER_GFX_BASE` (`0x50000000`) and the WM mappings are
   separate.
 - **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld`, `mkpack.c`,
-  `ramfs.c/h` — freestanding ELFs linked at `USER_BASE` (`0x40000000`), packed
-  by `mkpack` into `cmds.pack` (as `bin/<name>`), embedded in the kernel
-  image (`cmds_pack.o`) and mounted read-only at `/ramfs`.  The shell finds
-  them through PATH (`/ramfs/bin` by default), loads the whole ELF through
-  the VFS and spawns it as a ring-3 process; `hello` is just `bin/hello`.
-  New command: add `ucmd_<name>.c` to UCMDS — the pack, the mount and the
-  PATH listing pick it up automatically.  They talk to the kernel through
+  `rootfs.h`, `mkrootfs.c`, `ramfs.c/h` — freestanding ELFs linked at
+  `USER_BASE` (`0x40000000`), packed by `mkpack` into `cmds.pack` (as
+  `bin/<name>`), gzipped to `cmds_pack_gz.bin` and wrapped by `mkrootfs`
+  with a `NBROOT1` header.  The pack is the system rootfs: the boot path
+  loads it into high RAM (legacy AH=87h / UEFI / kexec) and `ramfs_init`
+  takes a private page-allocated copy, mounted read-only at `/ramfs`.  The
+  shell finds them through PATH (`/ramfs/bin` by default), loads the whole
+  ELF through the VFS and spawns it as a ring-3 process; `hello` is just
+  `bin/hello`.  New command: add `ucmd_<name>.c` to UCMDS — the pack, the
+  mount and the PATH listing pick it up automatically.  `SYS_SPAWN` still
+  loads ELFs from any VFS mount, so commands can also live on `/share` or a
+  FAT disk (`path /share/bin`, or an absolute path).  They talk to the kernel through
   `int 0x80` (`syscall.h`: putstr/ticks/sleep/exit, the whole-file service in
   `sys_fs.c`, the state snapshots in `sys_info.c` and the network service in
   `sys_net.c`) and inherit the terminal's screen, so their output lands in
@@ -435,19 +467,19 @@ run area), so adding code no longer moves any address.
 - **Gallery**: `gallery.c` is the ngui widget gallery: typography and
   truncation, the drawing primitives and clip stack, the theme palette, all
   nine icons, live buttons/icon buttons, text fields with event feedback, a
-  nested draggable scroll pane and the `ngui_cut_*` layout helpers.  It is a
-  disk app (`GALLERY` on `root.img`, or `/share`/FAT mounts) like the browser
-  because the embedded command pack is tight against the `0x7F000` wall;
-  `ucmd_gallery.c` is the tiny `bin/gallery` launcher, and `make gallery-dev`
-  uploads the real app to a board's `/share`.
-- **Browser**: `ucmd_browser.c` is a tiny `bin/browser` launcher; the real
-  browser is the external `BROWSER` on `root.img` (also looked up in `/share`
-  and on IDE/SATA FAT mounts) because it links ngui, the full image library,
-  inflate, TLS and uhttp and would not fit the compressed command pack.  The
-  launcher forwards its argument and cwd; `make run`/`run-net` attach
-  `root.img`, and a netbooted board can upload `browser.elf` to `/share`
-  (`make browser-dev` uses the board's `websrv`; stop `websrv` before browsing
-  HTTP, because it owns the NIC).
+  nested draggable scroll pane and the `ngui_cut_*` layout helpers.  The real
+  ELF ships in the pack as `bin/gallery.app`; `ucmd_gallery.c` is the tiny
+  `bin/gallery` launcher, which prefers `/share/GALLERY` (development upload
+  via `make gallery-dev`), then the pack copy, then the `GALLERY` disk
+  fallback on `root.img`/FAT mounts.
+- **Browser**: the real browser ships in the pack as `bin/browser.app`
+  (it links ngui, the full image library, inflate, TLS and uhttp, but the
+  rootfs is no longer constrained by the kernel's low-memory window).
+  `ucmd_browser.c` is the tiny `bin/browser` launcher; it prefers
+  `/share/BROWSER` (`make browser-dev` uploads it via the board's `websrv`;
+  stop `websrv` before browsing HTTP, because it owns the NIC), then the pack
+  copy, then `BROWSER` on `root.img`/IDE/SATA fat mounts.  The launcher
+  forwards its argument and cwd.
   `uhttp.c/h` is the shared ring-3 HTTP client extracted from curl: URL
   parsing/resolution, redirects, chunked decoding, timeouts and TLS; curl and
   the browser both use it.  `browser_html.c/h` is a tolerant HTML tree + the
@@ -528,7 +560,7 @@ run area), so adding code no longer moves any address.
   HTTP/1.1 + WebDAV from the VFS (`/` lists mounts, `/ramfs` is read-only,
   FAT mounts accept only names that round-trip to 8.3, `/share` is the
   writable target).  While listening, `SYS_TCP_ACCEPT` also answers ARP/ICMP
-  and captures a KXNU/KXNP header through `netkexec_capture_frame()`, so
+  and captures a KXN2/KXNP header through `netkexec_capture_frame()`, so
   `make net-dev`/`make net-cmds` interrupts the server cleanly instead of
   waiting for header retries.  The body is buffered whole (4 MB, or 1 MB when
   the heap alloc fails) from the per-process arena; the TCP receive path sends
@@ -589,9 +621,9 @@ Develop without reflashing the floppy. The serial link (COM1 ↔ `/dev/ttyUSB0`)
 runs at **115200 baud**. Two paths exist:
 
 - **Auto-detect** (the normal loop) — the WM loop watches the serial
-  ring buffer for the `"KXEC"` magic and auto-spawns the reload, so `make dev`
-  alone boots a fresh kernel. The manual `kexec` command is kept as a fallback
-  that waits for the same image.
+  ring buffer for the `"KXE2"` magic and auto-spawns the reload, so `make dev`
+  alone boots a fresh kernel + rootfs. The manual `kexec` command is kept as a
+  fallback that waits for the same image.
 - **`bootstrap`** (one-time, zero-reflash) — a ring-0 program loaded through the
   existing `serial recv` + `run serial` path that switches the UART to 115200,
   receives a new kernel, and jumps into it. Used only to install the first new
@@ -600,17 +632,23 @@ runs at **115200 baud**. Two paths exist:
   that is where the old build's `serial recv` writes it.
 
 Wire protocol (host → target, sent immediately; no handshake):
-`[magic "KXEC"][entry u32 LE][size u32 LE][data][checksum u8]`.
-The command pack has its own frame (`make cmds-dev`), the same layout with a
-`"KXNP"` magic (the entry field is ignored), which replaces /ramfs in place
-(see below).  On SMP the APs are INIT-parked just before the jump, and the
-serial receive drops the BKL while it waits for bytes so the WM and the other
-CPU's syscalls stay responsive during a `make dev`.
+`[magic "KXE2"][entry u32 LE][kernel_size u32 LE][pack_size u32 LE]`
+`[kernel][rootfs gzip][checksum u8]`.
+`pack_size == 0` tells the receiver to keep the running rootfs (kernel-only
+reload). A full reload stages both in one page-allocated buffer, copies only
+`kernel_size` bytes over `0x7E00`, and publishes the pack range in boot info;
+the new kernel copies/inflates it and frees the staging tail. The rootfs-only
+runtime update (`make cmds-dev`) keeps the old framing
+`[magic "KXNP"][entry u32][size u32][raw pack][checksum u8]` and replaces
+`/ramfs` in place (see below). On SMP the APs are INIT-parked just before the
+jump, and the serial receive drops the BKL while it waits for bytes so the WM
+and the other CPU's syscalls stay responsive during a `make dev`.
 
 **Every iteration:**
 ```sh
-make dev            # builds kernel.bin (which carries cmds.pack), sends
-make cmds-dev       # optional: push just the command pack to a running board
+make dev            # kernel.bin + cmds_pack_gz.bin (atomic; ~46 s at 115200)
+make kernel-dev     # kernel only; the new kernel keeps the running rootfs
+make cmds-dev       # runtime raw-pack update, no reboot
 ```
 The reload is automatic. On boot the kernel prints `Nebs OS v<version> booted`
 to COM1, so a serial monitor can confirm the new build headlessly:
@@ -631,23 +669,31 @@ make bootstrap                                   # builds bootstrap.bin
 make dev                                         # 115200
 ```
 After the first kexec the machine is at 115200, and `make dev` is all you need
-from then on.
+from then on.  `make bootstrap` is built from the new tree and speaks `KXE2`;
+it stages only the kernel and discards the rootfs bytes, so run `make dev`
+again (or `make cmds-dev`) to install a pack afterwards.
 
 Notes: the kexec path rebuilds a flat GDT at `0x900` before jumping (the old GDT
 lives inside the overwritten kernel region), so it's safe to edit any file,
 including `vesa_stage.S`/`boot.S` layout — but the video *mode* itself is only
 re-applied on a full floppy/USB boot (C-light reuses the current LFB).
 
-## Command pack hot-reload (cmds-dev / net-cmds)
+## Command pack rootfs (cmds.pack / cmds.img / cmds-dev)
 
 The commands live in `cmds.pack` (`bin/<name>` entries, built by `mkpack`),
-which is gzip-compressed at build time (`cmds_pack_gz.bin`) and embedded in
-`kernel.bin`; `ramfs_init()` inflates it at boot with `inflate.c` and mounts it
-read-only at `/ramfs`.  The compression keeps the kernel inside its
-low-memory window (`_end <= 0x7F000`) now that the image viewer adds decoders.
-`cmds-dev`/`net-cmds` still send the *raw* `cmds.pack`, which
-`ramfs_replace()` validates and installs directly.  A running board can
-replace the pack without a kernel reload:
+gzip-compressed to `cmds_pack_gz.bin` and wrapped by `mkrootfs` with a
+one-sector `NBROOT1` header (magic, version, exact `pack_bytes`, checksum,
+gzip flag).  The boot path loads the gz pack into high RAM — the legacy stage
+via INT 15h AH=87h, the UEFI loader via an embedded copy, kexec via its
+staging buffer — and `ramfs_init()` inflates it into page-allocated memory and
+mounts it read-only at `/ramfs`.  The kernel image no longer contains it, so
+the pack can grow without touching `_end <= 0x7F000`.
+
+`rootfs.bin` is the floppy append (header + pack); `cmds.img` is the 8 MB
+rootfs partition image written to USB partition 2.  `cmds-dev`/`net-cmds`
+send the *raw* `cmds.pack`, which `ramfs_replace()` validates and installs
+directly in the running kernel.  A running board can replace the pack without
+a kernel reload:
 
 ```sh
 make cmds-dev       # serial:  ./kexec_send  --payload $(SERIAL_DEV) $(SERIAL_BAUD) cmds.pack
@@ -658,10 +704,12 @@ The pack is received into page-allocated memory (magic "KXNP" over serial,
 the same stop-and-wait protocol with a "KXNP" header over UDP), validated
 *before* the swap, so a truncated or corrupt transfer leaves the running
 commands untouched; a good one is installed by `ramfs_replace()` and the
-previous received copy is freed.  Existing processes are unaffected (they
-already loaded their ELF), and the next spawn picks up the new files.  The
-WM idle loop auto-detects both the kernel (KXEC/KXNU) and the pack (KXNP)
-transfers, so a plain `make cmds-dev`/`make net-cmds` is enough.
+previous heap copy is freed.  Existing processes are unaffected (they already
+loaded their ELF), and the next spawn picks up the new files.  The WM idle
+loop auto-detects the kernel/rootfs (KXE2/KXN2) and the runtime pack (KXNP)
+transfers, so a plain `make cmds-dev`/`make net-cmds` is enough.  Runtime
+updates are RAM-only; a cold boot uses the flashed rootfs (USB partition 2 or
+the floppy append), so reflash after changing the bundle.
 
 ## Network hot-reload (net-dev) workflow
 
@@ -669,17 +717,24 @@ For boards without a serial console (the ASUS AT3IONT-I), the same reload runs
 over the network instead:
 
 ```sh
-make net-dev                    # pushes kernel.bin to BOARD_IP (default 192.168.178.240)
+make net-dev                    # kernel + rootfs to BOARD_IP (default 192.168.178.240)
 make net-dev BOARD_IP=192.168.178.42
+make kernel-net-dev             # kernel only; keeps the running rootfs
 ```
 
 The board must be idle at a shell prompt: the WM loop polls the NIC, answers
-ARP/ICMP for its IP, and auto-detects the `"KXNU"` header datagram (UDP port
-19288).  The host tool (`netkexec_send.c`) then does a stop-and-wait transfer:
-the board acks every datagram with the next expected offset, verifies the
-32-bit checksum and jumps.  ~130 KB takes about a second on a wired LAN.
-While a net command owns the receiver (`netrecv`/`ping`/`netloop`)
-or a kexec is in progress, the auto-detect pauses.
+ARP/ICMP for its IP, and auto-detects the `"KXN2"` header datagram (UDP port
+19288).  The header is `magic, entry, kernel_size, pack_size, checksum`; the
+host tool (`netkexec_send.c`) sends the kernel then the gz rootfs as one
+stop-and-wait stream, the board acks every datagram with the next expected
+offset, verifies the 32-bit checksum, writes boot info for the staging tail
+and jumps.  `pack_size == 0` keeps the running rootfs.  ~480 KB takes a
+couple of seconds on a wired LAN.  While a net command owns the receiver
+(`netrecv`/`ping`/`netloop`) or a kexec is in progress, the auto-detect pauses.
+
+The old `KXNU`/`KXEC` magics are deliberately not understood by this kernel
+(and it uses `KXN2`/`KXE2`), so a board still running a pre-rootfs build must
+be flashed (or bootstrapped) once; the new `make net-dev` is then atomic.
 
 The board's address comes from DHCP when a server is present (the DHCP client
 runs at boot; `netinfo` shows ip/mask/gateway and the lease), so use
@@ -938,10 +993,10 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    the USB tree printer) are the last non-privileged commands still living in
    the kernel, plus the privileged ones (`peek`, `poke`, `dbg`, `serial`,
    `kexec`, `reboot`, `poweroff`, `format`, `run`/`prog`/`space`, `ps`/`kill`).
-9. Every ring-3 command is a full ELF whose LOAD segment starts at file
-   offset 0x1000 (the linker's page alignment), so ~4 KB of each ~8 KB blob is
-   padding: 25 commands carry ~100 KB of it.  Linking them with
-   `-z max-page-size=0x100` would remove most of that.
+9. The rootfs pack is inflated into one contiguous page-allocated run at
+   boot, capped by `RAMFS_MAX_DECOMPRESSED` (8 MB); a larger pack fails to
+   load (the USB rootfs partition is 8 MB, so this only bites if the cap is
+   raised without a bigger partition).
 10. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
     board that exposes only MP tables stays UP (deliberate; there is no test
     hardware).
@@ -992,9 +1047,9 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     charged against the 128 MB identity-mapped window.
 
 22. The TCP backlog's early-request buffers cost 8 KB of kernel BSS
-    (8 slots x 1 KB), and the FAT listing cache another 5 KB; `_end` is
-    within roughly 30 KB of the `0x7F000` wall.  Adding more kernel buffers
-    or commands should be paired with reclaiming space elsewhere.
+    (8 slots x 1 KB), and the FAT listing cache another 5 KB.  The command
+    pack is out of the kernel now, so `_end` keeps ~130 KB of headroom below
+    the `0x7F000` wall; the remaining limit is kernel code/buffers only.
 
 23. Browser limits: no JavaScript, forms, flex/grid, CSS custom properties
     (`var(--...)`), tables with column widths, absolute/fixed positioning,
@@ -1041,5 +1096,5 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     IOAPIC setup: OVMF delivers the ISA IRQs through the 8259 path, but a
     platform that routes them through the IOAPIC may need a mask-all step after
     ACPI init.  UEFI runtime services are not used, so `reboot`/`poweroff` still
-    use the legacy ports.  The hybrid image is 72 MB because the ESP is a
-    third partition after the untouched 64 MB legacy layout.
+    use the legacy ports.  The image is 80 MB: the 64 MB kernel partition,
+    the 8 MB rootfs partition and the 8 MB ESP.

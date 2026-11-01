@@ -12,8 +12,8 @@
 #define PROGRAM_LOAD_ADDR 0x80000
 #define PROGRAM_LOAD_MAX  0x6000   /* up to 0x86000, below the VGA window */
 
-/* User programs embedded in the kernel image (like hello.elf): they travel
- * with `make dev`/`make net-dev`, so a board with no readable filesystem can
+/* User programs embedded in the kernel image: they travel with
+ * `make dev`/`make net-dev`, so a board with no readable filesystem can
  * still run them.  Rebuilt from prog.c/space.c by the Makefile. */
 extern unsigned char _binary_prog_bin_start[], _binary_prog_bin_end[];
 extern unsigned char _binary_space_bin_start[], _binary_space_bin_end[];

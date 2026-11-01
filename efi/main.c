@@ -33,6 +33,8 @@
 
 extern unsigned char kernel_image_start[];
 extern unsigned char kernel_image_end[];
+extern unsigned char pack_image_start[];
+extern unsigned char pack_image_end[];
 extern unsigned char tramp_blob_start[];
 extern unsigned char tramp_blob_end[];
 
@@ -433,34 +435,84 @@ static void build_e820(EFI_MEMORY_DESCRIPTOR *map, UINTN map_size,
 
 /* ---- boot structures --------------------------------------------------- */
 
-static void write_bootinfo(UINT32 rsdp, int have_fb, int rgbx)
+/* Copy the embedded rootfs pack to the top of RAM (below the 128 MB
+ * identity window and above the 1..9 MB VGA shadow reserve), matching the
+ * legacy stage's placement.  Returns the address, or 0 when it does not fit.
+ * Runs after ExitBootServices, so only plain memory accesses. */
+static UINT32 copy_pack(UINT32 size)
+{
+	volatile UINT32 *map = (volatile UINT32 *)E820_ADDR;
+	volatile struct e820_entry_disk *entries =
+		(volatile struct e820_entry_disk *)(E820_ADDR + 8);
+	UINT32 need, count, i, best = 0;
+	UINT32 p;
+
+	if (size == 0 || size > 0x400000u)
+		return 0;
+	need = (size + PAGE_SIZE_ - 1) & ~(PAGE_SIZE_ - 1);
+	if (map[0] != 0xE820E820u)
+		return 0;
+	count = map[1];
+	if (count > 32)
+		count = 32;
+
+	for (i = 0; i < count; i++) {
+		UINT64 base = entries[i].base;
+		UINT64 end = base + entries[i].length;
+		UINT32 a;
+
+		if (entries[i].type != 1 || base >= MAX_PHYS)
+			continue;
+		if (end > MAX_PHYS)
+			end = MAX_PHYS;
+		if (end < base + need)
+			continue;
+		a = (UINT32)(end - need) & ~(PAGE_SIZE_ - 1);
+		if (a < 0x900000u || a <= best)
+			continue;
+		best = a;
+	}
+	if (!best)
+		return 0;
+
+	for (p = 0; p < size; p++)
+		((UINT8 *)(UINTN)best)[p] = pack_image_start[p];
+	return best;
+}
+
+static void write_bootinfo(UINT32 rsdp, int have_fb, int rgbx,
+			   UINT32 pack_addr, UINT32 pack_size)
 {
 	volatile struct boot_info *bi =
 		(volatile struct boot_info *)BOOT_INFO_ADDR;
-	UINT32 words[8];
+	UINT32 words[BOOT_INFO_WORDS];
 	unsigned int i;
 	UINT32 sum = 0;
 
 	__asm__ volatile ("" : "+r"(bi));
 
+	for (i = 0; i < BOOT_INFO_WORDS; i++)
+		words[i] = 0;
 	words[0] = BOOT_INFO_MAGIC;
 	words[1] = BOOT_INFO_VERSION;
-	words[2] = 0;
 	words[3] = rsdp;
 	words[4] = BOOTINFO_FLAG_EFI |
 		((have_fb && rgbx) ? BOOTINFO_FLAG_RGBX : 0);
-	words[5] = words[6] = words[7] = 0;
-	for (i = 0; i < 8; i++)
+	words[5] = pack_addr;
+	words[6] = pack_size;
+	for (i = 0; i < BOOT_INFO_WORDS; i++)
 		sum += words[i];
-	words[2] = 0u - sum;   /* checksum over the eight dwords is zero */
+	words[2] = 0u - sum;   /* the sum over the block is zero */
 
 	bi->magic = words[0];
 	bi->version = words[1];
 	bi->checksum = words[2];
 	bi->rsdp = words[3];
 	bi->flags = words[4];
-	for (i = 0; i < 3; i++)
-		bi->reserved[i] = words[5 + i];
+	bi->pack_addr = words[5];
+	bi->pack_size = words[6];
+	for (i = 0; i < 5; i++)
+		bi->reserved[i] = words[7 + i];
 }
 
 static void write_fbinfo(const struct fb_saved *fb)
@@ -524,6 +576,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	UINT32 desc_ver = 0;
 	UINT32 rsdp;
 	UINT32 kernel_size;
+	UINT32 pack_addr = 0, pack_size;
 	UINTN pages, i, tries;
 	EFI_STATUS status;
 
@@ -539,11 +592,14 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	kernel_size = (UINT32)(kernel_image_end - kernel_image_start);
 	if (kernel_size == 0 || kernel_size > KERNEL_MAX)
 		fail_before(st, "kernel image size invalid");
+	pack_size = (UINT32)(pack_image_end - pack_image_start);
 	com1_puts("nebos-efi: kernel ");
 	com1_dec(kernel_size);
 	com1_puts(" bytes, entry 0x");
 	com1_hex((UINT64)KERNEL_ENTRY, 8);
-	com1_puts("\n");
+	com1_puts(", rootfs ");
+	com1_dec(pack_size);
+	com1_puts(" bytes\n");
 
 	/* Video: prefer BGRX (the byte order the kernel's shadow buffer uses);
 	 * RGBX is handled by a swizzling flush. */
@@ -623,7 +679,12 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 		fail_after("memory map is empty");
 	build_e820((EFI_MEMORY_DESCRIPTOR *)memmap_buf, map_size, desc_size,
 		   &fb);
-	write_bootinfo(rsdp, fb.valid, fb.rgbx);
+	pack_addr = copy_pack(pack_size);
+	com1_puts("nebos-efi: rootfs at 0x");
+	com1_hex(pack_addr, 8);
+	com1_puts("\n");
+	write_bootinfo(rsdp, fb.valid, fb.rgbx, pack_addr,
+		       pack_addr ? pack_size : 0);
 	write_fbinfo(&fb);
 	copy_trampoline();
 

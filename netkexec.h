@@ -9,7 +9,7 @@
 int netkexec_pending(void);
 
 /* Feed one frame received by another poller (the WebDAV server).  Returns 1
- * when it was a KXNU/KXNP header; netkexec_pending() then reports it without
+ * when it was a KXN2/KXNP header; netkexec_pending() then reports it without
  * polling the NIC again. */
 int netkexec_capture_frame(const unsigned char *frame, unsigned int len);
 

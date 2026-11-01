@@ -586,8 +586,8 @@ void vfs_mount_ramfs(void)
 {
 	vfs_mount_t *m;
 
-	if (ramfs_count() == 0)
-		return;
+	/* Mount even when the pack is empty: the runtime `cmds-dev` path can
+	 * install a pack later and vfs_refresh_ramfs() then updates the mount. */
 	m = mount_slot("ramfs");
 	if (!m)
 		return;

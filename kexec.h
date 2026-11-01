@@ -21,9 +21,12 @@ void kexec_stage_free(void);
 /* Physical base of the staging buffer holding the received image. */
 extern unsigned int kexec_stage;
 
-/* Copy the staged image (kexec_stage, `size` bytes) over the kernel region,
- * relocate the trampoline and jump to `entry`.  Never returns. */
-void kexec_jump(unsigned int entry, unsigned int size);
+/* Copy the staged kernel (`kernel_size` bytes) over the kernel region,
+ * relocate the trampoline and jump to `entry`.  `pack_addr`/`pack_size`
+ * describe the boot-time rootfs source; a zero pack_size means "keep the
+ * running ramfs".  Never returns. */
+void kexec_jump(unsigned int entry, unsigned int kernel_size,
+		unsigned int pack_addr, unsigned int pack_size);
 
 /* Non-zero while a kexec receive is in progress (prevents double-trigger). */
 extern volatile int kexec_busy;
@@ -32,8 +35,8 @@ extern volatile int kexec_busy;
 extern volatile unsigned int kexec_progress;
 extern volatile unsigned int kexec_total;
 
-/* Returns 1 if the serial ring buffer starts with the "KXEC" magic, i.e. the
- * host has begun sending a new kernel image. */
+/* Returns 1 if the serial ring buffer starts with the "KXE2" magic, i.e. the
+ * host has begun sending a new kernel/rootfs image. */
 int kexec_pending(void);
 
 #endif

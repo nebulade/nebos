@@ -1840,7 +1840,7 @@ void wm_handle_kexec(void)
 	if (kexec_busy)
 		return;
 	/* A command pack for /ramfs (checked before kexec: both start with
-	 * 'K', and the kexec detector drops anything that is not KXEC). */
+	 * 'K', and the kexec detector drops anything that is not KXE2). */
 	if (payload_pending()) {
 		kexec_busy = 1;
 		if (process_create("payload", program_payload_main) < 0)

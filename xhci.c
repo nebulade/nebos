@@ -7,8 +7,7 @@
  * are implemented, which is exactly what usbhid.c uses.
  *
  * The schedule is polled, like the rest of the kernel.  Rings and contexts
- * are page-allocated so the driver does not grow the kernel BSS into the
- * 0x7F000 wall. */
+ * are page-allocated so the driver does not grow the kernel BSS. */
 
 #include "mm.h"
 #include "paging.h"

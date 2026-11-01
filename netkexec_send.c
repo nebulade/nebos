@@ -1,7 +1,8 @@
-/* Push kernel.bin to a Nebs OS board over UDP (the board's WM loop
- * auto-detects the header and jumps into the new kernel).
+/* Push a kernel + rootfs pack to a Nebs OS board over UDP (the board's WM
+ * loop auto-detects the header and jumps into the new kernel).
  *
- *   netkexec_send <board-ip> <port> <entry-hex> <file>
+ *   netkexec_send <board-ip> <port> <entry-hex> <kernel> [pack]
+ *   netkexec_send --payload <board-ip> <port> <pack>
  *
  * Protocol: see netkexec.c.  Stop-and-wait: every datagram (except the
  * header) is acked with the next expected offset; lost datagrams are
@@ -20,8 +21,8 @@
 #include <unistd.h>
 
 #define DATA_MAX   1400
-#define MAGIC_HDR  0x554E584Bu   /* "KXNU" */
-#define MAGIC_PAY   0x504E584Bu   /* "KXNP" */
+#define MAGIC_HDR  0x324E584Bu   /* "KXN2" (kernel + rootfs) */
+#define MAGIC_PAY  0x504E584Bu   /* "KXNP" (runtime pack replacement) */
 #define MAGIC_DATA 0x444E584Bu   /* "KXND" */
 #define MAGIC_ACK  0x414E584Bu   /* "KXNA" */
 #define ACK_DONE   1
@@ -69,14 +70,42 @@ static long wait_ack(int fd, unsigned int timeout_ms, uint32_t *status)
 	}
 }
 
+static unsigned char *read_file(const char *path, long *size)
+{
+	FILE *f = fopen(path, "rb");
+	unsigned char *data;
+	long n;
+
+	if (!f) {
+		fprintf(stderr, "netkexec_send: %s: %s\n", path, strerror(errno));
+		exit(1);
+	}
+	fseek(f, 0, SEEK_END);
+	n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	if (n <= 0) {
+		fprintf(stderr, "netkexec_send: %s: empty file\n", path);
+		fclose(f);
+		exit(1);
+	}
+	data = malloc((size_t)n);
+	if (!data || fread(data, 1, (size_t)n, f) != (size_t)n) {
+		fprintf(stderr, "netkexec_send: %s: read failed\n", path);
+		fclose(f);
+		free(data);
+		exit(1);
+	}
+	fclose(f);
+	*size = n;
+	return data;
+}
+
 int main(int argc, char **argv)
 {
-	const char *ip, *path;
-	unsigned int port;
-	unsigned int entry;
-	unsigned char *data, *pkt;
-	long size;
-	FILE *f;
+	const char *ip, *kernel_path, *pack_path = 0;
+	unsigned int port, entry;
+	unsigned char *kdata, *pdata = 0, *data, *pkt;
+	long ksize, psize = 0, size;
 	unsigned int offset = 0, sum = 0;
 	int fd, i, fails = 0;
 	int payload = 0;
@@ -92,41 +121,39 @@ int main(int argc, char **argv)
 		payload = 1;
 		ip = argv[2];
 		port = (unsigned int)strtoul(argv[3], NULL, 0);
-		path = argv[4];
+		kernel_path = argv[4];
 		entry = 0;
 	} else {
-		if (argc != 5) {
+		if (argc != 5 && argc != 6) {
 			fprintf(stderr,
-				"usage: %s <board-ip> <port> <entry-hex> <file>\n",
-				argv[0]);
+				"usage: %s <board-ip> <port> <entry-hex> "
+				"<kernel> [pack]\n", argv[0]);
 			return 2;
 		}
 		ip = argv[1];
 		port = (unsigned int)strtoul(argv[2], NULL, 0);
 		entry = (unsigned int)strtoul(argv[3], NULL, 16);
-		path = argv[4];
+		kernel_path = argv[4];
+		if (argc == 6)
+			pack_path = argv[5];
 	}
 
-	f = fopen(path, "rb");
-	if (!f) {
-		fprintf(stderr, "netkexec_send: %s: %s\n", path, strerror(errno));
-		return 1;
-	}
-	fseek(f, 0, SEEK_END);
-	size = ftell(f);
-	fseek(f, 0, SEEK_SET);
+	kdata = read_file(kernel_path, &ksize);
+	if (pack_path)
+		pdata = read_file(pack_path, &psize);
+	size = ksize + psize;
 	if (size <= 0 || size > 0x400000) {   /* matches kexec.h KEXEC_MAX */
-		fprintf(stderr, "netkexec_send: bad size %ld\n", size);
-		fclose(f);
+		fprintf(stderr, "netkexec_send: bad total size %ld\n", size);
 		return 1;
 	}
 	data = malloc((size_t)size);
-	if (!data || fread(data, 1, (size_t)size, f) != (size_t)size) {
-		fprintf(stderr, "netkexec_send: read failed\n");
-		fclose(f);
+	if (!data) {
+		fprintf(stderr, "netkexec_send: out of memory\n");
 		return 1;
 	}
-	fclose(f);
+	memcpy(data, kdata, (size_t)ksize);
+	if (psize)
+		memcpy(data + ksize, pdata, (size_t)psize);
 	for (i = 0; i < size; i++)
 		sum += data[i];
 
@@ -143,24 +170,30 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	pkt = malloc(12 + DATA_MAX);
+	pkt = malloc(20 + DATA_MAX);
 	if (payload)
 		printf("netkexec: %s:%u, %ld bytes, command pack for /ramfs\n",
 		       ip, port, size);
 	else
-		printf("netkexec: %s:%u, %ld bytes, entry 0x%08x\n",
-		       ip, port, size, entry);
+		printf("netkexec: %s:%u, kernel %ld + rootfs %ld bytes, "
+		       "entry 0x%08x\n", ip, port, ksize, psize, entry);
 
 	/* Header first: the board answers with the first expected offset. */
 	wr32(pkt, payload ? MAGIC_PAY : MAGIC_HDR);
 	wr32(pkt + 4, entry);
-	wr32(pkt + 8, (uint32_t)size);
-	wr32(pkt + 12, (uint32_t)sum);
+	if (payload) {
+		wr32(pkt + 8, (uint32_t)size);
+		wr32(pkt + 12, (uint32_t)sum);
+	} else {
+		wr32(pkt + 8, (uint32_t)ksize);
+		wr32(pkt + 12, (uint32_t)psize);
+		wr32(pkt + 16, (uint32_t)sum);
+	}
 	for (i = 0; i < 20; i++) {
 		uint32_t status;
 		long ack;
 
-		if (send_packet(fd, &dst, pkt, 16) != 0) {
+		if (send_packet(fd, &dst, pkt, payload ? 16 : 20) != 0) {
 			perror("sendto");
 			return 1;
 		}
@@ -177,7 +210,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	/* Stop-and-wait data transfer. */
+	/* Stop-and-wait data transfer (kernel bytes, then rootfs bytes). */
 	while (offset < (unsigned int)size) {
 		unsigned int chunk = (unsigned int)size - offset;
 		uint32_t status = 0;
@@ -217,10 +250,13 @@ int main(int argc, char **argv)
 		printf("\rnetkexec: 100%% (%ld bytes) - pack accepted, /ramfs replaced\n",
 		       size);
 	else
-		printf("\rnetkexec: 100%% (%ld bytes) - image accepted, board is jumping\n",
+		printf("\rnetkexec: 100%% (%ld bytes) - kernel+rootfs accepted, board is jumping\n",
 		       size);
 	close(fd);
 	free(pkt);
 	free(data);
+	if (pdata)
+		free(pdata);
+	free(kdata);
 	return 0;
 }

@@ -1,4 +1,4 @@
-/* kexec: receive a new kernel.bin over serial and jump into it.
+/* kexec: receive a new kernel + rootfs pack over serial and jump into it.
  *
  * C-light reload: we do NOT return to real mode or re-run the VESA stage.
  * Instead we reuse the current framebuffer (the boot FB info at 0x600 and the
@@ -14,20 +14,24 @@
  * command is kept as a fallback that waits for the same image.
  *
  * Wire protocol (host -> us):
- *   4 bytes: magic "KXEC" (LE)
+ *   4 bytes: magic "KXE2" (LE)    -- new magic: old kernels ignore it
  *   4 bytes: entry address (LE)   -- new kernel_entry VMA
- *   4 bytes: size (LE)            -- kernel.bin byte count
+ *   4 bytes: kernel_size (LE)     -- kernel.bin byte count
+ *   4 bytes: pack_size (LE)       -- rootfs gzip byte count (0 = keep running)
  *   N bytes: kernel.bin data
- *   1 byte:  checksum (sum of data bytes mod 256)
+ *   M bytes: rootfs pack data
+ *   1 byte:  checksum (sum of both payloads mod 256)
  */
 
 #include "kexec.h"
+#include "bootinfo.h"
 #include "io.h"
 #include "mm.h"
+#include "ramfs.h"
 #include "serial.h"
 #include "smp.h"
 
-#define KEXEC_MAGIC 0x4345584B /* "KXEC" little-endian */
+#define KEXEC_MAGIC 0x3245584B /* "KXE2" little-endian */
 
 /* Staging buffer for the received image: allocated from the frame allocator
  * when the header arrives, so no fixed low-memory region is needed.  It sits
@@ -73,7 +77,7 @@ int kexec_pending(void)
 {
 	unsigned char b, x, e, c;
 
-	/* Scan for the "KXEC" magic, draining any leading bytes that can't begin
+	/* Scan for the "KXE2" magic, draining any leading bytes that can't begin
 	 * it. This self-heals after a stray/partial/overflowed transfer, so stale
 	 * bytes in the ring buffer can never permanently block detection. */
 	for (;;) {
@@ -86,8 +90,8 @@ int kexec_pending(void)
 		/* First byte is 'K'. Report pending only once all 4 bytes are here. */
 		if (serial_ring_peek(1, &x) && serial_ring_peek(2, &e) &&
 		    serial_ring_peek(3, &c)) {
-			if (x == 'X' && e == 'E' && c == 'C')
-				return 1;         /* "KXEC" found */
+			if (x == 'X' && e == 'E' && c == '2')
+				return 1;         /* "KXE2" found */
 			(void)serial_ring_getc(); /* false 'K' start, drop it */
 			continue;
 		}
@@ -111,9 +115,47 @@ static int kexec_fail(const char *msg)
 	return -1;
 }
 
-static int kexec_recv(unsigned int *entry, unsigned int *size)
+/* Publish the boot-info block the new kernel reads.  The pack source is the
+ * staging tail for a full reload, or the running ramfs for a kernel-only one;
+ * ramfs_init() takes its own copy and releases the region. */
+static void kexec_write_bootinfo(unsigned int pack_addr, unsigned int pack_size)
 {
-	unsigned int i, magic = 0, n;
+	volatile struct boot_info *bi =
+		(volatile struct boot_info *)BOOT_INFO_ADDR;
+	unsigned int words[BOOT_INFO_WORDS];
+	unsigned int rsdp = 0, flags = 0, sum = 0, i;
+
+	if (bootinfo_valid()) {
+		rsdp = bootinfo_rsdp();
+		flags = bootinfo_flags();
+	}
+	for (i = 0; i < BOOT_INFO_WORDS; i++)
+		words[i] = 0;
+	words[0] = BOOT_INFO_MAGIC;
+	words[1] = BOOT_INFO_VERSION;
+	words[3] = rsdp;
+	words[4] = flags;
+	words[5] = pack_addr;
+	words[6] = pack_size;
+	for (i = 0; i < BOOT_INFO_WORDS; i++)
+		sum += words[i];
+	words[2] = 0u - sum;
+
+	bi->magic = words[0];
+	bi->version = words[1];
+	bi->checksum = words[2];
+	bi->rsdp = words[3];
+	bi->flags = words[4];
+	bi->pack_addr = words[5];
+	bi->pack_size = words[6];
+	for (i = 0; i < 5; i++)
+		bi->reserved[i] = words[7 + i];
+}
+
+static int kexec_recv(unsigned int *entry, unsigned int *kernel_size,
+		      unsigned int *pack_size)
+{
+	unsigned int i, magic = 0, n, total;
 	unsigned char c, sum = 0, chk;
 	volatile unsigned char *dst;
 
@@ -132,22 +174,33 @@ static int kexec_recv(unsigned int *entry, unsigned int *size)
 		*entry |= (unsigned int)c << (8 * i);
 	}
 
-	*size = 0;
+	*kernel_size = 0;
 	for (i = 0; i < 4; i++) {
 		if (!serial_ring_wait(5000, &c))
-			return kexec_fail("kexec: timeout (size)\n");
-		*size |= (unsigned int)c << (8 * i);
+			return kexec_fail("kexec: timeout (kernel size)\n");
+		*kernel_size |= (unsigned int)c << (8 * i);
 	}
-	if (*size == 0 || *size > KEXEC_MAX)
+	*pack_size = 0;
+	for (i = 0; i < 4; i++) {
+		if (!serial_ring_wait(5000, &c))
+			return kexec_fail("kexec: timeout (pack size)\n");
+		*pack_size |= (unsigned int)c << (8 * i);
+	}
+
+	if (*kernel_size == 0 || *kernel_size > KEXEC_MAX ||
+	    *pack_size > KEXEC_MAX ||
+	    *kernel_size + *pack_size < *kernel_size ||
+	    *kernel_size + *pack_size > KEXEC_MAX)
 		return kexec_fail("kexec: bad size\n");
-	if (!kexec_stage_alloc(*size))
+	total = *kernel_size + *pack_size;
+	if (!kexec_stage_alloc(total))
 		return kexec_fail("kexec: out of memory (staging)\n");
 	dst = (volatile unsigned char *)kexec_stage;
 
-	kexec_total = *size;
+	kexec_total = total;
 	kexec_progress = 0;
 
-	for (n = 0; n < *size; n++) {
+	for (n = 0; n < total; n++) {
 		if (!serial_ring_wait(5000, &c)) {
 			kexec_stage_free();
 			return kexec_fail("kexec: timeout (data)\n");
@@ -174,32 +227,46 @@ static int kexec_recv(unsigned int *entry, unsigned int *size)
 
 void program_kexec_main(void)
 {
-	unsigned int entry = 0, size = 0;
+	unsigned int entry = 0, kernel_size = 0, pack_size = 0;
 
-	io_putstr("kexec: waiting for kernel image over serial...\n");
-	if (kexec_recv(&entry, &size) != 0) {
+	io_putstr("kexec: waiting for kernel/rootfs over serial...\n");
+	if (kexec_recv(&entry, &kernel_size, &pack_size) != 0) {
 		io_putstr("kexec: aborted\n");
 		kexec_busy = 0;
 		return;
 	}
 
-	io_putstr("kexec: received ");
-	io_puthex(size);
+	io_putstr("kexec: received kernel ");
+	io_puthex(kernel_size);
+	io_putstr(" bytes, rootfs ");
+	io_puthex(pack_size);
 	io_putstr(" bytes, entry ");
 	io_puthex(entry);
 	io_putstr("\n");
 
-	kexec_jump(entry, size);
+	if (pack_size)
+		kexec_jump(entry, kernel_size, kexec_stage + kernel_size,
+			   pack_size);
+	else
+		kexec_jump(entry, kernel_size, 0, 0);
 }
 
 /* Relocate the trampoline to 0x800 (it survives the kernel overwrite) and
- * jump to it with the staging/load/size/entry arguments.  Never returns. */
-void kexec_jump(unsigned int entry, unsigned int size)
+ * jump to it with the staging/load/size/entry arguments.  Never returns.
+ * A zero pack_size keeps the running rootfs. */
+void kexec_jump(unsigned int entry, unsigned int kernel_size,
+		unsigned int pack_addr, unsigned int pack_size)
 {
+	if (pack_size == 0) {
+		pack_addr = (unsigned int)ramfs_pack_base();
+		pack_size = ramfs_pack_size();
+	}
+
 	/* Park the APs first: the new kernel image is about to overwrite the
 	 * kernel they are executing.  INIT puts them back in real mode where
 	 * they wait for the new kernel's SIPI. */
 	smp_stop_aps();
+	kexec_write_bootinfo(pack_addr, pack_size);
 
 	/* Relocate the trampoline to 0x800 so it survives the kernel overwrite. */
 	{
@@ -217,10 +284,11 @@ void kexec_jump(unsigned int entry, unsigned int size)
 	/* Serialize so the freshly-written trampoline is visible to fetch. */
 	__asm__ volatile ("cpuid" ::: "eax", "ebx", "ecx", "edx");
 
-	/* Jump to the trampoline with args in eax/ebx/ecx/edx. Never returns. */
+	/* Jump to the trampoline with args in eax/ebx/ecx/edx.  Only the kernel
+	 * bytes are copied; the pack stays in the staging buffer. Never returns. */
 	__asm__ volatile (
 		"jmp *%4"
 		:
-		: "a"(kexec_stage), "b"(KEXEC_LOAD), "c"(size), "d"(entry), "r"(KEXEC_TRAMP)
+		: "a"(kexec_stage), "b"(KEXEC_LOAD), "c"(kernel_size), "d"(entry), "r"(KEXEC_TRAMP)
 		: "memory");
 }

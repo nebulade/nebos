@@ -1,6 +1,7 @@
 /* Physical memory manager: parse the E820 map and hand out 4 KB pages. */
 
 #include "mm.h"
+#include "bootinfo.h"
 #include "serial.h"
 
 /* One bit per 4 KB page; bit set = in use. */
@@ -109,6 +110,19 @@ void mm_init(void)
 	mark_used(0, MM_RESERVE_LOW);
 	mark_used(MM_SHADOW_BASE, MM_SHADOW_RESERVE);
 
+	/* The boot path copied the command-pack rootfs into high RAM before
+	 * the kernel ran.  Keep it away from the allocator until ramfs_init()
+	 * has taken its own copy. */
+	{
+		unsigned int pa = bootinfo_pack_addr();
+		unsigned int ps = bootinfo_pack_size();
+
+		if (pa >= MM_RESERVE_LOW && pa < MM_MAX_PHYS && ps != 0 &&
+		    ps <= MM_MAX_PHYS && pa + ps > pa &&
+		    pa + ps <= MM_MAX_PHYS)
+			mark_used(pa, ps);
+	}
+
 	/* Count free pages. */
 	free_pages = 0;
 	for (i = 0; i < MM_BITMAP_BITS; i++) {
@@ -186,6 +200,24 @@ void mm_free_page(unsigned int addr)
 		free_pages++;
 	}
 	irq_restore(flags);
+}
+
+/* Return a boot-time reservation (the rootfs pack region) to the allocator.
+ * Low memory and the VGA shadow reserve always stay reserved. */
+void mm_free_range(unsigned int base, unsigned int size)
+{
+	unsigned int end, p;
+
+	if (base == 0 || size == 0)
+		return;
+	base &= ~(PAGE_SIZE - 1u);
+	if (base + size < base)
+		return;
+	end = (base + size + PAGE_SIZE - 1u) & ~(PAGE_SIZE - 1u);
+	if (base < MM_SHADOW_BASE + MM_SHADOW_RESERVE)
+		return;
+	for (p = base; p < end; p += PAGE_SIZE)
+		mm_free_page(p);
 }
 
 unsigned int mm_free_pages(void)

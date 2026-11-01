@@ -13,3 +13,4 @@ mkpack
 tls_test
 img_test
 img_test_asan
+mkrootfs

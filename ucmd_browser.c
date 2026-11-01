@@ -1,6 +1,6 @@
-/* browser launcher: the real browser is a large disk app (BROWSER on a FAT
- * mount) because it links ngui, the full image library, TLS and uhttp.  This
- * tiny command keeps `browser` on PATH and in the WM's Web button. */
+/* browser launcher: the real browser ships in the rootfs pack as
+ * bin/browser.app (and can be overridden by /share/BROWSER or a FAT mount).
+ * This tiny command keeps `browser` on PATH and in the WM's Web button. */
 
 #include "ucmd_lib.h"
 
@@ -10,6 +10,8 @@
 static const char *const candidates[] = {
 	"/share/BROWSER",
 	"/share/BROWSER.ELF",
+	/* The copy shipped in the command-pack rootfs. */
+	"/ramfs/bin/browser.app",
 	"/floppy1/BROWSER",
 	"/floppy1/BROWSER.ELF",
 	"/ide0p1/BROWSER",
@@ -47,7 +49,7 @@ void _start(const char *arg)
 			u_exit(0);
 		}
 	}
-	u_puts("browser: BROWSER is not installed on a mounted disk\n");
+	u_puts("browser: BROWSER is not installed in the pack or on a disk\n");
 	u_puts("  put browser.elf on the root floppy or /share\n");
 	u_exit(1);
 }
