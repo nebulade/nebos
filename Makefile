@@ -13,7 +13,7 @@ ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb flash space prog bootstrap dev net-dev cmds-dev net-cmds netmon monitor test-crypto
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb flash space prog bootstrap dev net-dev cmds-dev net-cmds netmon monitor test-crypto test-images test-images-asan
 
 all: floppy.img usb.img final.bin root.img
 
@@ -281,6 +281,12 @@ syscall.o: syscall.c syscall.h io.h process.h timer.h sys_wm.h wm_abi.h
 sys_fs.o: sys_fs.c sys_fs.h syscall.h fat.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
+sys_mem.o: sys_mem.c sys_mem.h mm.h paging.h process.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+inflate.o: inflate.c inflate.h
+	$(CC) $(CFLAGS) -o $@ $<
+
 sys_info.o: sys_info.c sys_info.h syscall.h ahci.h blkdev.h mm.h mouse.h usbhid.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -290,7 +296,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h pr
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o cmds_pack.o ramfs.o payload.o
+kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o cmds_pack.o ramfs.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -380,7 +386,7 @@ UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
         ucmd_netinfo ucmd_netip ucmd_netdns ucmd_host ucmd_dhcp \
         ucmd_netsend ucmd_netrecv ucmd_ping ucmd_pong ucmd_netlog \
         ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_curl \
-        ucmd_files
+        ucmd_files ucmd_view
 
 # Keep the linked ELFs around (make would treat them as disposable
 # intermediates between the pattern rules).
@@ -423,10 +429,28 @@ ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x16.o ucmd.ld
 ngui.o: ngui.c ngui.h ucmd_lib.h syscall.h wm_abi.h font_8x16.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ucmd_files.o: ucmd_files.c ucmd_lib.h syscall.h wm_abi.h ngui.h
+ucmd_files.o: ucmd_files.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 ucmd_files.elf: ucmd_files.o ngui.o font_8x16.o ucmd.ld
+	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+	$(OBJCOPY) --strip-all $@ $@
+
+# Image library: pure freestanding decoders + RGB565 compositing.  Only the
+# viewer links them today; a browser can link the same objects later.
+IMGLIB_OBJS = img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o \
+              img_jpeg.o img_tga.o img_pnm.o img_file.o
+
+$(IMGLIB_OBJS): %.o: %.c img.h img_internal.h inflate.h ucmd_lib.h syscall.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+# The integer IDCT deliberately relies on 32-bit wrap-around.
+img_jpeg.o: CFLAGS += -fwrapv
+
+ucmd_view.o: ucmd_view.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h img_file.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+ucmd_view.elf: ucmd_view.o $(IMGLIB_OBJS) inflate.o ngui.o font_8x16.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
@@ -462,6 +486,23 @@ tls_test: tls_test.c tls_sha256.c tls_chacha20.c tls_x25519.c \
 test-crypto: tls_test
 	./tls_test
 
+# Host image-library tests (no kernel needed).  The corpus and expected hashes
+# are committed; tools/gen_img_tests.py regenerates them.
+IMGTEST_SRCS = img_test.c img.c img_mem.c img_blit.c img_png.c img_bmp.c \
+               img_gif.c img_jpeg.c img_tga.c img_pnm.c inflate.c
+IMGTEST_DEPS = img.h img_internal.h inflate.h testdata/images/expected.h
+
+img_test: $(IMGTEST_SRCS) $(IMGTEST_DEPS)
+	gcc -O2 -fwrapv -Wall -Wextra -I. -o $@ $(IMGTEST_SRCS)
+
+test-images: img_test
+	./img_test
+
+test-images-asan: $(IMGTEST_SRCS) $(IMGTEST_DEPS)
+	# -fwrapv: the integer IDCT deliberately relies on 32-bit wrap-around.
+	gcc -O1 -g -fwrapv -fsanitize=address,undefined -I. -o img_test_asan $(IMGTEST_SRCS)
+	./img_test_asan
+
 mkpack: mkpack.c
 	gcc -O2 -o $@ $<
 
@@ -473,13 +514,18 @@ PACK_FILES = $(foreach f,$(UCMDS),bin/$(patsubst ucmd_%,%,$(f))=$(f).elf) \
 cmds.pack: $(addsuffix .elf,$(UCMDS)) hello.elf mkpack
 	./mkpack $@ $(PACK_FILES)
 
-cmds_pack.o: cmds.pack
-	$(LD) -m elf_i386 -r -b binary -o cmds_pack.o cmds.pack
+# The embedded pack is gzip-compressed to stay inside the kernel's low-memory
+# window; the raw cmds.pack is still what cmds-dev/net-cmds send.
+cmds_pack_gz.bin: cmds.pack
+	gzip -9 -n -c $< > $@
+
+cmds_pack.o: cmds_pack_gz.bin
+	$(LD) -m elf_i386 -r -b binary -o cmds_pack.o cmds_pack_gz.bin
 
 payload.o: payload.c payload.h io.h mm.h ramfs.h serial.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ramfs.o: ramfs.c ramfs.h serial.h
+ramfs.o: ramfs.c ramfs.h serial.h inflate.h mm.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 space.o: space.c run_api.h
@@ -669,4 +715,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack.o ramfs.o payload.o mkpack uwm_lib.o ngui.o *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_file.o img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor

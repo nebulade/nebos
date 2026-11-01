@@ -6,8 +6,11 @@
  */
 
 #include "ramfs.h"
+#include "inflate.h"
 #include "mm.h"
 #include "serial.h"
+
+#define RAMFS_MAX_DECOMPRESSED (8u * 1024u * 1024u)
 
 struct ramfs_hdr {
 	char magic[8];
@@ -129,8 +132,67 @@ static const struct ramfs_hdr *ramfs_validate(const void *pack, unsigned int siz
 
 int ramfs_init(const void *pack, unsigned int size)
 {
-	const struct ramfs_hdr *h = ramfs_validate(pack, size);
+	const struct ramfs_hdr *h;
+	const unsigned char *p = (const unsigned char *)pack;
 
+	/* The embedded pack is gzip-compressed (the same inflate code that the
+	 * PNG decoder uses); a raw pack is still accepted, which is what the
+	 * cmds-dev path passes to ramfs_replace(). */
+	if (size >= 18 && p[0] == 0x1F && p[1] == 0x8B) {
+		unsigned int isize = (unsigned int)p[size - 4] |
+				     ((unsigned int)p[size - 3] << 8) |
+				     ((unsigned int)p[size - 2] << 16) |
+				     ((unsigned int)p[size - 1] << 24);
+		unsigned int pages, wpages, olen = 0;
+		unsigned char *out, *ws;
+
+		if (isize == 0 || isize > RAMFS_MAX_DECOMPRESSED)
+			return -1;
+		pages = (isize + 0xFFF) >> 12;
+		wpages = (sizeof(struct inflate) + 0xFFF) >> 12;
+		out = (unsigned char *)mm_alloc_pages(pages);
+		if (!out)
+			return -1;
+		ws = (unsigned char *)mm_alloc_pages(wpages);
+		if (!ws) {
+			unsigned int i;
+
+			for (i = 0; i < pages; i++)
+				mm_free_page((unsigned int)out + i * 0x1000);
+			return -1;
+		}
+		if (inflate_gzip_mem(pack, size, out, isize, &olen, ws) != 0 ||
+		    olen != isize) {
+			unsigned int i;
+
+			for (i = 0; i < pages; i++)
+				mm_free_page((unsigned int)out + i * 0x1000);
+			for (i = 0; i < wpages; i++)
+				mm_free_page((unsigned int)ws + i * 0x1000);
+			return -1;
+		}
+		{
+			unsigned int i;
+
+			for (i = 0; i < wpages; i++)
+				mm_free_page((unsigned int)ws + i * 0x1000);
+		}
+		h = ramfs_validate(out, isize);
+		if (!h) {
+			unsigned int i;
+
+			for (i = 0; i < pages; i++)
+				mm_free_page((unsigned int)out + i * 0x1000);
+			return -1;
+		}
+		pack_base = out;
+		pack_size = isize;
+		pack_hdr = h;
+		pack_pages = pages;
+		return 0;
+	}
+
+	h = ramfs_validate(pack, size);
 	if (!h)
 		return -1;
 	pack_base = (const unsigned char *)pack;

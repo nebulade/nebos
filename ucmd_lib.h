@@ -387,4 +387,22 @@ static inline int u_schedinfo(struct sys_schedinfo *out)
 	return u_syscall1(SYS_SCHEDINFO, (int)out);
 }
 
+/* Per-process anonymous heap: one growable arena, freed at exit. */
+static inline void *u_mem_alloc(unsigned int bytes)
+{
+	int r = u_syscall1(SYS_MEM_ALLOC, (int)bytes);
+
+	return r < 0 ? 0 : (void *)r;
+}
+
+static inline int u_mem_grow(unsigned int bytes)
+{
+	return u_syscall1(SYS_MEM_GROW, (int)bytes);
+}
+
+static inline int u_mem_free(void)
+{
+	return u_syscall0(SYS_MEM_FREE);
+}
+
 #endif

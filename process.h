@@ -43,6 +43,7 @@ struct process {
 	struct text_screen *screen;  /* output target for io_putchar & co. */
 	unsigned int stack_base;     /* page to free on exit, or 0 (bootstrap/fallback) */
 	unsigned int cr3;            /* physical address of this process's page dir */
+	unsigned int heap_pages;     /* pages mapped at USER_HEAP_BASE, or 0 */
 	unsigned int kstack_top;     /* ring-0 stack top (for TSS esp0) */
 	unsigned int wake_ms;        /* tick deadline when PROC_SLEEPING */
 	char cwd[PROC_CWD_MAX];      /* working directory (ring-3 commands) */
@@ -90,6 +91,10 @@ struct process {
  * gfx session owns those. */
 #define USER_GFX_BASE    0x50000000
 #define USER_GFX_RANGE   0x00400000   /* one 4 MB slot */
+/* Anonymous per-process heap (SYS_MEM_ALLOC/GROW/FREE): one growable arena
+ * above the WM mappings.  Freed by the reaper. */
+#define USER_HEAP_BASE   0x60000000u
+#define USER_HEAP_MAX    (32u * 1024u * 1024u)
 
 /* Stable, sparse process table (see process.c). */
 extern struct process *procs[PROC_MAX];

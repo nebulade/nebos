@@ -9,6 +9,7 @@
 #include "sys_fs.h"
 #include "sys_gfx.h"
 #include "sys_info.h"
+#include "sys_mem.h"
 #include "sys_net.h"
 #include "sys_wm.h"
 #include "terminal.h"
@@ -243,6 +244,12 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 		return sys_win_pointer((struct win_pointer *)a1);
 	case SYS_WIN_EVENT:
 		return sys_win_event((struct win_event *)a1);
+	case SYS_MEM_ALLOC:
+		return sys_mem_alloc((unsigned int)a1);
+	case SYS_MEM_GROW:
+		return sys_mem_grow((unsigned int)a1);
+	case SYS_MEM_FREE:
+		return sys_mem_free();
 	case SYS_WIN_KEY_WAIT:
 		return sys_win_key_wait((unsigned int)a1);
 	case SYS_SCHEDINFO:

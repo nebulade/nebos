@@ -242,9 +242,9 @@ int ngui_begin(struct ngui *ui)
 	return want;
 }
 
-void ngui_end(struct ngui *ui)
+void ngui_end_ex(struct ngui *ui, int present)
 {
-	if (u_win_present() != 0)
+	if (present && u_win_present() != 0)
 		ui->dirty = 1;
 
 	if (ui->clicked && !ui->focus_claimed)
@@ -257,6 +257,11 @@ void ngui_end(struct ngui *ui)
 	ui->focus_claimed = 0;
 	ui->press_x = ui->press_y = 0;
 	ui->release_x = ui->release_y = 0;
+}
+
+void ngui_end(struct ngui *ui)
+{
+	ngui_end_ex(ui, 1);
 }
 
 struct ngui_rect ngui_cut_top(struct ngui_rect *r, int h)

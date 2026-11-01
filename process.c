@@ -16,6 +16,7 @@
 #include "smp.h"
 #include "sys_fs.h"
 #include "sys_gfx.h"
+#include "sys_mem.h"
 #include "sys_net.h"
 #include "syscall.h"
 #include "timer.h"
@@ -665,6 +666,7 @@ void process_reap_dead(void)
 				USER_BASE, USER_STACK_TOP - USER_BASE, 1);
 			paging_release_user_range(p->cr3,
 				USER_GFX_BASE, USER_GFX_RANGE, 0);
+			sys_mem_release(p);
 			/* WM surface mappings: page tables only; the shadow/
 			 * terminal/canvas pages belong to the window server. */
 			paging_release_user_range(p->cr3,
@@ -819,7 +821,7 @@ int process_procinfo(unsigned int index, struct sys_procinfo *out)
 		out->life_ticks = life ? life : 1;
 		/* Kernel stack page + page directory + user pages (the WM shares
 		 * the kernel directory; counting one is close enough). */
-		out->pages      = 2 + count_user_pages(p->cr3);
+		out->pages      = 2 + count_user_pages(p->cr3) + p->heap_pages;
 		out->weight     = p->weight;
 		out->cpu        = p->on_cpu;
 		name_copy(out->name, p->name);

@@ -125,6 +125,9 @@ struct ngui {
 void ngui_init(struct ngui *ui, unsigned short *fb, int w, int h);
 int  ngui_begin(struct ngui *ui);       /* 1 = app should redraw */
 void ngui_end(struct ngui *ui);
+/* Same bookkeeping, but only publish the canvas when `present` is nonzero.
+ * Lets an app poll input without copying an unchanged frame every loop. */
+void ngui_end_ex(struct ngui *ui, int present);
 void ngui_invalidate(struct ngui *ui);
 void ngui_set_focus(struct ngui *ui, unsigned int id);
 unsigned int ngui_focus(struct ngui *ui);

@@ -6,6 +6,7 @@
 
 #include "ucmd_lib.h"
 #include "ngui.h"
+#include "img.h"
 
 #define FM_PATH_MAX     128
 #define FM_MAX_ENTRIES  256
@@ -151,6 +152,33 @@ static int s_ci_cmp(const char *a, const char *b)
 static int is_root(const char *p)
 {
 	return p && p[0] == '/' && p[1] == '\0';
+}
+
+static int ext_is(const char *name, const char *ext)
+{
+	unsigned int n = s_len(name), e = s_len(ext), i;
+
+	if (n < e)
+		return 0;
+	for (i = 0; i < e; i++) {
+		unsigned char a = (unsigned char)name[n - e + i];
+		unsigned char b = (unsigned char)ext[i];
+
+		if (a >= 'A' && a <= 'Z')
+			a = (unsigned char)(a + 32);
+		if (a != b)
+			return 0;
+	}
+	return 1;
+}
+
+static int is_image_name(const char *name)
+{
+	return ext_is(name, ".png") || ext_is(name, ".jpg") ||
+	       ext_is(name, ".jpeg") || ext_is(name, ".gif") ||
+	       ext_is(name, ".bmp") || ext_is(name, ".tga") ||
+	       ext_is(name, ".ppm") || ext_is(name, ".pgm") ||
+	       ext_is(name, ".pbm");
 }
 
 static void path_join(const char *dir, const char *name, char *out,
@@ -497,6 +525,19 @@ static void open_selected(void)
 		else
 			path_join(cwd, e->name, path, sizeof(path));
 		load_path(path);
+		return;
+	}
+	if (is_image_name(e->name)) {
+		if (e->size > IMG_FILE_MAX) {
+			set_status("Image is larger than 4 MB", 1);
+			return;
+		}
+		path_join(cwd, e->name, path, sizeof(path));
+		pid = u_spawn("/ramfs/bin/view", path, 0, cwd);
+		if (pid <= 0)
+			set_status("Cannot launch the viewer", 1);
+		else
+			set_status("Opened in the viewer", 0);
 		return;
 	}
 	if (e->size > FM_EDIT_MAX) {

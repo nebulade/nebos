@@ -109,6 +109,13 @@
 #define SYS_WIN_POINTER    86  /* (struct win_pointer *out) -> 0/-1 */
 #define SYS_WIN_EVENT      87  /* (struct win_event *out) -> 1 event, 0 none */
 
+/* Per-process anonymous heap (see sys_mem.c).  One growable arena at
+ * USER_HEAP_BASE (0x60000000), at most USER_HEAP_MAX (32 MB), freed when the
+ * process exits.  SYS_MEM_ALLOC returns the base address, or <0. */
+#define SYS_MEM_ALLOC      88  /* (unsigned bytes) -> VA or <0 */
+#define SYS_MEM_GROW       89  /* (unsigned total_bytes) -> 0/-1 */
+#define SYS_MEM_FREE       90  /* () -> 0/-1 */
+
 /* Terminal / process services used by the ring-3 shell. */
 #define SYS_TTY_CREATE     73  /* () -> tty id 1..TTY_MAX / -1 */
 #define SYS_TTY_READ       74  /* (id, buf, max) -> bytes / 0 / -1 */

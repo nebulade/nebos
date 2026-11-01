@@ -17,6 +17,7 @@ make run-uhci   # like `make run` but with a UHCI controller + USB mouse
 make run-net    # like `make run` + a PCI NE2000 NIC on QEMU's user network (slirp; DHCP/DNS/NAT)
 make run-ahci   # like `make run` + an ICH9 AHCI controller and a 512 MB SATA disk (sata0)
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
+make test-images  # host image-decoder + blit tests (ASan variant: test-images-asan)
 make clean
 ```
 
@@ -311,6 +312,13 @@ below the run area), so adding code no longer moves any address.
   `kernel.elf`).  Note: `run`/`prog`/`space` still draw over the WM (which keeps
   repainting its desktop); the windowed path for such programs is the ring-3
   canvas service (see the window graphics bullet, used by `clock`/`colors`).
+- **Ring-3 address space**: the ELF image and 8 KB stack live in the 2 MB
+  `USER_BASE` (`0x40000000`)..`USER_STACK_TOP` (`0x40200000`) window, which is
+  too small for a full-frame image.  `SYS_MEM_ALLOC`/`SYS_MEM_GROW`/`SYS_MEM_FREE`
+  (`sys_mem.c/h`) map/grow/delete a single anonymous arena at
+  `USER_HEAP_BASE` (`0x60000000`), capped at 32 MB; the reaper frees it with
+  the rest of the process and `top` counts its pages.  The canvas mapping at
+  `USER_GFX_BASE` (`0x50000000`) and the WM mappings are separate.
 - **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld`, `mkpack.c`,
   `ramfs.c/h` — freestanding ELFs linked at `USER_BASE` (`0x40000000`), packed
   by `mkpack` into `cmds.pack` (as `bin/<name>`), embedded in the kernel
@@ -330,7 +338,24 @@ below the run area), so adding code no longer moves any address.
   `_start(const char *arg)` needs no crt0.  `ngui.c/h` is the shared userland
   GUI toolkit linked into `ucmd_files.c` (buttons, text fields, icons, layout
   cuts and scroll panes); `files` opens the selected text file through
-  `/ramfs/bin/edit`.
+  `/ramfs/bin/edit` and image files through `/ramfs/bin/view`.  `ngui_end_ex()`
+  is the variant that runs the bookkeeping without publishing the canvas, for
+  apps that poll input without redrawing.
+- **Image library + viewer**: `img.h`, `img.c`, `img_mem.c`, `img_blit.c`,
+  `img_png.c`, `img_bmp.c`, `img_gif.c`, `img_jpeg.c`, `img_tga.c`,
+  `img_pnm.c`, `img_file.c/h` — freestanding RGB565 decoders with an optional
+  8-bit alpha plane.  The codecs are independent of the OS and ngui: they take
+  an input buffer plus a caller-provided `struct img_mem` arena, so a browser
+  can link the same objects and decode HTTP bodies.  `inflate.c/h` (DEFLATE,
+  zlib, gzip, CRC32/Adler32) is shared with the boot pack.  `img_sniff()` is a
+  cheap header probe; `img_decode()` returns `struct img_image`; `img_draw()`
+  is a clipped, scaled (box-filter down, bilinear up) RGB565 blit with alpha
+  over a checkerboard or over the destination (for a browser).  The viewer,
+  `ucmd_view.c`, owns a canvas window and reads its file through
+  `SYS_READ_FILE`; it uses fit/1:1/zoom/pan, shows format/dimensions/size and
+  a clear error for unsupported variants.  Host tests: `make test-images`
+  (`img_test.c`, corpus in `testdata/images/`, generator
+  `tools/gen_img_tests.py`).
 - **Network service**: `sys_net.c/h` — the NIC and the stack stay in the
   kernel; ring-3 commands get `SYS_NET_INFO`/config, the DNS and DHCP clients
   and the raw frame paths (`NET_TX/RX/DECODE/REPLY/LOOPBACK/REGS/RESET`), so
@@ -352,7 +377,7 @@ below the run area), so adding code no longer moves any address.
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
 `display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device>`,
-`ps`, `renice <pid> <weight>`, `kill <pid>`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`.
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, and `view <file>` (image viewer; PNG, baseline JPEG, GIF first frame, BMP, TGA, PNM).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `pong` (responds to ARP/ICMP for our IP for 30 s),
@@ -382,7 +407,7 @@ nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`, `spin`,
-`clock`, `colors`, `files`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
+`clock`, `colors`, `files`, `view`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
 `netreset`, `curl` and `hello` are files in `/ramfs/bin` (packed by the
 Makefile), found through the shell's PATH; the rest are kernel commands
@@ -446,8 +471,13 @@ re-applied on a full floppy/USB boot (C-light reuses the current LFB).
 ## Command pack hot-reload (cmds-dev / net-cmds)
 
 The commands live in `cmds.pack` (`bin/<name>` entries, built by `mkpack`),
-which is embedded in `kernel.bin` and mounted read-only at `/ramfs`.  A
-running board can replace it without a kernel reload:
+which is gzip-compressed at build time (`cmds_pack_gz.bin`) and embedded in
+`kernel.bin`; `ramfs_init()` inflates it at boot with `inflate.c` and mounts it
+read-only at `/ramfs`.  The compression keeps the kernel inside its
+low-memory window (`_end <= 0x7F000`) now that the image viewer adds decoders.
+`cmds-dev`/`net-cmds` still send the *raw* `cmds.pack`, which
+`ramfs_replace()` validates and installs directly.  A running board can
+replace the pack without a kernel reload:
 
 ```sh
 make cmds-dev       # serial:  ./kexec_send  --payload $(SERIAL_DEV) $(SERIAL_BAUD) cmds.pack
@@ -759,3 +789,15 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     rely on not-present TLB entries not being cached; there is no cross-CPU
     TLB shootdown.  No process shares an address space with another, so normal
     process teardown is unaffected.
+
+15. Image library limits: progressive/arithmetic JPEG and CMYK are rejected;
+    GIF shows only the first frame; EXIF orientation and ICC/gamma are ignored;
+    the whole file is read into memory (4 MB cap in the viewer); decoding uses
+    a 32 MB arena, so very large photos need DCT-scaled/streamed decode before
+    they fit.  Arithmetic-coded JPEGs are not supported.
+16. `img_draw()`'s box-filter downscale runs on the CPU.  It is fine for the
+    viewer's static frames, but a browser showing many large inline images
+    should cache a scaled bitmap (or use decode-at-display-scale) instead of
+    rescaling on every repaint.
+17. `files` recognises images by file extension only; a magic-based fallback
+    would also open extensionless files in the viewer.

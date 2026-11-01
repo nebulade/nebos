@@ -282,16 +282,21 @@ void kernel_main(void)
 	vfs_mount_all();
 	/* The command pack: read-only, mounted at /ramfs (see ramfs.c). */
 	{
-		extern unsigned char _binary_cmds_pack_start[];
-		extern unsigned char _binary_cmds_pack_end[];
-		unsigned int pack_len = (unsigned int)(_binary_cmds_pack_end -
-						       _binary_cmds_pack_start);
-		if (ramfs_init(_binary_cmds_pack_start, pack_len) != 0)
+		extern unsigned char _binary_cmds_pack_gz_bin_start[];
+		extern unsigned char _binary_cmds_pack_gz_bin_end[];
+		unsigned int pack_len =
+			(unsigned int)(_binary_cmds_pack_gz_bin_end -
+				       _binary_cmds_pack_gz_bin_start);
+		if (ramfs_init(_binary_cmds_pack_gz_bin_start, pack_len) != 0)
 			serial_puts(SERIAL_COM1, "ramfs: bad pack\n");
 		else {
 			serial_puts(SERIAL_COM1, "ramfs: pack ok, ");
 			serial_putdec(SERIAL_COM1, ramfs_count());
-			serial_puts(SERIAL_COM1, " files\n");
+			serial_puts(SERIAL_COM1, " files, ");
+			serial_putdec(SERIAL_COM1, pack_len);
+			serial_puts(SERIAL_COM1, " -> ");
+			serial_putdec(SERIAL_COM1, ramfs_pack_size());
+			serial_puts(SERIAL_COM1, " bytes\n");
 			vfs_mount_ramfs();
 		}
 	}
