@@ -2,6 +2,7 @@
    Reference: QEMU hw/display/cirrus_vga.c (register offsets, ROP codes). */
 
 #include "cirrus.h"
+#include "cursor_shape.h"
 #include "pci.h"
 #include "vga.h"
 
@@ -194,14 +195,6 @@ void cirrus_fill(unsigned int x, unsigned int y,
 		;
 }
 
-/* Pointer-arrow shape (16x16), same as the software cursor: tip at top-left,
-   widening triangle then a narrowing tail. Placed in the top-left of the
-   32x32 hardware-cursor box. MSB (bit 15) = column 0. */
-static const unsigned short cirrus_cursor_arrow[16] = {
-	0x8000, 0xC000, 0xE000, 0xF000, 0xF800, 0xFC00, 0xFE00, 0xFF00,
-	0xFC00, 0xE000, 0x8000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-};
-
 void cirrus_cursor_setup(void)
 {
 	unsigned char bitmap[256];
@@ -210,14 +203,22 @@ void cirrus_cursor_setup(void)
 	unsigned char *dst;
 
 	/* 32x32 two-plane cursor: AND plane (offset 0..127), XOR plane (128..255),
-	   4 bytes per row. The arrow is drawn in the XOR plane (so pixels are
-	   color0 = white) with the AND plane all-zero (no invert). */
+	   4 bytes per row.  The shared arrow is placed in the top-left of the
+	   box (the cursor position is the top-left of the 32x32 box):
+	     AND=0 XOR=0 -> transparent
+	     AND=0 XOR=1 -> color0 (white fill)
+	     AND=1 XOR=1 -> color1 (black outline)
+	   The hidden DAC entries 0 and 15 are programmed white and black. */
 	for (i = 0; i < 256; i++)
 		bitmap[i] = 0;
-	for (r = 0; r < 16; r++) {
-		unsigned short bits = cirrus_cursor_arrow[r];
-		bitmap[128 + r * 4 + 0] = (unsigned char)((bits >> 8) & 0xFF); /* x=0..7  */
-		bitmap[128 + r * 4 + 1] = (unsigned char)(bits & 0xFF);        /* x=8..15 */
+	for (r = 0; r < CURSOR_SHAPE_HEIGHT; r++) {
+		unsigned short fill = cursor_shape_fill[r];
+		unsigned short outl = cursor_shape_outline[r];
+		unsigned short xor = fill | outl;
+		bitmap[r * 4 + 0] = (unsigned char)((outl >> 8) & 0xFF);        /* AND x=0..7  */
+		bitmap[r * 4 + 1] = (unsigned char)(outl & 0xFF);               /* AND x=8..15 */
+		bitmap[128 + r * 4 + 0] = (unsigned char)((xor >> 8) & 0xFF);   /* XOR x=0..7  */
+		bitmap[128 + r * 4 + 1] = (unsigned char)(xor & 0xFF);          /* XOR x=8..15 */
 	}
 
 	/* Upload to the top of VRAM (SR[0x13] = 0 selects the first 256-byte block). */

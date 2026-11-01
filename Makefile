@@ -124,7 +124,7 @@ gpu.o: gpu.c gpu.h pci.h ati.h cirrus.h nvidia.h
 ati.o: ati.c ati.h pci.h radeon.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-cirrus.o: cirrus.c cirrus.h pci.h vga.h
+cirrus.o: cirrus.c cirrus.h cursor_shape.h pci.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 nvidia.o: nvidia.c nvidia.h nv50.h pci.h process.h serial.h
@@ -133,7 +133,7 @@ nvidia.o: nvidia.c nvidia.h nv50.h pci.h process.h serial.h
 nv50.o: nv50.c nv50.h nvidia.h serial.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-radeon.o: radeon.c radeon.h pci.h paging.h serial.h vga.h
+radeon.o: radeon.c radeon.h cursor_shape.h pci.h paging.h serial.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 mtrr.o: mtrr.c mtrr.h serial.h
@@ -217,7 +217,7 @@ fatformat.o: fatformat.c fatformat.h blkdev.h io.h mm.h sched.h
 format.o: format.c blkdev.h disk.h fatformat.h io.h process.h sched.h vga.h vfs.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-mouse.o: mouse.c mouse.h bootinfo.h cirrus.h radeon.h timer.h usbhid.h vga.h
+mouse.o: mouse.c mouse.h bootinfo.h cirrus.h cursor_shape.h radeon.h timer.h usbhid.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 idle.o: idle.c idle.h

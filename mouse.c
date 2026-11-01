@@ -1,6 +1,7 @@
 #include "mouse.h"
 #include "bootinfo.h"
 #include "cirrus.h"
+#include "cursor_shape.h"
 #include "radeon.h"
 #include "timer.h"
 #include "usbhid.h"
@@ -17,30 +18,8 @@
 #define MOUSE_ACK     0xFA
 #define MOUSE_RESEND  0xFE
 
-#define MOUSE_CUR_W 16
-#define MOUSE_CUR_H 16
-
-/* Simple triangle cursor bitmap, 16×16.
-   Hotspot is the top-left pixel of the 16×16 box (x0,y0).
-   Each row is encoded as 16 bits; MSB (bit 15) maps to c=0. */
-static const unsigned short mouse_pointer_bits[MOUSE_CUR_H] = {
-	0x8000,  /* 1....... ........  row 0: tip */
-	0xC000,  /* 11...... ........  row 1 */
-	0xE000,  /* 111..... ........  row 2 */
-	0xF000,  /* 1111.... ........  row 3 */
-	0xF800,  /* 11111... ........  row 4 */
-	0xFC00,  /* 111111.. ........  row 5 */
-	0xFE00,  /* 1111111. ........  row 6 */
-	0xFF00,  /* 11111111 ........  row 7 */
-	0xFC00,  /* 111111.. ........  row 8 */
-	0xE000,  /* 111..... ........  row 9 */
-	0x8000,  /* 1....... ........  row 10 */
-	0x0000,  /* ........ ........  row 11 */
-	0x0000,  /* ........ ........  row 12 */
-	0x0000,  /* ........ ........  row 13 */
-	0x0000,  /* ........ ........  row 14 */
-	0x0000   /* ........ ........  row 15 */
-};
+#define MOUSE_CUR_W CURSOR_SHAPE_WIDTH
+#define MOUSE_CUR_H CURSOR_SHAPE_HEIGHT
 
 static int mouse_present_flag;
 static int mouse_streaming_flag;
@@ -129,11 +108,21 @@ static int mouse_send_cmd_ack(unsigned char cmd)
 	return r;
 }
 
-static int mouse_bit_at(int r, int c)
+enum {
+	MOUSE_PIX_TRANSPARENT = 0,
+	MOUSE_PIX_OUTLINE,
+	MOUSE_PIX_FILL
+};
+
+static int mouse_pixel_at(int r, int c)
 {
 	if (r < 0 || c < 0 || r >= (int)MOUSE_CUR_H || c >= (int)MOUSE_CUR_W)
-		return 0;
-	return (mouse_pointer_bits[(unsigned int)r] & (0x8000u >> c)) != 0;
+		return MOUSE_PIX_TRANSPARENT;
+	if (cursor_shape_fill[(unsigned int)r] & (0x8000u >> c))
+		return MOUSE_PIX_FILL;
+	if (cursor_shape_outline[(unsigned int)r] & (0x8000u >> c))
+		return MOUSE_PIX_OUTLINE;
+	return MOUSE_PIX_TRANSPARENT;
 }
 
 static void cursor_save_under(void)
@@ -156,11 +145,14 @@ static void mouse_draw_cursor(unsigned int x0, unsigned int y0)
 {
 	unsigned int r, c;
 
-	/* Draw only the cursor fill bitmap (no outline). */
+	/* White arrow body with a black outline around it. */
 	for (r = 0; r < MOUSE_CUR_H; r++) {
 		for (c = 0; c < MOUSE_CUR_W; c++) {
-			if (mouse_bit_at((int)r, (int)c))
+			int px = mouse_pixel_at((int)r, (int)c);
+			if (px == MOUSE_PIX_FILL)
 				vga_put_pixel_rgb(x0 + c, y0 + r, 255, 255, 255);
+			else if (px == MOUSE_PIX_OUTLINE)
+				vga_put_pixel_rgb(x0 + c, y0 + r, 0, 0, 0);
 		}
 	}
 }

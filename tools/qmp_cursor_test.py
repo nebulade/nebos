@@ -25,9 +25,9 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# 16x16 cursor bitmap rows (same table as mouse.c); bit 15 = column 0.
-CUR = [0x8000, 0xC000, 0xE000, 0xF000, 0xF800, 0xFC00, 0xFE00, 0xFF00,
-       0xFC00, 0xE000, 0x8000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000]
+# 16x16 cursor fill rows (same table as cursor_shape.h); bit 15 = column 0.
+CUR = [0x0000, 0x4000, 0x6000, 0x7000, 0x7800, 0x7C00, 0x7E00, 0x7F00,
+       0x7F80, 0x7E00, 0x7000, 0x4000, 0x0000, 0x0000, 0x0000, 0x0000]
 
 
 def qmp_connect(sock):
@@ -78,7 +78,7 @@ def pixel(w, pix, x, y):
 
 
 def cursor_matches(w, pix, x0, y0):
-    for r in range(8):
+    for r in range(16):
         for c in range(16):
             want = (CUR[r] & (0x8000 >> c)) != 0
             got = pixel(w, pix, x0 + c, y0 + r) == (255, 255, 255)

@@ -22,6 +22,7 @@
  */
 
 #include "radeon.h"
+#include "cursor_shape.h"
 #include "pci.h"
 #include "paging.h"
 #include "serial.h"
@@ -75,12 +76,6 @@ static inline void mmio_mm_write(unsigned int reg, unsigned int v)
 	mmio_write(RADEON_MM_INDEX, reg);
 	mmio_write(RADEON_MM_DATA, v);
 }
-
-/* 16x16 arrow (MSB = column 0), matching the software cursor shape. */
-static const unsigned short radeon_arrow[16] = {
-	0x8000, 0xC000, 0xE000, 0xF000, 0xF800, 0xFC00, 0xFE00, 0xFF00,
-	0xFC00, 0xE000, 0x8000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-};
 
 void radeon_init(unsigned int bus, unsigned int dev, unsigned int device_id)
 {
@@ -142,19 +137,28 @@ void radeon_cursor_setup(void)
 
 	dst = (unsigned char *)(vga_fb_lfb_addr() + RADEON_CUR_VRAM_OFS);
 
-	/* Transparent background (alpha 0), then the opaque white arrow. */
+	/* Transparent background (alpha 0), then the opaque white fill and
+	   black outline of the shared arrow. */
 	for (i = 0; i < RADEON_CUR_BYTES; i++)
 		dst[i] = 0;
-	for (r = 0; r < 16; r++) {
-		unsigned short bits = radeon_arrow[r];
-		for (c = 0; c < 16; c++) {
-			if (bits & (0x8000u >> c)) {
-				unsigned int off = (r * RADEON_CUR_SIZE + c) * 4;
+	for (r = 0; r < CURSOR_SHAPE_HEIGHT; r++) {
+		unsigned short fill = cursor_shape_fill[r];
+		unsigned short outl = cursor_shape_outline[r];
+		for (c = 0; c < CURSOR_SHAPE_WIDTH; c++) {
+			unsigned short bit = (unsigned short)(0x8000u >> c);
+			unsigned int off = (r * RADEON_CUR_SIZE + c) * 4;
+			if (fill & bit) {
 				dst[off + 0] = 0xFF;  /* B */
 				dst[off + 1] = 0xFF;  /* G */
 				dst[off + 2] = 0xFF;  /* R */
-				dst[off + 3] = 0xFF;  /* A */
+			} else if (outl & bit) {
+				dst[off + 0] = 0x00;  /* B */
+				dst[off + 1] = 0x00;  /* G */
+				dst[off + 2] = 0x00;  /* R */
+			} else {
+				continue;
 			}
+			dst[off + 3] = 0xFF;          /* A */
 		}
 	}
 
