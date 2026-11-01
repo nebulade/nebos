@@ -144,6 +144,8 @@ unsigned int br_parse_image_doc(struct br_doc *d, const char *src);
 /* External CSS is parsed by the browser after br_parse(); parse the inline
  * <style> blocks last so the cascade order matches the document. */
 void br_set_viewport(unsigned int width);
+void br_set_theme(unsigned short text, unsigned short bg,
+		  unsigned short panel, unsigned short link);
 void br_parse_css_text(struct br_doc *d, const char *css, unsigned int len);
 void br_parse_inline_css(struct br_doc *d);
 void br_reset_styles(struct br_doc *d);

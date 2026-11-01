@@ -1392,6 +1392,20 @@ static unsigned int skip_at_rule(const char *s, unsigned int len,
 }
 
 static unsigned int viewport_w = 1024;
+static unsigned short theme_text = 0x0000;
+static unsigned short theme_bg = 0xFFFF;
+static unsigned short theme_panel = 0xEF5D;
+static unsigned short theme_link = 0x001B;
+
+void br_set_theme(unsigned short text, unsigned short bg,
+		  unsigned short panel, unsigned short link)
+{
+	theme_text = text;
+	theme_bg = bg;
+	theme_panel = panel;
+	theme_link = link;
+}
+
 
 void br_set_viewport(unsigned int width)
 {
@@ -1990,13 +2004,13 @@ void br_style_for(struct br_doc *d, unsigned int node,
 		break;
 	case BR_TAG_PRE:
 		out->mt = out->mb = 8; out->pl = 8;
-		out->has_bg = 1; out->bg = 0xEF5D;
+		out->has_bg = 1; out->bg = theme_panel;
 		break;
 	case BR_TAG_CENTER:
 		out->align = BR_ALIGN_CENTER;
 		break;
 	case BR_TAG_A:
-		out->color = 0x001B; out->underline = 1;
+		out->color = theme_link; out->underline = 1;
 		break;
 	case BR_TAG_B: case BR_TAG_STRONG:
 		out->bold = 1;

@@ -447,8 +447,11 @@ run area), so adding code no longer moves any address.
   `@media (min-width/max-width)` blocks are evaluated against a fixed 1000 px
   desktop viewport; `@font-face`/`@import`/`@keyframes` are skipped.  Inline
   `<svg>` subtrees and closed `<details>` are skipped (not renderable), and
-  `<video>` gets a placeholder box.  `browser.c` owns a 960x640 window, the
-  layout/render, URL bar, history, status bar and inline `<img>` decoding.
+  `<video>` gets a placeholder box.  The default page canvas follows
+  `ngui_theme_dark` (dark page, light text, `theme.panel` for `<pre>`);
+  a site's own `background-color`/`color` CSS still overrides it.  `browser.c`
+  owns a 960x640 window, the layout/render, URL bar, history, status bar and
+  inline `<img>` decoding.
   Page and image buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
   arenas (2560 nodes, 128 KB attributes, 1792 rules), and page bodies are
   capped at 2 MB with CSS sheets up to 832 KB (six sheets).  Images are
@@ -990,7 +993,10 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     rescales the cached bitmap on every repaint.  Video/audio elements are
     placeholders, and pages that depend on `display:grid`/flex or CSS
     variables (tagesschau's player and ad slots, for example) can show empty
-    bordered boxes or miss colours.  TLS is phase A (no certificate
+    bordered boxes or miss colours.  Because the default canvas is dark, a
+    page that sets dark text but relies on the browser's default white
+    background can be hard to read; pages with their own full background and
+    colour rules are unaffected.  TLS is phase A (no certificate
     verification); `https` is shown as unverified.  The disk app is loaded
     from FAT at spawn time, so a cold floppy start takes a few seconds; the
     8 KB user stack means the layout state is deliberately static.

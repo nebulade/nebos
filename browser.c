@@ -38,10 +38,7 @@
 
 #define BR_IMG_RGB565(r, g, b) \
 	((unsigned short)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3)))
-#define BR_WHITE  0xFFFF
-#define BR_BLACK  0x0000
 #define BR_GRAY   0x8410
-#define BR_LINK   0x001B
 
 enum {
 	ID_URL = 1,
@@ -398,7 +395,7 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 		return -1;
 	}
 	for (i = 0; i < (unsigned int)dw * (unsigned int)dh; i++)
-		px[i] = BR_WHITE;
+		px[i] = ui.theme.bg;
 
 	{
 		struct img_blit b;
@@ -413,8 +410,8 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 		b.x = 0;
 		b.y = 0;
 		b.scale = ((unsigned int)dw << 16) / decoded.w;
-		b.bg = BR_WHITE;
-		b.bg2 = BR_WHITE;
+		b.bg = ui.theme.bg;
+		b.bg2 = ui.theme.bg;
 		b.flags = IMG_BLIT_OVER_DST;
 		img_draw(&decoded, &b);
 	}
@@ -1280,12 +1277,12 @@ static void load_home(int push)
 	{
 		static const char home[] =
 			"<html><head><title>Nebs Browser</title><style>"
-			"body { margin: 10px; color: #222222; }"
-			"h1 { color: #2255cc; }"
-			".box { background-color: #eeeeff; margin: 12px; "
+			"body { margin: 10px; color: #e4e6f0; }"
+			"h1 { color: #7fb0ff; }"
+			".box { background-color: #262b3a; margin: 12px; "
 			"padding: 10px; }"
-			"a { color: #0033cc; }"
-			"pre { background-color: #f4f4f4; }"
+			"a { color: #7fb0ff; }"
+			"pre { background-color: #32384a; }"
 			"</style></head><body>"
 			"<h1>Nebs Browser</h1>"
 			"<p>A small HTML/CSS browser built on <b>ngui</b>, the "
@@ -1366,8 +1363,8 @@ static struct br_style base_style(void)
 {
 	struct br_style s = { 0 };
 
-	s.color = BR_BLACK;
-	s.bg = BR_WHITE;
+	s.color = ui.theme.text;
+	s.bg = ui.theme.bg;
 	s.has_bg = 0;
 	s.border_color = 0;
 	s.scale = 1;
@@ -1435,8 +1432,8 @@ static void flush_line(struct lay *l)
 					b.y = l->line_y;
 					b.scale = ((unsigned int)r->iw << 16) /
 						  bi->img.w;
-					b.bg = BR_WHITE;
-					b.bg2 = BR_WHITE;
+					b.bg = ui.theme.bg;
+					b.bg2 = ui.theme.bg;
 					b.flags = IMG_BLIT_OVER_DST;
 					img_draw(&bi->img, &b);
 				}
@@ -2259,7 +2256,7 @@ static void draw_page(struct ngui_rect page)
 	int old_panel, old_dim;
 
 	page_rect = page;
-	ngui_fill_rect(&ui, page, BR_WHITE);
+	ngui_fill_rect(&ui, page, ui.theme.bg);
 	if (!doc.nnode || (page_loading && doc.nnode <= 1)) {
 		const char *s = page_loading ? "Loading..." : "No page";
 		int w = (int)ngui_text_width(s);
@@ -2433,6 +2430,8 @@ void _start(const char *arg)
 	ngui_init(&ui, (unsigned short *)wi.fb, (int)wi.width, (int)wi.height);
 	url_in.placeholder = "http://...";
 	br_doc_init(&doc);
+	br_set_theme(ui.theme.text, ui.theme.bg, ui.theme.panel,
+		     ui.theme.accent);
 	br_set_viewport(BR_VIEWPORT_W);
 	if (u_getcwd(cwd, sizeof(cwd)) != 0 || !cwd[0])
 		s_copy(cwd, "/", sizeof(cwd));
