@@ -1,4 +1,5 @@
 #include "mouse.h"
+#include "bootinfo.h"
 #include "cirrus.h"
 #include "radeon.h"
 #include "timer.h"
@@ -193,8 +194,10 @@ static void mouse_cursor_setup(void)
 	if (fbw < MOUSE_CUR_W || fbh < MOUSE_CUR_H)
 		return;
 
-	/* Cirrus hardware cursor: the card overlays it; no save/restore. */
-	if (cirrus_available()) {
+	/* Cirrus hardware cursor: the card overlays it; no save/restore.
+	 * UEFI GOP modes are not programmed through the legacy VGA sequencer,
+	 * so use the software cursor there. */
+	if (!bootinfo_efi() && cirrus_available()) {
 		mouse_hw_cursor = 1;
 		cur_x = 100;
 		cur_y = 100;
@@ -205,7 +208,7 @@ static void mouse_cursor_setup(void)
 	}
 
 	/* Radeon (R200/RV280) hardware cursor. */
-	if (radeon_available()) {
+	if (!bootinfo_efi() && radeon_available()) {
 		mouse_hw_cursor = 2;
 		cur_x = 100;
 		cur_y = 100;

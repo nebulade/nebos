@@ -3,6 +3,8 @@
 *.elf
 *.img
 *.pack
+BOOTX64.EFI
+efi/efi_entry.h
 send_serial
 kexec_send
 netkexec_send

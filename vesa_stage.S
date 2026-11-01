@@ -23,6 +23,10 @@ _vesa_stage:
 	movw  %ax, %ds
 	movw  %ax, %es
 
+	/* No UEFI boot-info block on the BIOS path (see bootinfo.h).  The boot
+	 * sector used 0x500 as its disk-address packet, so clear the magic. */
+	movl  $0, 0x500
+
 	/* ---- Probe INT 15h E820 memory map into 0:0x1000 ----
 	 * Layout (see mm.h): [magic u32][count u32][24-byte entries...].
 	 * Stored below the kernel (0x7E00) so it survives kexec reloads,

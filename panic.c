@@ -1,6 +1,7 @@
 /* Fatal exception screen: see panic.h. */
 
 #include "panic.h"
+#include "bootinfo.h"
 #include "font_8x8.h"
 #include "process.h"
 #include "serial.h"
@@ -15,6 +16,7 @@
 static unsigned int fb_w, fb_h, fb_pitch, fb_bpp;
 static volatile unsigned char *fb_lfb;
 static int fb_ok;
+static int fb_swap_rb;
 static unsigned int panic_line;
 
 static const char hx[] = "0123456789ABCDEF";
@@ -34,6 +36,7 @@ static void cache_fb(void)
 	fb_pitch = vga_fb_pitch();
 	fb_bpp = vga_fb_bpp();
 	fb_lfb = (volatile unsigned char *)(unsigned long)vga_fb_lfb_addr();
+	fb_swap_rb = bootinfo_rgbx();
 	fb_ok = (fb_w > 0 && fb_h > 0 && fb_pitch > 0 && fb_lfb &&
 		 (fb_bpp == 16 || fb_bpp == 24 || fb_bpp == 32));
 }
@@ -51,9 +54,9 @@ static void px(unsigned int x, unsigned int y,
 		p[0] = (unsigned char)(v & 0xFF);
 		p[1] = (unsigned char)(v >> 8);
 	} else {
-		p[0] = (unsigned char)b;
+		p[0] = (unsigned char)(fb_swap_rb ? r : b);
 		p[1] = (unsigned char)g;
-		p[2] = (unsigned char)r;
+		p[2] = (unsigned char)(fb_swap_rb ? b : r);
 		if (fb_bpp == 32)
 			p[3] = 0;
 	}

@@ -16,6 +16,10 @@ make run-usb    # boot usb.img as an IDE disk
 make run-uhci   # like `make run` but with a UHCI controller + USB mouse
 make run-net    # like `make run` + a PCI NE2000 NIC on QEMU's user network (slirp; DHCP/DNS/NAT)
 make run-ahci   # like `make run` + an ICH9 AHCI controller and a 512 MB SATA disk (sata0)
+make uefi       # build BOOTX64.EFI and the dual-boot usb-efi.img
+make run-uefi   # boot usb-efi.img under OVMF (x86-64 UEFI; serial log in /tmp/opencode)
+make test-uefi  # headless OVMF boot test (greps the serial log for the boot line)
+make flash      # write the dual-boot image (legacy BIOS + UEFI) to a USB stick
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make test-images  # host image-decoder + blit tests (ASan variant: test-images-asan)
 make clean
@@ -27,6 +31,21 @@ make clean
   the external browser (`BROWSER`) and its `DEMO.HTM`/`PIC.BMP` test page, plus
   a few test files; it requires `mtools` to build.
 - `make send PROGRAM=prog` transfers a binary to a real machine over serial.
+- UEFI needs `x86_64-w64-mingw32-gcc` (the 64-bit loader) and, for the QEMU
+  targets, an OVMF firmware (`OVMF=/path/to/OVMF.4m.fd` overrides the default).
+  `make all` does not build the UEFI image, so a machine without mingw still
+  builds the legacy floppy/USB images normally.
+- `usb.img` remains the legacy-only image.  `make flash` uses `usb-efi.img`,
+  which is `usb.img` plus an 8 MB FAT16 ESP in a new third MBR partition
+  (type `0xEF`, LBA 131072).  The MBR boot code, partition entries 1/2 and the
+  active partition 1 are unchanged except for one BPB byte: FATSize16 is
+  cleared in the dual image (disk offset `0x7E16`).  Without that, UEFI
+  firmware scans the partition, sees the FAT16-looking boot sector and mounts
+  the raw kernel blob as a volume, writing FAT/root pages over the kernel at
+  LBA 64.  `boot.S` and the BIOS never read FATSize16.  Legacy boot from the
+  patched image is tested; `make flash FLASH_IMG=usb.img` flashes the
+  untouched legacy-only image.  `make flash` needs the mingw toolchain because
+  it builds `usb-efi.img`.
 
 ## Boot chain
 
@@ -39,7 +58,16 @@ make clean
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → memory/paging →
    ACPI/MADT → I/O → idle → processes → timer (PIT; 1 kHz busy, 100 Hz idle + IDT) → SMP AP
    bring-up → mouse → VGA shadow buffer → terminal.
-4. `mbr.S` — MBR (USB/HDD boot); loads partition boot sector at LBA 1.
+4. `mbr.S` — MBR (USB/HDD boot); loads the active partition's boot sector
+   (partition 1 at LBA 63).
+5. **UEFI (`efi/`)** — an x86-64 PE32+ `BOOTX64.EFI` loads from the ESP. It
+   picks a GOP mode, converts `GetMemoryMap` into the E820 map at `0x1000`,
+   stages `kernel.bin` below 4 GB, fills `0x500` (boot info) and `0x600`
+   (framebuffer), calls `ExitBootServices`, copies a 192-byte trampoline to
+   `0x800`, leaves IA-32e mode (`CR0.PG`, `EFER.LME`, `CR4.PAE/PGE/PCIDE/
+   SMEP/SMAP/LA57`), copies the kernel to `0x7E00` and jumps to
+   `kernel_entry`.  The BIOS boot sector / VESA stage are not executed on this
+   path; the legacy chain is unchanged.
 
 SMP is ACPI-only: RSDP → RSDT/XSDT → MADT, then `LAPIC` + `INIT-SIPI-SIPI`.
 There is deliberately no Intel MP-table parser.  If ACPI, a usable MADT, the
@@ -51,12 +79,13 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 
 | Address    | Purpose |
 |-----------|---------|
-| `0x600`   | Boot framebuffer info (`struct vga_boot_fb_info`, see `vga.h`) |
-| `0x7C00`  | Boot sector load address |
-| `0x7E00`  | Kernel load / VESA-stage entry (`kernel.ld`) |
-| `0x800`   | kexec trampoline (relocated at runtime; below the kernel) |
-| `0x900`   | kexec flat GDT + GDTR (built at runtime; below the kernel) |
-| `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S`, parsed by `mm.c`); also the kexec trampoline's private stack top (grows down, below the map) |
+| `0x500`   | UEFI boot info (`struct boot_info`, `bootinfo.h`): magic/checksum, ACPI RSDP, EFI/RGBX flags; `vesa_stage.S` clears the magic on BIOS boot |
+| `0x600`   | Boot framebuffer info (`struct vga_boot_fb_info`, see `vga.h`; written by `vesa_stage.S` or the UEFI loader) |
+| `0x7C00`  | Boot sector load address; also the UEFI handoff stack top |
+| `0x7E00`  | Kernel load / VESA-stage entry (`kernel.ld`); the UEFI loader copies the kernel here and jumps to `kernel_entry` |
+| `0x800`   | kexec and UEFI handoff trampoline (relocated at runtime; below the kernel) |
+| `0x900`   | kexec/UEFI flat GDT + GDTR (built at runtime; below the kernel) |
+| `0x1000`  | E820 memory map (`struct e820_map`, written by `vesa_stage.S` or the UEFI loader, parsed by `mm.c`); also the kexec trampoline's private stack top (grows down, below the map) |
 | `0x3000`  | UHCI frame list (1024 × 4 B, 4 KB-aligned; `uhci.c`) |
 | `0x4000`  | ISA DMA buffer, one sector (`disk.c`) |
 | `0x6000`  | AP real/protected-mode trampoline (`ap_tramp.S`/`ap_tramp.ld`; SIPI vector 0x06, image ends below `0x6C00`) |
@@ -70,8 +99,10 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 
 Everything else is dynamic: process stacks and the kexec staging buffer come
 from the frame allocator (≥ `0x900000`), and the fallback stack pool is a
-static BSS array.  The kernel region itself only has one wall (`_end`
-below the run area), so adding code no longer moves any address.
+static BSS array.  The UEFI loader's kernel staging buffer comes from
+`AllocatePages` below 4 GB and only lives until the `0x800` trampoline copies
+it to `0x7E00`.  The kernel region itself only has one wall (`_end` below the
+run area), so adding code no longer moves any address.
 
 ## Key files
 
@@ -120,6 +151,16 @@ below the run area), so adding code no longer moves any address.
   allocator on top of the frame allocator (used for PCBs and command context).
   Process stacks (≥ `0x900000`) come from the frame allocator, with an 8-stack
   fallback pool (a static BSS array; no fixed address).
+- **UEFI boot**: `bootinfo.h` (the `0x500` block and its checksum/accessors),
+  `efi/efi.h` (minimal UEFI types and table/protocol layouts), `efi/main.c`
+  (GOP mode choice, `GetMemoryMap` → E820, staging below 4 GB, boot-info/
+  framebuffer blocks, `ExitBootServices`), `efi/tramp.S` + `efi/tramp.ld` (the
+  `0x800` long-mode exit, kernel copy and jump) and `efi/payload.S` (embeds
+  `kernel.bin` and the trampoline in `BOOTX64.EFI`).  `vesa_stage.S` clears
+  the boot-info magic; `vga.c`/`panic.c` honour the RGBX flag and skip the
+  VBE-only ATI CRTC reset / NVIDIA stolen-VRAM alias under EFI; `mouse.c`
+  forces the software cursor; `acpi.c` prefers the passed RSDP and maps its
+  page before validating it.
 - **Paging**: `paging.c/h` — identity-maps RAM (4 MB pages via CR4.PSE) + the
   LFB (uncacheable) and enables CR0.PG/WP. Each process gets a page directory
   cloned from the kernel identity map (kernel stacks are mapped everywhere, so
@@ -926,3 +967,15 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     verification); `https` is shown as unverified.  The disk app is loaded
     from FAT at spawn time, so a cold floppy start takes a few seconds; the
     8 KB user stack means the layout state is deliberately static.
+
+24. UEFI boot is x86-64 firmware only (no `BOOTIA32.EFI` yet) and the loader
+    is unsigned, so Secure Boot must be off.  The loader needs a GOP mode with
+    BGRX or RGBX 32bpp, width ≤ 1280, `pitch * height` ≤ 8 MB and the
+    framebuffer below 4 GB; otherwise the kernel starts headless (serial only).
+    There is no xHCI/EHCI driver, so many modern UEFI laptops/desktops boot the
+    UI without a USB keyboard or mouse (PS/2 may still work), and there is no
+    IOAPIC setup: OVMF delivers the ISA IRQs through the 8259 path, but a
+    platform that routes them through the IOAPIC may need a mask-all step after
+    ACPI init.  UEFI runtime services are not used, so `reboot`/`poweroff` still
+    use the legacy ports.  The hybrid image is 72 MB because the ESP is a
+    third partition after the untouched 64 MB legacy layout.

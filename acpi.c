@@ -7,6 +7,7 @@
  */
 
 #include "acpi.h"
+#include "bootinfo.h"
 #include "paging.h"
 #include "serial.h"
 
@@ -104,6 +105,24 @@ static const struct acpi_rsdp *find_rsdp(void)
 {
 	volatile unsigned short *ebda_seg = (volatile unsigned short *)0x40E;
 	unsigned int ebda, i;
+	unsigned int given = bootinfo_rsdp();
+
+	/* The UEFI loader passes the RSDP address from the system table.  UEFI
+	 * places ACPI tables outside the 128 MB identity map often enough that
+	 * the scan below would never see them, so map the page first. */
+	if (given && given < 0xFFF00000u) {
+		const struct acpi_rsdp *r;
+
+		paging_map_ram(given & 0xFFC00000u, 0x800000u);
+		r = (const struct acpi_rsdp *)given;
+		if (rsdp_valid(r)) {
+			serial_puts(SERIAL_COM1, "acpi: EFI RSDP at ");
+			serial_puthex(SERIAL_COM1, given);
+			serial_puts(SERIAL_COM1, "\n");
+			return r;
+		}
+		serial_puts(SERIAL_COM1, "acpi: EFI RSDP invalid, scanning\n");
+	}
 
 	/* Opaque asm keeps -Warray-bounds quiet about the fixed BIOS pointer. */
 	__asm__ volatile ("" : "+r"(ebda_seg));

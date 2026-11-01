@@ -13,7 +13,18 @@ ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev netmon monitor test-crypto test-images test-images-asan
+# UEFI loader: a PE32+ x86-64 EFI application built with the mingw toolchain.
+# The kernel itself stays 32-bit; the loader leaves long mode before jumping.
+EFI_CC   ?= x86_64-w64-mingw32-gcc
+EFI_AS   ?= x86_64-w64-mingw32-as
+EFI_CFLAGS = -ffreestanding -fno-stack-protector -mno-red-zone -fno-builtin \
+             -fno-asynchronous-unwind-tables -fno-unwind-tables -O2 \
+             -Wall -Wextra -I. -Iefi
+EFI_LDFLAGS = -nostdlib -Wl,--subsystem,10 -Wl,-e,efi_main \
+              -Wl,--image-base,0x0 -Wl,--dynamicbase \
+              -Wl,--enable-reloc-section -Wl,--no-insert-timestamp
+
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-net run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev netmon monitor test-crypto test-images test-images-asan
 
 all: floppy.img usb.img final.bin root.img
 
@@ -86,7 +97,7 @@ bin_recv.o: bin_recv.c bin_recv.h serial.h io.h timer.h
 serial_recv.o: serial_recv.c serial.h bin_recv.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-vga.o: vga.c vga.h blit.h pci.h gpu.h ati.h process.h
+vga.o: vga.c vga.h bootinfo.h blit.h pci.h gpu.h ati.h process.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 blit.o: blit.c blit.h vga.h gfx.h cpu.h
@@ -152,7 +163,7 @@ usbhid.o: usbhid.c usbhid.h io.h usb.h usb_hcd.h serial.h timer.h
 lsusb.o: lsusb.c io.h usb.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-panic.o: panic.c panic.h font_8x8.h process.h serial.h timer.h vga.h
+panic.o: panic.c panic.h bootinfo.h font_8x8.h process.h serial.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 lspci.o: lspci.c io.h pci.h
@@ -206,7 +217,7 @@ fatformat.o: fatformat.c fatformat.h blkdev.h io.h mm.h sched.h
 format.o: format.c blkdev.h disk.h fatformat.h io.h process.h sched.h vga.h vfs.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-mouse.o: mouse.c mouse.h cirrus.h radeon.h timer.h usbhid.h vga.h
+mouse.o: mouse.c mouse.h bootinfo.h cirrus.h radeon.h timer.h usbhid.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 idle.o: idle.c idle.h
@@ -242,7 +253,7 @@ entry.o: entry.S
 sched.o: sched.c sched.h process.h paging.h smp.h spinlock.h sys_fs.h thermal.h timer.h tss.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-acpi.o: acpi.c acpi.h paging.h serial.h
+acpi.o: acpi.c acpi.h bootinfo.h paging.h serial.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 lapic.o: lapic.c lapic.h timer.h
@@ -369,6 +380,87 @@ final.bin: boot.bin kernel.bin
 	printf "$$(printf '\\x%02x\\x%02x' $$((SECTORS & 0xFF)) $$((SECTORS >> 8)))" | dd of=$@.boot.tmp bs=1 seek=$(KERNEL_SECTORS_OFFSET) conv=notrunc 2>/dev/null; \
 	cat $@.boot.tmp kernel.bin > $@; \
 	rm -f $@.boot.tmp
+
+# ---- UEFI loader and dual-boot USB image -------------------------------
+#
+# The legacy image (usb.img) is left byte-for-byte alone.  usb-efi.img copies
+# it, adds a third MBR partition (type 0xEF, starting at the old 64 MB end)
+# and writes a small FAT16 ESP there.  BIOS booting still uses the active
+# partition 1 at LBA 63; UEFI finds BOOTX64.EFI in the ESP.
+
+efi/efi_entry.h: kernel.elf
+	@mkdir -p efi
+	@entry=$$(nm kernel.elf | awk '/ T kernel_entry$$/{print $$1}'); \
+	if [ -z "$$entry" ]; then echo "efi: kernel_entry not found" >&2; exit 1; fi; \
+	printf '#define KERNEL_ENTRY 0x%s\n' "$$entry" > $@
+
+efi/main.o: efi/main.c efi/efi.h bootinfo.h vga.h efi/efi_entry.h
+	$(EFI_CC) $(EFI_CFLAGS) -c -o $@ $<
+
+efi/payload.o: efi/payload.S kernel.bin efi/tramp.bin
+	$(EFI_AS) --64 -o $@ $<
+
+efi/tramp.o: efi/tramp.S
+	$(AS) --64 -o $@ $<
+
+efi/tramp.elf: efi/tramp.o efi/tramp.ld
+	$(LD) -T efi/tramp.ld -nostdlib -m elf_x86_64 -o $@ $<
+
+efi/tramp.bin: efi/tramp.elf
+	$(OBJCOPY) -O binary $< $@
+
+BOOTX64.EFI: efi/main.o efi/payload.o
+	$(EFI_CC) $(EFI_LDFLAGS) -o $@ efi/main.o efi/payload.o
+
+ESP_LBA     = 131072
+ESP_SECTORS = 16384
+
+esp.img: BOOTX64.EFI
+	truncate -s $$(( $(ESP_SECTORS) * 512 )) $@
+	mkfs.fat -F 16 -s 2 -n NEBOSESP $@
+	mmd -i $@ ::/EFI
+	mmd -i $@ ::/EFI/BOOT
+	mcopy -i $@ BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+
+usb-efi.img: usb.img esp.img
+	cp usb.img $@
+	# The legacy partition is a raw kernel blob with a FAT16-looking BPB (the
+	# BIOS only needs the boot sector and LBA 64).  UEFI firmware scans FAT
+	# partitions and would mount it as a volume, writing FAT/root pages over
+	# the kernel at LBA 64.  Clear BPB FATSize16 so the firmware rejects the
+	# fake volume; boot.S and the BIOS never read that field.
+	printf '\x00\x00' | dd of=$@ bs=1 seek=$$((63 * 512 + 0x16)) conv=notrunc 2>/dev/null
+	printf '\x00\x28\x21\x08\xef\x2d\x24\x09\x00\x00\x02\x00\x00\x40\x00\x00' | \
+		dd of=$@ bs=1 seek=478 conv=notrunc 2>/dev/null
+	dd if=esp.img of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc 2>/dev/null
+	truncate -s $$(( ($(ESP_LBA) + $(ESP_SECTORS)) * 512 )) $@
+
+uefi: usb-efi.img
+
+OVMF ?= $(firstword $(wildcard /usr/share/ovmf/x64/OVMF.4m.fd /usr/share/OVMF/OVMF.4m.fd))
+
+# root.img is deliberately not attached: a running QEMU may hold its write
+# lock, and the UEFI boot test does not need a second filesystem.
+run-uefi: usb-efi.img
+	@test -n "$(OVMF)" || { echo "OVMF not found; set OVMF=/path/to/OVMF.4m.fd" >&2; exit 1; }
+	qemu-system-x86_64 -M pc -m 256 -smp 4 -bios $(OVMF) -snapshot \
+	  -drive file=usb-efi.img,format=raw,if=ide \
+	  -device pci-ohci -device usb-mouse \
+	  -device ne2k_pci,netdev=n0 -netdev user,id=n0 \
+	  -serial file:/tmp/opencode/nebos-uefi-serial.log
+
+test-uefi: usb-efi.img
+	@test -n "$(OVMF)" || { echo "OVMF not found; set OVMF=/path/to/OVMF.4m.fd" >&2; exit 1; }
+	@rm -f /tmp/opencode/nebos-uefi-serial.log
+	timeout 40 qemu-system-x86_64 -M pc -m 256 -smp 4 -bios $(OVMF) -snapshot \
+	  -drive file=usb-efi.img,format=raw,if=ide \
+	  -device pci-ohci -device usb-mouse \
+	  -device ne2k_pci,netdev=n0 -netdev user,id=n0 \
+	  -display none -serial file:/tmp/opencode/nebos-uefi-serial.log \
+	  -no-reboot >/dev/null 2>&1 || true
+	@grep -q "booted" /tmp/opencode/nebos-uefi-serial.log && \
+		echo "UEFI boot: OK (/tmp/opencode/nebos-uefi-serial.log)" || \
+		{ echo "UEFI boot: FAILED"; tail -c 4000 /tmp/opencode/nebos-uefi-serial.log; exit 1; }
 
 prog.o: prog.c run_api.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -616,10 +708,14 @@ floppy: floppy.img
 
 usb: usb.img
 
-# Write usb.img to a USB stick; prompts before destroying anything.
+# Write the dual-boot USB image (legacy BIOS + UEFI) to a stick; prompts
+# before destroying anything.
 #   make flash USB=/dev/sdX          FORCE=1 skips the removable-device check.
-flash: usb.img
-	@./flash.sh "$(USB)" "$(FORCE)"
+#   make flash FLASH_IMG=usb.img     legacy-only image
+# The UEFI half needs the mingw toolchain (EFI_CC); the legacy half does not.
+FLASH_IMG ?= usb-efi.img
+flash: $(FLASH_IMG)
+	@./flash.sh "$(USB)" "$(FORCE)" "$(FLASH_IMG)"
 
 run-floppy: floppy.img root.img
 	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
@@ -756,4 +852,4 @@ net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o usb.o usbhid.o lsusb.o panic.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h

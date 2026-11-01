@@ -1,0 +1,72 @@
+/* Boot information block at 0x500.
+ *
+ * The legacy VESA stage (vesa_stage.S) does not fill this in; it clears the
+ * magic so a BIOS boot takes exactly the old code paths.  The UEFI loader
+ * fills it in with the ACPI RSDP address, the boot source and the GOP pixel
+ * order.  A checksum over the eight dwords (with the checksum field set so
+ * the sum is zero) keeps stale low memory from being mistaken for a valid
+ * block after a kexec or a legacy boot.
+ */
+#ifndef BOOTINFO_H
+#define BOOTINFO_H
+
+#define BOOT_INFO_ADDR    0x500
+#define BOOT_INFO_MAGIC   0x4E425349u   /* "NBSI" */
+#define BOOT_INFO_VERSION 1u
+
+#define BOOTINFO_FLAG_EFI  0x00000001u
+#define BOOTINFO_FLAG_RGBX 0x00000002u  /* GOP 32bpp byte order R,G,B,X */
+
+struct boot_info {
+	unsigned int magic;
+	unsigned int version;
+	unsigned int checksum;
+	unsigned int rsdp;          /* physical ACPI RSDP address, 0 = scan */
+	unsigned int flags;
+	unsigned int reserved[3];
+} __attribute__((packed));
+
+/* Fixed low-memory pointer, hidden from -Warray-bounds like the other boot
+ * structures (see vga.c / acpi.c). */
+static inline const volatile unsigned int *bootinfo_words(void)
+{
+	const volatile unsigned int *p =
+		(const volatile unsigned int *)BOOT_INFO_ADDR;
+
+	__asm__ volatile ("" : "+r"(p));
+	return p;
+}
+
+static inline int bootinfo_valid(void)
+{
+	const volatile unsigned int *p = bootinfo_words();
+	unsigned int i, sum = 0;
+
+	if (p[0] != BOOT_INFO_MAGIC || p[1] != BOOT_INFO_VERSION)
+		return 0;
+	for (i = 0; i < 8; i++)
+		sum += p[i];
+	return sum == 0;
+}
+
+static inline unsigned int bootinfo_flags(void)
+{
+	return bootinfo_valid() ? bootinfo_words()[4] : 0;
+}
+
+static inline int bootinfo_efi(void)
+{
+	return (bootinfo_flags() & BOOTINFO_FLAG_EFI) != 0;
+}
+
+static inline int bootinfo_rgbx(void)
+{
+	return (bootinfo_flags() & BOOTINFO_FLAG_RGBX) != 0;
+}
+
+static inline unsigned int bootinfo_rsdp(void)
+{
+	return bootinfo_valid() ? bootinfo_words()[3] : 0;
+}
+
+#endif

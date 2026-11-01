@@ -8,12 +8,14 @@
 # prints a summary and needs "yes" before writing anything.
 set -eu
 
-IMG=usb.img
+# Third argument (or IMG= in the environment) selects the image.  Passing it
+# as an argument keeps it alive across the sudo re-exec below.
+IMG=${3:-${IMG:-usb.img}}
 dev=${1:-}
 force=${2:-}
 
 if [ -z "$dev" ]; then
-	echo "usage: make flash USB=/dev/sdX [FORCE=1]" >&2
+	echo "usage: make flash USB=/dev/sdX [FORCE=1] [IMAGE]" >&2
 	exit 1
 fi
 

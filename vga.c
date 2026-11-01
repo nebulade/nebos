@@ -1,6 +1,7 @@
 /* VGA: VESA LFB (from boot) with a shadow buffer and a damage-rect flush. */
 
 #include "vga.h"
+#include "bootinfo.h"
 #include "blit.h"
 #include "pci.h"
 #include "gpu.h"
@@ -17,6 +18,9 @@ static unsigned int vga_fb_w, vga_fb_h, vga_fb_pitch_val, vga_fb_bpp_val;
 static unsigned int vga_fb_vram_kb_val;
 static volatile unsigned char *vga_fb_lfb;
 static int vga_fb_cached;
+/* UEFI GOP can hand us RGBX instead of the VBE/BGRX byte order.  The shadow
+ * buffer is always BGRX, so only the shadow->LFB flush has to swizzle. */
+static int lfb_swap_rb;
 
 /* Shadow buffer state. */
 static unsigned char *vga_shadow_buf;
@@ -56,6 +60,15 @@ static inline unsigned int irq_save_disable(void)
 static inline void irq_restore(unsigned int flags)
 {
 	__asm__ volatile ("pushl %0; popfl" :: "r"(flags));
+}
+
+/* Shadow pixels are BGRX (B in the low byte, X in the high byte).  A GOP
+ * RGBX scanout wants R in the low byte; swap the two colour bytes and keep
+ * green and the reserved byte where they are. */
+static inline unsigned int swap_rb32(unsigned int v)
+{
+	return (v & 0xFF00FF00u) | ((v & 0x000000FFu) << 16) |
+	       ((v >> 16) & 0x000000FFu);
 }
 
 static void damage_add_locked(unsigned int x0, unsigned int y0,
@@ -233,6 +246,7 @@ static void vga_cache_boot_fb(void)
 	if (vga_fb_cached)
 		return;
 	vga_fb_cached = 1;
+	lfb_swap_rb = bootinfo_rgbx();
 	info = vga_get_boot_fb();
 	if (!info->valid) {
 		vga_fb_w = vga_fb_h = vga_fb_pitch_val = vga_fb_bpp_val = 0;
@@ -266,7 +280,10 @@ static void vga_cache_boot_fb(void)
 			vga_fb_h = max_h;
 	}
 	gpu_init(info->lfb_base);
-	if (gpu_vendor() == GPU_VENDOR_ATI && !ati_is_radeon())
+	/* The CRTC reset is a VBE-mode-set fixup.  Under UEFI the GOP owns the
+	 * mode; programming the legacy CRTC would break it. */
+	if (gpu_vendor() == GPU_VENDOR_ATI && !ati_is_radeon() &&
+	    !bootinfo_efi())
 		vga_reset_crtc();
 }
 
@@ -535,7 +552,10 @@ void vga_shadow_init(void)
 	 * instead, with a WC MTRR over the stolen range -- and only switch once
 	 * that entry is in place, otherwise the alias would be cached and the
 	 * screen would not update. */
-	if (gpu_vendor() == GPU_VENDOR_NVIDIA) {
+	/* The stolen-VRAM alias hunt is for the VBE BAR3 window on ION-class
+	 * hardware.  A GOP framebuffer is already the display buffer; touching
+	 * the BARs / scanning VRAM there can only break the firmware's mode. */
+	if (gpu_vendor() == GPU_VENDOR_NVIDIA && !bootinfo_efi()) {
 		unsigned int alias = nvidia_lfb_in_vram();
 
 		if (alias) {
@@ -611,11 +631,20 @@ static unsigned int shadow_copy_damage(unsigned int max_bytes)
 
 			/* Streaming stores: VRAM is WC (or UC on machines where the
 			 * MTRR cannot cover it) and rep movsl does not combine
-			 * there, while movntdq does. */
-			if (use_sse2)
+			 * there, while movntdq does.  A GOP RGBX scanout needs the
+			 * BGRX shadow swizzled while it is copied. */
+			if (lfb_swap_rb && pb == 4) {
+				const unsigned int *s32 = (const unsigned int *)s;
+				unsigned int *t32 = (unsigned int *)t;
+				unsigned int k;
+
+				for (k = 0; k < dwords; k++)
+					t32[k] = swap_rb32(s32[k]);
+			} else if (use_sse2) {
 				vga_fb_copy_row_nt(t, s, dwords);
-			else
+			} else {
 				vga_fb_copy_row(t, s, dwords);
+			}
 			if (tail) {
 				unsigned int k;
 				for (k = dwords * 4; k < row_bytes; k++)
