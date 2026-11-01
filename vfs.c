@@ -492,6 +492,63 @@ static void part_name(char *out, const char *base, unsigned int idx)
 	out[i] = '\0';
 }
 
+static void mount_device(blk_dev_t *d, unsigned char *buf)
+{
+	mbr_part_t parts[4];
+	int n, j;
+	int any_fat = 0;
+
+	if (d->kind != BLK_FLOPPY && !d->present)
+		return;
+	if (d->kind == BLK_FLOPPY) {
+		mount_one(d, 0, d->name);
+		return;
+	}
+
+	/* IDE/SATA: MBR -> FAT partitions, else superfloppy. */
+	if (blk_read(d, 0, buf, 1) != 0)
+		return;
+	n = mbr_parse(buf, parts);
+	for (j = 0; j < n; j++) {
+		char pname[16];
+		if (!parts[j].is_fat || parts[j].start_lba == 0 ||
+		    parts[j].sectors == 0)
+			continue;
+		any_fat = 1;
+		part_name(pname, d->name, parts[j].index);
+		mount_one(d, parts[j].start_lba, pname);
+	}
+	if (!any_fat)
+		mount_one(d, 0, d->name);
+}
+
+/* Mount names for a device are the device itself or "<device>pN". */
+static int mount_belongs_to(const char *mount, const char *dev)
+{
+	unsigned int i = 0;
+
+	while (dev[i] && mount[i] == dev[i])
+		i++;
+	if (dev[i] != '\0')
+		return 0;
+	return mount[i] == '\0' || mount[i] == 'p';
+}
+
+static void unmount_device(const char *dev)
+{
+	unsigned int i, j;
+
+	for (i = 0; i < vfs_mount_count; ) {
+		if (mount_belongs_to(vfs_mounts[i].name, dev)) {
+			for (j = i + 1; j < vfs_mount_count; j++)
+				vfs_mounts[j - 1] = vfs_mounts[j];
+			vfs_mount_count--;
+		} else {
+			i++;
+		}
+	}
+}
+
 void vfs_mount_all(void)
 {
 	static unsigned char buf[512];
@@ -500,43 +557,22 @@ void vfs_mount_all(void)
 	vfs_mount_count = 0;
 	blk_scan();
 
-	for (i = 0; i < blk_dev_count; i++) {
-		blk_dev_t *d = &blk_devs[i];
-
-		if (d->kind != BLK_FLOPPY && !d->present)
-			continue;
-
-		if (d->kind == BLK_FLOPPY) {
-			mount_one(d, 0, d->name);
-			continue;
-		}
-
-		/* IDE/SATA: MBR -> FAT partitions, else superfloppy. */
-		{
-			mbr_part_t parts[4];
-			int n, j;
-			int any_fat = 0;
-
-			if (blk_read(d, 0, buf, 1) != 0)
-				continue;
-			n = mbr_parse(buf, parts);
-			for (j = 0; j < n; j++) {
-				char pname[16];
-				if (!parts[j].is_fat || parts[j].start_lba == 0 ||
-				    parts[j].sectors == 0)
-					continue;
-				any_fat = 1;
-				part_name(pname, d->name, parts[j].index);
-				mount_one(d, parts[j].start_lba, pname);
-			}
-			if (!any_fat)
-				mount_one(d, 0, d->name);
-		}
-	}
+	for (i = 0; i < blk_dev_count; i++)
+		mount_device(&blk_devs[i], buf);
 
 	/* The ramfs is not a block device; keep it mounted across a refresh
 	 * (the `storage` command calls vfs_mount_all()). */
 	vfs_mount_ramfs();
+}
+
+void vfs_remount_device(blk_dev_t *d)
+{
+	unsigned char buf[512];
+
+	if (!d)
+		return;
+	unmount_device(d->name);
+	mount_device(d, buf);
 }
 
 vfs_mount_t *vfs_find(const char *name)

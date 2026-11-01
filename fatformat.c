@@ -2,7 +2,9 @@
  * Floppy: FAT12 superfloppy (no MBR). IDE/SATA: MBR + single FAT16/32 partition. */
 
 #include "fatformat.h"
+#include "io.h"
 #include "mm.h"
+#include "sched.h"
 
 #define SEC_SIZE 512
 
@@ -10,6 +12,52 @@
  * otherwise need millions of single-sector writes (a FAT32 on a 1 TB disk has
  * ~2 M FAT sectors). */
 #define ZERO_CHUNK_PAGES 32
+
+volatile int format_busy;
+volatile unsigned int format_owner_pid;
+
+static unsigned int fmt_total, fmt_done, fmt_last_pct;
+
+static void format_pct(unsigned int pct)
+{
+	char b[4];
+	unsigned int n = 0;
+
+	b[n++] = (char)('0' + pct / 100);
+	b[n++] = (char)('0' + (pct / 10) % 10);
+	b[n++] = (char)('0' + pct % 10);
+	io_putstr("format: ");
+	{ unsigned int i; for (i = 0; i < n; i++) io_putchar(b[i]); }
+	io_putstr("%\n");
+}
+
+static void format_progress(unsigned int sectors)
+{
+	unsigned int pct;
+
+	if (!fmt_total)
+		return;
+	fmt_done += sectors;
+	pct = (fmt_done * 100u) / fmt_total;
+	if (pct > 100) pct = 100;
+	if (pct >= fmt_last_pct + 10 || pct == 100) {
+		fmt_last_pct = pct;
+		format_pct(pct);
+	}
+}
+
+/* A chunk write releases the BKL so the WM/netlog/terminal can run between
+ * disk transfers; format_busy keeps other filesystem syscalls out. */
+static int format_write(blk_dev_t *d, unsigned int lba, const void *buf,
+			unsigned int count)
+{
+	int r;
+
+	bkl_pause();
+	r = blk_write(d, lba, buf, count);
+	bkl_resume();
+	return r;
+}
 
 /* Write `count` zero sectors at `lba` in `chunk`-sector pieces. */
 static int write_zeros(blk_dev_t *d, unsigned int lba, unsigned int count,
@@ -21,8 +69,9 @@ static int write_zeros(blk_dev_t *d, unsigned int lba, unsigned int count,
 		unsigned int n = count - done;
 		if (n > chunk)
 			n = chunk;
-		if (blk_write(d, lba + done, buf, n) != 0)
+		if (format_write(d, lba + done, buf, n) != 0)
 			return -1;
+		format_progress(n);
 		done += n;
 	}
 	return 0;
@@ -213,6 +262,12 @@ int fat_format(blk_dev_t *d)
 	root_start = reserved + num_fats * sec_per_fat;
 	data_start = root_start + root_dir_sectors;
 
+	fmt_total = reserved + num_fats * sec_per_fat + root_dir_sectors;
+	if (type == 32)
+		fmt_total += spc;
+	fmt_done = 0;
+	fmt_last_pct = 0;
+
 	zero_sector(zero);
 
 	/* Bulk zero buffer (a 1 TB FAT32 has ~2 M FAT sectors; single-sector
@@ -248,7 +303,7 @@ int fat_format(blk_dev_t *d)
 		put32(e + 12, fs_sectors);
 		sec[510] = 0x55;
 		sec[511] = 0xAA;
-		if (blk_write(d, 0, sec, 1) != 0)
+		if (format_write(d, 0, sec, 1) != 0)
 			return -1;
 	}
 
@@ -257,13 +312,13 @@ int fat_format(blk_dev_t *d)
 			  sec_per_fat, fs_sectors, part_start, media);
 	if (write_zeros(d, part_start, reserved, zbuf, zchunk) != 0)
 		return -1;
-	if (blk_write(d, part_start, sec, 1) != 0)
+	if (format_write(d, part_start, sec, 1) != 0)
 		return -1;
 	if (type == 32) {
-		if (blk_write(d, part_start + 6, sec, 1) != 0)   /* backup boot */
+		if (format_write(d, part_start + 6, sec, 1) != 0)   /* backup boot */
 			return -1;
 		build_fsinfo_sector(sec);
-		if (blk_write(d, part_start + 1, sec, 1) != 0)   /* FSInfo */
+		if (format_write(d, part_start + 1, sec, 1) != 0)   /* FSInfo */
 			return -1;
 	}
 
@@ -272,7 +327,7 @@ int fat_format(blk_dev_t *d)
 	build_fat_first_sector(fat_sec, type, media);
 	for (i = 0; i < num_fats; i++) {
 		unsigned int base = part_start + fat_start + i * sec_per_fat;
-		if (blk_write(d, base, fat_sec, 1) != 0)
+		if (format_write(d, base, fat_sec, 1) != 0)
 			return -1;
 		if (sec_per_fat > 1 &&
 		    write_zeros(d, base + 1, sec_per_fat - 1, zbuf, zchunk) != 0)

@@ -13,11 +13,22 @@
  * syscall, so no copy in/out is needed. */
 
 #include "syscall.h"
+#include "fatformat.h"
 #include "process.h"
 #include "vfs.h"
 
 void sys_fs_enter(void)
 {
+	/* A format owns the disks while its FAT is half-written.  Do not let a
+	 * file syscall read that inode/FAT state; sleeping drops the BKL so the
+	 * formatter can finish. */
+	while (format_busy && current_proc()->pid != format_owner_pid) {
+		if (!process_is_alive(format_owner_pid)) {
+			format_busy = 0;
+			break;
+		}
+		process_sleep_ms(10);
+	}
 	preempt_disable();
 	__asm__ volatile ("sti");   /* the disk may need its IRQ */
 }

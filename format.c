@@ -3,6 +3,7 @@
 #include "blkdev.h"
 #include "fatformat.h"
 #include "io.h"
+#include "process.h"
 #include "vga.h"
 #include "vfs.h"
 
@@ -24,9 +25,13 @@ void program_format_main(const char *arg)
 	unsigned int i = 0, j;
 	int k;
 
+	if (format_busy && process_is_alive(format_owner_pid)) {
+		io_putstr("format: another format is in progress\n");
+		return;
+	}
+	format_busy = 0;
 	if (!arg) {
 		io_putstr("format: usage format <device>\n");
-		blk_scan();
 		list_devices();
 		return;
 	}
@@ -40,12 +45,9 @@ void program_format_main(const char *arg)
 
 	if (name[0] == '\0') {
 		io_putstr("format: usage format <device>\n");
-		blk_scan();
 		list_devices();
 		return;
 	}
-
-	blk_scan();
 
 	d = blk_find(name);
 	if (!d) {
@@ -80,6 +82,11 @@ void program_format_main(const char *arg)
 			io_putstr("aborted\n");
 			return;
 		}
+		/* This kernel command holds the BKL.  Sleep briefly so the
+		 * kworker can poll USB HID and the terminal can render the
+		 * confirmation prompt; otherwise a USB-only keyboard deadlocks
+		 * here. */
+		process_sleep_ms(10);
 	}
 	io_set_raw_keyboard(0);
 	io_putchar('\n');
@@ -89,13 +96,18 @@ void program_format_main(const char *arg)
 	io_putstr("...\n");
 	vga_fb_flush();
 
+	/* Other filesystem syscalls wait while the FAT is half-written. */
+	format_owner_pid = current_proc()->pid;
+	format_busy = 1;
 	if (fat_format(d) != 0) {
+		format_busy = 0;
 		io_putstr("format: failed\n");
 		return;
 	}
-
-	/* Make the fresh filesystem immediately usable (save/ls/cat). */
-	vfs_mount_all();
+	/* Remount only the formatted device; a full vfs_mount_all() would probe
+	 * every disk again and was a second large stall. */
+	vfs_remount_device(d);
+	format_busy = 0;
 
 	io_putstr("done\n");
 }

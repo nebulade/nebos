@@ -4,6 +4,7 @@
 #ifndef VFS_H
 #define VFS_H
 
+#include "blkdev.h"
 #include "fat.h"
 
 /* Largest file the shell will load from a filesystem into a kernel buffer. */
@@ -71,6 +72,8 @@ extern unsigned int vfs_mount_count;
 
 /* Scan devices and mount all detected FAT filesystems. */
 void vfs_mount_all(void);
+/* Re-mount only one block device after it was formatted. */
+void vfs_remount_device(blk_dev_t *d);
 
 /* Mount the command pack (ramfs) at /ramfs; no-op when no pack is loaded. */
 void vfs_mount_ramfs(void);
