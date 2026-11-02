@@ -75,8 +75,10 @@ make clean
    12-dword `struct boot_info` (magic/checksum/rsdp/flags/pack range) to
    `0x500`, enters protected mode and jumps to `kernel_entry` (`entry.S`,
    re-points ESP to the current stack top, then `kernel_main`).  The stage
-   prints `Loading rootfs [d=<drive> lba=<hex> e=<0|1>]...`, then a dot
-   after the header and one per 32 KB chunk, so a BIOS hang is localised.
+   prints `Loading rootfs [d=<drive> lba=<hex> e=<0|1> m=<C|L>]...`, then a
+   dot after the header and one per 32 KB chunk, so a BIOS hang is
+   localised.  Drives below 0x80 use CHS (the same path the boot sector's
+   kernel load used); fixed disks use EDD LBA.
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → memory/paging →
    ACPI/MADT → I/O → idle → processes → timer (PIT; 1 kHz busy, 100 Hz idle + IDT) → SMP AP
    bring-up → mouse → VGA shadow buffer → terminal.

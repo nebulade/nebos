@@ -96,6 +96,11 @@ e820_done:
 	movw  %ax, %ds
 	movw  %ax, %es
 
+	movl  0x7C42, %eax            /* boot-sector pack_lba field */
+	movl  %eax, pack_lba
+	movl  $0, pack_addr
+	movl  $0, pack_bytes
+
 	movw  $msg_pack, %si
 	call  print_str
 	movzbl stage_drive, %eax
@@ -111,23 +116,29 @@ e820_done:
 	movb  $0x0E, %ah
 	movb  $0x00, %bh
 	int   $0x10
+	movw  $msg_m, %si
+	call  print_str
+	cmpb  $0x80, stage_drive
+	jb    1f
+	movb  $'L', %al
+	jmp   2f
+1:	movb  $'C', %al
+2:	movb  $0x0E, %ah
+	movb  $0x00, %bh
+	int   $0x10
 	movw  $msg_end, %si
 	call  print_str
 
-	movl  0x7C42, %eax            /* boot-sector pack_lba field */
-	movl  %eax, pack_lba
-	movl  $0, pack_addr
-	movl  $0, pack_bytes
-	testl %eax, %eax
-	jz    pack_fail
+	cmpl  $0, pack_lba
+	je    pack_fail
 
 	movl  pack_lba, %eax
 	movw  $1, %cx
 	call  read_sectors
 	jc    pack_fail
 
-	/* Validate the header at 0x80000: "NBROOT1\0", version 1. */
-	movl  $0x80000, %esi
+	/* Validate the header at 0x70000: "NBROOT1\0", version 1. */
+	movl  $0x70000, %esi
 	movl  0(%esi), %eax
 	cmpl  $0x4F52424E, %eax       /* "NBRO" */
 	jne   pack_fail
@@ -370,7 +381,7 @@ a20_wait:
 
 /* ---- Read sectors via INT 13h ------------------------------------------
  * in:  eax = LBA, cx = sector count
- * out: data at 0x80000, CF set on failure
+ * out: data at 0x70000, CF set on failure
  * Clobbers all general registers. */
 read_sectors:
 	movl  %eax, rd_lba
@@ -381,11 +392,9 @@ read_retry:
 	movw  rd_off, %bx
 	xorw  %ax, %ax
 	movw  %ax, %ds
-	movw  $0x8000, %ax
+	movw  $0x7000, %ax
 	movw  %ax, %es
 	movb  stage_drive, %dl
-	cmpb  $0, use_lba
-	jne   read_lba
 	cmpb  $0x80, %dl
 	jb    read_chs
 
@@ -394,7 +403,7 @@ read_lba:
 	movw  $0x10, 0x500
 	movw  $1, 0x502
 	movw  %bx, 0x504
-	movw  $0x8000, 0x506
+	movw  $0x7000, 0x506
 	movl  rd_lba, %eax
 	movl  %eax, 0x508
 	movl  $0, 0x50C
@@ -505,7 +514,7 @@ pack_addr_fallback:
 	ret
 
 /* ---- Copy a chunk to high memory with INT 15h AH=87h -------------------
- * in: copy_dst (24-bit), copy_len; source is 0x80000.
+ * in: copy_dst (24-bit), copy_len; source is 0x70000.
  * Copies in 16-bit words; returns with CF set on failure. */
 bios_copy:
 	movl  copy_dst, %eax
@@ -631,16 +640,16 @@ stage2_gdtr:
 	.long stage2_gdt
 
 /* ---- INT 15h AH=87h descriptor table (48 bytes) -----------------------
- * 16 zero bytes, source descriptor at 0x10 (0x80000, 64 KB), destination
+ * 16 zero bytes, source descriptor at 0x10 (0x70000, 64 KB), destination
  * at 0x18 (patched per chunk), 16 zero bytes. */
 .align 16
 bios_gdt:
 	.quad 0
 	.quad 0
-	/* source: limit 0xFFFF, base 0x80000, access 0x93, 16-bit data */
+	/* source: limit 0xFFFF, base 0x70000, access 0x93, 16-bit data */
 	.word 0xFFFF
 	.word 0x0000
-	.byte 0x08
+	.byte 0x07
 	.byte 0x93
 	.word 0x0000
 	/* destination: limit 0xFFFF, base patched, access 0x93 */
@@ -672,6 +681,7 @@ rd_tries:       .word 0
 msg_pack:       .asciz "Loading rootfs [d="
 msg_lba:        .asciz " lba="
 msg_e:          .asciz " e="
+msg_m:          .asciz " m="
 msg_end:        .asciz "]... "
 msg_dot:        .asciz "."
 msg_ok:         .asciz " ok\r\n"
