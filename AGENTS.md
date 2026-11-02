@@ -122,6 +122,11 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 | `0x80000` | Legacy ring-0 program load area (`run.c`, `serial_recv.c`, `user.ld`; max 0x6000, inside the reserved low 1 MB) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
+The legacy stage uses `0x3000..0x6FFF` as a 16 KB-chunk rootfs staging
+buffer before the kernel starts; the UHCI frame list (`0x3000`), ISA DMA
+buffer (`0x4000`) and AP trampoline (`0x6000`) reinitialize those addresses
+later.
+
 The boot-time rootfs pack is also dynamic: the legacy stage puts it at the
 top of RAM below 16 MB (the AH=87h 24-bit descriptor limit), the UEFI loader
 at the top of RAM below 128 MB, and kexec leaves it in the staging buffer
