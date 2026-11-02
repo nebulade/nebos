@@ -47,11 +47,12 @@ make clean
   targets, an OVMF firmware (`OVMF=/path/to/OVMF.4m.fd` overrides the default).
   `make all` does not build the UEFI image, so a machine without mingw still
   builds the legacy floppy/USB images normally.
-- `usb.img` is 72 MB: partition 1 (type `0x06`, LBA 63) is the raw kernel
-  blob and partition 2 (type `0x7F`, LBA 131072) is the 8 MB rootfs image
-  (`cmds.img`).  The boot sector's `pack_lba` field points the VESA stage at
-  partition 2.  `usb-efi.img` (80 MB) adds an 8 MB FAT16 ESP as partition 3
-  (type `0xEF`, LBA 147456); `BOOTX64.EFI` embeds the kernel + gz pack.
+- `usb.img` is 64 MB: partition 1 (type `0x06`, LBA 63) is the raw kernel
+  blob and partition 2 (type `0x7F`, LBA 112455) is the 8 MB rootfs image
+  (`cmds.img`, at the old dummy partition-2 slot below the 64 MB mark).  The
+  boot sector's `pack_lba` field points the VESA stage at partition 2.
+  `usb-efi.img` (72 MB) adds an 8 MB FAT16 ESP as partition 3 (type `0xEF`,
+  LBA 131072); `BOOTX64.EFI` embeds the kernel + gz pack.
   `make flash` writes the dual image; `make flash FLASH_IMG=usb.img` writes
   the legacy-only image.  One BPB byte is cleared in the dual image (disk
   offset `0x7E16`, FATSize16): without that, UEFI firmware scans partition 1,
@@ -1096,5 +1097,5 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     IOAPIC setup: OVMF delivers the ISA IRQs through the 8259 path, but a
     platform that routes them through the IOAPIC may need a mask-all step after
     ACPI init.  UEFI runtime services are not used, so `reboot`/`poweroff` still
-    use the legacy ports.  The image is 80 MB: the 64 MB kernel partition,
-    the 8 MB rootfs partition and the 8 MB ESP.
+    use the legacy ports.  The image is 72 MB: the 64 MB kernel partition
+    (with the rootfs at LBA 112455) and the 8 MB ESP.

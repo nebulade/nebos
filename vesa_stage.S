@@ -35,6 +35,23 @@ _vesa_stage:
 	cld
 	movb  %dl, stage_drive
 
+	/* Ask the BIOS whether this drive supports EDD LBA reads.  USB sticks
+	 * are sometimes presented as floppies (DL=0); the CHS geometry used
+	 * below cannot reach a rootfs image there. */
+	movb  stage_drive, %dl
+	movb  $0x41, %ah
+	movw  $0x55AA, %bx
+	int   $0x13
+	jc    1f
+	cmpw  $0xAA55, %bx
+	jne   1f
+	testb $0x01, %cl
+	jz    1f
+	movb  $1, use_lba
+1:	xorw  %ax, %ax
+	movw  %ax, %ds
+	movw  %ax, %es
+
 	/* No UEFI boot-info block on the BIOS path (see bootinfo.h).  The boot
 	 * sector used 0x500 as its disk-address packet, so clear the magic;
 	 * write_bootinfo fills in the real block before the PM jump. */
@@ -110,6 +127,8 @@ e820_done:
 	cmpl  $PACK_MAX, %eax
 	ja    pack_fail
 	movl  %eax, pack_bytes
+	movw  $msg_dot, %si
+	call  print_str
 
 	call  compute_pack_addr
 	testl %eax, %eax
@@ -350,9 +369,12 @@ read_retry:
 	movw  $0x8000, %ax
 	movw  %ax, %es
 	movb  stage_drive, %dl
+	cmpb  $0, use_lba
+	jne   read_lba
 	cmpb  $0x80, %dl
 	jb    read_chs
 
+read_lba:
 	/* EDD LBA read */
 	movw  $0x10, 0x500
 	movw  $1, 0x502
@@ -595,6 +617,7 @@ bios_gdt:
 /* ---- Stage variables --------------------------------------------------- */
 .align 4
 stage_drive:    .byte 0
+use_lba:        .byte 0
 pack_lba:       .long 0
 pack_bytes:     .long 0
 pack_addr:      .long 0
@@ -608,7 +631,7 @@ rd_off:         .word 0
 rd_left:        .word 0
 rd_tries:       .word 0
 
-msg_pack:       .asciz "Loading commands... "
+msg_pack:       .asciz "Loading rootfs... "
 msg_dot:        .asciz "."
 msg_ok:         .asciz " ok\r\n"
 msg_noroom:     .asciz " skipped (no room)\r\n"

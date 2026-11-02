@@ -150,11 +150,12 @@ part_table:
 	.long 63                /* LBA start (boot sector) */
 	.long 112392            /* sector count */
 
-	/* Partition 2: dummy. Old AMI BIOSes (e.g. the ASUS AT3IONT-I)
-	 * classify a single-partition MBR as a USB-ZIP disk, which is never
-	 * offered as a hard-disk boot option; a second valid entry makes the
-	 * stick look like a USB hard disk (same trick RMPrepUSB/Easy2Boot
-	 * use). It is never booted: only partition 1 is active. */
+	/* Partition 2: dummy in the bare MBR.  usb.img replaces this entry
+	 * with the rootfs partition (same start, LBA 112455); keeping a second
+	 * valid entry makes the stick look like a USB hard disk to old AMI
+	 * BIOSes (e.g. the ASUS AT3IONT-I), which classify a single-partition
+	 * MBR as a USB-ZIP disk and never offer it.  Only partition 1 is
+	 * active. */
 	.byte 0x00              /* not bootable */
 	.byte 0x00, 0x01, 0x07  /* CHS start: C=7 H=0 S=1 (LBA 112455) */
 	.byte 0x21              /* type: dummy */

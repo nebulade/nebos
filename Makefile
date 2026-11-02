@@ -363,10 +363,12 @@ BPB_HEADS_OFFSET = 26
 BPB_HIDDEN_OFFSET = 28
 BPB_TOTAL_OFFSET = 32
 
-# USB rootfs partition (type 0x7F) and UEFI ESP (type 0xEF).
-ROOTFS_LBA     = 131072
+# USB rootfs partition (type 0x7F) and UEFI ESP (type 0xEF).  The rootfs
+# lives at the old dummy partition-2 start (LBA 112455, ~55 MB), below the
+# 64 MB mark that some legacy USB BIOSes handle badly.
+ROOTFS_LBA     = 112455
 ROOTFS_SECTORS = 16384
-ESP_LBA        = 147456
+ESP_LBA        = 131072
 
 # Patch a little-endian 16/32-bit value into a boot-sector copy.  Usage:
 #   $(call patch16,file,offset,value)
@@ -406,8 +408,7 @@ usb.img: mbr.bin boot.bin kernel.bin cmds.img
 	cat $@.boot.tmp kernel.bin >> $@; \
 	truncate -s 64M $@; \
 	dd if=cmds.img of=$@ bs=512 seek=$(ROOTFS_LBA) conv=notrunc 2>/dev/null; \
-	truncate -s 72M $@; \
-	printf '\x00\xfe\xff\xff\x7f\xfe\xff\xff\x00\x00\x02\x00\x00\x40\x00\x00' | \
+	printf '\x00\x00\x01\x07\x7f\x05\x04\x08\x47\xb7\x01\x00\x00\x40\x00\x00' | \
 		dd of=$@ bs=1 seek=462 conv=notrunc 2>/dev/null; \
 	rm -f $@.boot.tmp
 
@@ -456,7 +457,6 @@ efi/tramp.bin: efi/tramp.elf
 BOOTX64.EFI: efi/main.o efi/payload.o
 	$(EFI_CC) $(EFI_LDFLAGS) -o $@ efi/main.o efi/payload.o
 
-ESP_LBA     = 147456
 ESP_SECTORS = 16384
 
 esp.img: BOOTX64.EFI
@@ -474,9 +474,9 @@ usb-efi.img: usb.img esp.img
 	# the kernel at LBA 64.  Clear BPB FATSize16 so the firmware rejects the
 	# fake volume; boot.S and the BIOS never read that field.
 	printf '\x00\x00' | dd of=$@ bs=1 seek=$$((63 * 512 + 0x16)) conv=notrunc 2>/dev/null
-	# Partition 3: ESP at LBA 147456, type 0xEF, 8 MB (partition 2 is the
-	# rootfs at LBA 131072 written by usb.img).
-	printf '\x00\xfe\xff\xff\xef\xfe\xff\xff\x00\x40\x02\x00\x00\x40\x00\x00' | \
+	# Partition 3: ESP at LBA 131072, type 0xEF, 8 MB (partition 2 is the
+	# rootfs at LBA 112455 written by usb.img).
+	printf '\x00\xfe\xff\xff\xef\xfe\xff\xff\x00\x00\x02\x00\x00\x40\x00\x00' | \
 		dd of=$@ bs=1 seek=478 conv=notrunc 2>/dev/null
 	dd if=esp.img of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc 2>/dev/null
 	truncate -s $$(( ($(ESP_LBA) + $(ESP_SECTORS)) * 512 )) $@
