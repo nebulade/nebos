@@ -364,11 +364,11 @@ BPB_HIDDEN_OFFSET = 28
 BPB_TOTAL_OFFSET = 32
 
 # USB rootfs partition (type 0x7F) and UEFI ESP (type 0xEF).  The rootfs
-# lives at the old dummy partition-2 start (LBA 112455, ~55 MB), below the
-# 64 MB mark that some legacy USB BIOSes handle badly.
-ROOTFS_LBA     = 112455
+# sits immediately behind the kernel (LBA 532), so even a CHS-only USB BIOS
+# finds the header and the 242 KB gzip pack inside the first 1.44 MB.
+ROOTFS_LBA     = 532
 ROOTFS_SECTORS = 16384
-ESP_LBA        = 131072
+ESP_LBA        = 16916
 
 # Patch a little-endian 16/32-bit value into a boot-sector copy.  Usage:
 #   $(call patch16,file,offset,value)
@@ -402,13 +402,13 @@ usb.img: mbr.bin boot.bin kernel.bin cmds.img
 	$(call patch32,$@.boot.tmp,$(ROOTFS_LBA),$(PACK_LBA_OFFSET)); \
 	printf '\xff\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_HEADS_OFFSET) conv=notrunc 2>/dev/null; \
 	printf '\x3f\x00\x00\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_HIDDEN_OFFSET) conv=notrunc 2>/dev/null; \
-	printf '\x08\xb7\x01\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_TOTAL_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\xd5\x01\x00\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_TOTAL_OFFSET) conv=notrunc 2>/dev/null; \
 	cat mbr.bin > $@; \
 	dd if=/dev/zero bs=512 count=62 2>/dev/null >> $@; \
 	cat $@.boot.tmp kernel.bin >> $@; \
-	truncate -s 64M $@; \
+	truncate -s 9M $@; \
 	dd if=cmds.img of=$@ bs=512 seek=$(ROOTFS_LBA) conv=notrunc 2>/dev/null; \
-	printf '\x00\x00\x01\x07\x7f\x05\x04\x08\x47\xb7\x01\x00\x00\x40\x00\x00' | \
+	printf '\x00\x08\x1d\x00\x7f\x0d\x20\x01\x14\x02\x00\x00\x00\x40\x00\x00' | \
 		dd of=$@ bs=1 seek=462 conv=notrunc 2>/dev/null; \
 	rm -f $@.boot.tmp
 
@@ -474,9 +474,9 @@ usb-efi.img: usb.img esp.img
 	# the kernel at LBA 64.  Clear BPB FATSize16 so the firmware rejects the
 	# fake volume; boot.S and the BIOS never read that field.
 	printf '\x00\x00' | dd of=$@ bs=1 seek=$$((63 * 512 + 0x16)) conv=notrunc 2>/dev/null
-	# Partition 3: ESP at LBA 131072, type 0xEF, 8 MB (partition 2 is the
-	# rootfs at LBA 112455 written by usb.img).
-	printf '\x00\xfe\xff\xff\xef\xfe\xff\xff\x00\x00\x02\x00\x00\x40\x00\x00' | \
+	# Partition 3: ESP at LBA 16916, type 0xEF, 8 MB (partition 2 is the
+	# rootfs at LBA 532 written by usb.img).
+	printf '\x00\xfe\xff\xff\xef\xfe\xff\xff\x14\x42\x00\x00\x00\x40\x00\x00' | \
 		dd of=$@ bs=1 seek=478 conv=notrunc 2>/dev/null
 	dd if=esp.img of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc 2>/dev/null
 	truncate -s $$(( ($(ESP_LBA) + $(ESP_SECTORS)) * 512 )) $@

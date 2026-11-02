@@ -146,22 +146,22 @@ part_table:
 	.byte 0x80              /* bootable */
 	.byte 0x01, 0x01, 0x00  /* CHS start: C=0 H=1 S=1 (LBA 63) */
 	.byte 0x06              /* type: FAT16 */
-	.byte 0xFE, 0x3F, 0x06  /* CHS end: C=6 H=254 S=63 (LBA 112454) */
+	.byte 0x08, 0x1C, 0x00  /* CHS end: C=0 H=8 S=28 (LBA 531) */
 	.long 63                /* LBA start (boot sector) */
-	.long 112392            /* sector count */
+	.long 469               /* boot sector + kernel sectors */
 
 	/* Partition 2: dummy in the bare MBR.  usb.img replaces this entry
-	 * with the rootfs partition (same start, LBA 112455); keeping a second
-	 * valid entry makes the stick look like a USB hard disk to old AMI
-	 * BIOSes (e.g. the ASUS AT3IONT-I), which classify a single-partition
-	 * MBR as a USB-ZIP disk and never offer it.  Only partition 1 is
-	 * active. */
+	 * with the rootfs partition (same start, LBA 532, immediately behind
+	 * the kernel); keeping a second valid entry makes the stick look like
+	 * a USB hard disk to old AMI BIOSes (e.g. the ASUS AT3IONT-I), which
+	 * classify a single-partition MBR as a USB-ZIP disk and never offer
+	 * it.  Only partition 1 is active. */
 	.byte 0x00              /* not bootable */
-	.byte 0x00, 0x01, 0x07  /* CHS start: C=7 H=0 S=1 (LBA 112455) */
+	.byte 0x08, 0x1d, 0x00  /* CHS start: C=0 H=8 S=29 (LBA 532) */
 	.byte 0x21              /* type: dummy */
-	.byte 0x28, 0x20, 0x08  /* CHS end: C=8 H=40 S=32 (LBA 131071) */
-	.long 112455
-	.long 18617
+	.byte 0x0d, 0x20, 0x01  /* CHS end: C=1 H=13 S=32 (LBA 16915) */
+	.long 532
+	.long 16384
 	.space 32, 0            /* 2 empty entries */
 
 	/* Boot signature at offset 510 */

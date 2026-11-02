@@ -47,12 +47,14 @@ make clean
   targets, an OVMF firmware (`OVMF=/path/to/OVMF.4m.fd` overrides the default).
   `make all` does not build the UEFI image, so a machine without mingw still
   builds the legacy floppy/USB images normally.
-- `usb.img` is 64 MB: partition 1 (type `0x06`, LBA 63) is the raw kernel
-  blob and partition 2 (type `0x7F`, LBA 112455) is the 8 MB rootfs image
-  (`cmds.img`, at the old dummy partition-2 slot below the 64 MB mark).  The
-  boot sector's `pack_lba` field points the VESA stage at partition 2.
-  `usb-efi.img` (72 MB) adds an 8 MB FAT16 ESP as partition 3 (type `0xEF`,
-  LBA 131072); `BOOTX64.EFI` embeds the kernel + gz pack.
+- `usb.img` is 9 MB: partition 1 (type `0x06`, LBA 63, 469 sectors) is the
+  boot sector + kernel and partition 2 (type `0x7F`, LBA 532) is the 8 MB
+  rootfs image (`cmds.img`), immediately behind the kernel.  The header and
+  the 242 KB gzip pack therefore live in the first 1.44 MB, which even a
+  CHS-only USB BIOS can read.  The boot sector's `pack_lba` field points the
+  VESA stage at partition 2.  `usb-efi.img` (17 MB) adds an 8 MB FAT16 ESP
+  as partition 3 (type `0xEF`, LBA 16916); `BOOTX64.EFI` embeds the kernel +
+  gz pack.
   `make flash` writes the dual image; `make flash FLASH_IMG=usb.img` writes
   the legacy-only image.  One BPB byte is cleared in the dual image (disk
   offset `0x7E16`, FATSize16): without that, UEFI firmware scans partition 1,
@@ -72,7 +74,9 @@ make clean
    (≥16 bpp, LFB, fits VRAM, ≤1280px), writes mode info to `0x600` and the
    12-dword `struct boot_info` (magic/checksum/rsdp/flags/pack range) to
    `0x500`, enters protected mode and jumps to `kernel_entry` (`entry.S`,
-   re-points ESP to the current stack top, then `kernel_main`).
+   re-points ESP to the current stack top, then `kernel_main`).  The stage
+   prints `Loading rootfs [d=<drive> lba=<hex> e=<0|1>]...`, then a dot
+   after the header and one per 32 KB chunk, so a BIOS hang is localised.
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → memory/paging →
    ACPI/MADT → I/O → idle → processes → timer (PIT; 1 kHz busy, 100 Hz idle + IDT) → SMP AP
    bring-up → mouse → VGA shadow buffer → terminal.
@@ -1097,5 +1101,5 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     IOAPIC setup: OVMF delivers the ISA IRQs through the 8259 path, but a
     platform that routes them through the IOAPIC may need a mask-all step after
     ACPI init.  UEFI runtime services are not used, so `reboot`/`poweroff` still
-    use the legacy ports.  The image is 72 MB: the 64 MB kernel partition
-    (with the rootfs at LBA 112455) and the 8 MB ESP.
+    use the legacy ports.  The image is 17 MB: the 9 MB kernel + rootfs disk
+    and the 8 MB ESP.

@@ -98,6 +98,21 @@ e820_done:
 
 	movw  $msg_pack, %si
 	call  print_str
+	movzbl stage_drive, %eax
+	call  print_hex32
+	movw  $msg_lba, %si
+	call  print_str
+	movl  pack_lba, %eax
+	call  print_hex32
+	movw  $msg_e, %si
+	call  print_str
+	movzbl use_lba, %eax
+	addl  $'0', %eax
+	movb  $0x0E, %ah
+	movb  $0x00, %bh
+	int   $0x10
+	movw  $msg_end, %si
+	call  print_str
 
 	movl  0x7C42, %eax            /* boot-sector pack_lba field */
 	movl  %eax, pack_lba
@@ -528,6 +543,29 @@ print_str:
 	popw  %ax
 	ret
 
+/* ---- Hex print (EAX, 8 digits) ----------------------------------------- */
+print_hex32:
+	movl  $8, %ecx
+	jmp   print_hex
+
+print_hex:
+	pushal
+	movl  %eax, %ebx
+1:	roll  $4, %ebx
+	movl  %ebx, %eax
+	andl  $0x0F, %eax
+	cmpl  $10, %eax
+	jb    2f
+	addl  $55, %eax
+	jmp   3f
+2:	addl  $48, %eax
+3:	movb  $0x0E, %ah
+	movb  $0x00, %bh
+	int   $0x10
+	loop  1b
+	popal
+	ret
+
 /* ---- Boot-info block at 0x500 (bootinfo.h) ----------------------------
  * twelve dwords: magic, version, checksum, rsdp, flags, pack_addr,
  * pack_size, reserved[5]; the checksum makes the sum zero. */
@@ -631,7 +669,10 @@ rd_off:         .word 0
 rd_left:        .word 0
 rd_tries:       .word 0
 
-msg_pack:       .asciz "Loading rootfs... "
+msg_pack:       .asciz "Loading rootfs [d="
+msg_lba:        .asciz " lba="
+msg_e:          .asciz " e="
+msg_end:        .asciz "]... "
 msg_dot:        .asciz "."
 msg_ok:         .asciz " ok\r\n"
 msg_noroom:     .asciz " skipped (no room)\r\n"
