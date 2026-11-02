@@ -356,7 +356,9 @@ run area), so adding code no longer moves any address.
 - **Network**: `netdev.c/h` — NIC driver registry (`struct netdev`, first probe
   wins; drivers: `e1000e.c` Intel e1000/PCH LAN (82540EM emulated,
   82577LM/82578/82579; polled, PCI INTx disabled before MMIO, PCH D0 and
-  no BAR sizing so the ME/AMT cannot leave the BAR undecoded), `r8168.c`
+  no BAR sizing so the ME/AMT cannot leave the BAR undecoded; skips the
+  global MAC reset while the link is up, because the PCH/ME wedges on the
+  CTRL_RST access), `r8168.c`
   RTL8111/8168 (PCIe, polled, C+ mode, 64-entry RX ring) and `ne2000.c`
   RTL8029 (QEMU/ISA)). `net.c` — ARP + ICMP echo, IPv4/UDP send + parse helpers,
   shared ARP resolution (`net_arp_resolve`) and routing (`net_next_hop`), frame

@@ -400,6 +400,10 @@ static int probe_pci(void)
 						cmd | 0x0006u |
 						PCI_CMD_INT_DISABLE);
 				pci_set_d0(bus, dev, func);
+				/* Let the function settle after D0/memory enable;
+				 * the ME can still be finishing its link work when
+				 * the cable is present. */
+				delay_ms(10);
 
 				if (probe_bar0(bus, dev, func,
 					       &bar_base, &bar_size) != 0)
@@ -558,6 +562,9 @@ static void phy_autoneg(void)
  * let any in-flight DMA finish.  This is the "reset" path on PCH LAN parts. */
 static void hw_stop(void)
 {
+	/* PCH LAN: let the ME finish the current link transaction before the
+	 * first MAC write. */
+	delay_ms(5);
 	w32(REG_IMC, 0xFFFFFFFFu);
 	(void)r32(REG_ICR);
 	w32(REG_RCTL, 0);
@@ -570,8 +577,8 @@ static void hw_stop(void)
  * the network interface, otherwise it can keep the LAN - notably the TX
  * path - to itself.  e1000e's e1000e_get_hw_control() sets
  * CTRL_EXT.DRV_LOAD for parts with FLAG_HAS_CTRLEXT_ON_LOAD (the pch_info
- * used by the 82577LM/82578/82579).  Do it right after the MAC reset, before
- * the rings are programmed, exactly where e1000e calls it. */
+ * used by the 82577LM/82578/82579).  Do it after the reset/quiesce path and
+ * before the rings are programmed, exactly where e1000e calls it. */
 static void pch_claim(void)
 {
 	unsigned int ctrl_ext;
@@ -598,8 +605,20 @@ static void pch_claim(void)
 static int hw_reset(void)
 {
 	unsigned int t0, ctrl;
+	/* Sample the link before hw_stop(): the PHY link is independent of
+	 * the MAC RX/TX state. */
+	int link_up = pch_lan && (r32(REG_STATUS) & STATUS_LU);
 
 	hw_stop();
+	if (link_up) {
+		/* Do not issue CTRL_RST while the ME has the link up: on the
+		 * X201 the CTRL access after GIO_MASTER_DISABLE wedges.  The
+		 * firmware already brought the MAC/PHY up; hw_stop() stopped
+		 * RX/TX and hw_start() reprograms the queues below. */
+		dbg("MAC reset skipped (link up)");
+		return 0;
+	}
+	delay_ms(5);
 
 	/* Block new DMA requests and wait for the last TLP to finish before
 	 * hitting the MAC with a global reset (same order as e1000e). */
@@ -609,6 +628,7 @@ static int hw_reset(void)
 	while ((r32(REG_STATUS) & STATUS_GIO_MASTER_ENABLE) &&
 	       !timed_out(t0, 1000))
 		;
+	delay_ms(5);
 
 	w32(REG_CTRL, r32(REG_CTRL) | CTRL_RST);
 	t0 = get_ticks_ms();
@@ -770,6 +790,11 @@ static int e1000e_init(void)
 	}
 	dbg(buf);
 
+	/* The PCH LAN/ME needs a moment after the config-space setup before
+	 * the first MAC register access; without it the probe can wedge when
+	 * the link is up. */
+	delay_ms(10);
+
 	/* MAC-only reset: CTRL.PHY_RST is deliberately never set, so the
 	 * firmware's PHY/Kumeran setup (and the link) survives, while the MAC
 	 * registers - including whatever TX queue state the BIOS UNDI left
@@ -824,6 +849,7 @@ static int e1000e_init(void)
 	if (pch_lan && phy_addr < 0)
 		phy_addr = 1;
 	hw_start();
+	delay_ms(10);
 
 	{
 		unsigned int st = r32(REG_STATUS);
