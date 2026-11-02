@@ -9,10 +9,28 @@
  */
 
 #include "paging.h"
+#include "cpu.h"
 #include "mm.h"
 #include "mtrr.h"
 #include "serial.h"
 #include "vga.h"
+
+/* CR4 bits that must not survive a BIOS protected-mode call.  A BIOS that
+ * returns with CR4.PAE or EFER.LME set makes the first CR0.PG enable either
+ * walk the 32-bit page directory as a PAE PDPT or enter long mode, which
+ * triple-faults before the kernel can print anything.  The X201's old
+ * INT 15h AH=87h rootfs copy was one source of this state; clear the bits
+ * defensively on every boot path before enabling paging. */
+#define CR4_PSE    (1u << 4)
+#define CR4_PAE    (1u << 5)
+#define CR4_PGE    (1u << 7)
+#define CR4_LA57   (1u << 12)
+#define CR4_PCIDE  (1u << 17)
+#define CR4_SMEP   (1u << 20)
+#define CR4_SMAP   (1u << 21)
+
+#define MSR_EFER   0xC0000080u
+#define EFER_LME   (1u << 8)
 
 /* Page-directory entry flags (4 MB page). */
 #define PDE_PRESENT  0x001
@@ -27,6 +45,59 @@
 #define LFB_MAP_SIZE 0x1000000
 
 static unsigned int *page_dir;
+
+static void rdmsr(unsigned int msr, unsigned int *lo, unsigned int *hi)
+{
+	__asm__ volatile ("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
+}
+
+static void wrmsr(unsigned int msr, unsigned int lo, unsigned int hi)
+{
+	__asm__ volatile ("wrmsr" : : "a"(lo), "d"(hi), "c"(msr));
+}
+
+static int cpu_has_long_mode(void)
+{
+	unsigned int eax, ebx, ecx, edx;
+
+	if (!cpu_has_cpuid())
+		return 0;
+	eax = 0x80000000u;
+	__asm__ volatile ("cpuid"
+			  : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+	if (eax < 0x80000001u)
+		return 0;
+	eax = 0x80000001u;
+	__asm__ volatile ("cpuid"
+			  : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+	return (edx & (1u << 29)) != 0;   /* LM */
+}
+
+/* Put the CPU into the state this 32-bit kernel expects before it installs
+ * its own page directory.  A BIOS protected-mode call (notably the old
+ * high-pack INT 15h AH=87h path) may leave CR4.PAE/PGE or EFER.LME set;
+ * CR0.PG is off here, so clearing them is safe on every CPU (reserved bits
+ * are written as zero). */
+void paging_prepare_cpu(void)
+{
+	unsigned int cr4, lo, hi;
+
+	__asm__ volatile ("movl %%cr4, %0" : "=r"(cr4));
+	cr4 &= ~(CR4_PAE | CR4_PGE | CR4_LA57 | CR4_PCIDE |
+		 CR4_SMEP | CR4_SMAP);
+	cr4 |= CR4_PSE;
+	__asm__ volatile ("movl %0, %%cr4" : : "r"(cr4) : "memory");
+
+	if (cpu_has_long_mode()) {
+		rdmsr(MSR_EFER, &lo, &hi);
+		if (lo & EFER_LME) {
+			lo &= ~EFER_LME;
+			wrmsr(MSR_EFER, lo, hi);
+			serial_puts(SERIAL_COM1, "paging: cleared EFER.LME\n");
+		}
+	}
+}
+
 /* LFB page-type decision, kept so it can be re-applied after other MMIO
  * mappings (the GPU BARs cover the framebuffer address) have set PCD. */
 static unsigned int lfb_wc_base, lfb_wc_size;
@@ -44,8 +115,14 @@ static void lfb_apply_pages(unsigned int *pd)
 		return;
 	base = fb->lfb_base;
 	p0 = base >> 22;
-	p1 = (base + LFB_MAP_SIZE) >> 22;
-	for (i = p0; i < p1 && i < 1024; i++) {
+	/* Compute the end page from the page index, not from base+size: for a
+	 * base above 0xFF000000 the 32-bit addition wraps to a small number
+	 * and the loop would map nothing, faulting on the first LFB write
+	 * after CR0.PG comes on. */
+	p1 = p0 + (LFB_MAP_SIZE >> 22);
+	if (p1 > 1024)
+		p1 = 1024;
+	for (i = p0; i < p1; i++) {
 		unsigned int page = i << 22;
 		unsigned int flags = PDE_PS | PDE_WRITABLE | PDE_PRESENT;
 
@@ -88,6 +165,8 @@ void paging_init(void)
 {
 	unsigned int i;
 	const volatile struct vga_boot_fb_info *fb = VGA_BOOT_FB;
+
+	paging_prepare_cpu();
 	/* Opaque asm hides the fixed 0x600 pointer from -Warray-bounds. */
 	__asm__ volatile ("" : "+r"(fb));
 

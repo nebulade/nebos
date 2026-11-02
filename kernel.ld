@@ -29,3 +29,6 @@ SECTIONS
 	_end = .;
 }
 ASSERT(_end <= 0x7F000, "Kernel too large: would reach the run area at 0x80000");
+/* The legacy stage loads the compressed rootfs at 0x60000; the BSS clear and
+ * the boot stack must stay below it. */
+ASSERT(_end <= 0x60000, "Kernel too large: would overlap the low rootfs pack");

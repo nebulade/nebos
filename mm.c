@@ -3,6 +3,7 @@
 #include "mm.h"
 #include "bootinfo.h"
 #include "serial.h"
+#include "vga.h"
 
 /* One bit per 4 KB page; bit set = in use. */
 #define MM_BITMAP_BITS  (MM_MAX_PHYS / PAGE_SIZE)
@@ -109,6 +110,22 @@ void mm_init(void)
 	/* Re-reserve what the kernel already owns. */
 	mark_used(0, MM_RESERVE_LOW);
 	mark_used(MM_SHADOW_BASE, MM_SHADOW_RESERVE);
+
+	/* The VBE LFB is normally high MMIO, but a BIOS may place it inside
+	 * low RAM.  Never hand framebuffer pages to the allocator: the boot
+	 * console draws into the LFB, so an allocated page directory there
+	 * would be overwritten by its own progress line. */
+	{
+		const volatile struct vga_boot_fb_info *fb = VGA_BOOT_FB;
+		unsigned int sz;
+
+		__asm__ volatile ("" : "+r"(fb));
+		sz = (unsigned int)fb->pitch * fb->height;
+		if (!sz)
+			sz = 0x1000000;
+		if (fb->valid && fb->lfb_base && fb->lfb_base < MM_MAX_PHYS)
+			mark_used(fb->lfb_base, sz);
+	}
 
 	/* The boot path copied the command-pack rootfs into high RAM before
 	 * the kernel ran.  Keep it away from the allocator until ramfs_init()

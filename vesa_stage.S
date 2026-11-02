@@ -2,11 +2,12 @@
  * VESA real-mode stage: runs at 0x7E00 before protected mode.
  *
  * Called by the boot sector in real mode (CS=0, IP=0x7E00).
- * Probes the E820 map, enables A20, copies the command-pack rootfs into
- * high memory (INT 15h AH=87h, so the CPU never leaves real mode), walks
- * the VBE mode list and picks the best mode (highest resolution, >= 16 bpp,
- * LFB, fits in VRAM), writes the mode info to 0x600 and the boot info to
- * 0x500, then enters protected mode and jumps to kernel_entry.
+ * Probes the E820 map, loads the compressed command-pack rootfs into the
+ * low gap at 0x60000..0x9FBFF (16 KB staging chunks at 0x3000, BIOS disk
+ * reads only), walks the VBE mode list and picks the best mode (highest
+ * resolution, >= 16 bpp, LFB, fits in VRAM), writes the mode info to 0x600
+ * and the boot info to 0x500, then enables A20, enters protected mode and
+ * jumps to kernel_entry.
  *
  * If no VESA mode works, boots in text mode (valid=0 at 0x600).
  */
@@ -21,9 +22,8 @@
 
 /* Rootfs/boot-info constants (must match rootfs.h / bootinfo.h). */
 .equ ROOTFS_VERSION,   1
-.equ PACK_MAX,         0x400000      /* 4 MB gzip payload cap */
-.equ PACK_MIN_ADDR,    0x900000      /* just above the VGA shadow reserve */
-.equ PACK_TOP_ADDR,    0x1000000     /* INT 15h AH=87h has a 24-bit base */
+.equ PACK_LOW_ADDR,    0x60000       /* low gap behind the kernel */
+.equ PACK_LOW_MAX,     0x3FBFF       /* 0x60000..0x9FBFF */
 .equ BOOT_INFO_MAGIC,  0x4E425349
 .equ BOOT_INFO_VERSION, 2
 .equ BOOT_INFO_WORDS,  12
@@ -87,11 +87,11 @@ e820_loop:
 	jmp   e820_loop
 e820_done:
 
-	/* ---- Rootfs: copy the command pack into high RAM ----
+	/* ---- Rootfs: load the command pack into the low gap ----
 	 * The pack is a gzip blob behind a one-sector NBROOT1 header (rootfs.h).
-	 * The destination is the top of RAM below 16 MB (the AH=87h block move
-	 * uses 24-bit descriptor bases), well above the 1..9 MB shadow reserve. */
-	call  enable_a20
+	 * Keep the destination at 0x60000..0x9FBFF: above the kernel BSS/boot
+	 * stack, below the EBDA, and inside the low 1 MB the frame allocator
+	 * already reserves. */
 	xorw  %ax, %ax
 	movw  %ax, %ds
 	movw  %ax, %es
@@ -129,6 +129,12 @@ e820_done:
 	movw  $msg_end, %si
 	call  print_str
 
+	xorw  %ax, %ax
+	movw  %ax, %ds
+	movw  %ax, %es
+
+	/* Read and validate the header, then copy the payload in 16 KB
+	 * chunks (32 sectors) through the 0x3000 staging buffer. */
 	cmpl  $0, pack_lba
 	je    pack_fail
 
@@ -150,16 +156,11 @@ e820_done:
 	movl  12(%esi), %eax          /* pack_bytes */
 	testl %eax, %eax
 	jz    pack_fail
-	cmpl  $PACK_MAX, %eax
+	cmpl  $PACK_LOW_MAX, %eax
 	ja    pack_fail
 	movl  %eax, pack_bytes
 	movw  $msg_dot, %si
 	call  print_str
-
-	call  compute_pack_addr
-	testl %eax, %eax
-	jz    pack_noroom
-	movl  %eax, pack_addr
 
 	movl  $0, pack_off
 load_loop:
@@ -183,11 +184,10 @@ load_loop:
 	movl  chunk_sectors, %eax
 	shll  $9, %eax
 	movl  %eax, copy_len
-	movl  pack_addr, %eax
+	movl  $PACK_LOW_ADDR, %eax
 	addl  pack_off, %eax
 	movl  %eax, copy_dst
-	call  bios_copy
-	jc    pack_fail
+	call  copy_low
 	movl  chunk_sectors, %eax
 	shll  $9, %eax
 	addl  %eax, pack_off
@@ -196,14 +196,10 @@ load_loop:
 	jmp   load_loop
 
 load_ok:
+	movl  $PACK_LOW_ADDR, pack_addr
 	movw  $msg_ok, %si
 	call  print_str
 	jmp   pack_done
-
-pack_noroom:
-	movw  $msg_noroom, %si
-	call  print_str
-	jmp   pack_clear
 
 pack_fail:
 	movw  $msg_fail, %si
@@ -349,8 +345,8 @@ vesa_no_vbe:
 	movb  $0, (%bx)
 
 stage_finish:
-	/* Publish the boot info after the last BIOS call that could touch
-	 * 0x500, then enter protected mode. */
+	/* The pack is loaded; enable A20 and enter protected mode. */
+	call  enable_a20
 	call  write_bootinfo
 	jmp   enter_pm
 
@@ -451,92 +447,6 @@ read_ok:
 	clc
 	ret
 
-/* ---- Pick the pack destination from the E820 map -----------------------
- * The AH=87h block move uses 24-bit bases, so stay below 16 MB.
- * out: eax = 4 KB-aligned destination (0 when there is no room) */
-compute_pack_addr:
-	movl  pack_bytes, %ebx
-	addl  $0xFFF, %ebx
-	andl  $0xFFFFF000, %ebx
-	movl  $0, best_addr
-
-	cmpl  $E820_MAGIC, 0x1000
-	jne   pack_addr_fallback
-	movl  0x1004, %ecx
-	testl %ecx, %ecx
-	jz    pack_addr_fallback
-	movl  $0x1008, %esi
-
-pack_addr_loop:
-	cmpl  $1, 16(%esi)            /* E820_RAM */
-	jne   1f
-	movl  0(%esi), %eax           /* base low */
-	cmpl  $PACK_TOP_ADDR, %eax
-	jae   1f
-	movl  4(%esi), %edx           /* base high */
-	testl %edx, %edx
-	jnz   1f
-	addl  8(%esi), %eax           /* end = base + length low */
-	jc    2f
-	cmpl  $PACK_TOP_ADDR, %eax
-	jbe   3f
-2:	movl  $PACK_TOP_ADDR, %eax
-3:	/* Need [end - need, end) to fit inside the entry. */
-	movl  0(%esi), %edx
-	addl  %ebx, %edx
-	jc    1f
-	cmpl  %edx, %eax
-	jb    1f
-	subl  %ebx, %eax
-	andl  $0xFFFFF000, %eax
-	cmpl  $PACK_MIN_ADDR, %eax
-	jb    1f
-	cmpl  best_addr, %eax
-	jbe   1f
-	movl  %eax, best_addr
-1:	addl  $24, %esi
-	decl  %ecx
-	jnz   pack_addr_loop
-	movl  best_addr, %eax
-	ret
-
-pack_addr_fallback:
-	/* No usable E820 map: matches mm_init's 16 MB fallback. */
-	movl  $PACK_TOP_ADDR, %eax
-	cmpl  %ebx, %eax
-	jbe   1f
-	subl  %ebx, %eax
-	andl  $0xFFFFF000, %eax
-	cmpl  $PACK_MIN_ADDR, %eax
-	jb    1f
-	ret
-1:	xorl  %eax, %eax
-	ret
-
-/* ---- Copy a chunk to high memory with INT 15h AH=87h -------------------
- * in: copy_dst (24-bit), copy_len; source is 0x3000.
- * Copies in 16-bit words; returns with CF set on failure. */
-bios_copy:
-	movl  copy_dst, %eax
-	movw  %ax, bios_gdt + 0x1A      /* dest base 15:0 */
-	shrl  $16, %eax
-	movb  %al, bios_gdt + 0x1C      /* dest base 23:16 */
-	movl  copy_len, %ecx
-	shrl  $1, %ecx                  /* AH=87h counts words */
-	jz    bios_copy_done
-	xorw  %ax, %ax
-	movw  %ax, %es
-	movw  $bios_gdt, %si
-	movw  $0x8700, %ax
-	int   $0x15
-	jc    bios_copy_fail
-bios_copy_done:
-	clc
-	ret
-bios_copy_fail:
-	stc
-	ret
-
 /* ---- Print a NUL-terminated string with the BIOS teletype ------------- */
 print_str:
 	pushw %ax
@@ -550,6 +460,29 @@ print_str:
 	jmp   1b
 2:	popw  %bx
 	popw  %ax
+	ret
+
+/* ---- Copy the 16 KB staging chunk to the low pack destination --------- */
+copy_low:
+	/* Read the stage variables with DS=0 first; only then switch DS to the
+	 * staging segment.  Save both segment registers: the load loop and the
+	 * progress prints keep using DS=0/ES=0. */
+	movl  copy_dst, %eax
+	movl  copy_len, %ecx
+	movl  %eax, %ebx
+	shrl  $4, %eax
+	pushw %ds
+	pushw %es
+	movw  %ax, %es
+	andl  $0x0000000F, %ebx
+	movw  %bx, %di
+	movw  $0x0300, %ax
+	movw  %ax, %ds
+	xorw  %si, %si
+	cld
+	rep movsb
+	popw  %es
+	popw  %ds
 	ret
 
 /* ---- Hex print (EAX, 8 digits) ----------------------------------------- */
@@ -568,10 +501,10 @@ print_hex:
 	addl  $55, %eax
 	jmp   3f
 2:	addl  $48, %eax
-3:	movb  $0x0E, %ah
-	movb  $0x00, %bh
-	pushl %ebx
+3:	pushl %ebx
 	pushl %ecx
+	movb  $0x0E, %ah
+	xorw  %bx, %bx
 	int   $0x10
 	popl  %ecx
 	popl  %ebx
@@ -643,28 +576,6 @@ stage2_gdtr:
 	.word stage2_gdt_end - stage2_gdt - 1
 	.long stage2_gdt
 
-/* ---- INT 15h AH=87h descriptor table (48 bytes) -----------------------
- * 16 zero bytes, source descriptor at 0x10 (0x3000, 64 KB), destination
- * at 0x18 (patched per chunk), 16 zero bytes. */
-.align 16
-bios_gdt:
-	.quad 0
-	.quad 0
-	/* source: limit 0xFFFF, base 0x3000, access 0x93, 16-bit data */
-	.word 0xFFFF
-	.word 0x3000
-	.byte 0x00
-	.byte 0x93
-	.word 0x0000
-	/* destination: limit 0xFFFF, base patched, access 0x93 */
-	.word 0xFFFF
-	.word 0x0000
-	.byte 0x00
-	.byte 0x93
-	.word 0x0000
-	.quad 0
-	.quad 0
-
 /* ---- Stage variables --------------------------------------------------- */
 .align 4
 stage_drive:    .byte 0
@@ -676,7 +587,6 @@ pack_off:       .long 0
 chunk_sectors:  .long 0
 copy_dst:       .long 0
 copy_len:       .long 0
-best_addr:      .long 0
 rd_lba:         .long 0
 rd_off:         .word 0
 rd_left:        .word 0
@@ -689,7 +599,6 @@ msg_m:          .asciz " m="
 msg_end:        .asciz "]... "
 msg_dot:        .asciz "."
 msg_ok:         .asciz " ok\r\n"
-msg_noroom:     .asciz " skipped (no room)\r\n"
 msg_fail:       .asciz " failed\r\n"
 
 .align 2

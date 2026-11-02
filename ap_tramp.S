@@ -55,10 +55,32 @@ ap_pm32:
 	movl  AP_INFO_CR3, %eax
 	movl  %eax, %cr3
 
+	/* Clear stale translation controls left by the firmware (PAE/PGE/
+	 * LA57/PCIDE/SMEP/SMAP) and enable PSE.  An AP that starts with
+	 * CR4.PAE set would otherwise walk the kernel page directory as a PAE
+	 * PDPT the moment CR0.PG is set. */
 	movl  %cr4, %eax
+	andl  $0xFFCDEF5F, %eax
 	orl   $0x10, %eax             /* CR4.PSE */
 	movl  %eax, %cr4
 
+	/* Clear EFER.LME too when long mode exists and the firmware left it
+	 * set; otherwise setting CR0.PG would enter long mode. */
+	movl  $0x80000000, %eax
+	cpuid
+	cmpl  $0x80000001, %eax
+	jb    3f
+	movl  $0x80000001, %eax
+	cpuid
+	testl $(1 << 29), %edx
+	jz    3f
+	movl  $0xC0000080, %ecx
+	rdmsr
+	testl $(1 << 8), %eax
+	jz    3f
+	andl  $~0x100, %eax
+	wrmsr
+3:
 	movl  %cr0, %eax
 	orl   $0x80010000, %eax       /* CR0.PG | CR0.WP */
 	movl  %eax, %cr0

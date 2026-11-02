@@ -13,6 +13,13 @@ ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
 
+# NOWM=1 builds a diagnostic kernel that boots to the console without the
+# window manager (make nowm).
+NOWM ?= 0
+ifeq ($(NOWM),1)
+CFLAGS += -DNOWM
+endif
+
 # UEFI loader: a PE32+ x86-64 EFI application built with the mingw toolchain.
 # The kernel itself stays 32-bit; the loader leaves long mode before jumping.
 EFI_CC   ?= x86_64-w64-mingw32-gcc
@@ -325,8 +332,8 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h pr
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o ramfs.o share.o payload.o
-	$(LD) $(KERNEL_LDFLAGS) -o $@ $^
+kernel.elf: kernel.ld vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o ramfs.o share.o payload.o
+	$(LD) $(KERNEL_LDFLAGS) -o $@ $(filter-out kernel.ld,$^)
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
 
@@ -712,6 +719,12 @@ rootfs.bin: cmds_pack_gz.bin mkrootfs
 	./mkrootfs $@ cmds_pack_gz.bin
 
 rootfs: cmds.img
+
+# Diagnostic: no WM, boot console stays visible.  Rebuild normally with
+# `make -B ...` afterwards (the objects carry -DNOWM).
+nowm:
+	$(MAKE) NOWM=1 -B kernel.elf kernel.bin floppy.img usb.img usb-efi.img final.bin
+	@echo "nowm: WM disabled; flash usb.img or usb-efi.img."
 
 cmds.img: cmds_pack_gz.bin mkrootfs
 	./mkrootfs $@ cmds_pack_gz.bin $$(( $(ROOTFS_SECTORS) * 512 ))

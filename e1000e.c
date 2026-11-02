@@ -13,6 +13,7 @@
  * the user process.
  */
 #include "e1000e.h"
+#include "bootcon.h"
 #include "io.h"
 #include "mm.h"
 #include "netdev.h"
@@ -137,6 +138,7 @@
 #define BMCR_ANRESTART 0x0200
 
 /* ---- PCI ---- */
+#define PCI_CMD_INT_DISABLE 0x0400u   /* command bit 10: INTx disabled */
 #define E1000E_VENDOR 0x8086u
 
 struct e1000e_rx_desc {
@@ -207,6 +209,12 @@ static void dbg(const char *s)
 	serial_puts(SERIAL_COM1, "e1000e: ");
 	serial_puts(SERIAL_COM1, s);
 	serial_puts(SERIAL_COM1, "\n");
+	/* Also show the trail on the boot console (NOWM diagnostics): if the
+	 * probe wedges, the last line says which step.  No-op once the WM has
+	 * taken over and disabled the console. */
+	bootcon_puts("e1000e: ");
+	bootcon_puts(s);
+	bootcon_puts("\n");
 }
 
 static void put_dec(unsigned int v)
@@ -311,30 +319,49 @@ static int probe_bar0(unsigned int bus, unsigned int dev, unsigned int func,
 		      unsigned int *base, unsigned int *size)
 {
 	unsigned int val = pci_cfg_read32(bus, dev, func, 0x10);
-	unsigned int hi = 0, mask, len;
 
 	if (!val || val == 0xFFFFFFFFu || (val & 1u))
 		return -1;
-	if (val & 4u) {
-		hi = pci_cfg_read32(bus, dev, func, 0x14);
-		pci_cfg_write32(bus, dev, func, 0x14, 0xFFFFFFFFu);
-	}
-	pci_cfg_write32(bus, dev, func, 0x10, 0xFFFFFFFFu);
-	mask = pci_cfg_read32(bus, dev, func, 0x10) & 0xFFFFFFF0u;
-	pci_cfg_write32(bus, dev, func, 0x10, val);
+	/* Do NOT size the BAR by writing 0xFFFFFFFF: on PCH LAN parts the
+	 * ME/AMT can leave the BAR restore incomplete, after which every MMIO
+	 * access goes to an undecoded address and stalls.  All supported
+	 * e1000/e1000e BARs are 128 KB, so trust the firmware-assigned base. */
 	if (val & 4u)
-		pci_cfg_write32(bus, dev, func, 0x14, hi);
-	if (!mask || mask == 0xFFFFFFF0u)
-		return -1;
-
-	len = ~mask + 1u;
-	if (len < 0x1000)
-		len = 0x1000;
-	if (len > 0x100000)
-		len = 0x100000;      /* sanity: all supported BARs are 128 KB */
+		return -1;               /* 64-bit BAR: not used by these parts */
 	*base = val & 0xFFFFFFF0u;
-	*size = len;
+	*size = 0x20000;
 	return 0;
+}
+
+/* Put the function in D0 before the first MMIO access.  The PCH LAN is
+ * often left in D3hot by the BIOS/ME; MMIO while suspended can return
+ * 0xFFFFFFFF or stall the PCIe root complex.  Walk the capability list for
+ * the PM capability (ID 1) and clear PMCSR.PS. */
+static void pci_set_d0(unsigned int bus, unsigned int dev, unsigned int func)
+{
+	unsigned int status = pci_cfg_read32(bus, dev, func, 0x04) >> 16;
+	unsigned int cap, guard = 0;
+
+	if (!(status & 0x10u))
+		return;                       /* no capability list */
+	cap = pci_cfg_read32(bus, dev, func, 0x34) & 0xFCu;
+	while (cap && guard++ < 48) {
+		unsigned int hdr = pci_cfg_read32(bus, dev, func, cap);
+
+		if ((hdr & 0xFFu) == 0x01u) {
+			unsigned int pmcsr =
+				pci_cfg_read32(bus, dev, func, cap + 4);
+
+			if (pmcsr & 3u) {
+				pci_cfg_write32(bus, dev, func, cap + 4,
+						pmcsr & ~3u);
+				delay_ms(10);
+				dbg("PM state -> D0");
+			}
+			return;
+		}
+		cap = (hdr >> 8) & 0xFCu;
+	}
 }
 
 static int probe_pci(void)
@@ -364,8 +391,15 @@ static int probe_pci(void)
 
 				/* Memory space + bus master. */
 				cmd = pci_cfg_read32(bus, dev, func, 0x04);
+				/* Polled driver: disable INTx before enabling memory
+				 * and bus master.  A link-change interrupt from
+				 * the PHY can otherwise fire before hw_stop()
+				 * masks the device, and the kernel has no NIC IRQ
+				 * handler (the X201 stalls with the cable in). */
 				pci_cfg_write32(bus, dev, func, 0x04,
-						cmd | 0x0006u);
+						cmd | 0x0006u |
+						PCI_CMD_INT_DISABLE);
+				pci_set_d0(bus, dev, func);
 
 				if (probe_bar0(bus, dev, func,
 					       &bar_base, &bar_size) != 0)

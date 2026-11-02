@@ -20,6 +20,7 @@ make uefi       # build BOOTX64.EFI and the dual-boot usb-efi.img
 make run-uefi   # boot usb-efi.img under OVMF (x86-64 UEFI; serial log in /tmp/opencode)
 make test-uefi  # headless OVMF boot test (greps the serial log for the boot line)
 make rootfs     # build cmds.img (the 8 MB rootfs partition image)
+make nowm       # diagnostic kernel with no WM; the boot console stays visible
 make dev        # serial kernel + rootfs reload (KXE2)
 make kernel-dev # serial kernel-only reload (keeps the running rootfs)
 make net-dev    # network kernel + rootfs reload (KXN2)
@@ -68,17 +69,18 @@ make clean
 1. `boot.S` — 512-byte boot sector (FAT16 BPB). Loads contiguous kernel sectors
    to `0x7E00` (CHS for floppy, INT 13h AH=42h LBA for hard disk), jumps there.
 2. `vesa_stage.S` — real-mode VESA stage. Probes INT 15h E820 into `0x1000`,
-   enables A20, reads the `NBROOT1` rootfs header at the boot sector's
-   `pack_lba` field and copies the gzip pack to the top of RAM below 16 MB
-   with INT 15h AH=87h (no mode switching), picks the best VBE mode
-   (≥16 bpp, LFB, fits VRAM, ≤1280px), writes mode info to `0x600` and the
-   12-dword `struct boot_info` (magic/checksum/rsdp/flags/pack range) to
-   `0x500`, enters protected mode and jumps to `kernel_entry` (`entry.S`,
-   re-points ESP to the current stack top, then `kernel_main`).  The stage
-   prints `Loading rootfs [d=<drive> lba=<hex> e=<0|1> m=<C|L>]...`, then a
-   dot after the header and one per 32 KB chunk, so a BIOS hang is
-   localised.  Drives below 0x80 use CHS (the same path the boot sector's
-   kernel load used); fixed disks use EDD LBA.
+   reads the `NBROOT1` rootfs header at the boot sector's `pack_lba` field
+   and loads the gzip pack into the low gap at `0x60000..0x9FBFF`
+   (16 KB staging chunks at `0x3000`, `rep movsb`; no protected-mode BIOS
+   call), picks the best VBE mode (≥16 bpp, LFB, fits VRAM, ≤1280px), writes
+   mode info to `0x600` and the 12-dword `struct boot_info`
+   (magic/checksum/rsdp/flags/pack range) to `0x500`, enables A20, enters
+   protected mode and jumps to `kernel_entry` (`entry.S`, re-points ESP to
+   the current stack top, then `kernel_main`).  The stage prints
+   `Loading rootfs [d=<drive> lba=<hex> e=<0|1> m=<C|L>]...`, then a dot
+   after the header and one per 16 KB chunk, so a BIOS hang is localised.
+   Drives below 0x80 use CHS (the same path the boot sector's kernel load
+   used); fixed disks use EDD LBA.
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → memory/paging →
    ACPI/MADT → I/O → idle → processes → timer (PIT; 1 kHz busy, 100 Hz idle + IDT) → SMP AP
    bring-up → mouse → VGA shadow buffer → terminal.
@@ -116,7 +118,8 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 | `0x6000`  | AP real/protected-mode trampoline (`ap_tramp.S`/`ap_tramp.ld`; SIPI vector 0x06, image ends below `0x6C00`) |
 | `0x6C00`  | AP trampoline real-mode stack top (grows down) |
 | `0x6F00`  | AP startup info block (CR3, stack top, C entry, CPU index) |
-| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs it stays below `0x7F000`); the command pack is no longer in the image, so this has ~130 KB of headroom |
+| `0x60000` | Legacy rootfs pack (`vesa_stage.S`; compressed gzip data, up to `PACK_LOW_MAX` 0x3FBFF, ending below the EBDA at `0x9FC00`).  Loaded before the kernel; `ramfs_init` copies/inflates it, after which the `0x80000` run area may reuse the space |
+| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs `_end <= 0x60000` for the low rootfs pack and `<= 0x7F000` for the run area).  The low pack leaves only ~6 KB of growth margin |
 | (in-image) | Bootstrap/protected-mode stack: 8 KB `.stack` NOLOAD section, `__boot_stack_top`/`__boot_stack_bottom` (travels with the kernel) |
 | `0x7FF00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
 | `0x80000` | Legacy ring-0 program load area (`run.c`, `serial_recv.c`, `user.ld`; max 0x6000, inside the reserved low 1 MB) |
@@ -127,13 +130,14 @@ buffer before the kernel starts; the UHCI frame list (`0x3000`), ISA DMA
 buffer (`0x4000`) and AP trampoline (`0x6000`) reinitialize those addresses
 later.
 
-The boot-time rootfs pack is also dynamic: the legacy stage puts it at the
-top of RAM below 16 MB (the AH=87h 24-bit descriptor limit), the UEFI loader
-at the top of RAM below 128 MB, and kexec leaves it in the staging buffer
+The boot-time rootfs pack placement depends on the boot path: the legacy
+stage uses the fixed low gap `0x60000..0x9FBFF`, the UEFI loader puts it at
+the top of RAM below 128 MB, and kexec leaves it in the staging buffer
 (≥ `0x900000`).  `mm_init` reserves `[pack_addr, pack_addr+pack_size)` from
-boot info; `ramfs_init` copies/inflates it into fresh pages and
-`mm_free_range()` releases the boot region.  The placement is always above
-the 1..9 MB VGA shadow reserve.
+boot info when it is above the low 1 MB; the legacy low pack is already
+inside the reserved low 1 MB.  `ramfs_init` copies/inflates it into fresh
+pages and `mm_free_range()` releases the boot region when it is above the
+VGA shadow reserve.
 
 Everything else is dynamic: process stacks and the kexec staging buffer come
 from the frame allocator (≥ `0x900000`), and the fallback stack pool is a
@@ -201,7 +205,14 @@ run area), so adding code no longer moves any address.
   `mouse.c` forces the software cursor; `acpi.c` prefers the passed RSDP and
   maps its page before validating it.
 - **Paging**: `paging.c/h` — identity-maps RAM (4 MB pages via CR4.PSE) + the
-  LFB (uncacheable) and enables CR0.PG/WP. Each process gets a page directory
+  LFB (uncacheable) and enables CR0.PG/WP. Before the switch it clears stale
+  translation controls a BIOS protected-mode call can leave behind
+  (`CR4.PAE/PGE/LA57/PCIDE/SMEP/SMAP` and `EFER.LME`); the X201's legacy
+  stage used to return from `INT 15h AH=87h` with `CR4` set, and the first
+  `CR0.PG` write then triple-faulted.  The LFB PDE range is computed from
+  the page index (a base above `0xFF000000` used to wrap `base + 16 MB` and
+  map nothing), and `mm_init` reserves a low LFB range so the boot console
+  cannot overwrite the page directory.  Each process gets a page directory
   cloned from the kernel identity map (kernel stacks are mapped everywhere, so
   CR3 can switch on the old stack); `paging_current_cr3()` reads CR3. The kexec
   trampoline (`kexec_tramp.S`) clears CR0.PG before the copy so it can overwrite
@@ -343,8 +354,10 @@ run area), so adding code no longer moves any address.
 - **Serial**: `serial.c`, `serial_ring_buf.c/h`, `bin_recv.c/h`, `serial_recv.c`,
   `serial_loop.c`, `send_serial.c` — 16550 UART, IRQ-driven ring buffer, XMODEM.
 - **Network**: `netdev.c/h` — NIC driver registry (`struct netdev`, first probe
-  wins; drivers: `r8168.c` RTL8111/8168 (PCIe, polled, C+ mode, 64-entry RX
-  ring) and `ne2000.c`
+  wins; drivers: `e1000e.c` Intel e1000/PCH LAN (82540EM emulated,
+  82577LM/82578/82579; polled, PCI INTx disabled before MMIO, PCH D0 and
+  no BAR sizing so the ME/AMT cannot leave the BAR undecoded), `r8168.c`
+  RTL8111/8168 (PCIe, polled, C+ mode, 64-entry RX ring) and `ne2000.c`
   RTL8029 (QEMU/ISA)). `net.c` — ARP + ICMP echo, IPv4/UDP send + parse helpers,
   shared ARP resolution (`net_arp_resolve`) and routing (`net_next_hop`), frame
   decode, `net_checksum()`/`net_checksum_tcp()`. `dhcp.c` — minimal DHCP client
@@ -452,7 +465,7 @@ run area), so adding code no longer moves any address.
   `USER_BASE` (`0x40000000`), packed by `mkpack` into `cmds.pack` (as
   `bin/<name>`), gzipped to `cmds_pack_gz.bin` and wrapped by `mkrootfs`
   with a `NBROOT1` header.  The pack is the system rootfs: the boot path
-  loads it into high RAM (legacy AH=87h / UEFI / kexec) and `ramfs_init`
+  loads it into RAM (legacy low gap / UEFI / kexec staging) and `ramfs_init`
   takes a private page-allocated copy, mounted read-only at `/ramfs`.  The
   shell finds them through PATH (`/ramfs/bin` by default), loads the whole
   ELF through the VFS and spawns it as a ring-3 process; `hello` is just
@@ -695,11 +708,12 @@ re-applied on a full floppy/USB boot (C-light reuses the current LFB).
 The commands live in `cmds.pack` (`bin/<name>` entries, built by `mkpack`),
 gzip-compressed to `cmds_pack_gz.bin` and wrapped by `mkrootfs` with a
 one-sector `NBROOT1` header (magic, version, exact `pack_bytes`, checksum,
-gzip flag).  The boot path loads the gz pack into high RAM — the legacy stage
-via INT 15h AH=87h, the UEFI loader via an embedded copy, kexec via its
-staging buffer — and `ramfs_init()` inflates it into page-allocated memory and
-mounts it read-only at `/ramfs`.  The kernel image no longer contains it, so
-the pack can grow without touching `_end <= 0x7F000`.
+gzip flag).  The boot path loads the gz pack into RAM — the legacy stage into
+the low gap at `0x60000`, the UEFI loader via an embedded copy at the top of
+RAM below 128 MB, kexec via its staging buffer — and `ramfs_init()` inflates
+it into page-allocated memory and mounts it read-only at `/ramfs`.  The
+kernel image no longer contains it, so the pack no longer moves `_end`; the
+legacy low gap has its own size cap (known issue 9).
 
 `rootfs.bin` is the floppy append (header + pack); `cmds.img` is the 8 MB
 rootfs partition image written to USB partition 2.  `cmds-dev`/`net-cmds`
@@ -1008,7 +1022,10 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
 9. The rootfs pack is inflated into one contiguous page-allocated run at
    boot, capped by `RAMFS_MAX_DECOMPRESSED` (8 MB); a larger pack fails to
    load (the USB rootfs partition is 8 MB, so this only bites if the cap is
-   raised without a bigger partition).
+   raised without a bigger partition).  The legacy low pack is additionally
+   capped at `PACK_LOW_MAX` (0x3FBFF, ~255 KB compressed) by the
+   `0x60000..0x9FBFF` gap; a larger pack needs the UEFI/kexec path or a
+   high-memory legacy copy.
 10. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
     board that exposes only MP tables stays UP (deliberate; there is no test
     hardware).

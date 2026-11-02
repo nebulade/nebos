@@ -3,6 +3,11 @@
 #define PAGING_H
 
 void paging_init(void);
+/* Clear translation controls a BIOS protected-mode call may have left set
+ * (CR4.PAE/PGE/LA57/PCIDE, EFER.LME) before this 32-bit kernel enables its
+ * own page directory.  Called by paging_init(); the AP trampoline applies
+ * the same policy inline. */
+void paging_prepare_cpu(void);
 /* Re-apply the framebuffer page types (after GPU BAR mappings that cover it). */
 void paging_lfb_refresh(void);
 /* 1 when the LFB is mapped for write-combining. */

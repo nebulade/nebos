@@ -230,15 +230,22 @@ static void system_housekeeping(void)
 {
 	process_reap_dead();
 	mouse_poll_update();
+#ifndef NOWM
 	wm_pump_keyboard();
 	wm_blink_cursor();
+#endif
 	netlog_flush();
+#ifndef NOWM
 	wm_handle_kexec();
 	wm_server_supervise();
 	if (wm_server_can_reap())
 		sys_gfx_collect();
 	if (!wm_server_frame_active())
 		vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
+#else
+	/* Diagnostic build: keep the direct-LFB boot console visible and do
+	 * not let the WM shadow flush overwrite it. */
+#endif
 }
 
 static void kworker_main(void)
@@ -350,6 +357,9 @@ void kernel_main(void)
 	boot_trace("mm");
 	boot_val("mm free KB", mm_free_pages() * 4);
 	kmalloc_init();
+	/* Report the VBE geometry before paging, so a boot that dies in the
+	 * translation switch still says which mode the BIOS picked. */
+	bootcon_fb_info();
 	paging_init();
 	boot_trace("paging");
 	/* paging_init only ORs in PSE; make sure the BSP's SSE state is on
@@ -398,12 +408,11 @@ void kernel_main(void)
 	vga_shadow_init();
 	vga_fb_flush();
 	boot_trace("vga");
-	bootcon_fb_info();
 
 	/* The command pack: read-only, mounted at /ramfs (see ramfs.c).  The
-	 * boot path copied it into high RAM (the legacy stage, the UEFI loader
-	 * or kexec); ramfs_init takes its own copy so the boot region can be
-	 * released.  The mount is created even without a pack, so a running
+	 * boot path copied it into RAM (the legacy stage's low gap, the UEFI
+	 * loader or kexec); ramfs_init takes its own copy so the boot region
+	 * can be released.  The mount is created even without a pack, so a running
 	 * board can be recovered with `make cmds-dev`/`make net-cmds`. */
 	{
 		unsigned int pack_addr = bootinfo_pack_addr();
@@ -436,6 +445,7 @@ void kernel_main(void)
 	boot_trace("ramfs");
 	boot_val("ramfs files", ramfs_count());
 
+#ifndef NOWM
 	/* Start the WM before touching disks: the first frame can be painted
 	 * while storage and the network are still being probed. */
 	wm_server_init();
@@ -445,6 +455,12 @@ void kernel_main(void)
 	bootcon_set_enabled(0);
 	wm_server_start();
 	boot_trace("wm");
+#else
+	/* Diagnostic build: boot to the console, no WM, no terminal. */
+	bootcon_puts("WM disabled (diagnostic build)\n");
+	serial_puts(SERIAL_COM1, "nowm: window manager disabled\n");
+	boot_trace("wm off");
+#endif
 
 	/* Probe the NIC (link negotiation is asynchronous now) before the
 	 * kworker starts, so its netlog flushes have a device to use. */
@@ -471,8 +487,12 @@ void kernel_main(void)
 	/* The first terminal is spawned only now: while the boot scan was
 	 * rebuilding the mount table, no user command could touch the disks.
 	 * The desktop itself was already painted from /ramfs. */
+#ifndef NOWM
 	wm_spawn_terminal();
 	boot_trace("terminal");
+#else
+	boot_trace("terminal off");
+#endif
 
 	/* With a NIC present, try DHCP; on failure the static default stays.
 	 * Deliberately after the WM: a missing cable or DHCP server must not

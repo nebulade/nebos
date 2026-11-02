@@ -8,6 +8,7 @@
 #include "bootcon.h"
 #include "bootinfo.h"
 #include "font_8x8.h"
+#include "serial.h"
 #include "vga.h"
 
 #define SCALE  2
@@ -220,4 +221,18 @@ void bootcon_fb_info(void)
 	bootcon_puts(" lfb 0x");
 	bootcon_hex(fb_base);
 	bootcon_puts("\n");
+
+	/* Mirror to COM1 (and the netlog console) so a machine without a
+	 * serial port can report the VBE mode before the WM repaints. */
+	serial_puts(SERIAL_COM1, "fb ");
+	serial_putdec(SERIAL_COM1, fb_w);
+	serial_puts(SERIAL_COM1, "x");
+	serial_putdec(SERIAL_COM1, fb_h);
+	serial_puts(SERIAL_COM1, "x");
+	serial_putdec(SERIAL_COM1, fb_bpp);
+	serial_puts(SERIAL_COM1, " pitch ");
+	serial_putdec(SERIAL_COM1, fb_pitch);
+	serial_puts(SERIAL_COM1, " lfb ");
+	serial_puthex(SERIAL_COM1, fb_base);
+	serial_puts(SERIAL_COM1, "\n");
 }
