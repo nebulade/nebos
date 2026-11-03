@@ -11,6 +11,7 @@
 #define BR_ATTR_SIZE     524288
 #define BR_CSS_SIZE      12288
 #define BR_MAX_RULES     2304
+#define BR_MAX_VARS      512
 #define BR_DECLS         16
 #define BR_TITLE_MAX     96
 
@@ -27,6 +28,8 @@
 #define BR_DISPLAY_INLINE 0
 #define BR_DISPLAY_BLOCK  1
 #define BR_DISPLAY_NONE   2
+#define BR_DISPLAY_FLEX   3
+#define BR_DISPLAY_GRID   4
 
 /* Text alignment. */
 #define BR_ALIGN_LEFT   0
@@ -67,6 +70,12 @@ struct br_style {
 	unsigned char align;        /* BR_ALIGN_* */
 	unsigned char display;      /* BR_DISPLAY_* */
 	unsigned char float_left;   /* float: left/right */
+	unsigned char flex_grow;    /* flex-grow, 0..100 */
+	unsigned char flex_col;     /* flex-direction: column */
+	unsigned char flex_wrap;    /* flex-wrap: wrap */
+	unsigned char grid_ncols;   /* 1 or 2 supported */
+	unsigned char grid_gap;     /* px */
+	unsigned char grid_slot;    /* 0 auto, 1 full, 2 left, 3 right */
 	unsigned char no_bullet;    /* list-style: none (inherited) */
 	unsigned char uppercase;    /* text-transform: uppercase (inherited) */
 	unsigned char border_w;
@@ -134,6 +143,11 @@ struct br_doc {
 	unsigned int nrules;
 	char title[BR_TITLE_MAX];
 	unsigned int inline_css_len;
+	/* CSS custom properties, stored in the attr arena.  A pragmatic
+	 * single table: the last definition wins, which matches :root. */
+	unsigned int var_name[BR_MAX_VARS];
+	unsigned int var_val[BR_MAX_VARS];
+	unsigned int nvars;
 	int truncated;
 	int plain;                  /* text/plain: one preformatted text node */
 };
@@ -167,5 +181,8 @@ const char *br_href(struct br_doc *d, unsigned int node);
 const char *br_src(struct br_doc *d, unsigned int node);
 const char *br_alt(struct br_doc *d, unsigned int node);
 const char *br_rel(struct br_doc *d, unsigned int node);
+const char *br_value(struct br_doc *d, unsigned int node);
+const char *br_placeholder(struct br_doc *d, unsigned int node);
+const char *br_type(struct br_doc *d, unsigned int node);
 
 #endif

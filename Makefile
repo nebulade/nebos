@@ -639,11 +639,13 @@ ucmd_curl.elf: ucmd_curl.o uhttp.o $(TLSLIB_OBJS) ucmd.ld
 
 # browser: the real app is a disk image (BROWSER) because it links ngui, the
 # image library, TLS and uhttp.  ucmd_browser.c is the tiny PATH launcher.
+# Compile the two large browser-specific objects for size: the legacy rootfs
+# pack has a hard low-memory cap and is already close to it.
 browser_html.o: browser_html.c browser_html.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 browser.o: browser.c ucmd_lib.h syscall.h wm_abi.h ngui.h browser_html.h uhttp.h img.h inflate.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 browser.elf: browser.o browser_html.o uhttp.o ngui.o font_8x16.o $(IMGLIB_OBJS) inflate.o $(TLSLIB_OBJS) ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)

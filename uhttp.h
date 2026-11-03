@@ -14,8 +14,8 @@
 #include "ucmd_lib.h"
 
 #define UHTTP_HOST_MAX       128
-#define UHTTP_PATH_MAX       192
-#define UHTTP_LOC_MAX        256
+#define UHTTP_PATH_MAX       512
+#define UHTTP_LOC_MAX        640
 #define UHTTP_LINE_MAX       320
 #define UHTTP_READER_MAX     2048
 #define UHTTP_MAX_REDIRECTS  5

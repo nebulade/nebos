@@ -4,6 +4,8 @@
 
 #include "browser_html.h"
 
+static int is_space(char c);
+
 /* ---- storage (one document per process) ---- */
 
 static struct br_node nodes_store[BR_MAX_NODES];
@@ -392,6 +394,147 @@ static const char *attr_ptr(struct br_doc *d, unsigned int off)
 	return off ? d->attrs + off : "";
 }
 
+/* Copy a raw CSS string into the attr arena (no entity decoding). */
+static unsigned int store_raw(struct br_doc *d, const char *s,
+			      unsigned int len, unsigned int limit)
+{
+	unsigned int off;
+
+	if (len > limit)
+		len = limit;
+	if (!len || d->attrs_used + len + 1 > BR_ATTR_SIZE)
+		return 0;
+	off = d->attrs_used;
+	{
+		unsigned int i;
+
+		for (i = 0; i < len; i++)
+			d->attrs[off + i] = s[i];
+	}
+	d->attrs[off + len] = '\0';
+	d->attrs_used += len + 1;
+	return off;
+}
+
+static unsigned int css_var_find(struct br_doc *d, const char *name,
+				 unsigned int nlen)
+{
+	unsigned int i;
+
+	for (i = 0; i < d->nvars; i++) {
+		const char *n = attr_ptr(d, d->var_name[i]);
+		unsigned int j;
+
+		if (s_len(n) != nlen)
+			continue;
+		for (j = 0; j < nlen && n[j] == name[j]; j++)
+			;
+		if (j == nlen)
+			return i;
+	}
+	return BR_MAX_VARS;
+}
+
+static void css_var_set(struct br_doc *d, const char *name,
+			unsigned int nlen, const char *val, unsigned int vlen)
+{
+	unsigned int i, noff, voff;
+
+	if (nlen < 3 || name[0] != '-' || name[1] != '-' || !vlen)
+		return;
+	noff = store_raw(d, name, nlen, 63);
+	voff = store_raw(d, val, vlen, 199);
+	if (!noff || !voff)
+		return;
+	i = css_var_find(d, name, nlen);
+	if (i >= BR_MAX_VARS) {
+		if (d->nvars >= BR_MAX_VARS)
+			return;
+		i = d->nvars++;
+		d->var_name[i] = noff;
+	}
+	d->var_val[i] = voff;
+}
+
+/* Find the end of a declaration value: the next ';' outside quotes and
+ * parentheses.  The caller passes the position just after the ':'. */
+static unsigned int css_value_end(const char *s, unsigned int len,
+				  unsigned int i)
+{
+	int depth = 0;
+	char quote = 0;
+
+	while (i < len) {
+		char c = s[i];
+
+		if (quote) {
+			if (c == quote)
+				quote = 0;
+			else if (c == '\\' && i + 1 < len)
+				i++;
+		} else if (c == '"' || c == '\'') {
+			quote = c;
+		} else if (c == '(') {
+			depth++;
+		} else if (c == ')' && depth > 0) {
+			depth--;
+		} else if (c == ';' && depth == 0) {
+			break;
+		}
+		i++;
+	}
+	return i;
+}
+
+/* Collect --custom-property definitions from one declaration block. */
+static void css_collect_block(struct br_doc *d, const char *s,
+			      unsigned int len)
+{
+	unsigned int i = 0;
+
+	while (i < len) {
+		unsigned int pstart, pend, vstart, vend;
+
+		while (i < len && (is_space(s[i]) || s[i] == ';'))
+			i++;
+		if (i >= len)
+			break;
+		pstart = i;
+		while (i < len && s[i] != ':' && s[i] != ';')
+			i++;
+		pend = i;
+		if (i >= len || s[i] != ':') {
+			if (i < len)
+				i++;
+			continue;
+		}
+		i++;
+		vstart = i;
+		i = css_value_end(s, len, i);
+		vend = i;
+		if (i < len)
+			i++;
+		while (pstart < pend && is_space(s[pstart]))
+			pstart++;
+		while (pend > pstart && is_space(s[pend - 1]))
+			pend--;
+		while (vstart < vend && is_space(s[vstart]))
+			vstart++;
+		while (vend > vstart && is_space(s[vend - 1]))
+			vend--;
+		if (vend - vstart >= 10 &&
+		    ci_eq_n(s + vend - 10, "!important", 10)) {
+			vend -= 10;
+			while (vend > vstart && is_space(s[vend - 1]))
+				vend--;
+		}
+		if (pend - pstart >= 3 && s[pstart] == '-' &&
+		    s[pstart + 1] == '-')
+			css_var_set(d, s + pstart, pend - pstart,
+				    s + vstart, vend - vstart);
+	}
+}
+
 const char *br_href(struct br_doc *d, unsigned int node)
 {
 	return attr_ptr(d, d->nodes[node].href_off);
@@ -412,6 +555,21 @@ const char *br_rel(struct br_doc *d, unsigned int node)
 	return attr_ptr(d, d->nodes[node].rel_off);
 }
 
+const char *br_value(struct br_doc *d, unsigned int node)
+{
+	return attr_ptr(d, d->nodes[node].src_off);
+}
+
+const char *br_placeholder(struct br_doc *d, unsigned int node)
+{
+	return attr_ptr(d, d->nodes[node].alt_off);
+}
+
+const char *br_type(struct br_doc *d, unsigned int node)
+{
+	return attr_ptr(d, d->nodes[node].rel_off);
+}
+
 /* ---- document setup / node append ---- */
 
 void br_doc_init(struct br_doc *d)
@@ -426,6 +584,7 @@ void br_doc_init(struct br_doc *d)
 	d->rules = rule_store;
 	d->attrs_used = 1;      /* offset 0 = "no attribute" */
 	d->attrs[0] = '\0';
+	d->nvars = 0;
 	d->root = 0;
 }
 
@@ -440,6 +599,7 @@ static void doc_reset(struct br_doc *d)
 	d->nrules = 0;
 	d->title[0] = '\0';
 	d->inline_css_len = 0;
+	d->nvars = 0;
 	d->truncated = 0;
 	d->plain = 0;
 	for (i = 0; i < BR_MAX_NODES; i++) {
@@ -592,7 +752,7 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 			continue;
 		}
 		if (str_eq(name, "href"))
-			n->href_off = store_attr(d, s + vstart, vlen, 220);
+			n->href_off = store_attr(d, s + vstart, vlen, 480);
 		else if (str_eq(name, "class"))
 			n->class_off = store_attr(d, s + vstart, vlen, 120);
 		else if (str_eq(name, "id"))
@@ -600,13 +760,22 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 		else if (str_eq(name, "style"))
 			n->style_off = store_attr(d, s + vstart, vlen, 240);
 		else if (str_eq(name, "src"))
-			n->src_off = store_attr(d, s + vstart, vlen, 220);
+			n->src_off = store_attr(d, s + vstart, vlen, 400);
 		else if (str_eq(name, "alt"))
 			n->alt_off = store_attr(d, s + vstart, vlen, 120);
 		else if (str_eq(name, "color"))
 			n->color_off = store_attr(d, s + vstart, vlen, 32);
 		else if (str_eq(name, "rel"))
 			n->rel_off = store_attr(d, s + vstart, vlen, 64);
+		else if (str_eq(name, "value"))
+			n->src_off = store_attr(d, s + vstart, vlen, 220);
+		else if (str_eq(name, "placeholder") &&
+			 (n->tag == BR_TAG_INPUT || n->tag == BR_TAG_TEXTAREA))
+			n->alt_off = store_attr(d, s + vstart, vlen, 120);
+		else if (str_eq(name, "type") &&
+			 (n->tag == BR_TAG_INPUT || n->tag == BR_TAG_BUTTON ||
+			  n->tag == BR_TAG_SELECT || n->tag == BR_TAG_TEXTAREA))
+			n->rel_off = store_attr(d, s + vstart, vlen, 40);
 		else if (str_eq(name, "width")) {
 			n->width_attr = (unsigned short)parse_uint(s + vstart, vlen);
 			if (vlen && s[vstart + vlen - 1] == '%')
@@ -637,7 +806,8 @@ enum {
 	PROP_BORDER_W, PROP_BORDER_COLOR, PROP_LIST_NONE,
 	PROP_WIDTH, PROP_WIDTH_KIND, PROP_MAXW, PROP_MAXW_KIND,
 	PROP_HEIGHT, PROP_HEIGHT_KIND, PROP_LH_PCT, PROP_LH_PX, PROP_UPPER,
-	PROP_FLOAT,
+	PROP_FLOAT, PROP_FLEX_GROW, PROP_FLEX_COL, PROP_FLEX_WRAP,
+	PROP_GRID_NCOLS, PROP_GRID_GAP, PROP_GRID_SLOT,
 	PROP_COUNT
 };
 
@@ -1069,12 +1239,19 @@ static int parse_display(const char *s, unsigned int len)
 	if (i == 10 && ci_eq_n(s, "list-item", 10))
 		return BR_DISPLAY_BLOCK;
 	if (i == 4 && ci_eq_n(s, "flex", 4))
-		return BR_DISPLAY_BLOCK;
+		return BR_DISPLAY_FLEX;
+	if (i == 10 && ci_eq_n(s, "inline-flex", 10))
+		return BR_DISPLAY_FLEX;
 	if (i == 5 && ci_eq_n(s, "table", 5))
 		return BR_DISPLAY_BLOCK;
 	if (i == 10 && ci_eq_n(s, "table-cell", 10))
 		return BR_DISPLAY_INLINE;
-	if (i == 5 && ci_eq_n(s, "grid", 5))
+	/* Grid shells are common on news/wiki pages, but the two-column
+	 * heuristic is not reliable for their nested area templates yet.
+	 * Collapse them to block flow so the content stays readable. */
+	if (i == 4 && ci_eq_n(s, "grid", 4))
+		return BR_DISPLAY_BLOCK;
+	if (i == 11 && ci_eq_n(s, "inline-grid", 11))
 		return BR_DISPLAY_BLOCK;
 	return BR_DISPLAY_INLINE;
 }
@@ -1130,9 +1307,275 @@ static int parse_border_width(const char *s, unsigned int len)
 	return -1;
 }
 
-static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
+
+/* Expand var(--name[, fallback]) references.  Returns the expanded length;
+ * the input is copied verbatim when it contains no var(). */
+static unsigned int css_expand_vars(struct br_doc *d, const char *s,
+				    unsigned int len, char *out,
+				    unsigned int cap, int depth)
+{
+	unsigned int i = 0, n = 0;
+
+	if (depth > 8)
+		return 0;
+	while (i < len && n + 1 < cap) {
+		unsigned int p, inner, close, comma, nlen, fstart;
+		char quote;
+		int parens;
+
+		if (!(i + 4 <= len && ci_eq_n(s + i, "var(", 4))) {
+			out[n++] = s[i++];
+			continue;
+		}
+		p = i + 4;
+		quote = 0;
+		parens = 1;
+		while (p < len && parens) {
+			char c = s[p];
+
+			if (quote) {
+				if (c == quote)
+					quote = 0;
+				else if (c == '\\' && p + 1 < len)
+					p++;
+			} else if (c == '"' || c == '\'') {
+				quote = c;
+			} else if (c == '(') {
+				parens++;
+			} else if (c == ')') {
+				parens--;
+			}
+			p++;
+		}
+		if (parens) {
+			out[n++] = s[i++];
+			continue;
+		}
+		close = p - 1;
+		inner = i + 4;
+		while (inner < close && is_space(s[inner]))
+			inner++;
+		comma = inner;
+		parens = 0;
+		quote = 0;
+		while (comma < close) {
+			char c = s[comma];
+
+			if (quote) {
+				if (c == quote)
+					quote = 0;
+			} else if (c == '"' || c == '\'') {
+				quote = c;
+			} else if (c == '(') {
+				parens++;
+			} else if (c == ')' && parens > 0) {
+				parens--;
+			} else if (c == ',' && parens == 0) {
+				break;
+			}
+			comma++;
+		}
+		nlen = comma - inner;
+		while (nlen && is_space(s[inner + nlen - 1]))
+			nlen--;
+		fstart = comma < close ? comma + 1 : close;
+		while (fstart < close && is_space(s[fstart]))
+			fstart++;
+		if (nlen >= 3 && s[inner] == '-' && s[inner + 1] == '-') {
+			unsigned int vi = css_var_find(d, s + inner, nlen);
+
+			if (vi < BR_MAX_VARS) {
+				const char *v = attr_ptr(d, d->var_val[vi]);
+				unsigned int vn = css_expand_vars(d, v, s_len(v),
+								  out + n,
+								  cap - n, depth + 1);
+				n += vn;
+			} else if (fstart < close) {
+				unsigned int vn = css_expand_vars(d, s + fstart,
+								  close - fstart,
+								  out + n, cap - n,
+								  depth + 1);
+				n += vn;
+			}
+		} else if (fstart < close) {
+			unsigned int vn = css_expand_vars(d, s + fstart,
+							  close - fstart,
+							  out + n, cap - n,
+							  depth + 1);
+			n += vn;
+		}
+		i = p;
+	}
+	out[n] = '\0';
+	return n;
+}
+
+
+static unsigned int grid_skip_sep(const char *s, unsigned int len,
+				  unsigned int i)
+{
+	while (i < len && (is_space(s[i]) || s[i] == ','))
+		i++;
+	return i;
+}
+
+/* Parse one grid track (px, %, rem/em, fr, auto, or the second minmax()
+ * argument).  Returns 1 on success. */
+static int parse_grid_track(const char *s, unsigned int len,
+			    unsigned int *pp, unsigned short *val,
+			    unsigned char *kind)
+{
+	unsigned int i = grid_skip_sep(s, len, *pp);
+	unsigned int whole = 0, frac = 0, scale = 1;
+	int any = 0;
+
+	if (i + 7 <= len && ci_eq_n(s + i, "minmax(", 7)) {
+		unsigned int j = i + 7;
+
+		while (j < len && s[j] != ',')
+			j++;
+		if (j >= len)
+			return 0;
+		i = j + 1;
+		while (i < len && is_space(s[i]))
+			i++;
+	}
+	if (i + 7 <= len && ci_eq_n(s + i, "repeat(", 7)) {
+		int depth = 1;
+
+		i += 7;
+		while (i < len && depth) {
+			if (s[i] == '(')
+				depth++;
+			else if (s[i] == ')')
+				depth--;
+			i++;
+		}
+		*pp = i;
+		return 0;
+	}
+	while (i < len && s[i] >= '0' && s[i] <= '9') {
+		whole = whole * 10 + (unsigned int)(s[i] - '0');
+		i++;
+		any = 1;
+	}
+	if (i < len && s[i] == '.') {
+		i++;
+		while (i < len && s[i] >= '0' && s[i] <= '9') {
+			if (scale < 1000) {
+				frac = frac * 10 + (unsigned int)(s[i] - '0');
+				scale *= 10;
+			}
+			i++;
+			any = 1;
+		}
+	}
+	if (!any) {
+		if (i + 4 <= len && ci_eq_n(s + i, "auto", 4)) {
+			*val = 1;
+			*kind = 3;
+			*pp = i + 4;
+			return 1;
+		}
+		return 0;
+	}
+	if (i + 2 <= len && ci_eq_n(s + i, "fr", 2)) {
+		*val = (unsigned short)(whole ? whole : 1);
+		*kind = 3;
+		i += 2;
+	} else if (i < len && s[i] == '%') {
+		*val = (unsigned short)(whole > 1000 ? 1000 : whole);
+		*kind = 2;
+		i++;
+	} else if (i + 3 <= len && ci_eq_n(s + i, "rem", 3)) {
+		*val = (unsigned short)(whole * 16 + frac * 16 / scale);
+		*kind = 1;
+		i += 3;
+	} else if (i + 2 <= len && ci_eq_n(s + i, "em", 2)) {
+		*val = (unsigned short)(whole * 16 + frac * 16 / scale);
+		*kind = 1;
+		i += 2;
+	} else {
+		*val = (unsigned short)(whole > 1000 ? 1000 : whole);
+		*kind = 1;
+		if (i + 2 <= len && ci_eq_n(s + i, "px", 2))
+			i += 2;
+	}
+	while (i < len && s[i] != ')' && !is_space(s[i]) && s[i] != ',')
+		i++;
+	*pp = i;
+	return 1;
+}
+
+static int parse_grid_cols(const char *s, unsigned int len,
+			   unsigned short val[2], unsigned char kind[2])
+{
+	unsigned int pos = 0;
+	int n = 0;
+
+	while (n < 2) {
+		unsigned int before = pos;
+
+		if (!parse_grid_track(s, len, &pos, &val[n], &kind[n]))
+			break;
+		n++;
+		if (pos <= before)
+			break;
+		while (pos < len && is_space(s[pos]))
+			pos++;
+		if (pos >= len)
+			break;
+	}
+	return n;
+}
+
+static int parse_grid_slot(const char *s, unsigned int len)
+{
+	if (contains_ci_len(s, len, "footer") ||
+	    contains_ci_len(s, len, "header") ||
+	    contains_ci_len(s, len, "sitenotice") ||
+	    contains_ci_len(s, len, "navbar"))
+		return 1;
+	if (contains_ci_len(s, len, "columnstart") ||
+	    contains_ci_len(s, len, "sidebar") ||
+	    contains_ci_len(s, len, "left") ||
+	    contains_ci_len(s, len, "start"))
+		return 2;
+	if (contains_ci_len(s, len, "pagecontent") ||
+	    contains_ci_len(s, len, "content") ||
+	    contains_ci_len(s, len, "main") ||
+	    contains_ci_len(s, len, "right") ||
+	    contains_ci_len(s, len, "end"))
+		return 3;
+	return 0;
+}
+
+static int css_has_var(const char *s, unsigned int len)
+{
+	unsigned int i;
+
+	for (i = 0; i + 4 <= len; i++)
+		if ((s[i] == 'v' || s[i] == 'V') &&
+		    ci_eq_n(s + i, "var(", 4))
+			return 1;
+	return 0;
+}
+
+static void parse_decls(struct br_doc *d, const char *s,
+			unsigned int len, struct br_decl *out,
 			unsigned int *nout)
 {
+	static char expanded[4096];
+
+	if (css_has_var(s, len)) {
+		unsigned int elen = css_expand_vars(d, s, len, expanded,
+						   sizeof(expanded), 0);
+
+		if (elen) {
+			s = expanded;
+			len = elen;
+		}
+	}
 	unsigned int i = 0;
 
 	*nout = 0;
@@ -1244,6 +1687,74 @@ static void parse_decls(const char *s, unsigned int len, struct br_decl *out,
 				 ci_eq_n(s + vstart, "right", 5))
 				f = 2;
 			decl_add(out, nout, PROP_FLOAT, f, important);
+		} else if (str_eq(prop, "flex-grow") ||
+			   str_eq(prop, "flex")) {
+			unsigned int q = vstart;
+			int g = 0;
+
+			while (q < vend && (s[q] == ' ' || s[q] == '\t'))
+				q++;
+			while (q < vend && s[q] >= '0' && s[q] <= '9') {
+				g = g * 10 + (s[q] - '0');
+				q++;
+			}
+			if (g > 100)
+				g = 100;
+			decl_add(out, nout, PROP_FLEX_GROW, g, important);
+		} else if (str_eq(prop, "flex-direction")) {
+			decl_add(out, nout, PROP_FLEX_COL,
+				 contains_ci_len(s + vstart, vend - vstart,
+						  "column"), important);
+		} else if (str_eq(prop, "flex-wrap")) {
+			int wrap = contains_ci_len(s + vstart, vend - vstart,
+						   "wrap") &&
+				   !contains_ci_len(s + vstart, vend - vstart,
+						    "nowrap");
+			decl_add(out, nout, PROP_FLEX_WRAP, wrap, important);
+		} else if (str_eq(prop, "grid-template-columns") ||
+			   str_eq(prop, "grid-template")) {
+			const char *v = s + vstart;
+			unsigned int vl = vend - vstart;
+			unsigned short val[2];
+			unsigned char kind[2];
+			int n, q;
+
+			if (str_eq(prop, "grid-template")) {
+				for (q = 0; q < (int)vl; q++)
+					if (v[q] == '/') {
+						q++;
+						while (q < (int)vl && is_space(v[q]))
+							q++;
+						v += q;
+						vl -= (unsigned int)q;
+						break;
+					}
+			}
+			n = parse_grid_cols(v, vl, val, kind);
+			if (n > 0) {
+				decl_add(out, nout, PROP_WIDTH, val[0], important);
+				decl_add(out, nout, PROP_WIDTH_KIND, kind[0], important);
+				decl_add(out, nout, PROP_GRID_NCOLS, n, important);
+			}
+			if (n > 1) {
+				decl_add(out, nout, PROP_MAXW, val[1], important);
+				decl_add(out, nout, PROP_MAXW_KIND, kind[1], important);
+			}
+		} else if (str_eq(prop, "gap") || str_eq(prop, "column-gap")) {
+			unsigned int gp = 0;
+			unsigned short gv = 0;
+			unsigned char gk = 1;
+
+			if (parse_grid_track(s, vend, &gp, &gv, &gk) && gk == 1) {
+				if (gv > 120)
+					gv = 120;
+				decl_add(out, nout, PROP_GRID_GAP, gv, important);
+			}
+		} else if (str_eq(prop, "grid-area")) {
+			int slot = parse_grid_slot(s + vstart, vend - vstart);
+
+			if (slot)
+				decl_add(out, nout, PROP_GRID_SLOT, slot, important);
 		} else if (str_eq(prop, "width") ||
 			   str_eq(prop, "max-width") ||
 			   str_eq(prop, "height")) {
@@ -1531,6 +2042,8 @@ static int media_list_matches(const char *s, unsigned int len)
 	return 0;
 }
 
+static int css_collect_only;
+
 static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 {
 	unsigned int i = 0;
@@ -1601,7 +2114,10 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 			send--;
 		if (sstart == send)
 			continue;
-		parse_decls(s + bstart, bend - bstart, decls, &nd);
+		css_collect_block(d, s + bstart, bend - bstart);
+		if (css_collect_only)
+			continue;
+		parse_decls(d, s + bstart, bend - bstart, decls, &nd);
 		if (!nd)
 			continue;
 		/* Split a comma-separated selector list into separate rules. */
@@ -1623,10 +2139,20 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 				 * pseudo-classes or attribute tests: they need
 				 * state/attributes we do not model.  The other
 				 * selectors in the list still apply. */
-				for (k = j; k < e; k++)
+				for (k = j; k < e; ) {
 					if (s[k] == '+' || s[k] == '~' ||
-					    s[k] == ':' || s[k] == '[')
+					    s[k] == '[')
 						break;
+					if (s[k] == ':') {
+						if (k + 5 <= e &&
+						    ci_eq_n(s + k, ":root", 5)) {
+							k += 5;
+							continue;
+						}
+						break;
+					}
+					k++;
+				}
 				if (k < e) {
 					j = q + 1;
 					if (q >= send)
@@ -1654,13 +2180,20 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 
 void br_parse_css_text(struct br_doc *d, const char *css, unsigned int len)
 {
+	css_collect_only = 1;
+	parse_css(d, css, len);
+	css_collect_only = 0;
 	parse_css(d, css, len);
 }
 
 void br_parse_inline_css(struct br_doc *d)
 {
-	if (d->inline_css_len)
+	if (d->inline_css_len) {
+		css_collect_only = 1;
 		parse_css(d, css_store, d->inline_css_len);
+		css_collect_only = 0;
+		parse_css(d, css_store, d->inline_css_len);
+	}
 	d->inline_css_len = 0;
 }
 
@@ -1754,7 +2287,15 @@ static int compound_match(struct br_doc *d, unsigned int node, const char *s,
 				return 0;
 			got = 1;
 		} else if (s[i] == ':') {
-			return 0;      /* pseudo-classes are not modelled */
+			if (i + 5 <= len && ci_eq_n(s + i, ":root", 5) &&
+			    (i + 5 == len || !is_ident(s[i + 5]))) {
+				if (d->nodes[node].tag != BR_TAG_HTML)
+					return 0;
+				i += 5;
+				got = 1;
+			} else {
+				return 0;  /* other pseudo-classes are not modelled */
+			}
 		} else {
 			i++;
 		}
@@ -1922,6 +2463,24 @@ static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 	case PROP_FLOAT:
 		st->float_left = (unsigned char)dcl->val;
 		break;
+	case PROP_FLEX_GROW:
+		st->flex_grow = (unsigned char)dcl->val;
+		break;
+	case PROP_FLEX_COL:
+		st->flex_col = (unsigned char)(dcl->val != 0);
+		break;
+	case PROP_FLEX_WRAP:
+		st->flex_wrap = (unsigned char)(dcl->val != 0);
+		break;
+	case PROP_GRID_NCOLS:
+		st->grid_ncols = (unsigned char)dcl->val;
+		break;
+	case PROP_GRID_GAP:
+		st->grid_gap = (unsigned char)dcl->val;
+		break;
+	case PROP_GRID_SLOT:
+		st->grid_slot = (unsigned char)dcl->val;
+		break;
 	default:
 		break;
 	}
@@ -1966,6 +2525,8 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	out->width_kind = out->max_width_kind = out->height_kind = 0;
 	out->mt = out->mr = out->mb = out->ml = 0;
 	out->pt = out->pr = out->pb = out->pl = 0;
+	out->flex_grow = out->flex_col = out->flex_wrap = 0;
+	out->grid_ncols = out->grid_gap = out->grid_slot = 0;
 	tag = d->nodes[node].tag;
 	out->display = br_tag_is_block(tag) ? BR_DISPLAY_BLOCK :
 					      BR_DISPLAY_INLINE;
@@ -2061,7 +2622,7 @@ void br_style_for(struct br_doc *d, unsigned int node,
 		unsigned int nd, k;
 		const char *v = attr_ptr(d, d->nodes[node].style_off);
 
-		parse_decls(v, s_len(v), decls, &nd);
+		parse_decls(d, v, s_len(v), decls, &nd);
 		for (k = 0; k < nd; k++)
 			cascade_decl(out, &decls[k], 1000, best, best_imp);
 	}

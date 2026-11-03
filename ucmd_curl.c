@@ -116,7 +116,7 @@ static void fetch_fail(unsigned int status, int err, const char *ctype,
 static void fetch_once(void)
 {
 	static struct uhttp h;
-	char req[512];
+	char req[768];
 	char meta[768];
 	unsigned char *buf, *body;
 	unsigned int cap = 0, total = 0, n = 0;
@@ -153,7 +153,7 @@ static void fetch_once(void)
 	}
 
 	uhttp_init(&h);
-	h.user_agent = "nebos-browser-fetch/0.1";
+	h.user_agent = "Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 	rv = uhttp_open(&h, req + i, 0, 0);
 	/* The browser cancels a page load by killing our predecessor.  It can
 	 * still own the single NIC receiver for a tick or two, so a fresh

@@ -585,7 +585,7 @@ static int read_response_head(struct uhttp *h, char *location, int *have_loc)
 
 static int send_request(struct uhttp *h, unsigned int flags)
 {
-	char req[640];
+	char req[1024];
 	unsigned int n = 0;
 	int rv;
 
@@ -621,7 +621,7 @@ void uhttp_init(struct uhttp *h)
 
 	for (i = 0; i < sizeof(*h); i++)
 		((unsigned char *)h)[i] = 0;
-	h->user_agent = "nebos-uhttp/0.1";
+	h->user_agent = "Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 }
 
 static int host_same(const char *a, const char *b)

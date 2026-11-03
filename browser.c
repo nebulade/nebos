@@ -33,7 +33,7 @@
 #define BR_CSS_COMP_MAX (192u * 1024u)
 #define BR_MAX_SHEETS   6
 #define BR_HISTORY      16
-#define BR_URL_MAX      320
+#define BR_URL_MAX      512
 #define BR_STATUS_MAX   200
 
 #define BR_IMG_RGB565(r, g, b) \
@@ -804,7 +804,7 @@ static void worker_wait_ui(void)
 static int worker_fetch(const char *url, unsigned int cap,
 			struct fetch_meta *m, char *err, unsigned int errcap)
 {
-	static char req[512], meta[1024];
+	static char req[768], meta[1024];
 	char *p;
 	unsigned int n = 0, deadline, i;
 	int rn, pid;
@@ -1552,6 +1552,8 @@ static int run_width(const struct lay_run *r)
 {
 	if (r->img >= 0)
 		return r->iw;
+	if (r->img == -2)
+		return r->iw;
 	{
 		unsigned int n = r->has_lit ? s_len(r->lit) : r->len;
 		return (int)(n * (unsigned int)(8 * r->scale) +
@@ -1581,7 +1583,19 @@ static void flush_line(struct lay *l)
 
 		x += r->gap;
 		if (l->draw) {
-			if (r->img >= 0) {
+			if (r->img == -2) {
+				int hh = r->ih ? r->ih : 20;
+
+				ngui_fill_rect(l->ui,
+					(struct ngui_rect){x, l->line_y, w, hh},
+					l->ui->theme.panel_alt);
+				ngui_frame(l->ui,
+					(struct ngui_rect){x, l->line_y, w, hh},
+					l->ui->theme.border);
+				ngui_text_styled(l->ui, x + 6, l->line_y + 2,
+						 r->lit, s_len(r->lit), r->color,
+						 r->scale, r->bold);
+			} else if (r->img >= 0) {
 				struct br_image *bi = &images[r->img];
 				if (bi->state == 1) {
 					struct img_blit b;
@@ -1987,9 +2001,84 @@ static int list_index(unsigned int parent, unsigned int node)
 	return (int)n + 1;
 }
 
+static const char *form_text(unsigned int node)
+{
+	const char *v = br_value(&doc, node);
+	const char *p = br_placeholder(&doc, node);
+	const char *t = br_type(&doc, node);
+
+	if (s_eq(t, "hidden"))
+		return 0;
+	if (s_eq(t, "submit") || s_eq(t, "button") || s_eq(t, "reset"))
+		return v[0] ? v : "Button";
+	if (v[0])
+		return v;
+	if (p[0])
+		return p;
+	if (doc.nodes[node].tag == BR_TAG_TEXTAREA)
+		return "Text";
+	if (doc.nodes[node].tag == BR_TAG_SELECT)
+		return "Select";
+	return "Search";
+}
+
+static void add_form_run(struct lay *l, unsigned int node,
+			 const struct br_style *st, unsigned short href)
+{
+	const char *text = form_text(node);
+	struct lay_run *r;
+	int tw, w, h = 20, i;
+
+	if (!text)
+		return;
+	tw = (int)s_len(text) * 8 * st->scale;
+	if (st->width_kind == 1)
+		w = st->width;
+	else if (st->width_kind == 2)
+		w = (l->right - l->left) * (int)st->width / 100;
+	else
+		w = tw + 18;
+	if (w < 64)
+		w = 64;
+	if (w > l->right - l->left)
+		w = l->right - l->left;
+	if (w < 8)
+		w = 8;
+	if (l->line_x + w > l->right &&
+	    (l->nruns > 0 || l->line_x > l->left))
+		flush_line(l);
+	if (l->nruns >= 96)
+		return;
+	r = &l->runs[l->nruns++];
+	r->gap = (unsigned short)(l->line_x - l->run_x);
+	r->off = r->len = 0;
+	r->color = st->color;
+	r->href = href;
+	r->has_lit = 1;
+	for (i = 0; i + 1 < (int)sizeof(r->lit) && text[i]; i++)
+		r->lit[i] = text[i];
+	r->lit[i] = '\0';
+	r->img = -2;
+	r->iw = (unsigned short)w;
+	r->ih = (unsigned short)h;
+	r->scale = st->scale;
+	r->bold = st->bold;
+	r->underline = 0;
+	l->line_x += w;
+	l->run_x = l->line_x;
+	if (l->line_h < h)
+		l->line_h = h;
+}
+
 static void layout_children(struct lay *l, unsigned int parent,
 			    const struct br_style *pst, int depth,
 			    unsigned short link);
+static void layout_flex_children(struct lay *l, unsigned int parent,
+				 const struct br_style *pst, int depth,
+				 unsigned short link);
+static void layout_grid_children(struct lay *l, unsigned int parent,
+				 const struct br_style *pst, int depth,
+				 unsigned short link);
 
 static void layout_block(struct lay *l, unsigned int node,
 			 const struct br_style *st, int depth,
@@ -2000,6 +2089,15 @@ static void layout_block(struct lay *l, unsigned int node,
 
 	if (depth > 24 || st->display == BR_DISPLAY_NONE)
 		return;
+	if (doc.nodes[node].tag == BR_TAG_INPUT ||
+	    doc.nodes[node].tag == BR_TAG_TEXTAREA ||
+	    doc.nodes[node].tag == BR_TAG_SELECT) {
+		if (!(doc.nodes[node].tag == BR_TAG_INPUT &&
+		      s_eq(br_type(&doc, node), "hidden")))
+			add_form_run(l, node, st, link);
+		l->y += 20;
+		return;
+	}
 	flush_line(l);
 	l->y += st->mt;
 	top = l->y;
@@ -2074,7 +2172,13 @@ static void layout_block(struct lay *l, unsigned int node,
 					  st->color);
 			}
 		}
-		layout_children(l, node, st, depth + 1, link);
+		if (st->display == BR_DISPLAY_GRID && st->grid_ncols >= 2 &&
+		    st->grid_gap > 0)
+			layout_grid_children(l, node, st, depth + 1, link);
+		else if (st->display == BR_DISPLAY_FLEX && !st->flex_col)
+			layout_flex_children(l, node, st, depth + 1, link);
+		else
+			layout_children(l, node, st, depth + 1, link);
 	}
 	flush_line(l);
 	l->y += st->pb;
@@ -2240,6 +2344,299 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 	return n;
 }
 
+/* A deliberately simple flex row: items are placed left to right, grow
+ * items share the leftover width, and a row wraps when the next item does not
+ * fit.  It is enough for site headers, cards and Wikipedia's main-page boxes;
+ * flex-direction: column uses the normal block path. */
+static int flex_item_width(struct lay *l, unsigned int n,
+			   const struct br_style *cs, int avail)
+{
+	struct br_node *nd = &doc.nodes[n];
+
+	(void)l;
+	int w;
+
+	if (cs->width_kind == 2)
+		w = avail * (int)cs->width / 100;
+	else if (cs->width_kind == 1)
+		w = (int)cs->width;
+	else if (nd->tag == BR_TAG_IMG) {
+		int idx = nd->img_index;
+
+		if (idx >= 0 && idx < image_count &&
+		    images[idx].state == 1)
+			w = (int)images[idx].img.w;
+		else if (nd->width_attr)
+			w = (int)nd->width_attr;
+		else
+			w = 64;
+	} else {
+		w = intrinsic_width(n, cs, 0);
+		w += cs->pl + cs->pr + cs->ml + cs->mr;
+	}
+	if (w < 24)
+		w = 24;
+	if (w > avail)
+		w = avail;
+	return w;
+}
+
+static void layout_flex_children(struct lay *l, unsigned int parent,
+				 const struct br_style *pst, int depth,
+				 unsigned short link)
+{
+	unsigned int n, c;
+	int row_left = l->left, row_right = l->right;
+	int avail = row_right - row_left;
+	int grow_count = 0, fixed = 0, grow_w;
+	int x = row_left, row_top = l->y, row_bottom = l->y, any = 0;
+
+	if (avail < 160 || depth > 24) {
+		layout_children(l, parent, pst, depth, link);
+		return;
+	}
+
+	/* If direct text is not just whitespace, normal block flow handles it
+	 * better than pretending it is a flex item. */
+	for (c = doc.nodes[parent].first; c; c = doc.nodes[c].next) {
+		struct br_node *nd = &doc.nodes[c];
+
+		if (nd->type == BR_NODE_TEXT && !text_node_blank(nd)) {
+			layout_children(l, parent, pst, depth, link);
+			return;
+		}
+	}
+
+	for (c = doc.nodes[parent].first; c; c = doc.nodes[c].next) {
+		struct br_node *nd = &doc.nodes[c];
+		struct br_style cs;
+
+		if (nd->type == BR_NODE_TEXT)
+			continue;
+		br_style_for(&doc, c, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE)
+			continue;
+		if (cs.flex_grow && !cs.width_kind)
+			grow_count++;
+		else
+			fixed += flex_item_width(l, c, &cs, avail);
+	}
+	grow_w = grow_count ? (avail - fixed) / grow_count : 0;
+	if (grow_w < 96)
+		grow_w = 96;
+
+	n = doc.nodes[parent].first;
+	while (n) {
+		struct br_node *nd = &doc.nodes[n];
+		struct br_style cs;
+		unsigned short lk = link;
+		int colw;
+
+		if (nd->type == BR_NODE_TEXT) {
+			n = nd->next;
+			continue;
+		}
+		br_style_for(&doc, n, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE) {
+			n = nd->next;
+			continue;
+		}
+		if (nd->tag == BR_TAG_A && nd->href_off)
+			lk = (unsigned short)n;
+		if (cs.flex_grow && !cs.width_kind)
+			colw = grow_w;
+		else
+			colw = flex_item_width(l, n, &cs, avail);
+		if (colw > row_right - row_left)
+			colw = row_right - row_left;
+		if (any && x + colw > row_right) {
+			row_top = row_bottom;
+			row_bottom = row_top;
+			x = row_left;
+		}
+		l->left = x;
+		l->right = x + colw;
+		if (l->right < l->left + 8)
+			l->right = l->left + 8;
+		l->y = row_top;
+		l->line_x = l->left;
+		l->run_x = l->left;
+		l->line_y = l->y;
+		l->line_h = 0;
+		l->nruns = 0;
+		l->space_pending = 0;
+		l->align = cs.align;
+		layout_block(l, n, &cs, depth + 1, lk);
+		if (l->y > row_bottom)
+			row_bottom = l->y;
+		x += colw;
+		any++;
+		n = nd->next;
+	}
+	l->left = row_left;
+	l->right = row_right;
+	l->y = row_bottom;
+	l->line_x = l->left;
+	l->run_x = l->left;
+	l->line_y = l->y;
+	l->line_h = 0;
+	l->nruns = 0;
+	l->space_pending = 0;
+}
+
+/* Two-column CSS grid: track sizes from grid-template-columns (px, %, fr)
+ * plus the grid-area hints used by site shells (site notice/footer full
+ * width, column-start left, page-content right).  Anything more elaborate
+ * falls back to normal block flow. */
+static int grid_track_width(unsigned char kind, unsigned short val,
+			    int avail, int other)
+{
+	if (kind == 2)
+		return avail * (int)val / 100;
+	if (kind == 1)
+		return val;
+	return other;
+}
+
+static void layout_grid_children(struct lay *l, unsigned int parent,
+				 const struct br_style *pst, int depth,
+				 unsigned short link)
+{
+	unsigned int n;
+	int row_left = l->left, row_right = l->right;
+	int avail = row_right - row_left;
+	int gap = pst->grid_gap;
+	int track_total = avail - gap;
+	int col0, col1, x0, x1;
+	int row_y, row_bottom, have_left = 0, have_right = 0;
+	unsigned int c;
+
+	if (avail < 32 || depth > 24)
+		return;
+	if (track_total < 16)
+		track_total = 16;
+
+	col0 = grid_track_width((unsigned char)(pst->width_kind),
+				pst->width, track_total, 0);
+	col1 = grid_track_width((unsigned char)(pst->max_width_kind),
+				pst->max_width, track_total, 0);
+	if (pst->width_kind == 3 && pst->max_width_kind == 3) {
+		int w0 = pst->width ? pst->width : 1;
+		int w1 = pst->max_width ? pst->max_width : 1;
+
+		col0 = track_total * w0 / (w0 + w1);
+		col1 = track_total - col0;
+	} else if (pst->width_kind == 3) {
+		col0 = track_total - col1;
+		if (col0 < 24)
+			col0 = 24;
+	} else if (pst->max_width_kind == 3) {
+		col1 = track_total - col0;
+		if (col1 < 24)
+			col1 = 24;
+	}
+	if (col0 < 24)
+		col0 = 24;
+	if (col1 < 24)
+		col1 = 24;
+	if (col0 + col1 > track_total) {
+		col1 = track_total - col0;
+		if (col1 < 24)
+			col1 = 24;
+	}
+	x0 = row_left;
+	x1 = row_left + col0 + gap;
+
+	/* Direct text makes a grid ambiguous; use block flow instead. */
+	for (c = doc.nodes[parent].first; c; c = doc.nodes[c].next) {
+		struct br_node *nd = &doc.nodes[c];
+
+		if (nd->type == BR_NODE_TEXT && !text_node_blank(nd)) {
+			layout_children(l, parent, pst, depth, link);
+			return;
+		}
+	}
+
+	row_y = row_bottom = l->y;
+	n = doc.nodes[parent].first;
+	while (n) {
+		struct br_node *nd = &doc.nodes[n];
+		struct br_style cs;
+		unsigned short lk = link;
+		int slot, x, w;
+
+		if (nd->type == BR_NODE_TEXT) {
+			n = nd->next;
+			continue;
+		}
+		br_style_for(&doc, n, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE) {
+			n = nd->next;
+			continue;
+		}
+		if (nd->tag == BR_TAG_A && nd->href_off)
+			lk = (unsigned short)n;
+		slot = cs.grid_slot;
+		if (!slot) {
+			if (!have_left)
+				slot = 2;
+			else if (!have_right)
+				slot = 3;
+			else
+				slot = 2;
+		}
+		if (slot == 1) {
+			if (have_left || have_right) {
+				row_y = row_bottom;
+				have_left = have_right = 0;
+			}
+			x = row_left;
+			w = avail;
+		} else if (slot == 2) {
+			if (have_left) {
+				row_y = row_bottom;
+				have_left = have_right = 0;
+			}
+			x = x0;
+			w = col0;
+			have_left = 1;
+		} else {
+			if (have_right) {
+				row_y = row_bottom;
+				have_left = have_right = 0;
+			}
+			x = x1;
+			w = col1;
+			have_right = 1;
+		}
+		l->left = x;
+		l->right = x + w;
+		if (l->right < l->left + 8)
+			l->right = l->left + 8;
+		l->y = row_y;
+		l->line_x = l->left;
+		l->run_x = l->left;
+		l->line_y = l->y;
+		l->line_h = 0;
+		l->nruns = 0;
+		l->space_pending = 0;
+		l->align = cs.align;
+		layout_block(l, n, &cs, depth + 1, lk);
+		if (l->y > row_bottom)
+			row_bottom = l->y;
+		n = nd->next;
+	}
+	l->left = row_left;
+	l->right = row_right;
+	l->y = row_bottom;
+	l->line_x = l->left;
+	l->run_x = l->left;
+	l->line_y = l->y;
+	l->line_h = 0;
+	l->nruns = 0;
+	l->space_pending = 0;
+}
+
 static void layout_children(struct lay *l, unsigned int parent,
 			    const struct br_style *pst, int depth,
 			    unsigned short link)
@@ -2279,6 +2676,14 @@ static void layout_children(struct lay *l, unsigned int parent,
 					(struct ngui_rect){l->left, l->y + 2,
 					l->right - l->left, 1}, BR_GRAY);
 			l->y += 8;
+			n = nd->next;
+			continue;
+		}
+		if (nd->tag == BR_TAG_INPUT || nd->tag == BR_TAG_TEXTAREA ||
+		    nd->tag == BR_TAG_SELECT) {
+			if (!(nd->tag == BR_TAG_INPUT &&
+			      s_eq(br_type(&doc, n), "hidden")))
+				add_form_run(l, n, &cs, lk);
 			n = nd->next;
 			continue;
 		}
