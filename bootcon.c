@@ -8,6 +8,7 @@
 #include "bootcon.h"
 #include "bootinfo.h"
 #include "font_8x8.h"
+#include "mm.h"
 #include "serial.h"
 #include "vga.h"
 
@@ -24,6 +25,16 @@ static int fb_ok;
 static int enabled;
 static unsigned int cur_x, cur_y;
 static unsigned int home_x, home_y;
+
+/* Text log kept independently of the framebuffer: bootcon is disabled when
+ * the WM starts, but the e1000e probe and later driver messages still go
+ * through bootcon_puts().  The buffer is allocated from the frame allocator
+ * (see bootcon_log_init) so it does not move the kernel's _end past the low
+ * rootfs pack at 0x60000. */
+static char *log_buf;
+static unsigned int log_cap;
+static unsigned int log_len;
+static int log_truncated;
 
 static void fb_px(unsigned int x, unsigned int y, unsigned int r,
 		  unsigned int g, unsigned int b)
@@ -151,14 +162,40 @@ static void newline(void)
 	clear_line();
 }
 
+void bootcon_log_init(void)
+{
+	unsigned int mem;
+
+	if (log_buf)
+		return;
+	mem = mm_alloc_pages(BOOTCON_LOG_PAGES);
+	if (!mem)
+		return;
+	log_buf = (char *)mem;
+	log_cap = BOOTCON_LOG_PAGES * PAGE_SIZE;
+	log_len = 0;
+	log_truncated = 0;
+	log_buf[0] = '\0';
+}
+
 void bootcon_puts(const char *s)
 {
-	if (!fb_ok || !enabled)
-		return;
-
 	while (*s) {
 		unsigned char c = (unsigned char)*s++;
 
+		/* Keep the text even after bootcon_set_enabled(0) has hidden
+		 * the framebuffer console. */
+		if (log_buf) {
+			if (log_len + 1 < log_cap) {
+				log_buf[log_len++] = (char)c;
+				log_buf[log_len] = '\0';
+			} else {
+				log_truncated = 1;
+			}
+		}
+
+		if (!fb_ok || !enabled)
+			continue;
 		if (c == '\r') {
 			cur_x = LEFT;
 			continue;
@@ -172,6 +209,17 @@ void bootcon_puts(const char *s)
 		draw_char(cur_x, cur_y, c);
 		cur_x += 8 * SCALE;
 	}
+}
+
+const char *bootcon_log(unsigned int *len)
+{
+	*len = log_len;
+	return log_buf ? log_buf : "";
+}
+
+int bootcon_log_truncated(void)
+{
+	return log_truncated;
 }
 
 void bootcon_dec(unsigned int v)

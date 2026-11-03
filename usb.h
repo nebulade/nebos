@@ -1,6 +1,7 @@
 /* USB core: device enumeration, descriptor parsing, hub recursion, bus
    scans and the hotplug watcher.  Controller-specific work (transfers, root
-   ports) goes through the usb_hcd_ops vtable (uhci.c / ohci.c). */
+   ports) goes through the usb_hcd_ops vtable (uhci.c / ohci.c / ehci.c /
+   xhci.c). */
 #ifndef USB_H
 #define USB_H
 
@@ -9,9 +10,11 @@
 /* `lsusb` command: full scan, print the tree. */
 void usb_enumerate_and_print(void);
 
-/* Find + bring up a host controller; 0 when one is available. */
+/* Find + bring up every host controller; 0 when at least one is available. */
 int usb_hcd_init(void);
 const char *usb_hcd_name(void);
+/* Name of the controller type behind one global controller index. */
+const char *usb_hcd_name_ctrl(unsigned int ctrl);
 
 /* Full bus scan: resets every connected root port, re-enumerates and calls
    the probe for each interface (probe may be NULL to print instead).

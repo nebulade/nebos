@@ -80,10 +80,22 @@ static void send_line(const unsigned char *buf, unsigned int len)
 	static const unsigned char bcast_mac[6] = {
 		0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
 	};
-	unsigned char dst[4];
+	const struct netdev *nd = netdev_mgmt();
+	unsigned char src[4], dst[4];
 
+	if (!nd)
+		return;
 	netlog_get_host(dst);
-	net_udp_send(bcast_mac, dst, NETLOG_PORT, NETLOG_PORT, buf, len);
+	if (nd->default_ip) {
+		unsigned int i;
+
+		for (i = 0; i < 4; i++)
+			src[i] = nd->default_ip[i];
+	} else {
+		net_get_ip(src);
+	}
+	net_udp_send_from_dev(nd, src, bcast_mac, dst,
+			      NETLOG_PORT, NETLOG_PORT, buf, len);
 }
 
 void netlog_flush(void)
@@ -93,7 +105,7 @@ void netlog_flush(void)
 	static const char dropmsg[] = "[netlog: output dropped, buffer full]\n";
 	unsigned int i;
 
-	if (!enabled || netdev_in_use() || !netdev_active())
+	if (!enabled || netdev_in_use() || !netdev_mgmt())
 		return;
 
 	avail = pending();

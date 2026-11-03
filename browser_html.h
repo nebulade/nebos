@@ -134,7 +134,9 @@ struct br_decl {
 struct br_rule {
 	unsigned int sel_off;       /* selector text in the attr arena */
 	unsigned int key_off;       /* rightmost compound, for a fast prefilter */
+	unsigned short spec;        /* selector specificity */
 	unsigned char nd;
+	unsigned char single;       /* one compound, no ancestor walk needed */
 	struct br_decl d[BR_DECLS];
 };
 
@@ -155,6 +157,7 @@ struct br_doc {
 	 * single table: the last definition wins, which matches :root. */
 	unsigned int var_name[BR_MAX_VARS];
 	unsigned int var_val[BR_MAX_VARS];
+	unsigned short var_slot[1024];
 	unsigned int nvars;
 	/* Rule index: rightmost class/id/tag -> linked list of rule indices. */
 	unsigned short rule_next[BR_MAX_RULES];

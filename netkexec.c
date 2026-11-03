@@ -24,6 +24,7 @@
 #include "kexec.h"
 #include "net.h"
 #include "netdev.h"
+#include "process.h"
 #include "serial.h"
 #include "timer.h"
 #include "netkexec.h"
@@ -89,17 +90,10 @@ static void wr32(unsigned char *p, unsigned int v)
 	p[3] = (unsigned char)((v >> 24) & 0xFF);
 }
 
-static int ip_eq(const unsigned char *a, const unsigned char *b)
-{
-	return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
-}
-
-static int ip_is_bcast(const unsigned char *ip)
-{
-	return ip[0] == 0xFF && ip[1] == 0xFF && ip[2] == 0xFF && ip[3] == 0xFF;
-}
-
 /* Parse `f` as a UDP datagram to NETKEXEC_PORT; fill payload + peer address.
+ * The management link may have a different address from the active test NIC
+ * (ASIX 192.168.50.2 while e1000e is 192.168.178.240), so accept any
+ * destination IP here: the KXN2/KXND magic and checksum are the gate.
  * Returns 1 on match. */
 static int parse_udp(const unsigned char *f, unsigned int len,
 		     const unsigned char **payload, unsigned int *plen,
@@ -108,7 +102,6 @@ static int parse_udp(const unsigned char *f, unsigned int len,
 {
 	const unsigned char *ip = f + 14;
 	const unsigned char *udp;
-	unsigned char my_ip[4];
 	unsigned int i, ihl, ip_len;
 
 	if (len < 14 + 20 + 8)
@@ -122,10 +115,6 @@ static int parse_udp(const unsigned char *f, unsigned int len,
 		return 0;
 	ip_len = ((unsigned int)ip[2] << 8) | ip[3];
 	if (ip_len < ihl + 8 || 14 + ip_len > len)
-		return 0;
-
-	net_get_ip(my_ip);
-	if (!ip_eq(ip + 16, my_ip) && !ip_is_bcast(ip + 16))
 		return 0;
 
 	udp = ip + ihl;
@@ -142,38 +131,56 @@ static int parse_udp(const unsigned char *f, unsigned int len,
 	return *plen > 0;
 }
 
+static int netkexec_poll_nd(const struct netdev *nd, int capture)
+{
+	unsigned int n;
+
+	for (n = 0; n < 8; n++) {
+		int len = nd->rx(rxbuf, sizeof(rxbuf));
+
+		if (len < 0)
+			break;
+		if (capture && netkexec_capture_frame(rxbuf,
+						      (unsigned int)len))
+			return 1;
+
+		/* Not a kexec datagram: stay reachable by answering ARP and
+		 * ICMP echo requests for our IP (so the board can be pinged,
+		 * and a host can resolve its MAC, without running a
+		 * command).  Until an address is configured there is nothing
+		 * to answer for. */
+		if (net_is_configured()) {
+			int rlen = net_build_reply(rxbuf, (unsigned int)len,
+						   replybuf,
+						   sizeof(replybuf));
+			if (rlen > 0)
+				nd->tx(replybuf, (unsigned int)rlen);
+		}
+	}
+	return 0;
+}
+
 int netkexec_pending(void)
 {
-	const struct netdev *nd;
-	int len;
+	const struct netdev *mgmt, *act;
 
 	if (kexec_busy || netdev_in_use())
 		return 0;
 	if (have_header)
 		return 1;
-	nd = netdev_active();
-	if (!nd)
+	mgmt = netdev_mgmt();
+	act = netdev_active();
+	if (!mgmt && !act)
 		return 0;
 
-	/* One frame per call; anything else is dropped (this also keeps the RX
-	 * ring drained while the system idles at a prompt). */
-	len = nd->rx(rxbuf, sizeof(rxbuf));
-	if (len < 0)
-		return 0;
-
-	if (netkexec_capture_frame(rxbuf, (unsigned int)len))
+	/* KXN2/KXNP headers and the netmon console use the management
+	 * link (ASIX when present), so switching the active driver to
+	 * e1000e for testing does not cut the upload/debug path.  The
+	 * active NIC still gets its ARP/ICMP responder polled. */
+	if (mgmt && netkexec_poll_nd(mgmt, 1))
 		return 1;
-
-	/* Not a kexec datagram: stay reachable by answering ARP and ICMP echo
-	 * requests for our IP (so the board can be pinged, and a host can
-	 * resolve its MAC, without running a command).  Until an address is
-	 * configured there is nothing to answer for. */
-	if (net_is_configured()) {
-		int rlen = net_build_reply(rxbuf, (unsigned int)len,
-					   replybuf, sizeof(replybuf));
-		if (rlen > 0)
-			nd->tx(replybuf, (unsigned int)rlen);
-	}
+	if (act && act != mgmt)
+		netkexec_poll_nd(act, 0);
 	return 0;
 }
 
@@ -230,19 +237,36 @@ int netkexec_capture_frame(const unsigned char *frame, unsigned int len)
 
 static void send_ack(unsigned int next_offset, unsigned int status)
 {
+	const struct netdev *nd = netdev_mgmt();
+	unsigned char src[4];
+
+	if (!nd)
+		return;
+	if (nd->default_ip) {
+		unsigned int i;
+
+		for (i = 0; i < 4; i++)
+			src[i] = nd->default_ip[i];
+	} else {
+		net_get_ip(src);
+	}
 	wr32(ackbuf, X_MAGIC_ACK);
 	wr32(ackbuf + 4, next_offset);
 	wr32(ackbuf + 8, status);
-	net_udp_send(peer_mac, peer_ip, NETKEXEC_PORT, peer_port,
-		     ackbuf, sizeof(ackbuf));
+	net_udp_send_from_dev(nd, src, peer_mac, peer_ip, NETKEXEC_PORT,
+			      peer_port, ackbuf, sizeof(ackbuf));
 }
 
 static int netkexec_recv(unsigned int stage_base)
 {
 	volatile unsigned char *stage = (volatile unsigned char *)stage_base;
+	const struct netdev *nd = netdev_mgmt();
 	unsigned int offset = 0, retries = 0, sum = 0;
 	unsigned int deadline = get_ticks_ms() + 3000;
+	unsigned int hard_deadline = get_ticks_ms() + 60000;
 
+	if (!nd)
+		return -1;
 	kexec_total = x_size;
 	kexec_progress = 0;
 	send_ack(0, ACK_CONTINUE);          /* header ok, send from offset 0 */
@@ -252,6 +276,13 @@ static int netkexec_recv(unsigned int stage_base)
 		unsigned int plen, port, doff, dlen;
 		int len, i;
 
+		/* A host that trickles one datagram at a time can keep the
+		 * per-packet deadline alive forever, holding the NIC (and the
+		 * background ARP/ICMP responder) hostage.  Cap the whole
+		 * transfer as well. */
+		if ((int)(get_ticks_ms() - hard_deadline) > 0)
+			return -1;
+
 		if ((int)(get_ticks_ms() - deadline) > 0) {
 			if (++retries > 10)
 				return -1;      /* host gave up */
@@ -260,19 +291,30 @@ static int netkexec_recv(unsigned int stage_base)
 			continue;
 		}
 
-		len = netdev_active()->rx(rxbuf, sizeof(rxbuf));
-		if (len < 0)
+		len = nd->rx(rxbuf, sizeof(rxbuf));
+		if (len < 0) {
+			/* Yield so the WM and terminal keep running while we
+			 * wait for the next datagram; this used to busy-spin
+			 * with the BKL held and froze the UI. */
+			process_sleep_ms(1);
 			continue;
+		}
 		if (!parse_udp(rxbuf, (unsigned int)len, &payload, &plen,
-			       peer_mac, peer_ip, &port))
+			       peer_mac, peer_ip, &port)) {
+			process_sleep_ms(1);
 			continue;
-		if (plen < 12 || rd32(payload) != X_MAGIC_DATA)
+		}
+		if (plen < 12 || rd32(payload) != X_MAGIC_DATA) {
+			process_sleep_ms(1);
 			continue;
+		}
 
 		doff = rd32(payload + 4);
 		dlen = rd32(payload + 8);
-		if (dlen > NETKEXEC_DATA_MAX || plen < 12 + dlen)
+		if (dlen > NETKEXEC_DATA_MAX || plen < 12 + dlen) {
+			process_sleep_ms(1);
 			continue;
+		}
 
 		if (doff == offset) {
 			for (i = 0; i < (int)dlen; i++) {

@@ -79,10 +79,46 @@ const char *br_tag_name(unsigned int tag)
 	return "?";
 }
 
+static unsigned int s_len(const char *s);
+
+#define TAG_HASH_SIZE 128
+
+static unsigned char tag_hash_idx[TAG_HASH_SIZE];
+static int tag_hash_ready;
+
+static unsigned int tag_hash_key(const char *name, unsigned int len)
+{
+	unsigned int i, h = 2166136261u;
+
+	for (i = 0; i < len; i++) {
+		h ^= (unsigned char)name[i];
+		h *= 16777619u;
+	}
+	return h & (TAG_HASH_SIZE - 1);
+}
+
+static void tag_hash_build(void)
+{
+	unsigned int i;
+
+	for (i = 0; i < TAG_HASH_SIZE; i++)
+		tag_hash_idx[i] = 0xFF;
+	for (i = 0; tag_names[i].name; i++) {
+		unsigned int h = tag_hash_key(tag_names[i].name,
+					      s_len(tag_names[i].name));
+
+		while (tag_hash_idx[h] != 0xFF)
+			h = (h + 1) & (TAG_HASH_SIZE - 1);
+		tag_hash_idx[h] = (unsigned char)i;
+	}
+	tag_hash_ready = 1;
+}
+
 unsigned int br_tag_from_name(const char *name)
 {
-	unsigned int i, j;
 	char lower[16];
+	unsigned int i, len, h;
+	unsigned char idx;
 
 	for (i = 0; i < 15 && name[i]; i++) {
 		char c = name[i];
@@ -92,13 +128,25 @@ unsigned int br_tag_from_name(const char *name)
 		lower[i] = c;
 	}
 	lower[i] = '\0';
-	for (i = 0; tag_names[i].name; i++) {
-		for (j = 0; lower[j] && tag_names[i].name[j] == lower[j]; j++)
-			;
-		if (!lower[j] && !tag_names[i].name[j])
-			return tag_names[i].tag;
+	len = i;
+	if (!tag_hash_ready)
+		tag_hash_build();
+	h = tag_hash_key(lower, len);
+	for (;;) {
+		idx = tag_hash_idx[h];
+		if (idx == 0xFF)
+			return BR_TAG_UNKNOWN;
+		{
+			const char *n = tag_names[idx].name;
+			unsigned int j;
+
+			for (j = 0; lower[j] && n[j] == lower[j]; j++)
+				;
+			if (!lower[j] && !n[j])
+				return tag_names[idx].tag;
+		}
+		h = (h + 1) & (TAG_HASH_SIZE - 1);
 	}
-	return BR_TAG_UNKNOWN;
 }
 
 int br_tag_is_void(unsigned int tag)
@@ -418,23 +466,41 @@ static unsigned int store_raw(struct br_doc *d, const char *s,
 	return off;
 }
 
+#define VAR_HASH_SIZE 1024
+
+static unsigned int var_hash(const char *name, unsigned int len)
+{
+	unsigned int i, h = 2166136261u;
+
+	for (i = 0; i < len; i++) {
+		h ^= (unsigned char)name[i];
+		h *= 16777619u;
+	}
+	return h & (VAR_HASH_SIZE - 1);
+}
+
 static unsigned int css_var_find(struct br_doc *d, const char *name,
 				 unsigned int nlen)
 {
-	unsigned int i;
+	unsigned int h = var_hash(name, nlen);
 
-	for (i = 0; i < d->nvars; i++) {
-		const char *n = attr_ptr(d, d->var_name[i]);
-		unsigned int j;
+	for (;;) {
+		unsigned int i = d->var_slot[h];
 
-		if (s_len(n) != nlen)
-			continue;
-		for (j = 0; j < nlen && n[j] == name[j]; j++)
-			;
-		if (j == nlen)
-			return i;
+		if (!i)
+			return BR_MAX_VARS;
+		i--;
+		if (s_len(attr_ptr(d, d->var_name[i])) == nlen) {
+			const char *n = attr_ptr(d, d->var_name[i]);
+			unsigned int j;
+
+			for (j = 0; j < nlen && n[j] == name[j]; j++)
+				;
+			if (j == nlen)
+				return i;
+		}
+		h = (h + 1) & (VAR_HASH_SIZE - 1);
 	}
-	return BR_MAX_VARS;
 }
 
 static void css_var_set(struct br_doc *d, const char *name,
@@ -450,10 +516,16 @@ static void css_var_set(struct br_doc *d, const char *name,
 		return;
 	i = css_var_find(d, name, nlen);
 	if (i >= BR_MAX_VARS) {
+		unsigned int h;
+
 		if (d->nvars >= BR_MAX_VARS)
 			return;
 		i = d->nvars++;
 		d->var_name[i] = noff;
+		h = var_hash(name, nlen);
+		while (d->var_slot[h])
+			h = (h + 1) & (VAR_HASH_SIZE - 1);
+		d->var_slot[h] = (unsigned short)(i + 1);
 	}
 	d->var_val[i] = voff;
 }
@@ -641,6 +713,8 @@ void br_doc_init(struct br_doc *d)
 	d->attrs[0] = '\0';
 	d->nvars = 0;
 	d->root = 0;
+	for (unsigned int vi = 0; vi < VAR_HASH_SIZE; vi++)
+		d->var_slot[vi] = 0;
 	root_font_px = 16;
 }
 
@@ -2277,6 +2351,8 @@ static void rule_index_add(struct br_doc *d, unsigned int idx,
 	*head = (unsigned short)idx;
 }
 
+static unsigned int selector_specificity(const char *s, unsigned int len);
+
 static int css_collect_only;
 
 static void parse_css(struct br_doc *d, const char *s, unsigned int len)
@@ -2409,6 +2485,17 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 					r->sel_off = off;
 					r->key_off = store_attr(d, sel + ks,
 								 k - ks, 79);
+					r->spec = (unsigned short)selector_specificity(sel, k);
+					r->single = 1;
+					{
+						unsigned int z;
+
+						for (z = 0; z < k; z++)
+							if (is_space(sel[z]) || sel[z] == '>') {
+								r->single = 0;
+								break;
+							}
+					}
 					r->nd = (unsigned char)nd;
 					for (k = 0; k < nd; k++)
 						r->d[k] = decls[k];
@@ -2665,7 +2752,7 @@ static unsigned int selector_specificity(const char *s, unsigned int len)
 
 /* Match one complex selector; returns specificity or -1. */
 static int selector_match(struct br_doc *d, unsigned int node, const char *s,
-			  unsigned int len)
+			  unsigned int len, int right_done)
 {
 	struct {
 		unsigned int start, end;
@@ -2702,7 +2789,8 @@ static int selector_match(struct br_doc *d, unsigned int node, const char *s,
 	}
 	if (!np)
 		return -1;
-	if (!compound_match(d, node, s + parts[np - 1].start,
+	if (!right_done &&
+	    !compound_match(d, node, s + parts[np - 1].start,
 			    parts[np - 1].end - parts[np - 1].start))
 		return -1;
 	right = np - 1;
@@ -2746,12 +2834,16 @@ static void rule_try(struct br_doc *d, unsigned int node, unsigned int idx)
 {
 	struct br_rule *r = &d->rules[idx];
 	const char *key = attr_ptr(d, r->key_off);
-	int spec;
+	int spec, key_ok = 0;
 
-	if (key[0] && !compound_match(d, node, key, s_len(key)))
-		return;
-	spec = selector_match(d, node, attr_ptr(d, r->sel_off),
-			      s_len(attr_ptr(d, r->sel_off)));
+	if (key[0]) {
+		if (!compound_match(d, node, key, s_len(key)))
+			return;
+		key_ok = 1;
+	}
+	spec = (r->single && key_ok) ? (int)r->spec :
+		selector_match(d, node, attr_ptr(d, r->sel_off),
+			      s_len(attr_ptr(d, r->sel_off)), key_ok);
 	if (spec < 0)
 		return;
 	if (nrule_matches < RULE_MATCH_MAX) {

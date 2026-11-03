@@ -1175,7 +1175,7 @@ static void complete_line(void)
 	} else {
 		/* Command-name completion: builtins + /ramfs/bin. */
 		static const char * const builtins[] = {
-			"cd", "path", "help", "clear", "ps", "kill"
+			"cd", "path", "help", "clear", "bootlog", "ps", "kill"
 		};
 		struct sys_dirent d;
 

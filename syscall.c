@@ -117,6 +117,10 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 		return sys_net_regs();
 	case SYS_NET_RESET:
 		return sys_net_reset();
+	case SYS_NET_SPEED:
+		return sys_net_speed((unsigned int)a1);
+	case SYS_NET_MAC_SET:
+		return sys_net_mac_set((const unsigned char *)a1);
 	case SYS_DHCP_RUN:
 		return sys_dhcp_run((unsigned int)a1);
 	case SYS_DHCP_INFO:

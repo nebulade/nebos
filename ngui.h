@@ -155,6 +155,8 @@ void ngui_text_n(struct ngui *ui, int x, int y, const char *s,
 		 unsigned int n, unsigned short color);
 void ngui_text_styled(struct ngui *ui, int x, int y, const char *s,
 		      unsigned int n, unsigned short color, int scale, int bold);
+void ngui_text_rot180(struct ngui *ui, int x, int y, const char *s,
+		      unsigned int n, unsigned short color);
 void ngui_text_ellipsis(struct ngui *ui, struct ngui_rect r, int x, int y,
 			const char *s, unsigned short color);
 unsigned int ngui_text_width(const char *s);
@@ -165,6 +167,8 @@ void ngui_icon(struct ngui *ui, struct ngui_rect r, enum ngui_icon icon,
 /* Widgets.  IDs must be stable across frames. */
 int ngui_button(struct ngui *ui, unsigned int id, struct ngui_rect r,
 		const char *label);
+int ngui_menu_item(struct ngui *ui, unsigned int id, struct ngui_rect r,
+		   const char *label, const char *shortcut, int checked);
 int ngui_icon_button(struct ngui *ui, unsigned int id, struct ngui_rect r,
 		     enum ngui_icon icon);
 int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,

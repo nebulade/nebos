@@ -98,7 +98,11 @@ int sys_net_print_info(void)
 
 	if (!nd || !nd->print_info)
 		return -1;
+	/* print_info reads the PHY via MDIC and can wait on the PHY/ME
+	 * semaphore; the syscall stub entered with interrupts off. */
+	net_enter();
 	nd->print_info();
+	net_exit();
 	return 0;
 }
 
@@ -188,7 +192,9 @@ int sys_net_regs(void)
 
 	if (!nd || !nd->dump_regs)
 		return -1;
+	net_enter();
 	nd->dump_regs();
+	net_exit();
 	return 0;
 }
 
@@ -201,8 +207,44 @@ int sys_net_reset(void)
 	/* Own the receiver for the whole reset, so the netlog kworker cannot
 	 * submit frames while the MAC and rings are being reinitialised. */
 	netdev_acquire();
+	/* The reset waits on ticks (reset timeouts, PHY autoneg); the syscall
+	 * entered with interrupts off. */
+	net_enter();
 	nd->reset();
+	net_exit();
 	netdev_release();
+	return 0;
+}
+
+/* net100 fallback: force 100M or restore auto.  The driver drops and
+ * renegotiates the link, which can take a few seconds; own the receiver so
+ * the background watcher cannot poll frames while the link is down. */
+int sys_net_speed(unsigned int mbps)
+{
+	const struct netdev *nd = netdev_active();
+	int r;
+
+	if (!nd || !nd->set_speed)
+		return -1;
+	if (sys_net_acquire() != 0)
+		return -2;
+	net_enter();
+	r = nd->set_speed(mbps);
+	net_exit();
+	sys_net_release();
+	return r;
+}
+
+int sys_net_mac_set(const unsigned char mac[6])
+{
+	const struct netdev *nd = netdev_active();
+
+	if (!nd || !nd->set_mac)
+		return -1;
+	if (sys_net_acquire() != 0)
+		return -2;
+	nd->set_mac(mac);
+	sys_net_release();
 	return 0;
 }
 

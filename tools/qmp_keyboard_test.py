@@ -7,6 +7,8 @@ verifies the screen content changed (the command output).
 Modes:
   (default)   OHCI + usb-mouse + usb-kbd; types "help"
   --hotplug   boots without the keyboard, plugs it in via QMP, then types
+  --xhci      xHCI controller, keyboard on it
+  --ehci      EHCI + UHCI companion, keyboard on the companion (multi-HCD)
   --keys a,b,ret   type a custom key list (QEMU qcodes)
 
 Requires: floppy.img/root.img built (make all), python3, QEMU.
@@ -61,6 +63,7 @@ def read_ppm(path):
 def main():
     hotplug = "--hotplug" in sys.argv
     xhci = "--xhci" in sys.argv
+    ehci = "--ehci" in sys.argv
     keys = ["h", "e", "l", "p", "ret"]
     if "--keys" in sys.argv:
         keys = sys.argv[sys.argv.index("--keys") + 1].split(",")
@@ -75,9 +78,15 @@ def main():
     ppm = os.path.join(workdir, "screen.ppm")
 
     kbddev = [] if hotplug else ["-device", "usb-kbd"]
+    if ehci and not hotplug:
+        kbddev = ["-device", "usb-kbd,bus=uhci0.0"]
     qemu = ["qemu-system-i386", "-M", "pc"]
     if xhci:
         qemu += ["-device", "qemu-xhci", "-device", "usb-mouse"]
+    elif ehci:
+        qemu += ["-device", "usb-ehci,id=ehci0",
+                 "-device", "piix3-usb-uhci,id=uhci0",
+                 "-device", "usb-mouse,bus=uhci0.0"]
     else:
         qemu += ["-device", "pci-ohci", "-device", "usb-mouse"]
     qemu += kbddev + [
@@ -98,7 +107,7 @@ def main():
         s.connect(sock)
         qmp_recv(s)                  # greeting
         qmp_cmd(s, "qmp_capabilities")
-        time.sleep(4)                # boot
+        time.sleep(5)                # boot
 
         if hotplug:
             qmp_cmd(s, "device_add", {"driver": "usb-kbd", "id": "kbd"})
@@ -113,7 +122,7 @@ def main():
         for k in keys:
             qmp_cmd(s, "send-key", {"keys": [{"type": "qcode", "data": k}]})
             time.sleep(0.25)
-        time.sleep(1.0)
+        time.sleep(4.0)
 
         if os.path.exists(ppm):
             os.unlink(ppm)

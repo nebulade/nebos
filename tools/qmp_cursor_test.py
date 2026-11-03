@@ -9,6 +9,8 @@ Modes:
   --uhci      UHCI (piix3) controller
   --uhci72    UHCI at PCI 00:01.2 (multifunction south-bridge layout)
   --multi     three OHCI controllers, mouse on the third
+  --xhci      xHCI controller, mouse on it
+  --ehci      EHCI + UHCI companion, mouse on the companion (multi-HCD)
   --hotplug   boot without the mouse, plug it in, move, unplug, replug
 
 Requires: floppy.img/root.img built (make all), python3, QEMU.
@@ -118,7 +120,7 @@ def move(s, dx, dy):
 
 def main():
     mode = "ohci"
-    for m in ("uhci", "uhci72", "multi", "hotplug", "xhci"):
+    for m in ("uhci", "uhci72", "multi", "hotplug", "xhci", "ehci"):
         if "--" + m in sys.argv:
             mode = m
 
@@ -143,6 +145,10 @@ def main():
         qemu += ["-device", "pci-ohci"]
     elif mode == "xhci":
         qemu += ["-device", "qemu-xhci", "-device", "usb-mouse"]
+    elif mode == "ehci":
+        qemu += ["-device", "usb-ehci,id=ehci0",
+                 "-device", "piix3-usb-uhci,id=uhci0",
+                 "-device", "usb-mouse,bus=uhci0.0"]
     else:
         qemu += ["-device", "pci-ohci", "-device", "usb-mouse"]
     qemu += ["-drive", "file=floppy.img,format=raw,if=floppy",

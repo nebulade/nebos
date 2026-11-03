@@ -1491,4 +1491,5 @@ const struct usb_hcd_ops usb_xhci_ops = {
 	stop_int,
 	xhci_bulk_out,
 	xhci_bulk_in,
+	0,
 };

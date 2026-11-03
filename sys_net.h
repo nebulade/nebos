@@ -26,6 +26,8 @@ int sys_net_reply(const unsigned char *in, unsigned int len,
 int sys_net_loopback(int on);
 int sys_net_regs(void);
 int sys_net_reset(void);
+int sys_net_speed(unsigned int mbps);
+int sys_net_mac_set(const unsigned char mac[6]);
 int sys_dhcp_run(unsigned int timeout_ms);
 int sys_dhcp_info(unsigned char server[4], unsigned int *lease);
 int sys_dns_resolve(const char *name, unsigned char ip[4]);

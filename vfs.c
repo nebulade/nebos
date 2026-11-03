@@ -244,10 +244,10 @@ static int fat_op_rmdir(struct vfs_mount *m, const char *path)
 }
 
 /* Index-based listing used to re-walk the FAT directory for every index, and
- * the WebDAV server asks for 0..N-1 in one PROPFIND.  Cache the first 64
+ * the WebDAV server asks for 0..N-1 in one PROPFIND.  Cache the first 24
  * entries of the last directory so a listing is one directory walk; a write
- * invalidates it.  Larger directories fall back to the old walk past 64. */
-#define FAT_LIST_CACHE 32
+ * invalidates it.  Larger directories fall back to the old walk past 24. */
+#define FAT_LIST_CACHE 24
 
 static struct vfs_dirent fat_cache[FAT_LIST_CACHE];
 static unsigned int fat_cache_count;

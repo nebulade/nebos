@@ -14,6 +14,8 @@ make run        # boot floppy.img + root.img in QEMU (fallback: qemu-system-x86_
 make run-smp    # same with -smp 4 (BSP + 3 APs, the Atom 330 topology)
 make run-usb    # boot usb.img as an IDE disk
 make run-uhci   # like `make run` but with a UHCI controller + USB mouse
+make run-ehci   # EHCI + UHCI companion: high-speed storage on EHCI, HID on UHCI
+make run-ehci-asix # pass through a real ASIX AX88772 dongle on EHCI
 make run-net    # like `make run` + a PCI NE2000 NIC on QEMU's user network (slirp; DHCP/DNS/NAT)
 make run-ahci   # like `make run` + an ICH9 AHCI controller and a 512 MB SATA disk (sata0)
 make uefi       # build BOOTX64.EFI and the dual-boot usb-efi.img
@@ -48,13 +50,13 @@ make clean
   targets, an OVMF firmware (`OVMF=/path/to/OVMF.4m.fd` overrides the default).
   `make all` does not build the UEFI image, so a machine without mingw still
   builds the legacy floppy/USB images normally.
-- `usb.img` is 9 MB: partition 1 (type `0x06`, LBA 63, 469 sectors) is the
-  boot sector + kernel and partition 2 (type `0x7F`, LBA 532) is the 8 MB
-  rootfs image (`cmds.img`), immediately behind the kernel.  The header and
-  the 242 KB gzip pack therefore live in the first 1.44 MB, which even a
+- `usb.img` is 9 MB: partition 1 (type `0x06`, LBA 63, 1024 sectors) is the
+  boot sector + kernel and partition 2 (type `0x7F`, LBA 1088) is the 8 MB
+  rootfs image (`cmds.img`), 512 KB behind the boot sector.  The header and
+  the 242 KB gzip pack therefore still live in the first 1.44 MB, which even a
   CHS-only USB BIOS can read.  The boot sector's `pack_lba` field points the
   VESA stage at partition 2.  `usb-efi.img` (17 MB) adds an 8 MB FAT16 ESP
-  as partition 3 (type `0xEF`, LBA 16916); `BOOTX64.EFI` embeds the kernel +
+  as partition 3 (type `0xEF`, LBA 18432); `BOOTX64.EFI` embeds the kernel +
   gz pack.
   `make flash` writes the dual image; `make flash FLASH_IMG=usb.img` writes
   the legacy-only image.  One BPB byte is cleared in the dual image (disk
@@ -70,13 +72,16 @@ make clean
    to `0x7E00` (CHS for floppy, INT 13h AH=42h LBA for hard disk), jumps there.
 2. `vesa_stage.S` — real-mode VESA stage. Probes INT 15h E820 into `0x1000`,
    reads the `NBROOT1` rootfs header at the boot sector's `pack_lba` field
-   and loads the gzip pack into the low gap at `0x60000..0x9FBFF`
+   and stages the gzip pack in the low gap at `0x60000..0x9FBFF`
    (16 KB staging chunks at `0x3000`, `rep movsb`; no protected-mode BIOS
    call), picks the best VBE mode (≥16 bpp, LFB, fits VRAM, ≤1280px), writes
    mode info to `0x600` and the 12-dword `struct boot_info`
    (magic/checksum/rsdp/flags/pack range) to `0x500`, enables A20, enters
-   protected mode and jumps to `kernel_entry` (`entry.S`, re-points ESP to
-   the current stack top, then `kernel_main`).  The stage prints
+   protected mode, copies the pack to `PACK_HIGH_ADDR` (`0x900000`, above the
+   VGA-shadow reserve) and rewrites the boot-info pack address before jumping
+   to `kernel_entry` (`entry.S`, re-points ESP to the current stack top, then
+   `kernel_main`).  The copy lets the kernel image's BSS/boot stack extend
+   past `0x60000`.  The stage prints
    `Loading rootfs [d=<drive> lba=<hex> e=<0|1> m=<C|L>]...`, then a dot
    after the header and one per 16 KB chunk, so a BIOS hang is localised.
    Drives below 0x80 use CHS (the same path the boot sector's kernel load
@@ -118,11 +123,12 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 | `0x6000`  | AP real/protected-mode trampoline (`ap_tramp.S`/`ap_tramp.ld`; SIPI vector 0x06, image ends below `0x6C00`) |
 | `0x6C00`  | AP trampoline real-mode stack top (grows down) |
 | `0x6F00`  | AP startup info block (CR3, stack top, C entry, CPU index) |
-| `0x60000` | Legacy rootfs pack (`vesa_stage.S`; compressed gzip data, up to `PACK_LOW_MAX` 0x3FBFF, ending below the EBDA at `0x9FC00`).  Loaded before the kernel; `ramfs_init` copies/inflates it, after which the `0x80000` run area may reuse the space |
-| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs `_end <= 0x60000` for the low rootfs pack and `<= 0x7F000` for the run area).  The low pack leaves only ~6 KB of growth margin |
+| `0x60000` | Legacy rootfs pack staging (`vesa_stage.S`; compressed gzip data, up to `PACK_LOW_MAX` 0x3FBFF, ending below the EBDA at `0x9FC00`).  Temporary: copied to `0x900000` in protected mode before the kernel starts, so the kernel BSS/boot stack may extend past this address |
+| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs `__bss_start <= 0x60000` so the loaded image stays below the legacy staging gap, and `_end <= 0x7F000` so it does not reach the run area).  BSS and the boot stack may extend past `0x60000` |
 | (in-image) | Bootstrap/protected-mode stack: 8 KB `.stack` NOLOAD section, `__boot_stack_top`/`__boot_stack_bottom` (travels with the kernel) |
 | `0x7FF00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
 | `0x80000` | Legacy ring-0 program load area (`run.c`, `serial_recv.c`, `user.ld`; max 0x6000, inside the reserved low 1 MB) |
+| `0x900000`| Legacy boot-time rootfs pack after `vesa_stage.S` relocates it (reserved by `mm_init` until `ramfs_init` takes its copy, then freed; process stacks and kexec staging also start here) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
 The legacy stage uses `0x3000..0x6FFF` as a 16 KB-chunk rootfs staging
@@ -131,11 +137,12 @@ buffer (`0x4000`) and AP trampoline (`0x6000`) reinitialize those addresses
 later.
 
 The boot-time rootfs pack placement depends on the boot path: the legacy
-stage uses the fixed low gap `0x60000..0x9FBFF`, the UEFI loader puts it at
-the top of RAM below 128 MB, and kexec leaves it in the staging buffer
+stage stages it in the low gap `0x60000..0x9FBFF` and copies it to
+`0x900000` before the kernel starts, the UEFI loader puts it at the top of
+RAM below 128 MB, and kexec leaves it in the staging buffer
 (≥ `0x900000`).  `mm_init` reserves `[pack_addr, pack_addr+pack_size)` from
-boot info when it is above the low 1 MB; the legacy low pack is already
-inside the reserved low 1 MB.  `ramfs_init` copies/inflates it into fresh
+boot info when it is above the low 1 MB, so the legacy pack is protected
+from the frame allocator too.  `ramfs_init` copies/inflates it into fresh
 pages and `mm_free_range()` releases the boot region when it is above the
 VGA shadow reserve.
 
@@ -219,7 +226,8 @@ run area), so adding code no longer moves any address.
   the old kernel's page tables safely.
 - **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
   terminal windows (64×32) with a system bar (banner + purple "New", "Clock",
-  "Colors" and "Files" buttons + clock + CPU temperature + rainbow). Click-to-focus,
+  "Colors", "Files", "Mines", "Web" and "Cards" buttons + clock + CPU
+  temperature + rainbow). Click-to-focus,
   drag-by-title-bar, close (×). The "New"
   button and first boot spawn terminals; there is no `term` command.  Content is
   repainted per damage rect (`wm_redraw_rect`: desktop fill + every intersecting
@@ -359,10 +367,15 @@ run area), so adding code no longer moves any address.
   no BAR sizing so the ME/AMT cannot leave the BAR undecoded; skips the
   global MAC reset while the link is up, because the PCH/ME wedges on the
   CTRL_RST access), `r8168.c`
-  RTL8111/8168 (PCIe, polled, C+ mode, 64-entry RX ring) and `ne2000.c`
-  RTL8029 (QEMU/ISA)). `net.c` — ARP + ICMP echo, IPv4/UDP send + parse helpers,
+  RTL8111/8168 (PCIe, polled, C+ mode, 64-entry RX ring), `ne2000.c`
+  RTL8029 (QEMU/ISA) and `asix.c` AX88772 USB Ethernet (bulk over the USB
+  core, so an EHCI/xHCI dongle is usable).  `netdev [name]` is a kernel
+  command that shows the active driver or switches it (`netdev asix`,
+  `netdev e1000e`, ...); it calls the selected driver's probe and leaves the
+  current driver untouched on failure.  `net.c` — ARP + ICMP echo, IPv4/UDP
+  send + parse helpers,
   shared ARP resolution (`net_arp_resolve`) and routing (`net_next_hop`), frame
-  decode, `net_checksum()`/`net_checksum_tcp()`. `dhcp.c` — minimal DHCP client
+  decode, `net_checksum()`/`net_checksum_tcp()`.  `dhcp.c` — minimal DHCP client
   (DISCOVER →
   OFFER → REQUEST → ACK; runs at boot when a NIC is present, 3 s budget, keeps
   the static address when no server answers; `dhcp` re-runs it; learns the DNS
@@ -410,15 +423,19 @@ run area), so adding code no longer moves any address.
   keyboard scancodes, watch for plug/unplug.
 - **USB**: `usb.c/h` — controller-agnostic core: device enumeration,
   descriptor parsing, hub recursion, bus scans, per-controller addresses, the
-  hotplug watcher and the interrupt-IN consumers (mouse + keyboard).
-  `usb_hcd.h` is the
-  host-controller ops vtable; `uhci.c` (I/O-port UHCI, frame list at
-  `0x3000`, one instance) and `ohci.c` (MMIO OHCI, up to 4 instances, HCCA +
-  ED/TD lists, polling) implement it.  `lsusb.c` — the `lsusb` command (lists
-  every controller and its tree).  The devices work on both controller types
-  and can be plugged in at any time (root-port connect-change watcher);
-  `lsusb` re-enumerates the bus, after which `usbhid` re-inits itself via a
-  scan generation counter.
+  hotplug watcher and the interrupt-IN consumers (mouse + keyboard).  It keeps
+  a global controller table, so EHCI (high-speed) and its UHCI/OHCI
+  companions (low/full-speed) are driven together; EHCI is scanned first so
+  its port resets hand non-high-speed devices back to the companions.
+  `usb_hcd.h` is the host-controller ops vtable; `uhci.c` (I/O-port UHCI,
+  frame list at `0x3000`, one instance), `ohci.c` (MMIO OHCI, up to 4
+  instances, HCCA + ED/TD lists, polling), `ehci.c` (MMIO EHCI, QH/qTD
+  asynchronous schedule, up to 4 instances) and `xhci.c` (MMIO xHCI, USB2
+  root ports) implement it.  `lsusb.c` — the `lsusb` command (lists every
+  controller and its tree).  The devices work on every controller type and
+  can be plugged in at any time (root-port connect-change watcher); `lsusb`
+  re-enumerates the bus, after which `usbhid` re-inits itself via a scan
+  generation counter.
 - **Power/idle**: `idle.c` — HLT/C1 by default, `idle c2`/`idle c3`
   (and the `c2ap`/`c3ap` AP-only variants) switch to MONITOR/MWAIT at runtime
   (the old USB-legacy SMM hang is addressed by the UHCI/OHCI `0xC0`
@@ -484,8 +501,9 @@ run area), so adding code no longer moves any address.
   `cd` (the shell passes arguments verbatim).  The one argument is passed as a
   C string on the top of the user stack (`process_create_user(..., arg)`), so
   `_start(const char *arg)` needs no crt0.  `ngui.c/h` is the shared userland
-  GUI toolkit linked into `ucmd_files.c` and the external `gallery.elf`
-  (buttons, text fields, icons, layout cuts and scroll panes); `files` opens
+  GUI toolkit linked into `ucmd_files.c`, `ucmd_mines.c`, `ucmd_solitaire.c`
+  and the external `gallery.elf` (buttons, menu items, text fields, icons,
+  layout cuts and scroll panes); `files` opens
   the selected text file through
   `/ramfs/bin/edit`, image files through `/ramfs/bin/view`, and `.htm`/`.html`
   files through `/ramfs/bin/browser`.  `ngui_end_ex()`
@@ -499,6 +517,15 @@ run area), so adding code no longer moves any address.
   `bin/gallery` launcher, which prefers `/share/GALLERY` (development upload
   via `make gallery-dev`), then the pack copy, then the `GALLERY` disk
   fallback on `root.img`/FAT mounts.
+- **Solitaire**: `ucmd_solitaire.c` — a Windows 95 style Klondike game on the
+  canvas service: green felt, a Game/Help menu (ngui buttons and menu items:
+  new game, draw one/three, blue or red deck), four foundations, seven tableau
+  piles, stock/waste, drag-and-drop (or click a card and then its destination),
+  double-click to send a card home, auto-flip, standard scoring, a score/time
+  status bar and the bouncing-card win animation.  The cards use pip layouts
+  with mirrored corner indices, notched corners and pixel-art J/Q/K portraits;
+  the back is the castle.  The bar's "Cards" button launches
+  `/ramfs/bin/solitaire`.
 - **Browser**: the real browser ships in the pack as `bin/browser.app`
   (it links ngui, the full image library, inflate, TLS and uhttp, but the
   rootfs is no longer constrained by the kernel's low-memory window).
@@ -609,7 +636,8 @@ run area), so adding code no longer moves any address.
 `ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [hlt|c2|c3|c2ap|c3ap]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
-DHCP client), `pong` (responds to ARP/ICMP for our IP for 30 s),
+DHCP client), `netdev [name]` (kernel command: show the active NIC driver or
+switch it, e.g. `netdev asix`), `pong` (responds to ARP/ICMP for our IP for 30 s),
 `ping <host|a.b.c.d>` (active ARP + ICMP echo with RTT; resolves DNS names,
 goes via the gateway when the target is off-subnet), `netloop` (PHY loopback
 TX/RX self-test), `netreset`
@@ -638,9 +666,9 @@ filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`, `spin`,
 `clock`, `colors`, `files`, `gallery`, `view`, `sensors`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
-`netreset`, `websrv`, `curl` and `hello` are files in `/ramfs/bin` (packed by the
-Makefile), found through the shell's PATH; the rest are kernel commands
-spawned as processes, or builtins (`cd`, `path`, `help`, `clear`).
+`netreset`, `websrv`, `curl`, `solitaire` and `hello` are files in `/ramfs/bin`
+(packed by the Makefile), found through the shell's PATH; the rest are kernel
+commands spawned as processes, or builtins (`cd`, `path`, `help`, `clear`).
 
 ## Serial hot-reload (kexec) workflow
 
@@ -708,14 +736,18 @@ re-applied on a full floppy/USB boot (C-light reuses the current LFB).
 ## Command pack rootfs (cmds.pack / cmds.img / cmds-dev)
 
 The commands live in `cmds.pack` (`bin/<name>` entries, built by `mkpack`),
-gzip-compressed to `cmds_pack_gz.bin` and wrapped by `mkrootfs` with a
+compressed with `libdeflate-gzip -12` when it is installed (falling back to
+`gzip -9`) to `cmds_pack_gz.bin` and wrapped by `mkrootfs` with a
 one-sector `NBROOT1` header (magic, version, exact `pack_bytes`, checksum,
-gzip flag).  The boot path loads the gz pack into RAM — the legacy stage into
-the low gap at `0x60000`, the UEFI loader via an embedded copy at the top of
+gzip flag).  The build rejects a legacy pack above the `PACK_LOW_MAX` cap;
+`libdeflate` buys several KB over `gzip -9` and is currently needed to fit.
+The boot path loads the gz pack into RAM — the legacy stage stages it in
+the low gap at `0x60000` and relocates it to `0x900000` before the kernel
+starts, the UEFI loader via an embedded copy at the top of
 RAM below 128 MB, kexec via its staging buffer — and `ramfs_init()` inflates
 it into page-allocated memory and mounts it read-only at `/ramfs`.  The
 kernel image no longer contains it, so the pack no longer moves `_end`; the
-legacy low gap has its own size cap (known issue 9).
+legacy staging gap has its own size cap (known issue 9).
 
 `rootfs.bin` is the floppy append (header + pack); `cmds.img` is the 8 MB
 rootfs partition image written to USB partition 2.  `cmds-dev`/`net-cmds`
@@ -797,11 +829,36 @@ pauses while a net command owns the receiver.
 ## USB HID (mouse + keyboard) / host controllers
 
 `usb.c` is controller-agnostic; the drivers implement the `usb_hcd_ops`
-vtable (`usb_hcd.h`): control transfers, root-port queries/reset, and two
-interrupt-IN slots (0 = mouse, 1 = keyboard). `usb_hcd_init()` picks UHCI
-when present, otherwise OHCI (`ohci.c` drives up to 4 instances — MCP79 has
-four).
+vtable (`usb_hcd.h`): control transfers, root-port queries/reset, bulk
+transfers and up to six interrupt-IN slots. `usb_hcd_init()` brings up every
+controller type and builds one global controller table: EHCI first, then
+UHCI, OHCI and xHCI.  A machine with EHCI and UHCI/OHCI companions therefore
+enumerates high-speed devices on EHCI and low/full-speed devices on the
+companions; a port reset hands a non-high-speed device back to its companion
+before the companion is scanned.  A single device address is per-controller,
+so addresses do not collide.
 
+- **EHCI**: MMIO BAR0, page-allocated frame list/QH/qTD/bounce buffers, QH/
+  qTD descriptors in the identity-mapped kernel space.  Control, bulk and
+  interrupt endpoints all live in the asynchronous schedule (a circular QH
+  list with the control QH after the reclamation head); the periodic list is
+  not used.  Polling only (no IRQs).  Ports are claimed from the companions
+  with CONFIGFLAG; `port_reset` holds PORT_RESET for 50 ms, then clears it
+  (QEMU and hardware complete the reset on that write), waits for PED and
+  sets PORT_OWNER for a non-high-speed device.  `ehci.c` supports up to four
+  PCI instances.  Bulk `in`/`out` use one qTD per call (up to five 4 KB
+  buffer pages), which is enough for the ASIX AX88772 RX/TX path.
+  There is no transaction translator: low/full-speed devices behind a
+  high-speed hub stay invisible to EHCI (use the companion controller for
+  them).
+- **Hubs**: `usb.c` sets a class-9 hub's configuration with
+  `SET_CONFIGURATION` before issuing hub-class requests, powers every
+  downstream port (honouring the hub descriptor's `bPwrOn2PwrGood`) and waits
+  for `PORT_ENABLE` after the port reset.  This is needed for the X201's PCH
+  internal `8087:0020` hubs, which sit between the EHCI root ports and the
+  external USB ports.  Downstream devices are enumerated recursively; a
+  full-speed device behind a USB 2.0 hub would need split transactions (not
+  implemented).
 - **OHCI**: BAR0 MMIO (`paging_map_mmio()`), HCCA from the page allocator,
   static 16-byte-aligned ED/TD sets. Control transfers run on the control
   list (`HcControlHeadED` + CLF) and are polled via each TD's condition code
@@ -842,19 +899,21 @@ four).
   can't leave the devices dead.  The BIOS PS/2 legacy emulation is
   deliberately disabled (PCI config `0xC0`) because the kernel now owns
   these devices.
-- **Debug**: `ohci:` / `uhci:` / `usbhid:` lines go to COM1 (and through the
-  netlog mirror on serial-less boards); `mouseinfo` shows the active mouse
-  backend and whether a USB keyboard is attached; `usb.c`'s `USB_DEBUG` and
-  `usbhid.c`'s `USBHID_DEBUG` (both default 0) add scan/report tracing.
-  Headless tests: `make test-usb` runs `tools/qmp_cursor_test.py` (injects
-  mouse motion with QMP `input-send-event`, verifies the cursor with
-  `screendump`) and `tools/qmp_keyboard_test.py` (types with QMP `send-key`,
-  verifies the screen output); both take mode flags (`--uhci`, `--uhci72`,
-  `--multi`, `--hotplug`).
-- **Limits**: no EHCI (high-speed devices stay invisible), hotplug watches
-  root ports only (a device behind a hub is only enumerated when a scan
-  runs), HID report IDs are not handled (a device that prepends report IDs
-  decodes as garbage), absolute pointers/tablets are ignored, no wheel
+- **Debug**: `ohci:` / `uhci:` / `ehci:` / `usbhid:` lines go to COM1 (and
+  through the netlog mirror on serial-less boards); `mouseinfo` shows the
+  active mouse backend and whether a USB keyboard is attached; `usb.c`'s
+  `USB_DEBUG` and `usbhid.c`'s `USBHID_DEBUG` (both default 0) add
+  scan/report tracing.  Headless tests: `make test-usb` runs
+  `tools/qmp_cursor_test.py` (injects mouse motion with QMP
+  `input-send-event`, verifies the cursor with `screendump`) and
+  `tools/qmp_keyboard_test.py` (types with QMP `send-key`, verifies the
+  screen output); the cursor test takes `--uhci`, `--uhci72` and `--multi`,
+  and both take `--hotplug`, `--xhci` and `--ehci`.
+- **Limits**: EHCI drives high-speed root-port devices only (no TT/split
+  transactions for low/full-speed devices behind a high-speed hub), hotplug
+  watches root ports only (a device behind a hub is only enumerated when a
+  scan runs), HID report IDs are not handled (a device that prepends report
+  IDs decodes as garbage), absolute pointers/tablets are ignored, no wheel
   events, and no USB keyboard means no keyboard at all if the BIOS legacy
   emulation was the only other source (`make net-dev` still reloads the
   kernel).
@@ -1024,10 +1083,13 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
 9. The rootfs pack is inflated into one contiguous page-allocated run at
    boot, capped by `RAMFS_MAX_DECOMPRESSED` (8 MB); a larger pack fails to
    load (the USB rootfs partition is 8 MB, so this only bites if the cap is
-   raised without a bigger partition).  The legacy low pack is additionally
-   capped at `PACK_LOW_MAX` (0x3FBFF, ~255 KB compressed) by the
-   `0x60000..0x9FBFF` gap; a larger pack needs the UEFI/kexec path or a
-   high-memory legacy copy.
+   raised without a bigger partition).  The legacy stage still stages the
+   compressed pack through the `0x60000..0x9FBFF` gap before copying it to
+   `0x900000`, so `PACK_LOW_MAX` (0x3FBFF, ~255 KB compressed) still caps the
+   legacy path; a larger pack needs the UEFI/kexec path or a chunked
+   high-memory loader.  The current pack is within a few KB of that cap
+   with `libdeflate-gzip -12` (plain `gzip -9` is already over), so command
+   growth needs care.
 10. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
     board that exposes only MP tables stays UP (deliberate; there is no test
     hardware).
@@ -1122,10 +1184,12 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     is unsigned, so Secure Boot must be off.  The loader needs a GOP mode with
     BGRX or RGBX 32bpp, width ≤ 1280, `pitch * height` ≤ 8 MB and the
     framebuffer below 4 GB; otherwise the kernel starts headless (serial only).
-    There is no xHCI/EHCI driver, so many modern UEFI laptops/desktops boot the
-    UI without a USB keyboard or mouse (PS/2 may still work), and there is no
-    IOAPIC setup: OVMF delivers the ISA IRQs through the 8259 path, but a
-    platform that routes them through the IOAPIC may need a mask-all step after
-    ACPI init.  UEFI runtime services are not used, so `reboot`/`poweroff` still
-    use the legacy ports.  The image is 17 MB: the 9 MB kernel + rootfs disk
-    and the 8 MB ESP.
+    xHCI drives USB2 root ports only (USB3 SuperSpeed devices are not
+    handled), and EHCI only high-speed root ports (no transaction translator
+    for low/full-speed devices behind a high-speed hub), so a USB3-only
+    keyboard/mouse can still leave the UI without input (PS/2 may still work).
+    There is no IOAPIC setup: OVMF delivers the ISA IRQs through the 8259
+    path, but a platform that routes them through the IOAPIC may need a
+    mask-all step after ACPI init.  UEFI runtime services are not used, so
+    `reboot`/`poweroff` still use the legacy ports.  The image is 17 MB: the
+    9 MB kernel + rootfs disk and the 8 MB ESP.

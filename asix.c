@@ -348,6 +348,9 @@ static void net_reset(void)
 		chip_init();
 }
 
+static const unsigned char asix_default_ip[4] = { 192, 168, 50, 2 };
+static const unsigned char asix_default_mask[4] = { 255, 255, 255, 0 };
+
 const struct netdev asix_netdev = {
 	"asix",
 	"AX88772 USB 2.0 Ethernet",
@@ -359,6 +362,11 @@ const struct netdev asix_netdev = {
 	0,
 	0,
 	net_reset,
+	0,
+	0,
+	asix_default_ip,
+	asix_default_mask,
+	0,
 };
 
 /* Read and parse the configuration descriptor.  The AX88772 has one

@@ -6,8 +6,10 @@
  * low gap at 0x60000..0x9FBFF (16 KB staging chunks at 0x3000, BIOS disk
  * reads only), walks the VBE mode list and picks the best mode (highest
  * resolution, >= 16 bpp, LFB, fits in VRAM), writes the mode info to 0x600
- * and the boot info to 0x500, then enables A20, enters protected mode and
- * jumps to kernel_entry.
+ * and the boot info to 0x500, then enables A20, enters protected mode,
+ * copies the pack above the 8 MB VGA-shadow reserve (PACK_HIGH_ADDR) and
+ * jumps to kernel_entry.  Relocating the pack before the kernel runs lets
+ * the kernel's BSS/boot stack extend past 0x60000.
  *
  * If no VESA mode works, boots in text mode (valid=0 at 0x600).
  */
@@ -24,6 +26,7 @@
 .equ ROOTFS_VERSION,   1
 .equ PACK_LOW_ADDR,    0x60000       /* low gap behind the kernel */
 .equ PACK_LOW_MAX,     0x3FBFF       /* 0x60000..0x9FBFF */
+.equ PACK_HIGH_ADDR,   0x900000      /* above the 8 MB VGA-shadow reserve */
 .equ BOOT_INFO_MAGIC,  0x4E425349
 .equ BOOT_INFO_VERSION, 2
 .equ BOOT_INFO_WORDS,  12
@@ -562,6 +565,33 @@ stage2_pm:
 	movw  %ax, %gs
 	movw  %ax, %ss
 	movl  $__boot_stack_top, %esp
+
+	/* Move the pack out of the low gap before the kernel clears its BSS
+	 * or uses the boot stack (both may now live above 0x60000). */
+	cld
+	movl  pack_addr, %esi
+	testl %esi, %esi
+	jz    2f
+	movl  pack_bytes, %ecx
+	testl %ecx, %ecx
+	jz    2f
+	movl  $PACK_HIGH_ADDR, %edi
+	rep   movsb
+	movl  $PACK_HIGH_ADDR, pack_addr
+
+	/* Rewrite boot info: zero checksum, new pack address, recompute the
+	 * twelve-word sum (must match bootinfo.h / write_bootinfo). */
+	movl  $0, 0x508
+	movl  $PACK_HIGH_ADDR, 0x514
+	xorl  %eax, %eax
+	movl  $0x500, %esi
+	movl  $BOOT_INFO_WORDS, %ecx
+1:	addl  (%esi), %eax
+	addl  $4, %esi
+	loop  1b
+	negl  %eax
+	movl  %eax, 0x508
+2:
 	jmp   kernel_entry
 
 .align 4

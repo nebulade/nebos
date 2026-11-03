@@ -362,6 +362,9 @@ void kernel_main(void)
 	bootcon_fb_info();
 	paging_init();
 	boot_trace("paging");
+	/* Keep a RAM copy of the boot console text; the WM hides the
+	 * framebuffer console later and this is what `bootlog` prints. */
+	bootcon_log_init();
 	/* paging_init only ORs in PSE; make sure the BSP's SSE state is on
 	 * before any drawing path can select an SSE2 helper. */
 	cpu_enable_sse();
@@ -500,6 +503,23 @@ void kernel_main(void)
 	if (netdev_active())
 		dhcp_run(3000);
 	boot_trace("dhcp");
+
+	/* Dump the active NIC's counters after the boot DHCP attempt.  With
+	 * the ASIX as the management link this appears in netmon even when
+	 * the active e1000e cannot pass traffic. */
+	{
+		const struct netdev *nd = netdev_active();
+
+		if (nd && (nd->dump_brief || nd->dump_regs)) {
+			io_putstr("\n[boot netregs: ");
+			io_putstr(nd->name);
+			io_putstr("]\n");
+			if (nd->dump_brief)
+				nd->dump_brief();
+			else
+				nd->dump_regs();
+		}
+	}
 
 	/* Boot-time device/FS setup is complete; APs may now take user work.
 	 * Kernel threads stay pinned to the BSP and serialize on the BKL. */

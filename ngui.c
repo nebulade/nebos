@@ -484,8 +484,6 @@ unsigned int ngui_text_width(const char *s)
 
 unsigned int ngui_text_width_n(const char *s, unsigned int n, int scale)
 {
-	unsigned int i = 0;
-
 	(void)s;
 	if (scale < 1)
 		scale = 1;
@@ -517,6 +515,37 @@ void ngui_text_styled(struct ngui *ui, int x, int y, const char *s,
 	for (i = 0; i < n && s && s[i]; i++)
 		ngui_glyph(ui, x + (int)i * 8 * scale, y, (unsigned char)s[i],
 			   color, scale, bold);
+}
+
+/* Draw a string upside down.  The whole n-character block is rotated, so the
+ * first character ends up on the right; used for the mirrored corner index on
+ * a playing card. */
+void ngui_text_rot180(struct ngui *ui, int x, int y, const char *s,
+		      unsigned int n, unsigned short color)
+{
+	unsigned int i;
+	int row, col;
+
+	for (i = 0; i < n && s && s[i]; i++) {
+		const unsigned char *g =
+			&font_8x16[(unsigned int)(unsigned char)s[i] *
+				   FONT_8X16_ROWS];
+
+		for (row = 0; row < FONT_8X16_ROWS; row++) {
+			unsigned char bits = g[row];
+
+			if (!bits)
+				continue;
+			for (col = 0; col < 8; col++) {
+				if (!(bits & (0x80u >> col)))
+					continue;
+				ngui_pixel(ui,
+					   x + (int)(n - 1 - i) * 8 + 7 - col,
+					   y + FONT_8X16_ROWS - 1 - row,
+					   color);
+			}
+		}
+	}
 }
 
 void ngui_text_ellipsis(struct ngui *ui, struct ngui_rect r, int x, int y,
@@ -641,9 +670,57 @@ int ngui_button(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	return fired;
 }
 
-int ngui_icon_button(struct ngui *ui, unsigned int id, struct ngui_rect r,
-		     enum ngui_icon icon)
+/* One row of a drop-down menu: left-aligned label, optional check mark and
+ * right-aligned shortcut.  Uses the same press/release/active semantics as
+ * ngui_button so a menu and its caller never disagree about a click. */
+int ngui_menu_item(struct ngui *ui, unsigned int id, struct ngui_rect r,
+		   const char *label, const char *shortcut, int checked)
 {
+	int hot = ui->inside && ngui_rect_contains(&r, ui->mouse_x, ui->mouse_y);
+	int press_hot = ui->pressed &&
+		ngui_rect_contains(&r, ui->press_x, ui->press_y);
+	int release_hot = ngui_rect_contains(&r, ui->release_x, ui->release_y);
+	int fired = 0;
+	int selected;
+	unsigned short bg, fg;
+	int ty;
+
+	if (press_hot)
+		ui->active = id;
+	if (ui->pressed && ui->released && press_hot && release_hot)
+		fired = 1;
+	if (ui->released && ui->active == id) {
+		if (release_hot)
+			fired = 1;
+		ui->active = 0;
+	}
+
+	selected = (ui->active == id) || hot;
+	bg = selected ? ui->theme.selection : ui->theme.panel;
+	fg = selected ? NGUI_RGB(255, 255, 255) : ui->theme.text;
+	ngui_fill_rect(ui, r, bg);
+
+	ty = r.y + (r.h - 16) / 2;
+	ngui_push_clip(ui, r);
+	if (checked) {
+		ngui_line(ui, r.x + 8, ty + 10, r.x + 10, ty + 13, fg);
+		ngui_line(ui, r.x + 10, ty + 13, r.x + 15, ty + 5, fg);
+	}
+	if (label)
+		ngui_text(ui, r.x + 22, ty, label, fg);
+	if (shortcut) {
+		int sw = (int)ngui_text_width(shortcut);
+
+		ngui_text(ui, r.x + r.w - 8 - sw, ty, shortcut, fg);
+	}
+	ngui_pop_clip(ui);
+	if (hot)
+		ui->hot = id;
+	return fired;
+}
+
+int ngui_icon_button(struct ngui *ui, unsigned int id, struct ngui_rect r,
+		     enum ngui_icon icon){
 	int hot = ui->inside && ngui_rect_contains(&r, ui->mouse_x, ui->mouse_y);
 	int press_hot = ui->pressed &&
 		ngui_rect_contains(&r, ui->press_x, ui->press_y);

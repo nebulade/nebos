@@ -985,4 +985,5 @@ const struct netdev r8168_netdev = {
 	"r8168", "RTL8111/8168",
 	r8168_init, r8168_get_mac, r8168_rx, r8168_tx, r8168_print_info,
 	r8168_dump_regs, r8168_set_loopback, r8168_reset,
+	0, 0, 0, 0, 0,
 };

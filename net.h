@@ -73,6 +73,14 @@ int net_udp_send_from(const unsigned char *src_ip,
 		      unsigned int src_port, unsigned int dst_port,
 		      const void *payload, unsigned int len);
 
+/* Same, but forced onto a specific NIC (netlog/netkexec management link). */
+struct netdev;
+int net_udp_send_from_dev(const struct netdev *nd,
+			  const unsigned char *src_ip,
+			  const unsigned char *dst_mac, const unsigned char *dst_ip,
+			  unsigned int src_port, unsigned int dst_port,
+			  const void *payload, unsigned int len);
+
 /* Parse one Ethernet frame as a UDP datagram addressed to us or to the
  * broadcast address.  Fills the addresses/ports and the payload location.
  * Returns 1 on match. */
@@ -80,6 +88,15 @@ int net_udp_parse(const unsigned char *frame, unsigned int len,
 		  unsigned char src_ip[4], unsigned char dst_ip[4],
 		  unsigned int *src_port, unsigned int *dst_port,
 		  const unsigned char **payload, unsigned int *plen);
+
+/* Same, but without the destination-IP filter.  DHCP uses this because a
+ * server may send its OFFER unicast to the address it is offering, which is
+ * not our current (static) IP.  The protocol layer still validates the DHCP
+ * transaction ID and chaddr. */
+int net_udp_parse_any(const unsigned char *frame, unsigned int len,
+		      unsigned char src_ip[4], unsigned char dst_ip[4],
+		      unsigned int *src_port, unsigned int *dst_port,
+		      const unsigned char **payload, unsigned int *plen);
 
 /* Print one decoded frame summary line (dst/src/ethertype + ARP/IP/ICMP). */
 void net_decode_frame(const unsigned char *frame, unsigned int len);

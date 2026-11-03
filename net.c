@@ -242,12 +242,12 @@ void net_print_ip(void)
 
 static unsigned char udp_frame[14 + 20 + 8 + NET_UDP_MAX];
 
-int net_udp_send_from(const unsigned char *src_ip,
-		      const unsigned char *dst_mac, const unsigned char *dst_ip,
-		      unsigned int src_port, unsigned int dst_port,
-		      const void *payload, unsigned int len)
+int net_udp_send_from_dev(const struct netdev *nd,
+			  const unsigned char *src_ip,
+			  const unsigned char *dst_mac, const unsigned char *dst_ip,
+			  unsigned int src_port, unsigned int dst_port,
+			  const void *payload, unsigned int len)
 {
-	const struct netdev *nd = netdev_active();
 	unsigned char my_mac[6];
 	unsigned char *ip = udp_frame + 14;
 	unsigned char *udp = ip + 20;
@@ -295,6 +295,15 @@ int net_udp_send_from(const unsigned char *src_ip,
 	return nd->tx(udp_frame, 14 + total);
 }
 
+int net_udp_send_from(const unsigned char *src_ip,
+		      const unsigned char *dst_mac, const unsigned char *dst_ip,
+		      unsigned int src_port, unsigned int dst_port,
+		      const void *payload, unsigned int len)
+{
+	return net_udp_send_from_dev(netdev_active(), src_ip, dst_mac, dst_ip,
+				     src_port, dst_port, payload, len);
+}
+
 int net_udp_send(const unsigned char *dst_mac, const unsigned char *dst_ip,
 		 unsigned int src_port, unsigned int dst_port,
 		 const void *payload, unsigned int len)
@@ -306,16 +315,17 @@ int net_udp_send(const unsigned char *dst_mac, const unsigned char *dst_ip,
 				 payload, len);
 }
 
-int net_udp_parse(const unsigned char *f, unsigned int len,
-		  unsigned char src_ip[4], unsigned char dst_ip[4],
-		  unsigned int *src_port, unsigned int *dst_port,
-		  const unsigned char **payload, unsigned int *plen)
+static int net_udp_parse_common(const unsigned char *f, unsigned int len,
+				unsigned char src_ip[4],
+				unsigned char dst_ip[4],
+				unsigned int *src_port,
+				unsigned int *dst_port,
+				const unsigned char **payload,
+				unsigned int *plen, int check_dst)
 {
 	const unsigned char *ip = f + 14;
 	const unsigned char *udp;
-	unsigned char my_ip[4];
 	unsigned int i, ihl, ip_len;
-	int dst_ok = 0, dst_bcast = 1;
 
 	if (len < 14 + 20 + 8)
 		return 0;
@@ -331,17 +341,23 @@ int net_udp_parse(const unsigned char *f, unsigned int len,
 		return 0;
 
 	/* Accept datagrams for us or for the broadcast address (a DHCP client
-	 * has no address yet). */
-	net_get_ip(my_ip);
-	dst_ok = 1;
-	for (i = 0; i < 4; i++) {
-		if (ip[16 + i] != my_ip[i])
-			dst_ok = 0;
-		if (ip[16 + i] != 0xFF)
-			dst_bcast = 0;
+	 * has no address yet).  The DHCP client passes check_dst=0: a server
+	 * may send its OFFER unicast to the address it is offering, which is
+	 * not our (still static) IP. */
+	if (check_dst) {
+		unsigned char my_ip[4];
+		int dst_ok = 1, dst_bcast = 1;
+
+		net_get_ip(my_ip);
+		for (i = 0; i < 4; i++) {
+			if (ip[16 + i] != my_ip[i])
+				dst_ok = 0;
+			if (ip[16 + i] != 0xFF)
+				dst_bcast = 0;
+		}
+		if (!dst_ok && !dst_bcast)
+			return 0;
 	}
-	if (!dst_ok && !dst_bcast)
-		return 0;
 
 	udp = ip + ihl;
 	for (i = 0; i < 4; i++) {
@@ -353,6 +369,24 @@ int net_udp_parse(const unsigned char *f, unsigned int len,
 	*payload = udp + 8;
 	*plen = ip_len - ihl - 8;
 	return 1;
+}
+
+int net_udp_parse(const unsigned char *f, unsigned int len,
+		  unsigned char src_ip[4], unsigned char dst_ip[4],
+		  unsigned int *src_port, unsigned int *dst_port,
+		  const unsigned char **payload, unsigned int *plen)
+{
+	return net_udp_parse_common(f, len, src_ip, dst_ip, src_port,
+				    dst_port, payload, plen, 1);
+}
+
+int net_udp_parse_any(const unsigned char *f, unsigned int len,
+		      unsigned char src_ip[4], unsigned char dst_ip[4],
+		      unsigned int *src_port, unsigned int *dst_port,
+		      const unsigned char **payload, unsigned int *plen)
+{
+	return net_udp_parse_common(f, len, src_ip, dst_ip, src_port,
+				    dst_port, payload, plen, 0);
 }
 
 /* ---- ARP resolution (shared by the DNS resolver and the TCP client) ---- */

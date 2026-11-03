@@ -1,9 +1,11 @@
 /* USB host controller driver (HCD) interface.
  *
- * usb.c drives enumeration, bus scans and the interrupt-IN consumers (USB
- * mouse + keyboard) through this vtable; uhci.c and ohci.c each implement it
- * for their controller type.  One "controller instance" is one PCI function
- * (MCP79 exposes four OHCI ones, for example). */
+ * usb.c drives enumeration, bus scans and the transfer consumers (USB mouse
+ * + keyboard, USB Ethernet) through this vtable; uhci.c/ohci.c/ehci.c/xhci.c
+ * each implement it for their controller type.  One "controller instance" is
+ * one PCI function (MCP79 exposes four OHCI ones, for example).  A machine
+ * with EHCI and UHCI/OHCI companions drives all of them: high-speed devices
+ * enumerate on EHCI, the rest on the companions. */
 #ifndef USB_HCD_H
 #define USB_HCD_H
 
@@ -87,10 +89,15 @@ struct usb_hcd_ops {
 	int (*bulk_in)(unsigned int ctrl, unsigned int addr,
 		       unsigned int ep, unsigned int mps,
 		       unsigned char *buf, unsigned int len);
+
+	/* Optional: print raw root-port status during `lsusb` (print mode
+	 * only).  Used by EHCI to show PORTSC while debugging routing. */
+	void (*print_ports)(unsigned int ctrl);
 };
 
 extern const struct usb_hcd_ops usb_uhci_ops;
 extern const struct usb_hcd_ops usb_ohci_ops;
+extern const struct usb_hcd_ops usb_ehci_ops;
 extern const struct usb_hcd_ops usb_xhci_ops;
 
 #endif

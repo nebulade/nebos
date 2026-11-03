@@ -132,6 +132,8 @@
 #define SYS_TCP_SRV_SEND   96  /* (buf, len) -> 0/-1/-2/-3 */
 #define SYS_TCP_SRV_CLOSE  97
 #define SYS_TCP_PEER       99  /* (ip[4], unsigned *port) -> 0/-1 (debug log) */
+#define SYS_NET_SPEED     100  /* (mbps) -> 0; 0 = auto, 100 = force 100M */
+#define SYS_NET_MAC_SET   101  /* (const mac[6]) -> 0/-1/-2 */
 
 /* Stat one path (the file service has no open handle). */
 #define SYS_FS_STAT        98  /* (path, struct sys_stat *out) -> 0/<0 */

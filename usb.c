@@ -1,11 +1,21 @@
 /* USB core: device enumeration, descriptor parsing, hub recursion, bus scans
    and the hotplug watcher.  Controller-specific work goes through the
-   usb_hcd_ops vtable (uhci.c / ohci.c). */
+   usb_hcd_ops vtable (uhci.c / ohci.c / ehci.c / xhci.c). */
 
 #include "io.h"
 #include "timer.h"
 #include "usb.h"
 #include "usb_hcd.h"
+
+/* One global controller index space.  Each entry maps to one instance of
+   one controller type; a machine with EHCI + UHCI companions gets several.
+   USB_HCD_MAX_CTRL is the per-type limit, this is the total. */
+#define USB_MAX_CTRL 8
+
+struct usb_ctrl_ref {
+	const struct usb_hcd_ops *ops;
+	unsigned int local;
+};
 
 /* Standard request types. */
 #define RT_DEV2HOST_STD 0x80u
@@ -20,6 +30,7 @@
 #define REQ_SET_FEATURE    0x03u
 #define REQ_SET_ADDRESS    0x05u
 #define REQ_GET_DESCRIPTOR 0x06u
+#define REQ_SET_CONFIGURATION 0x09u
 
 /* Descriptor types. */
 #define DESC_DEVICE    0x01u
@@ -32,9 +43,11 @@
 #define FEAT_PORT_RESET        4u
 #define FEAT_PORT_POWER        8u
 #define FEAT_C_PORT_CONNECTION 16u
+#define FEAT_C_PORT_RESET      20u
 
 /* Hub port status bits. */
 #define PSTAT_CONNECT   0x0001u
+#define PSTAT_ENABLE    0x0002u
 #define PSTAT_LOW_SPEED 0x0200u
 
 /* How much of a configuration descriptor we read/parse. */
@@ -85,9 +98,12 @@ static void dbg_port(unsigned int ctrl, unsigned int port, unsigned int conn,
 }
 #endif
 
-static const struct usb_hcd_ops *hcd;
+static struct usb_ctrl_ref usb_ctrls[USB_MAX_CTRL];
+static unsigned int n_usb_ctrls;
+static int hcd_init_done;
 static unsigned int generation;
-static unsigned int next_addr[USB_HCD_MAX_CTRL];
+static unsigned int next_addr[USB_MAX_CTRL];
+static const struct usb_hcd_ops *slot_ops[USB_HCD_INT_SLOTS];
 static usb_probe_fn current_probe;
 static usb_device_probe_fn device_probe;
 static int print_devices;
@@ -175,10 +191,12 @@ int usb_control_in(unsigned int ctrl, unsigned int addr, unsigned int mps,
 		   unsigned short value, unsigned short index,
 		   unsigned char *buf, unsigned int len)
 {
+	const struct usb_hcd_ops *ops;
 	unsigned char setup[8];
 
-	if (!hcd)
+	if (ctrl >= n_usb_ctrls)
 		return -1;
+	ops = usb_ctrls[ctrl].ops;
 	setup[0] = rt;
 	setup[1] = req;
 	setup[2] = (unsigned char)(value & 0xFF);
@@ -187,17 +205,20 @@ int usb_control_in(unsigned int ctrl, unsigned int addr, unsigned int mps,
 	setup[5] = (unsigned char)((index >> 8) & 0xFF);
 	setup[6] = (unsigned char)(len & 0xFF);
 	setup[7] = (unsigned char)((len >> 8) & 0xFF);
-	return hcd->control_transfer(ctrl, addr, mps, low_speed, setup, buf, len, 1);
+	return ops->control_transfer(usb_ctrls[ctrl].local, addr, mps,
+				     low_speed, setup, buf, len, 1);
 }
 
 int usb_control_out(unsigned int ctrl, unsigned int addr, unsigned int mps,
 		    int low_speed, unsigned char rt, unsigned char req,
 		    unsigned short value, unsigned short index)
 {
+	const struct usb_hcd_ops *ops;
 	unsigned char setup[8];
 
-	if (!hcd)
+	if (ctrl >= n_usb_ctrls)
 		return -1;
+	ops = usb_ctrls[ctrl].ops;
 	setup[0] = rt;
 	setup[1] = req;
 	setup[2] = (unsigned char)(value & 0xFF);
@@ -206,7 +227,8 @@ int usb_control_out(unsigned int ctrl, unsigned int addr, unsigned int mps,
 	setup[5] = (unsigned char)((index >> 8) & 0xFF);
 	setup[6] = 0;
 	setup[7] = 0;
-	return hcd->control_transfer(ctrl, addr, mps, low_speed, setup, 0, 0, 0);
+	return ops->control_transfer(usb_ctrls[ctrl].local, addr, mps,
+				     low_speed, setup, 0, 0, 0);
 }
 
 int usb_control_out_data(unsigned int ctrl, unsigned int addr,
@@ -215,10 +237,12 @@ int usb_control_out_data(unsigned int ctrl, unsigned int addr,
 			 unsigned short index, const unsigned char *buf,
 			 unsigned int len)
 {
+	const struct usb_hcd_ops *ops;
 	unsigned char setup[8];
 
-	if (!hcd)
+	if (ctrl >= n_usb_ctrls)
 		return -1;
+	ops = usb_ctrls[ctrl].ops;
 	setup[0] = rt;
 	setup[1] = req;
 	setup[2] = (unsigned char)(value & 0xFF);
@@ -227,8 +251,9 @@ int usb_control_out_data(unsigned int ctrl, unsigned int addr,
 	setup[5] = (unsigned char)((index >> 8) & 0xFF);
 	setup[6] = (unsigned char)(len & 0xFF);
 	setup[7] = (unsigned char)((len >> 8) & 0xFF);
-	return hcd->control_transfer(ctrl, addr, mps, low_speed, setup,
-				     (unsigned char *)buf, len, 0);
+	return ops->control_transfer(usb_ctrls[ctrl].local, addr, mps,
+				     low_speed, setup, (unsigned char *)buf,
+				     len, 0);
 }
 
 /* Read the configuration descriptor and hand every interface with an
@@ -407,7 +432,21 @@ static void enumerate_device(unsigned int ctrl, unsigned int addr,
 static void enumerate_hub(unsigned int ctrl, unsigned int addr, unsigned int mps,
 			  int low, unsigned int port, unsigned int depth)
 {
-	unsigned int nports, p;
+	unsigned char cfg[9];
+	unsigned int nports, p, i, power_good;
+
+	/* Put the hub in its configured state before issuing hub-class
+	   requests.  The core does not configure non-HID devices itself, and
+	   some hubs (notably Intel PCH internal hubs) require this. */
+	if (usb_control_in(ctrl, addr, mps, low, RT_DEV2HOST_STD,
+			   REQ_GET_DESCRIPTOR,
+			   (unsigned short)(DESC_CONFIG << 8), 0, cfg,
+			   sizeof(cfg)) >= 0 && cfg[5] != 0) {
+		usb_control_out(ctrl, addr, mps, low, RT_HOST2DEV_STD,
+				REQ_SET_CONFIGURATION, (unsigned short)cfg[5],
+				0);
+		msleep(5);
+	}
 
 	if (usb_control_in(ctrl, addr, mps, low, RT_DEV2HOST_CLS,
 			   REQ_GET_DESCRIPTOR,
@@ -419,26 +458,65 @@ static void enumerate_hub(unsigned int ctrl, unsigned int addr, unsigned int mps
 	if (nports > 8)
 		nports = 8;
 
+	/* Power every downstream port before looking at connect status.
+	   An unpowered port reports no connection, so the old order could
+	   miss devices behind a switched hub. */
+	power_good = (unsigned int)hub_desc[5] * 2;
+	if (power_good < 20)
+		power_good = 20;
+	if (power_good > 500)
+		power_good = 500;
+	for (p = 1; p <= nports; p++)
+		usb_control_out(ctrl, addr, mps, low, RT_HOST2DEV_OTH,
+				REQ_SET_FEATURE, FEAT_PORT_POWER,
+				(unsigned short)p);
+	msleep(power_good);
+
 	for (p = 1; p <= nports; p++) {
+		unsigned int st = 0;
 		int low2;
 
 		if (usb_control_in(ctrl, addr, mps, low, RT_DEV2HOST_OTH,
 				   REQ_GET_STATUS, 0, (unsigned short)p,
 				   port_st, 4) < 0)
 			continue;
-		if (!(port_status_word() & PSTAT_CONNECT))
+		st = port_status_word();
+		if (print_devices) {
+			unsigned int chg = (unsigned int)port_st[2] |
+					   ((unsigned int)port_st[3] << 8);
+			indent(depth);
+			io_putstr("Hub port ");
+			put_uint(p);
+			io_putstr(": status 0x");
+			put_hex(st, 4);
+			io_putstr(" change 0x");
+			put_hex(chg, 4);
+			io_putchar('\n');
+		}
+		if (!(st & PSTAT_CONNECT))
 			continue;
 
-		/* Power and reset the downstream port. */
-		usb_control_out(ctrl, addr, mps, low, RT_HOST2DEV_OTH,
-				REQ_SET_FEATURE, FEAT_PORT_POWER,
-				(unsigned short)p);
+		/* Reset the downstream port and wait for it to enable. */
 		if (usb_control_out(ctrl, addr, mps, low, RT_HOST2DEV_OTH,
 				    REQ_SET_FEATURE, FEAT_PORT_RESET,
 				    (unsigned short)p) < 0)
 			continue;
-		msleep(30);
-
+		for (i = 0; i < 100; i++) {
+			if (usb_control_in(ctrl, addr, mps, low,
+					   RT_DEV2HOST_OTH, REQ_GET_STATUS, 0,
+					   (unsigned short)p, port_st, 4) < 0)
+				break;
+			st = port_status_word();
+			if (st & PSTAT_ENABLE)
+				break;
+			if (port_st[2] & 0x10u)   /* C_PORT_RESET */
+				break;
+			msleep(5);
+		}
+		msleep(10);
+		usb_control_out(ctrl, addr, mps, low, RT_HOST2DEV_OTH,
+				REQ_CLEAR_FEATURE, FEAT_C_PORT_RESET,
+				(unsigned short)p);
 		usb_control_out(ctrl, addr, mps, low, RT_HOST2DEV_OTH,
 				REQ_CLEAR_FEATURE, FEAT_C_PORT_CONNECTION,
 				(unsigned short)p);
@@ -448,8 +526,24 @@ static void enumerate_hub(unsigned int ctrl, unsigned int addr, unsigned int mps
 		if (usb_control_in(ctrl, addr, mps, low, RT_DEV2HOST_OTH,
 				   REQ_GET_STATUS, 0, (unsigned short)p,
 				   port_st, 4) >= 0) {
-			if (port_status_word() & PSTAT_LOW_SPEED)
+			st = port_status_word();
+			if (st & PSTAT_LOW_SPEED)
 				low2 = 1;
+		}
+		if (!(st & PSTAT_ENABLE))
+			continue;
+
+		if (print_devices) {
+			unsigned int chg = (unsigned int)port_st[2] |
+					   ((unsigned int)port_st[3] << 8);
+			indent(depth);
+			io_putstr("Hub port ");
+			put_uint(p);
+			io_putstr(" after reset: status 0x");
+			put_hex(st, 4);
+			io_putstr(" change 0x");
+			put_hex(chg, 4);
+			io_putchar('\n');
 		}
 
 		enumerate_new_device(ctrl, port, low2, depth);
@@ -504,28 +598,55 @@ static void enumerate_new_device(unsigned int ctrl, unsigned int port, int low,
 	enumerate_device(ctrl, addr, mps, low, port, depth);
 }
 
+static void add_ctrl(const struct usb_hcd_ops *ops, unsigned int count)
+{
+	unsigned int i;
+
+	for (i = 0; i < count && n_usb_ctrls < USB_MAX_CTRL; i++) {
+		usb_ctrls[n_usb_ctrls].ops = ops;
+		usb_ctrls[n_usb_ctrls].local = i;
+		n_usb_ctrls++;
+	}
+}
+
 int usb_hcd_init(void)
 {
-	if (hcd)
-		return 0;
-	if (usb_uhci_ops.init() > 0) {
-		hcd = &usb_uhci_ops;
-		return 0;
-	}
-	if (usb_ohci_ops.init() > 0) {
-		hcd = &usb_ohci_ops;
-		return 0;
-	}
-	if (usb_xhci_ops.init() > 0) {
-		hcd = &usb_xhci_ops;
-		return 0;
-	}
-	return -1;
+	unsigned int uhci, ohci, ehci, xhci;
+
+	if (hcd_init_done)
+		return n_usb_ctrls ? 0 : -1;
+	hcd_init_done = 1;
+
+	/* Companions first, so EHCI's CONFIGFLAG claim is the last thing
+	   that happens to the shared ports. */
+	uhci = (unsigned int)usb_uhci_ops.init();
+	ohci = (unsigned int)usb_ohci_ops.init();
+	ehci = (unsigned int)usb_ehci_ops.init();
+	xhci = (unsigned int)usb_xhci_ops.init();
+
+	/* Scan EHCI first: resetting its ports hands low/full-speed devices
+	   back to the companions before those are scanned. */
+	add_ctrl(&usb_ehci_ops, ehci);
+	add_ctrl(&usb_uhci_ops, uhci);
+	add_ctrl(&usb_ohci_ops, ohci);
+	add_ctrl(&usb_xhci_ops, xhci);
+	return n_usb_ctrls ? 0 : -1;
 }
 
 const char *usb_hcd_name(void)
 {
-	return hcd ? hcd->name : "none";
+	if (!n_usb_ctrls)
+		return "none";
+	if (n_usb_ctrls == 1)
+		return usb_ctrls[0].ops->name;
+	return "USB";
+}
+
+const char *usb_hcd_name_ctrl(unsigned int ctrl)
+{
+	if (ctrl >= n_usb_ctrls)
+		return "none";
+	return usb_ctrls[ctrl].ops->name;
 }
 
 unsigned int usb_generation(void)
@@ -535,30 +656,44 @@ unsigned int usb_generation(void)
 
 int usb_port_connected(unsigned int ctrl, unsigned int port)
 {
-	if (!hcd)
+	if (ctrl >= n_usb_ctrls)
 		return 0;
-	return hcd->port_connected(ctrl, port);
+	return usb_ctrls[ctrl].ops->port_connected(usb_ctrls[ctrl].local,
+						   port);
 }
 
 int usb_int_in_start(unsigned int ctrl, unsigned int slot, unsigned int addr,
 		     unsigned int ep, unsigned int mps, int low_speed)
 {
-	if (!hcd || slot >= USB_HCD_INT_SLOTS)
+	const struct usb_hcd_ops *ops;
+	int r;
+
+	if (ctrl >= n_usb_ctrls || slot >= USB_HCD_INT_SLOTS)
 		return -1;
-	return hcd->int_in_start(ctrl, slot, addr, ep, mps, low_speed);
+	ops = usb_ctrls[ctrl].ops;
+	if (slot_ops[slot]) {           /* stale owner from another HCD */
+		slot_ops[slot]->int_in_stop(slot);
+		slot_ops[slot] = 0;
+	}
+	r = ops->int_in_start(usb_ctrls[ctrl].local, slot, addr, ep, mps,
+			      low_speed);
+	slot_ops[slot] = r == 0 ? ops : 0;
+	return r;
 }
 
 int usb_int_in_poll(unsigned int slot, unsigned char *buf, unsigned int len)
 {
-	if (!hcd || slot >= USB_HCD_INT_SLOTS)
+	if (slot >= USB_HCD_INT_SLOTS || !slot_ops[slot])
 		return 0;
-	return hcd->int_in_poll(slot, buf, len);
+	return slot_ops[slot]->int_in_poll(slot, buf, len);
 }
 
 void usb_int_in_stop(unsigned int slot)
 {
-	if (hcd && slot < USB_HCD_INT_SLOTS)
-		hcd->int_in_stop(slot);
+	if (slot >= USB_HCD_INT_SLOTS || !slot_ops[slot])
+		return;
+	slot_ops[slot]->int_in_stop(slot);
+	slot_ops[slot] = 0;
 }
 
 void usb_register_device_probe(usb_device_probe_fn fn)
@@ -570,17 +705,19 @@ int usb_bulk_out(unsigned int ctrl, unsigned int addr, unsigned int ep,
 		 unsigned int mps, const unsigned char *buf,
 		 unsigned int len)
 {
-	if (!hcd || !hcd->bulk_out)
+	if (ctrl >= n_usb_ctrls || !usb_ctrls[ctrl].ops->bulk_out)
 		return -1;
-	return hcd->bulk_out(ctrl, addr, ep, mps, buf, len);
+	return usb_ctrls[ctrl].ops->bulk_out(usb_ctrls[ctrl].local, addr, ep,
+					     mps, buf, len);
 }
 
 int usb_bulk_in(unsigned int ctrl, unsigned int addr, unsigned int ep,
 		unsigned int mps, unsigned char *buf, unsigned int len)
 {
-	if (!hcd || !hcd->bulk_in)
+	if (ctrl >= n_usb_ctrls || !usb_ctrls[ctrl].ops->bulk_in)
 		return -1;
-	return hcd->bulk_in(ctrl, addr, ep, mps, buf, len);
+	return usb_ctrls[ctrl].ops->bulk_in(usb_ctrls[ctrl].local, addr, ep,
+					    mps, buf, len);
 }
 
 int usb_scan(usb_probe_fn probe)
@@ -597,15 +734,18 @@ int usb_scan(usb_probe_fn probe)
 	current_probe = probe;
 	print_devices = (probe == 0);
 
-	for (c = 0; c < hcd->count() && c < USB_HCD_MAX_CTRL; c++) {
+	for (c = 0; c < n_usb_ctrls; c++) {
+		const struct usb_hcd_ops *ops = usb_ctrls[c].ops;
+		unsigned int local = usb_ctrls[c].local;
+
 		next_addr[c] = 1;
 
 		if (print_devices) {
 			unsigned int bus, dev, func, base;
 			int mmio;
 
-			hcd->info(c, &bus, &dev, &func, &base, &mmio);
-			io_putstr(hcd->name);
+			ops->info(local, &bus, &dev, &func, &base, &mmio);
+			io_putstr(ops->name);
 			io_putstr(" Host Controller (PCI ");
 			put_hex(bus, 2);
 			io_putchar(':');
@@ -615,22 +755,31 @@ int usb_scan(usb_probe_fn probe)
 			io_putstr(mmio ? ", MMIO 0x" : ", I/O 0x");
 			put_hex(base, mmio ? 8 : 4);
 			io_putstr(")\n");
+			if (ops->print_ports)
+				ops->print_ports(local);
 		}
 
-		for (p = 0; p < hcd->port_count(c); p++) {
-			unsigned int conn = (unsigned int)hcd->port_connected(c, p);
+		for (p = 0; p < ops->port_count(local); p++) {
+			unsigned int conn =
+				(unsigned int)ops->port_connected(local, p);
 
 			dbg_port(c, p, conn,
-				 (unsigned int)hcd->port_low_speed(c, p));
+				 (unsigned int)ops->port_low_speed(local, p));
 			if (!conn)
 				continue;
-			hcd->port_take_change(c, p);   /* clear stale CSC */
-			if (hcd->port_reset(c, p) != 0) {
+			ops->port_take_change(local, p);  /* clear stale CSC */
+			if (ops->port_reset(local, p) != 0) {
 				dbg("usb:   port reset failed\n");
 				continue;
 			}
 			dbg("usb:   port reset ok\n");
-			enumerate_new_device(c, p, hcd->port_low_speed(c, p), 1);
+			enumerate_new_device(c, p,
+					     ops->port_low_speed(local, p), 1);
+		}
+
+		if (print_devices && ops->print_ports) {
+			io_putstr("    After scan:\n");
+			ops->print_ports(local);
 		}
 	}
 
@@ -646,7 +795,7 @@ int usb_hotplug_poll(usb_probe_fn probe)
 	unsigned int now, c, p;
 	int n = 0;
 
-	if (!hcd || scan_busy)
+	if (!n_usb_ctrls || scan_busy)
 		return 0;
 
 	now = get_ticks_ms();
@@ -656,15 +805,19 @@ int usb_hotplug_poll(usb_probe_fn probe)
 
 	scan_busy = 1;
 	current_probe = probe;
-	for (c = 0; c < hcd->count() && c < USB_HCD_MAX_CTRL; c++) {
-		for (p = 0; p < hcd->port_count(c); p++) {
-			if (!hcd->port_take_change(c, p))
+	for (c = 0; c < n_usb_ctrls; c++) {
+		const struct usb_hcd_ops *ops = usb_ctrls[c].ops;
+		unsigned int local = usb_ctrls[c].local;
+
+		for (p = 0; p < ops->port_count(local); p++) {
+			if (!ops->port_take_change(local, p))
 				continue;
-			if (!hcd->port_connected(c, p))
+			if (!ops->port_connected(local, p))
 				continue;
-			if (hcd->port_reset(c, p) != 0)
+			if (ops->port_reset(local, p) != 0)
 				continue;
-			enumerate_new_device(c, p, hcd->port_low_speed(c, p), 1);
+			enumerate_new_device(c, p,
+					     ops->port_low_speed(local, p), 1);
 			n++;
 		}
 	}

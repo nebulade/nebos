@@ -29,6 +29,8 @@ SECTIONS
 	_end = .;
 }
 ASSERT(_end <= 0x7F000, "Kernel too large: would reach the run area at 0x80000");
-/* The legacy stage loads the compressed rootfs at 0x60000; the BSS clear and
- * the boot stack must stay below it. */
-ASSERT(_end <= 0x60000, "Kernel too large: would overlap the low rootfs pack");
+/* The legacy stage stages the compressed rootfs at 0x60000 before copying it
+ * to PACK_HIGH_ADDR; the loaded image (text/rodata/data) must not reach that
+ * staging area.  BSS and the boot stack may extend past it: the stage copy
+ * happens before the kernel clears BSS and starts using its stack. */
+ASSERT(__bss_start <= 0x60000, "Kernel image too large: legacy pack staging would overwrite it");

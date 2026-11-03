@@ -17,11 +17,31 @@ struct netdev {
 	void (*dump_regs)(void);    /* register dump; may be NULL */
 	int  (*set_loopback)(int on);   /* PHY loopback for self-test; may be NULL */
 	void (*reset)(void);        /* full NIC re-init (recover from a stall); may be NULL */
+	int  (*set_speed)(unsigned int mbps); /* 0 = auto, 100 = force 100M; may be NULL */
+	void (*set_mac)(const unsigned char mac[6]); /* runtime MAC override; may be NULL */
+	/* Address applied when this driver becomes active.  The direct ASIX
+	 * link uses its own subnet so it can coexist with the e1000e link to
+	 * the router.  NULL leaves the current address alone. */
+	const unsigned char *default_ip;
+	const unsigned char *default_mask;
+	/* Short RX summary for the boot log (a full register dump can
+	 * overflow the netlog ring before the WM starts); may be NULL. */
+	void (*dump_brief)(void);
 };
 
 /* First registered driver that probes successfully (probe result is cached);
  * NULL when no NIC is present. */
 const struct netdev *netdev_active(void);
+
+/* Management NIC for netlog/netkexec.  Prefers the ASIX dongle so the
+ * direct debug link survives `netdev e1000e`; falls back to the active
+ * driver. */
+const struct netdev *netdev_mgmt(void);
+
+/* Select a NIC by short driver name ("e1000e", "r8168", "ne2000", "asix").
+ * Returns 0 on success; leaves the current driver active on failure. */
+int netdev_select(const char *name);
+void program_netdev_main(const char *arg);
 
 /* Busy gate for commands that poll the NIC for a while (netrecv, ping,
  * netloop, netkexec): the background kexec watcher must not steal

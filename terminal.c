@@ -2,12 +2,14 @@
    Commands are spawned as separate processes for preemptive multitasking. */
 
 #include "io.h"
+#include "bootcon.h"
 #include "dbg.h"
 #include "idle.h"
 #include "kexec.h"
 #include "kmalloc.h"
 #include "mm.h"
 #include "process.h"
+#include "sys_fs.h"
 #include "terminal.h"
 #include "timer.h"
 
@@ -21,6 +23,7 @@ extern void program_serial_recv_main(const char *arg);
 extern void program_run_serial_main(const char *arg);
 extern void program_run_embedded_main(const char *name);
 extern void program_lsusb_main(void);
+extern void program_netdev_main(const char *arg);
 extern void program_format_main(const char *arg);
 extern void program_lspci_main(const char *filter);
 extern void program_peek_main(const char *arg);
@@ -85,6 +88,7 @@ static int term_path_spawn(struct term *t, const char *word, const char *args);
 
 static int cmd_cd(struct term *t, const char *args);
 static int cmd_clear(struct term *t, const char *args);
+static int cmd_bootlog(struct term *t, const char *args);
 static int cmd_dbg(struct term *t, const char *args);
 static int cmd_format(struct term *t, const char *args);
 static int cmd_help(struct term *t, const char *args);
@@ -107,6 +111,7 @@ static const struct kcmd cmds[] = {
 	{ "path",       "path [dir[:dir...]]",           CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_path },
 	{ "help",       "help",                          CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_help },
 	{ "clear",      "clear",                         CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_clear },
+	{ "bootlog",    "bootlog",                       CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_bootlog },
 	{ "run",        "run <name>|<file>",             CK_CUSTOM, 0, 0, 0, 0, cmd_run },
 	{ "space",      "space",                         CK_SPAWN, 0, 0, program_run_embedded_main, "space", 0 },
 	{ "prog",       "prog",                          CK_SPAWN, 0, 0, program_run_embedded_main, "prog", 0 },
@@ -115,6 +120,7 @@ static const struct kcmd cmds[] = {
 	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
 	{ "gfxbench",   "gfxbench",                      CK_SPAWN, 0, program_gfxbench_main, 0, 0, 0 },
 	{ "lsusb",      "lsusb",                         CK_SPAWN, 0, program_lsusb_main, 0, 0, 0 },
+	{ "netdev",     "netdev [name]",                 CK_SPAWN_ARG, 0, 0, program_netdev_main, 0, 0 },
 	{ "format",     "format <device> [size]",        CK_CUSTOM, 0, 0, 0, 0, cmd_format },
 	{ "lspci",      "lspci [id]",                    CK_SPAWN_ARG, 0, 0, program_lspci_main, 0, 0 },
 	{ "peek",       "peek <addr> [len]",             CK_SPAWN_ARG, 0, 0, program_peek_main, 0, 0 },
@@ -257,6 +263,50 @@ static int cmd_clear(struct term *t, const char *args)
 	io_clear_screen();
 	term_print_prompt(t, 1);
 	return 1;   /* prompt already printed */
+}
+
+/* Dump the whole boot console text captured by bootcon_puts().  The ring-3
+ * terminal keeps scrollback, so no paging is needed; sleep briefly every
+ * 512 bytes so the terminal can drain its tty ring while we write. */
+static int cmd_bootlog(struct term *t, const char *args)
+{
+	const char *p;
+	unsigned int len, i;
+
+	(void)t;
+	p = bootcon_log(&len);
+	while (*args == ' ')
+		args++;
+	if (args[0] == 's' && args[1] == 'a' && args[2] == 'v' &&
+	    args[3] == 'e' && (args[4] == ' ' || args[4] == '\0')) {
+		const char *path = args + 4;
+		int r;
+
+		while (*path == ' ')
+			path++;
+		if (!*path) {
+			io_putstr("bootlog: usage bootlog save <path>\n");
+			return 0;
+		}
+		r = sys_write_file(path, p, len);
+		if (r == 0)
+			io_putstr("bootlog saved\n");
+		else {
+			io_putstr("bootlog: save failed (");
+			io_puthex((unsigned int)r);
+			io_putstr(")\n");
+		}
+		return 0;
+	}
+
+	for (i = 0; i < len; i++) {
+		io_putchar(p[i]);
+		if ((i & 511u) == 511u)
+			process_sleep_ms(1);
+	}
+	if (bootcon_log_truncated())
+		io_putstr("\n[boot log truncated]\n");
+	return 0;
 }
 
 static int cmd_dbg(struct term *t, const char *args)
@@ -1474,7 +1524,8 @@ int term_kcmd_spawn(const char *name, const char *args, unsigned int tty)
 	unsigned int i;
 	int pid;
 
-	if (!c || ((c->flags & CMD_BUILTIN) && c->custom != cmd_help))
+	if (!c || ((c->flags & CMD_BUILTIN) && c->custom != cmd_help &&
+		   c->custom != cmd_bootlog))
 		return -1;
 	ctx = (struct kcmd_ctx *)kmalloc(sizeof(*ctx));
 	if (!ctx)

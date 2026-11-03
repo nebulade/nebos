@@ -275,7 +275,7 @@ static void dev_attach(struct hid_dev *d, unsigned int slot)
 	serial_puts(SERIAL_COM1, d->kind == KIND_MOUSE
 				   ? "usbhid: mouse attached ("
 				   : "usbhid: keyboard attached (");
-	serial_puts(SERIAL_COM1, usb_hcd_name());
+	serial_puts(SERIAL_COM1, usb_hcd_name_ctrl(d->ctrl));
 	serial_puts(SERIAL_COM1, ", addr ");
 	serial_putdec(SERIAL_COM1, d->addr);
 	serial_puts(SERIAL_COM1, " ep ");

@@ -75,7 +75,8 @@ int sys_mouseinfo(struct sys_mouseinfo *out)
 		out->usb_ep = ep;
 		out->usb_mps = mps;
 		out->usb_low = (unsigned int)low;
-		copy_str(out->hcd, usb_hcd_name(), sizeof(out->hcd));
+		copy_str(out->hcd, usb_hcd_name_ctrl(out->usb_ctrl),
+			 sizeof(out->hcd));
 	}
 	out->usb_keyboard = usbhid_keyboard_attached() ? 1 : 0;
 	return 1;

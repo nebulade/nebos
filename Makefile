@@ -31,7 +31,7 @@ EFI_LDFLAGS = -nostdlib -Wl,--subsystem,10 -Wl,-e,efi_main \
               -Wl,--image-base,0x0 -Wl,--dynamicbase \
               -Wl,--enable-reloc-section -Wl,--no-insert-timestamp
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan kernel-dev kernel-net-dev rootfs
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-ehci run-ehci-asix run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan kernel-dev kernel-net-dev rootfs
 
 all: floppy.img usb.img final.bin root.img
 
@@ -161,6 +161,9 @@ uhci.o: uhci.c uhci.h usb_hcd.h pci.h serial.h timer.h
 ohci.o: ohci.c ohci.h usb_hcd.h pci.h paging.h mm.h serial.h timer.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
+ehci.o: ehci.c ehci.h usb_hcd.h pci.h paging.h mm.h serial.h timer.h
+	$(CC) $(CFLAGS) -Os -o $@ $<
+
 xhci.o: xhci.c xhci.h usb_hcd.h pci.h paging.h mm.h serial.h timer.h spinlock.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
@@ -195,7 +198,7 @@ r8168.o: r8168.c r8168.h netdev.h io.h mm.h paging.h pci.h process.h serial.h ti
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
 e1000e.o: e1000e.c e1000e.h io.h mm.h netdev.h paging.h pci.h process.h serial.h timer.h
-	$(CC) $(CFLAGS) -Os -o $@ $<
+	$(CC) $(CFLAGS) -Oz -o $@ $<
 
 netkexec.o: netkexec.c netkexec.h io.h kexec.h net.h netdev.h timer.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -332,7 +335,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h pr
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.ld vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o ramfs.o share.o payload.o
+kernel.elf: kernel.ld vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o ramfs.o share.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $(filter-out kernel.ld,$^)
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -370,12 +373,12 @@ BPB_HEADS_OFFSET = 26
 BPB_HIDDEN_OFFSET = 28
 BPB_TOTAL_OFFSET = 32
 
-# USB rootfs partition (type 0x7F) and UEFI ESP (type 0xEF).  The rootfs
-# sits immediately behind the kernel (LBA 532), so even a CHS-only USB BIOS
-# finds the header and the 242 KB gzip pack inside the first 1.44 MB.
-ROOTFS_LBA     = 532
+# USB rootfs partition (type 0x7F) and UEFI ESP (type 0xEF).  Partition 1
+# has room for a 512 KB kernel; the rootfs starts after it at LBA 1088.
+# The header and the 242 KB gzip pack are still inside the first 1.44 MB.
+ROOTFS_LBA     = 1088
 ROOTFS_SECTORS = 16384
-ESP_LBA        = 16916
+ESP_LBA        = 18432
 
 # Patch a little-endian 16/32-bit value into a boot-sector copy.  Usage:
 #   $(call patch16,file,offset,value)
@@ -409,13 +412,13 @@ usb.img: mbr.bin boot.bin kernel.bin cmds.img
 	$(call patch32,$@.boot.tmp,$(ROOTFS_LBA),$(PACK_LBA_OFFSET)); \
 	printf '\xff\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_HEADS_OFFSET) conv=notrunc 2>/dev/null; \
 	printf '\x3f\x00\x00\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_HIDDEN_OFFSET) conv=notrunc 2>/dev/null; \
-	printf '\xd5\x01\x00\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_TOTAL_OFFSET) conv=notrunc 2>/dev/null; \
+	printf '\x00\x04\x00\x00' | dd of=$@.boot.tmp bs=1 seek=$(BPB_TOTAL_OFFSET) conv=notrunc 2>/dev/null; \
 	cat mbr.bin > $@; \
 	dd if=/dev/zero bs=512 count=62 2>/dev/null >> $@; \
 	cat $@.boot.tmp kernel.bin >> $@; \
 	truncate -s 9M $@; \
 	dd if=cmds.img of=$@ bs=512 seek=$(ROOTFS_LBA) conv=notrunc 2>/dev/null; \
-	printf '\x00\x08\x1d\x00\x7f\x0d\x20\x01\x14\x02\x00\x00\x00\x40\x00\x00' | \
+	printf '\x00\x11\x12\x00\x7f\x16\x15\x01\x40\x04\x00\x00\x00\x40\x00\x00' | \
 		dd of=$@ bs=1 seek=462 conv=notrunc 2>/dev/null; \
 	rm -f $@.boot.tmp
 
@@ -481,9 +484,9 @@ usb-efi.img: usb.img esp.img
 	# the kernel at LBA 64.  Clear BPB FATSize16 so the firmware rejects the
 	# fake volume; boot.S and the BIOS never read that field.
 	printf '\x00\x00' | dd of=$@ bs=1 seek=$$((63 * 512 + 0x16)) conv=notrunc 2>/dev/null
-	# Partition 3: ESP at LBA 16916, type 0xEF, 8 MB (partition 2 is the
-	# rootfs at LBA 532 written by usb.img).
-	printf '\x00\xfe\xff\xff\xef\xfe\xff\xff\x14\x42\x00\x00\x00\x40\x00\x00' | \
+	# Partition 3: ESP at LBA 18432, type 0xEF, 8 MB (partition 2 is the
+	# rootfs at LBA 1088 written by usb.img).
+	printf '\x00\xfe\xff\xff\xef\xfe\xff\xff\x00\x48\x00\x00\x00\x40\x00\x00' | \
 		dd of=$@ bs=1 seek=478 conv=notrunc 2>/dev/null
 	dd if=esp.img of=$@ bs=512 seek=$(ESP_LBA) conv=notrunc 2>/dev/null
 	truncate -s $$(( ($(ESP_LBA) + $(ESP_SECTORS)) * 512 )) $@
@@ -536,9 +539,9 @@ UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
         ucmd_clock ucmd_colors ucmd_edit ucmd_wm ucmd_term ucmd_spin \
         ucmd_netinfo ucmd_netip ucmd_netdns ucmd_host ucmd_dhcp \
         ucmd_netsend ucmd_netrecv ucmd_ping ucmd_pong ucmd_netlog \
-        ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_curl \
-        ucmd_files ucmd_view ucmd_sensors ucmd_mines ucmd_gallery \
-        ucmd_websrv ucmd_browser
+        ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_net100 ucmd_netmac ucmd_curl \
+        ucmd_files ucmd_view ucmd_sensors ucmd_mines ucmd_solitaire \
+        ucmd_gallery ucmd_websrv ucmd_browser
 
 # Keep the linked ELFs around (make would treat them as disposable
 # intermediates between the pattern rules).
@@ -593,6 +596,14 @@ ucmd_mines.o: ucmd_mines.c ucmd_lib.h syscall.h wm_abi.h ngui.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 ucmd_mines.elf: ucmd_mines.o ngui.o font_8x16.o ucmd.ld
+	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+	$(OBJCOPY) --strip-all $@ $@
+
+# solitaire: a Windows 95 style Klondike game on the same canvas toolkit.
+ucmd_solitaire.o: ucmd_solitaire.c ucmd_lib.h syscall.h wm_abi.h ngui.h
+	$(CC) $(CFLAGS) -Os -o $@ $<
+
+ucmd_solitaire.elf: ucmd_solitaire.o ngui.o font_8x16.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
@@ -707,9 +718,19 @@ cmds.pack: $(addsuffix .elf,$(UCMDS)) hello.elf browser.elf gallery.elf mkpack
 	./mkpack $@ $(PACK_FILES)
 
 # The boot-time rootfs is gzip-compressed; the raw cmds.pack is still what
-# cmds-dev/net-cmds send for a runtime replacement.
+# cmds-dev/net-cmds send for a runtime replacement.  Prefer libdeflate's
+# level 12 when it is installed: it saves about 8 KB over gzip -9 on the
+# current pack, which matters for the legacy low-memory pack (0x3FBFF).
+CMDS_GZ     = $(shell command -v libdeflate-gzip >/dev/null 2>&1 && \
+		     echo "libdeflate-gzip -12 -n -c" || echo "gzip -9 -n -c")
+CMDS_GZ_MAX = 261119
 cmds_pack_gz.bin: cmds.pack
-	gzip -9 -n -c $< > $@
+	$(CMDS_GZ) $< > $@
+	@sz=$$(stat -c%s $@); \
+	if [ $$sz -gt $(CMDS_GZ_MAX) ]; then \
+		echo "error: cmds_pack_gz.bin is $$sz bytes; the legacy low pack cap is $(CMDS_GZ_MAX) (install libdeflate-gzip)"; \
+		rm -f $@; exit 1; \
+	fi
 
 mkrootfs: mkrootfs.c rootfs.h
 	gcc -O2 -o $@ $<
@@ -823,11 +844,30 @@ run-xhci: floppy.img root.img
 	qemu-system-i386 -M pc -device qemu-xhci -device usb-mouse -device usb-kbd -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
 	qemu-system-x86_64 -M pc -device qemu-xhci -device usb-mouse -device usb-kbd -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
+# EHCI variant (USB 2.0 high-speed root ports).  usb-storage is high-speed
+# and lands on EHCI; the mouse/keyboard are full-speed and use the UHCI
+# companion, exercising the multi-controller USB core.
+run-ehci: floppy.img root.img
+	qemu-system-i386 -M pc -boot a -device usb-ehci,id=ehci0 -device piix3-usb-uhci,id=uhci0 \
+	  -device usb-storage,bus=ehci0.0,drive=usbstick \
+	  -drive if=none,id=usbstick,file=root.img,format=raw \
+	  -device usb-mouse,bus=uhci0.0 -device usb-kbd,bus=uhci0.0 \
+	  -drive file=floppy.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -boot a -device usb-ehci,id=ehci0 -device piix3-usb-uhci,id=uhci0 \
+	  -device usb-storage,bus=ehci0.0,drive=usbstick \
+	  -drive if=none,id=usbstick,file=root.img,format=raw \
+	  -device usb-mouse,bus=uhci0.0 -device usb-kbd,bus=uhci0.0 \
+	  -drive file=floppy.img,format=raw,if=floppy
+
 # Passthrough of the real ASIX AX88772 dongle (requires the host's asix
 # driver to be unbound and permission on /dev/bus/usb/...; typically run with
 # sudo).  `-nic none` keeps the QEMU e1000 out of the way so the USB NIC is
 # the only netdev.
 ASIX_HOST ?= vendorid=0x0b95,productid=0x7720
+run-ehci-asix: floppy.img root.img
+	qemu-system-i386 -M pc -nic none -device usb-ehci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -nic none -device usb-ehci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+
 run-xhci-asix: floppy.img root.img
 	qemu-system-i386 -M pc -nic none -device qemu-xhci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
 	qemu-system-x86_64 -M pc -nic none -device qemu-xhci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
@@ -880,9 +920,11 @@ test-usb: floppy.img root.img
 	python3 tools/qmp_cursor_test.py --uhci72
 	python3 tools/qmp_cursor_test.py --hotplug
 	python3 tools/qmp_cursor_test.py --xhci
+	python3 tools/qmp_cursor_test.py --ehci
 	python3 tools/qmp_keyboard_test.py
 	python3 tools/qmp_keyboard_test.py --hotplug
 	python3 tools/qmp_keyboard_test.py --xhci
+	python3 tools/qmp_keyboard_test.py --ehci
 
 scp-final: final.bin
 	scp final.bin root@192.168.0.136:
@@ -988,4 +1030,4 @@ kernel-net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o sys_gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h

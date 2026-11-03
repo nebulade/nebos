@@ -402,4 +402,5 @@ void ne2000_print_info(void)
 const struct netdev ne2000_netdev = {
 	"ne2000", "RTL8029AS",
 	ne2000_init, ne2000_get_mac, ne2000_rx, ne2000_tx, ne2000_print_info, 0, 0, 0,
+	0, 0, 0, 0, 0,
 };

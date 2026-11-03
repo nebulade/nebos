@@ -32,6 +32,19 @@ static unsigned char rxbuf[1520];
 static int have_info;
 static unsigned char last_server[4];
 static unsigned int last_lease;
+/* Number of UDP port-68 datagrams seen in the current dhcp_run(), regardless
+ * of whether dhcp_parse() liked them.  Printed on failure so netmon can tell
+ * "no reply at all" from "reply arrived but was rejected". */
+static unsigned int dhcp_rx68;
+/* Rejection breakdown for the same window. */
+static unsigned int dhcp_frames, dhcp_udp, dhcp_other_udp, dhcp_not_udp;
+static unsigned int dhcp_p68, dhcp_short, dhcp_bad_magic, dhcp_bad_xid;
+static unsigned int dhcp_bad_mac;
+static unsigned int dhcp_first_sport, dhcp_first_dport;
+static unsigned int dhcp_first_xid;
+static unsigned char dhcp_first_src[4], dhcp_first_dst[4];
+static unsigned char dhcp_first_chaddr[6];
+static int dhcp_have_udp, dhcp_have_p68;
 
 static void put_ip(const unsigned char *ip)
 {
@@ -70,6 +83,14 @@ static void put_dec(unsigned int v)
 	}
 	while (i)
 		io_putchar(b[--i]);
+}
+
+static void put_hex2(unsigned int v)
+{
+	static const char hex[] = "0123456789ABCDEF";
+
+	io_putchar(hex[(v >> 4) & 0xF]);
+	io_putchar(hex[v & 0xF]);
 }
 
 static unsigned int rd32be(const unsigned char *p)
@@ -156,20 +177,56 @@ static int dhcp_parse(const unsigned char *frame, unsigned int len,
 	unsigned char s_ip[4], d_ip[4];
 	unsigned int sport, dport, plen, i, o;
 
-	if (!net_udp_parse(frame, len, s_ip, d_ip, &sport, &dport, &p, &plen))
+	dhcp_frames++;
+	if (!net_udp_parse_any(frame, len, s_ip, d_ip, &sport, &dport, &p, &plen)) {
+		dhcp_not_udp++;
 		return 0;
-	if (dport != DHCP_CLIENT_PORT)
+	}
+	dhcp_udp++;
+	if (!dhcp_have_udp) {
+		dhcp_have_udp = 1;
+		dhcp_first_sport = sport;
+		dhcp_first_dport = dport;
+		for (i = 0; i < 4; i++) {
+			dhcp_first_src[i] = s_ip[i];
+			dhcp_first_dst[i] = d_ip[i];
+		}
+	}
+	if (dport != DHCP_CLIENT_PORT) {
+		dhcp_other_udp++;
 		return 0;
-	if (plen < DHCP_OPT_OFF || p[0] != DHCP_OP_REPLY)
+	}
+	dhcp_rx68++;
+	dhcp_p68++;
+	if (!dhcp_have_p68) {
+		dhcp_have_p68 = 1;
+		dhcp_first_xid = 0;
+		for (i = 0; i < 6; i++)
+			dhcp_first_chaddr[i] = 0;
+		if (plen >= 34) {
+			dhcp_first_xid = rd32be(p + 4);
+			for (i = 0; i < 6; i++)
+				dhcp_first_chaddr[i] = p[28 + i];
+		}
+	}
+	if (plen < DHCP_OPT_OFF || p[0] != DHCP_OP_REPLY) {
+		dhcp_short++;
 		return 0;
+	}
 	if (p[DHCP_MAGIC_OFF] != 0x63 || p[DHCP_MAGIC_OFF + 1] != 0x82 ||
-	    p[DHCP_MAGIC_OFF + 2] != 0x53 || p[DHCP_MAGIC_OFF + 3] != 0x63)
+	    p[DHCP_MAGIC_OFF + 2] != 0x53 || p[DHCP_MAGIC_OFF + 3] != 0x63) {
+		dhcp_bad_magic++;
 		return 0;
-	if (rd32be(p + 4) != xid)
+	}
+	if (rd32be(p + 4) != xid) {
+		dhcp_bad_xid++;
 		return 0;
+	}
 	for (i = 0; i < 6; i++) {
-		if (p[28 + i] != my_mac[i])
+		if (p[28 + i] != my_mac[i]) {
+			dhcp_bad_mac++;
 			return 0;
+		}
 	}
 
 	*type = 0;
@@ -277,6 +334,55 @@ static int dhcp_wait(const struct netdev *nd, unsigned int xid,
 	return -1;
 }
 
+static void dhcp_dump_stats(unsigned int xid)
+{
+	unsigned int i;
+
+	io_putstr("dhcp: seen ");
+	put_dec(dhcp_frames);
+	io_putstr(" frames, udp ");
+	put_dec(dhcp_udp);
+	io_putstr(" (p68 ");
+	put_dec(dhcp_p68);
+	io_putstr(", other port ");
+	put_dec(dhcp_other_udp);
+	io_putstr("), notudp ");
+	put_dec(dhcp_not_udp);
+	io_putstr(", short ");
+	put_dec(dhcp_short);
+	io_putstr(", magic ");
+	put_dec(dhcp_bad_magic);
+	io_putstr(", xid ");
+	put_dec(dhcp_bad_xid);
+	io_putstr(", mac ");
+	put_dec(dhcp_bad_mac);
+	io_putchar('\n');
+	if (dhcp_have_udp) {
+		io_putstr("dhcp: first udp ");
+		put_dec(dhcp_first_sport);
+		io_putstr("->");
+		put_dec(dhcp_first_dport);
+		io_putstr(" from ");
+		put_ip(dhcp_first_src);
+		io_putstr(" to ");
+		put_ip(dhcp_first_dst);
+		io_putchar('\n');
+	}
+	if (dhcp_have_p68) {
+		io_putstr("dhcp: first p68 xid 0x");
+		io_puthex(dhcp_first_xid);
+		io_putstr(" want 0x");
+		io_puthex(xid);
+		io_putstr(" chaddr ");
+		for (i = 0; i < 6; i++) {
+			if (i)
+				io_putchar(':');
+			put_hex2(dhcp_first_chaddr[i]);
+		}
+		io_putchar('\n');
+	}
+}
+
 int dhcp_run(unsigned int timeout_ms)
 {
 	static const unsigned char bcast_mac[6] = {
@@ -285,7 +391,7 @@ int dhcp_run(unsigned int timeout_ms)
 	static const unsigned char bcast_ip[4] = { 255, 255, 255, 255 };
 	static const unsigned char zero_ip[4] = { 0, 0, 0, 0 };
 	const struct netdev *nd = netdev_active();
-	unsigned char my_mac[6], want_ip[4], current[4];
+	unsigned char my_mac[6], current[4];
 	unsigned char yiaddr[4], mask[4], gw[4], dns[4], server[4];
 	unsigned int xid, start, deadline, tries;
 	unsigned int lease = 0;
@@ -294,15 +400,23 @@ int dhcp_run(unsigned int timeout_ms)
 		return -2;
 	nd->get_mac(my_mac);
 	net_get_ip(current);
-	/* Try to get the address we would use anyway (static default or the
-	 * previous lease): most routers honour option 50. */
-	for (tries = 0; tries < 4; tries++)
-		want_ip[tries] = current[tries];
 
 	xid = (get_ticks_ms() << 8) ^ ((unsigned int)my_mac[3] << 16) ^
 	      ((unsigned int)my_mac[4] << 8) ^ my_mac[5];
 	start = get_ticks_ms();
 	deadline = start + timeout_ms;
+	dhcp_rx68 = 0;
+	dhcp_frames = dhcp_udp = dhcp_other_udp = dhcp_not_udp = 0;
+	dhcp_p68 = dhcp_short = dhcp_bad_magic = dhcp_bad_xid = 0;
+	dhcp_bad_mac = 0;
+	dhcp_have_udp = dhcp_have_p68 = 0;
+
+	/* Do not share the receiver with a raw net command or a stuck
+	 * netkexec transfer: both would consume each other's replies. */
+	if (netdev_in_use()) {
+		io_putstr("dhcp: NIC is busy (see ps, kill the other command)\n");
+		return -4;
+	}
 
 	netdev_acquire();
 	io_putstr("dhcp: DISCOVER\n");
@@ -314,7 +428,7 @@ int dhcp_run(unsigned int timeout_ms)
 		if ((int)(wait_until - deadline) > 0)
 			wait_until = deadline;
 		dhcp_build(DHCP_DISCOVER, my_mac, xid,
-			   get_ticks_ms() - start, want_ip, 0);
+			   get_ticks_ms() - start, 0, 0);
 		if (net_udp_send_from(zero_ip, bcast_mac, bcast_ip,
 				      DHCP_CLIENT_PORT, DHCP_SERVER_PORT,
 				      msg, DHCP_MSG_LEN) != 0) {
@@ -329,9 +443,12 @@ int dhcp_run(unsigned int timeout_ms)
 	}
 	if (tries == 3) {
 		netdev_release();
-		io_putstr("dhcp: no server, keeping ");
+		io_putstr("dhcp: no server (rx ");
+		put_dec(dhcp_rx68);
+		io_putstr("), keeping ");
 		put_ip(current);
 		io_putchar('\n');
+		dhcp_dump_stats(xid);
 		return -1;
 	}
 
@@ -370,9 +487,12 @@ int dhcp_run(unsigned int timeout_ms)
 	}
 	if (tries == 3) {
 		netdev_release();
-		io_putstr("dhcp: no ACK, keeping ");
+		io_putstr("dhcp: no ACK (rx ");
+		put_dec(dhcp_rx68);
+		io_putstr("), keeping ");
 		put_ip(current);
 		io_putchar('\n');
+		dhcp_dump_stats(xid);
 		return -1;
 	}
 

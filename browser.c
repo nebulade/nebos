@@ -134,6 +134,9 @@ static int cancel_fetch;
 static int quit;
 
 static struct ngui_rect page_rect;
+static int layout_valid, layout_left, layout_right;
+static unsigned int layout_nnode;
+static int layout_content_h;
 
 /* layout output */
 struct lay_run {
@@ -1175,6 +1178,7 @@ static void show_error(const char *title, const char *detail)
 	s_append(page, &n, "</p><p><a href=\"/\">home</a></p></body></html>",
 		 sizeof(error_page));
 	br_parse(&doc, page, n);
+	layout_valid = 0;
 	preload_active = 0;
 	preload_pending = 0;
 	preload_wait = 0;
@@ -1242,6 +1246,7 @@ static int load_stylesheets(void)
 	}
 	br_parse_inline_css(&doc);
 	br_reset_styles(&doc);
+	layout_valid = 0;
 	return 0;
 }
 
@@ -1328,6 +1333,7 @@ static void preload_step(void)
 			nd->img_index = (short)image_count;
 			image_count++;
 			preload_loaded++;
+			layout_valid = 0;
 		}
 		ngui_invalidate(&ui);
 		return;
@@ -1380,6 +1386,7 @@ static void load_page(const char *url, int local, int push)
 
 	heap_clear();
 	image_reset();
+	layout_valid = 0;
 	page_scroll.offset = 0;
 	page_scroll.dragging = 0;
 	br_parse_plain(&doc, "", 0);    /* blank while loading */
@@ -1480,6 +1487,7 @@ static void load_home(int push)
 	preload_pending = 0;
 	heap_clear();
 	image_reset();
+	layout_valid = 0;
 	page_scroll.offset = 0;
 	page_scroll.dragging = 0;
 	br_parse_plain(&doc, "", 0);
@@ -1628,7 +1636,7 @@ static int run_width(const struct lay_run *r)
 
 static void flush_line(struct lay *l)
 {
-	int total, x, i;
+	int total, x, i, vis;
 
 	if (!l->nruns && l->line_x == l->left) {
 		l->line_h = 0;
@@ -1636,6 +1644,13 @@ static void flush_line(struct lay *l)
 	}
 	total = l->line_x - l->left;
 	x = l->left;
+	vis = 1;
+	if (l->draw) {
+		int lh = l->line_h ? l->line_h : 16;
+
+		vis = l->line_y + lh >= page_rect.y &&
+		      l->line_y <= page_rect.y + page_rect.h;
+	}
 	if (l->align == BR_ALIGN_CENTER)
 		x += (l->right - l->left - total) / 2;
 	else if (l->align == BR_ALIGN_RIGHT)
@@ -1647,7 +1662,7 @@ static void flush_line(struct lay *l)
 		int w = run_width(r);
 
 		x += r->gap;
-		if (l->draw) {
+		if (l->draw && vis) {
 			if (r->img == -2) {
 				int hh = r->ih ? r->ih : 20;
 
@@ -2212,14 +2227,18 @@ static void layout_block(struct lay *l, unsigned int node,
 	r0 = old_right - st->mr;
 	if (r0 < l0 + 16)
 		r0 = l0 + 16;
-	if (l->draw && st->has_bg && block_h[node])
-		ngui_fill_rect(l->ui, (struct ngui_rect){l0, top, r0 - l0,
-							 block_h[node]},
-			       st->bg);
-	if (l->draw && st->border_w && block_h[node])
-		ngui_frame(l->ui, (struct ngui_rect){l0, top, r0 - l0,
-						    block_h[node]},
-			   st->border_color);
+	if (l->draw && block_h[node] &&
+	    top < page_rect.y + page_rect.h &&
+	    top + block_h[node] > page_rect.y) {
+		if (st->has_bg)
+			ngui_fill_rect(l->ui, (struct ngui_rect){l0, top,
+						 r0 - l0, block_h[node]},
+				       st->bg);
+		if (st->border_w)
+			ngui_frame(l->ui, (struct ngui_rect){l0, top,
+						 r0 - l0, block_h[node]},
+				   st->border_color);
+	}
 	l->left = l0 + st->pl;
 	l->right = r0 - st->pr;
 	if (l->right < l->left + 8)
@@ -3051,7 +3070,15 @@ static void draw_page(struct ngui_rect page)
 		return;
 	left = page.x + 8;
 	right = page.x + page.w - 16;
-	ch = measure_page(left, right);
+	if (!layout_valid || left != layout_left || right != layout_right ||
+	    layout_nnode != doc.nnode) {
+		layout_content_h = measure_page(left, right);
+		layout_valid = 1;
+		layout_left = left;
+		layout_right = right;
+		layout_nnode = doc.nnode;
+	}
+	ch = layout_content_h;
 	page_scroll.content_h = ch;
 	page_scroll.view_h = page.h;
 	ngui_scroll_begin(&ui, page, &page_scroll);
