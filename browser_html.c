@@ -12,8 +12,9 @@ static int is_ident(char c);
 static struct br_node nodes_store[BR_MAX_NODES];
 static char text_store[BR_TEXT_SIZE];
 static char attr_store[BR_ATTR_SIZE];
-static struct br_rule rule_store[BR_MAX_RULES];
+static struct br_rule rule_fallback[BR_RULE_FALLBACK];
 static char css_store[BR_CSS_SIZE];
+static int root_font_px = 16;
 
 /* ---- tag table ---- */
 
@@ -487,6 +488,44 @@ static unsigned int css_value_end(const char *s, unsigned int len,
 	return i;
 }
 
+/* Theme-variant selectors (html.dark, .skin-theme-clientpref-night) carry a
+ * second palette.  We render the light page, so skip their custom-property
+ * definitions; otherwise their last-wins values leak into the light rules. */
+static int css_dark_selector(const char *s, unsigned int len)
+{
+	unsigned int i;
+
+	for (i = 0; i + 4 <= len; i++) {
+		if ((s[i] == 'n' || s[i] == 'N') &&
+		    (s[i + 1] == 'i' || s[i + 1] == 'I') &&
+		    (s[i + 2] == 'g' || s[i + 2] == 'G') &&
+		    (s[i + 3] == 'h' || s[i + 3] == 'H') &&
+		    (s[i + 4] == 't' || s[i + 4] == 'T'))
+			return 1;
+		if ((s[i] == 'd' || s[i] == 'D') &&
+		    (s[i + 1] == 'a' || s[i + 1] == 'A') &&
+		    (s[i + 2] == 'r' || s[i + 2] == 'R') &&
+		    (s[i + 3] == 'k' || s[i + 3] == 'K'))
+			return 1;
+		if (i + 12 <= len &&
+		    (s[i] == 'c' || s[i] == 'C') &&
+		    (s[i + 1] == 'l' || s[i + 1] == 'L') &&
+		    (s[i + 2] == 'i' || s[i + 2] == 'I') &&
+		    (s[i + 3] == 'e' || s[i + 3] == 'E') &&
+		    (s[i + 4] == 'n' || s[i + 4] == 'N') &&
+		    (s[i + 5] == 't' || s[i + 5] == 'T') &&
+		    (s[i + 6] == 'p' || s[i + 6] == 'P') &&
+		    (s[i + 7] == 'r' || s[i + 7] == 'R') &&
+		    (s[i + 8] == 'e' || s[i + 8] == 'E') &&
+		    (s[i + 9] == 'f' || s[i + 9] == 'F') &&
+		    s[i + 10] == '-' &&
+		    (s[i + 11] == 'o' || s[i + 11] == 'O') &&
+		    (s[i + 12] == 's' || s[i + 12] == 'S'))
+			return 1;
+	}
+	return 0;
+}
+
 /* Collect --custom-property definitions from one declaration block. */
 static void css_collect_block(struct br_doc *d, const char *s,
 			      unsigned int len)
@@ -596,11 +635,29 @@ void br_doc_init(struct br_doc *d)
 	d->nodes = nodes_store;
 	d->text = text_store;
 	d->attrs = attr_store;
-	d->rules = rule_store;
+	d->rules = rule_fallback;
+	d->rule_cap = BR_RULE_FALLBACK;
 	d->attrs_used = 1;      /* offset 0 = "no attribute" */
 	d->attrs[0] = '\0';
 	d->nvars = 0;
 	d->root = 0;
+	root_font_px = 16;
+}
+
+void br_set_rule_store(struct br_doc *d, struct br_rule *buf,
+		       unsigned int cap)
+{
+	if (!buf || !cap) {
+		d->rules = rule_fallback;
+		d->rule_cap = BR_RULE_FALLBACK;
+		d->nrules = 0;
+		return;
+	}
+	if (cap > BR_MAX_RULES)
+		cap = BR_MAX_RULES;
+	d->rules = buf;
+	d->rule_cap = cap;
+	d->nrules = 0;
 }
 
 static void doc_reset(struct br_doc *d)
@@ -824,6 +881,7 @@ enum {
 	PROP_HEIGHT, PROP_HEIGHT_KIND, PROP_LH_PCT, PROP_LH_PX, PROP_UPPER,
 	PROP_FLOAT, PROP_FLEX_GROW, PROP_FLEX_COL, PROP_FLEX_WRAP,
 	PROP_GRID_NCOLS, PROP_GRID_GAP, PROP_GRID_SLOT,
+	PROP_POS, PROP_LEFT, PROP_TOP, PROP_LEFT_SET, PROP_TOP_SET,
 	PROP_COUNT
 };
 
@@ -995,11 +1053,14 @@ static int parse_color(const char *s, unsigned int len, unsigned short *out)
 }
 
 /* Length values for margins/padding: px, ignore percentages/units. */
+static unsigned int viewport_w;
+
 static int parse_len(const char *s, unsigned int len, unsigned int *pos)
 {
 	unsigned int i = *pos;
 	int sign = 1;
-	int v = 0;
+	long v = 0;            /* hundredths of a unit before conversion */
+	int digits = 0, frac = 0, unit = 0;
 
 	while (i < len && is_space(s[i]))
 		i++;
@@ -1010,24 +1071,54 @@ static int parse_len(const char *s, unsigned int len, unsigned int *pos)
 	}
 	while (i < len && s[i] >= '0' && s[i] <= '9') {
 		v = v * 10 + (s[i] - '0');
+		digits = 1;
 		i++;
 	}
 	if (i < len && s[i] == '.') {
 		i++;
-		while (i < len && s[i] >= '0' && s[i] <= '9')
+		while (i < len && s[i] >= '0' && s[i] <= '9') {
+			if (frac < 2) {
+				v = v * 10 + (s[i] - '0');
+				frac++;
+			}
 			i++;
+		}
 	}
+	while (frac < 2) {
+		v *= 10;
+		frac++;
+	}
+	while (frac > 2) {
+		v /= 10;
+		frac--;
+	}
+	if (i < len && s[i] == '%')
+		unit = 2;
+	else if (i + 2 < len && s[i] == 'r' && s[i + 1] == 'e' &&
+		 s[i + 2] == 'm')
+		unit = 1;
+	else if (i + 1 < len && s[i] == 'e' && s[i + 1] == 'm')
+		unit = 3;
 	while (i < len && (s[i] == 'p' || s[i] == 'x' || s[i] == '%' ||
 			   s[i] == 'e' || s[i] == 'm' || s[i] == 'r' ||
 			   s[i] == 'a' || s[i] == 'd'))
 		i++;
 	*pos = i;
+	if (!digits)
+		return 0;
+	if (unit == 1)
+		v *= root_font_px;
+	else if (unit == 3)
+		v *= 16;
+	else if (unit == 2)
+		v = v * (long)viewport_w / 100;
+	v /= 100;
 	v *= sign;
-	if (v < -32)
-		v = -32;
-	if (v > 96)
-		v = 96;
-	return v;
+	if (v < -2048)
+		v = -2048;
+	if (v > 2048)
+		v = 2048;
+	return (int)v;
 }
 
 /* width/height: kind 0 = auto/none, 1 = px, 2 = percent. */
@@ -1035,9 +1126,8 @@ static int parse_size(const char *s, unsigned int len, unsigned short *val,
 		      unsigned char *kind)
 {
 	unsigned int i = 0;
-	unsigned int v = 0;
-	int digits = 0;
-	int pct = 0;
+	unsigned long v = 0;
+	int digits = 0, frac = 0, pct = 0, rem = 0;
 
 	*val = 0;
 	*kind = 0;
@@ -1054,8 +1144,21 @@ static int parse_size(const char *s, unsigned int len, unsigned short *val,
 	}
 	if (i < len && s[i] == '.') {
 		i++;
-		while (i < len && s[i] >= '0' && s[i] <= '9')
+		while (i < len && s[i] >= '0' && s[i] <= '9') {
+			if (frac < 2) {
+				v = v * 10 + (unsigned int)(s[i] - '0');
+				frac++;
+			}
 			i++;
+		}
+	}
+	while (frac < 2) {
+		v *= 10;
+		frac++;
+	}
+	while (frac > 2) {
+		v /= 10;
+		frac--;
 	}
 	if (!digits)
 		return 0;
@@ -1063,6 +1166,16 @@ static int parse_size(const char *s, unsigned int len, unsigned short *val,
 		i++;
 	if (i < len && s[i] == '%')
 		pct = 1;
+	else if (i + 2 < len && s[i] == 'r' && s[i + 1] == 'e' &&
+		 s[i + 2] == 'm')
+		rem = 1;
+	else if (i + 1 < len && s[i] == 'e' && s[i + 1] == 'm')
+		rem = 2;
+	if (rem == 1)
+		v *= root_font_px;
+	else if (rem == 2)
+		v *= 16;
+	v /= 100;
 	if (pct) {
 		if (v > 100)
 			v = 100;
@@ -1120,9 +1233,9 @@ static int parse_font_px(const char *s, unsigned int len)
 	}
 	v1000 = whole * 1000 + frac * 1000 / fscale;
 	if (is_rem)
-		px = v1000 * 16 / 1000;
+		px = v1000 * root_font_px / 1000;
 	else if (is_pct)
-		px = v1000 * 16 / 100000;
+		px = v1000 * root_font_px / 100000;
 	else if (is_px)
 		px = v1000 / 1000;
 	else
@@ -1251,7 +1364,7 @@ static int parse_display(const char *s, unsigned int len)
 	if (i == 6 && ci_eq_n(s, "inline", 6))
 		return BR_DISPLAY_INLINE;
 	if (i == 12 && ci_eq_n(s, "inline-block", 12))
-		return BR_DISPLAY_INLINE;
+		return BR_DISPLAY_BLOCK;
 	if (i == 10 && ci_eq_n(s, "list-item", 10))
 		return BR_DISPLAY_BLOCK;
 	if (i == 4 && ci_eq_n(s, "flex", 4))
@@ -1261,7 +1374,7 @@ static int parse_display(const char *s, unsigned int len)
 	if (i == 5 && ci_eq_n(s, "table", 5))
 		return BR_DISPLAY_BLOCK;
 	if (i == 10 && ci_eq_n(s, "table-cell", 10))
-		return BR_DISPLAY_INLINE;
+		return BR_DISPLAY_BLOCK;
 	/* Grid shells are common on news/wiki pages, but the two-column
 	 * heuristic is not reliable for their nested area templates yet.
 	 * Collapse them to block flow so the content stays readable. */
@@ -1722,11 +1835,44 @@ static void parse_decls(struct br_doc *d, const char *s,
 				 contains_ci_len(s + vstart, vend - vstart,
 						  "column"), important);
 		} else if (str_eq(prop, "flex-wrap")) {
-			int wrap = contains_ci_len(s + vstart, vend - vstart,
-						   "wrap") &&
-				   !contains_ci_len(s + vstart, vend - vstart,
-						    "nowrap");
+			int wrap = 0;
+
+			if (contains_ci_len(s + vstart, vend - vstart, "nowrap"))
+				wrap = 2;
+			else if (contains_ci_len(s + vstart, vend - vstart,
+						 "wrap"))
+				wrap = 1;
 			decl_add(out, nout, PROP_FLEX_WRAP, wrap, important);
+		} else if (str_eq(prop, "position")) {
+			int p = 0;
+
+			if (contains_ci_len(s + vstart, vend - vstart,
+					    "absolute"))
+				p = 1;
+			else if (contains_ci_len(s + vstart, vend - vstart,
+						 "fixed") ||
+				 contains_ci_len(s + vstart, vend - vstart,
+						 "sticky"))
+				p = 2;
+			decl_add(out, nout, PROP_POS, p, important);
+		} else if (str_eq(prop, "left") || str_eq(prop, "top")) {
+			int is_left = prop[0] == 'l';
+			unsigned int pos = 0;
+
+			if (!(vend - vstart >= 4 &&
+			      ci_eq_n(s + vstart, "auto", 4))) {
+				int v = parse_len(s + vstart, vend - vstart, &pos);
+
+				if (v > 32000)
+					v = 32000;
+				else if (v < -32000)
+					v = -32000;
+				decl_add(out, nout,
+					 is_left ? PROP_LEFT : PROP_TOP, v, important);
+				decl_add(out, nout,
+					 is_left ? PROP_LEFT_SET : PROP_TOP_SET, 1,
+					 important);
+			}
 		} else if (str_eq(prop, "grid-template-columns") ||
 			   str_eq(prop, "grid-template")) {
 			const char *v = s + vstart;
@@ -1991,6 +2137,12 @@ static int media_feature_matches(const char *s, unsigned int len)
 
 	while (len && is_space(*s)) { s++; len--; }
 	while (len && is_space(s[len - 1])) len--;
+	if (contains_ci_len(s, len, "prefers-color-scheme")) {
+		/* The browser canvas is dark, but sites express their light
+		 * palette in the base rules; the dark overrides are usually
+		 * invisible against our default surfaces.  Pick the light set. */
+		return !contains_ci_len(s, len, "dark");
+	}
 	if (len >= 9 && ci_eq_n(s, "min-width", 9)) {
 		for (i = 9; i < len && s[i] != ':'; i++)
 			;
@@ -2131,7 +2283,7 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 {
 	unsigned int i = 0;
 
-	while (i < len && d->nrules < BR_MAX_RULES) {
+	while (i < len && d->nrules < d->rule_cap) {
 		unsigned int sstart, send, bstart, bend, j;
 		struct br_decl decls[BR_DECLS];
 		unsigned int nd;
@@ -2197,7 +2349,8 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 			send--;
 		if (sstart == send)
 			continue;
-		css_collect_block(d, s + bstart, bend - bstart);
+		if (!css_dark_selector(s + sstart, send - sstart))
+			css_collect_block(d, s + bstart, bend - bstart);
 		if (css_collect_only)
 			continue;
 		parse_decls(d, s + bstart, bend - bstart, decls, &nd);
@@ -2205,7 +2358,7 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 			continue;
 		/* Split a comma-separated selector list into separate rules. */
 		j = sstart;
-		while (j <= send && d->nrules < BR_MAX_RULES) {
+		while (j <= send && d->nrules < d->rule_cap) {
 			unsigned int q = j, e, k;
 			char sel[80];
 			unsigned int off;
@@ -2271,8 +2424,105 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 	}
 }
 
+/* Sites often set html { font-size: 62.5% } and then size everything in
+ * rem.  Detect that root size before parsing the sheet so a rem resolves to
+ * the same pixels a real browser would use. */
+static void detect_root_font(const char *s, unsigned int len)
+{
+	unsigned int i;
+
+	for (i = 0; i + 4 < len; i++) {
+		unsigned int j, end, sel, q;
+		int v = 0, digits = 0, pct = 0, px = 0, frac = 0;
+		int exact;
+
+		if (!(s[i] == 'h' && s[i + 1] == 't' && s[i + 2] == 'm' &&
+		      s[i + 3] == 'l'))
+			continue;
+		if (i + 4 < len && s[i + 4] != '{' && s[i + 4] != ',' &&
+		    s[i + 4] != '.' && s[i + 4] != ':' && s[i + 4] != '[')
+			continue;
+		sel = i;
+		while (sel && s[sel - 1] != '}' && s[sel - 1] != '{' &&
+		       s[sel - 1] != ';' && s[sel - 1] != ',')
+			sel--;
+		q = sel;
+		while (q < i && is_space(s[q]))
+			q++;
+		exact = (q == i);
+		if (!exact && i + 4 < len && s[i + 4] != ',' &&
+		    s[i + 4] != '.')
+			continue;
+		j = i + 4;
+		while (j < len && is_space(s[j]))
+			j++;
+		if (j >= len || s[j] != '{')
+			continue;
+		while (j < len && s[j] != '{')
+			j++;
+		if (j >= len)
+			break;
+		end = j + 1;
+		while (end < len && s[end] != '}')
+			end++;
+		for (; j + 9 < end; j++) {
+			if (!(s[j] == 'f' && s[j + 1] == 'o' && s[j + 2] == 'n' &&
+			      s[j + 3] == 't' && s[j + 4] == '-' &&
+			      s[j + 5] == 's' && s[j + 6] == 'i' &&
+			      s[j + 7] == 'z' && s[j + 8] == 'e'))
+				continue;
+			j += 9;
+			while (j < end && s[j] != ':')
+				j++;
+			if (j >= end)
+				break;
+			j++;
+			while (j < end && is_space(s[j]))
+				j++;
+			while (j < end && s[j] >= '0' && s[j] <= '9') {
+				v = v * 10 + (s[j] - '0');
+				digits = 1;
+				j++;
+			}
+			if (j < end && s[j] == '.') {
+				j++;
+				while (j < end && s[j] >= '0' && s[j] <= '9') {
+					v = v * 10 + (s[j] - '0');
+					frac++;
+					j++;
+				}
+			}
+			while (frac < 2) {
+				v *= 10;
+				frac++;
+			}
+			while (frac > 2) {
+				v /= 10;
+				frac--;
+			}
+			if (!digits)
+				break;
+			if (j < end && s[j] == '%')
+				pct = 1;
+			else if (j + 1 < end && s[j] == 'p' && s[j + 1] == 'x')
+				px = 1;
+			if (pct)
+				v = (v * 16 + 5000) / 10000;
+			else if (px)
+				v /= 100;
+			else
+				v = v * 16 / 100;
+			if (exact && v >= 8 && v <= 24)
+				root_font_px = v;
+			if (exact)
+				return;
+		}
+	}
+}
+
 void br_parse_css_text(struct br_doc *d, const char *css, unsigned int len)
 {
+	detect_root_font(css, len);
 	css_collect_only = 1;
 	parse_css(d, css, len);
 	css_collect_only = 0;
@@ -2661,6 +2911,21 @@ static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 	case PROP_GRID_SLOT:
 		st->grid_slot = (unsigned char)dcl->val;
 		break;
+	case PROP_POS:
+		st->pos = (unsigned char)dcl->val;
+		break;
+	case PROP_LEFT:
+		st->left = dcl->val;
+		break;
+	case PROP_TOP:
+		st->top = dcl->val;
+		break;
+	case PROP_LEFT_SET:
+		st->left_set = (unsigned char)(dcl->val != 0);
+		break;
+	case PROP_TOP_SET:
+		st->top_set = (unsigned char)(dcl->val != 0);
+		break;
 	default:
 		break;
 	}
@@ -2707,6 +2972,8 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	out->pt = out->pr = out->pb = out->pl = 0;
 	out->flex_grow = out->flex_col = out->flex_wrap = 0;
 	out->grid_ncols = out->grid_gap = out->grid_slot = 0;
+	out->pos = out->left_set = out->top_set = 0;
+	out->left = out->top = 0;
 	tag = d->nodes[node].tag;
 	out->display = br_tag_is_block(tag) ? BR_DISPLAY_BLOCK :
 					      BR_DISPLAY_INLINE;

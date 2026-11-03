@@ -10,7 +10,8 @@
 #define BR_TEXT_SIZE     65536
 #define BR_ATTR_SIZE     524288
 #define BR_CSS_SIZE      12288
-#define BR_MAX_RULES     2304
+#define BR_MAX_RULES     4608
+#define BR_RULE_FALLBACK 256
 #define BR_MAX_VARS      512
 #define BR_TAG_MAX       128
 #define BR_RULE_HASH     256
@@ -78,6 +79,9 @@ struct br_style {
 	unsigned char grid_ncols;   /* 1 or 2 supported */
 	unsigned char grid_gap;     /* px */
 	unsigned char grid_slot;    /* 0 auto, 1 full, 2 left, 3 right */
+	unsigned char pos;          /* 0 static, 1 absolute, 2 fixed */
+	unsigned char left_set, top_set;
+	signed short left, top;
 	unsigned char no_bullet;    /* list-style: none (inherited) */
 	unsigned char uppercase;    /* text-transform: uppercase (inherited) */
 	unsigned char border_w;
@@ -144,6 +148,7 @@ struct br_doc {
 	unsigned int attrs_used;
 	struct br_rule *rules;
 	unsigned int nrules;
+	unsigned int rule_cap;
 	char title[BR_TITLE_MAX];
 	unsigned int inline_css_len;
 	/* CSS custom properties, stored in the attr arena.  A pragmatic
@@ -161,6 +166,8 @@ struct br_doc {
 };
 
 void br_doc_init(struct br_doc *d);
+void br_set_rule_store(struct br_doc *d, struct br_rule *buf,
+		       unsigned int cap);
 int  br_parse(struct br_doc *d, const char *html, unsigned int len);
 int  br_parse_plain(struct br_doc *d, const char *text, unsigned int len);
 unsigned int br_parse_image_doc(struct br_doc *d, const char *src);

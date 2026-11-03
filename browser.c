@@ -337,6 +337,15 @@ static void *heap_alloc(unsigned int bytes, unsigned int align)
 	return heap + start;
 }
 
+static void browser_rules_alloc(void)
+{
+	struct br_rule *rules;
+
+	rules = (struct br_rule *)heap_alloc(
+		(unsigned int)(BR_MAX_RULES * sizeof(struct br_rule)), 16);
+	br_set_rule_store(&doc, rules, rules ? BR_MAX_RULES : 0);
+}
+
 /* ---- status ---- */
 
 static void set_status(const char *s, int err, unsigned int ttl_ms)
@@ -1395,6 +1404,7 @@ static void load_page(const char *url, int local, int push)
 		show_error("Out of memory", "Cannot allocate the page buffer");
 		return;
 	}
+	browser_rules_alloc();
 	rv = read_url(url, BR_PAGE_MAX, &body, &len, &local, ctype,
 		     sizeof(ctype), final, sizeof(final), err, sizeof(err),
 		     &truncated);
@@ -1489,6 +1499,7 @@ static void load_home(int push)
 		show_error("Out of memory", "Cannot allocate the browser heap");
 		return;
 	}
+	browser_rules_alloc();
 	{
 		static const char home[] =
 			"<html><head><title>Nebs Browser</title><style>"
@@ -2134,15 +2145,57 @@ static void layout_grid_children(struct lay *l, unsigned int parent,
 				 const struct br_style *pst, int depth,
 				 unsigned short link);
 
+/* A flex container whose items are only inline spans is usually just a
+ * heading/icon pair.  Our flex row positions such items without emitting
+ * their inline text in some deep page contexts; normal inline flow renders
+ * the same content correctly. */
+static int flex_wants_row(unsigned int parent, const struct br_style *pst)
+{
+	unsigned int c;
+
+	for (c = doc.nodes[parent].first; c; c = doc.nodes[c].next) {
+		struct br_node *nd = &doc.nodes[c];
+		struct br_style cs;
+
+		if (nd->type == BR_NODE_TEXT)
+			continue;
+		br_style_for(&doc, c, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE)
+			continue;
+		if (cs.display != BR_DISPLAY_INLINE || cs.flex_grow ||
+		    cs.width_kind || nd->tag == BR_TAG_IMG)
+			return 1;
+	}
+	return 0;
+}
+
 static void layout_block(struct lay *l, unsigned int node,
 			 const struct br_style *st, int depth,
 			 unsigned short link)
 {
 	int old_left = l->left, old_right = l->right, old_align = l->align;
 	int top, l0, r0;
+	int flow_y, flow_left, flow_right, positioned;
 
 	if (depth > 24 || st->display == BR_DISPLAY_NONE)
 		return;
+	flow_y = l->y;
+	flow_left = l->left;
+	flow_right = l->right;
+	positioned = st->pos;
+	if (positioned) {
+		if (st->pos == 2) {
+			l->y = page_rect.y + (st->top_set ? st->top : 0);
+			l->left = page_rect.x;
+			l->right = page_rect.x + page_rect.w - 12;
+		} else {
+			l->y = flow_y + (st->top_set ? st->top : 0);
+			l->left = flow_left + (st->left_set ? st->left : 0);
+			l->right = flow_right + (st->left_set ? st->left : 0);
+		}
+		old_left = l->left;
+		old_right = l->right;
+	}
 	if (doc.nodes[node].tag == BR_TAG_INPUT ||
 	    doc.nodes[node].tag == BR_TAG_TEXTAREA ||
 	    doc.nodes[node].tag == BR_TAG_SELECT) {
@@ -2229,13 +2282,20 @@ static void layout_block(struct lay *l, unsigned int node,
 		if (st->display == BR_DISPLAY_GRID && st->grid_ncols >= 2 &&
 		    st->grid_gap > 0)
 			layout_grid_children(l, node, st, depth + 1, link);
-		else if (st->display == BR_DISPLAY_FLEX && !st->flex_col)
+		else if (st->display == BR_DISPLAY_FLEX && !st->flex_col &&
+			 flex_wants_row(node, st))
 			layout_flex_children(l, node, st, depth + 1, link);
 		else
 			layout_children(l, node, st, depth + 1, link);
 	}
 	flush_line(l);
 	l->y += st->pb;
+	/* Honour an explicit CSS height.  Fixed-height header/icon boxes often
+	 * contain only absolutely positioned children, so their flow height
+	 * would otherwise collapse to zero. */
+	if (st->height_kind == 1 && st->height > 0 &&
+	    l->y < top + st->height)
+		l->y = top + st->height;
 	l->left = old_left;
 	l->right = old_right;
 	l->align = old_align;
@@ -2247,6 +2307,12 @@ static void layout_block(struct lay *l, unsigned int node,
 		if (h > 65535)
 			h = 65535;
 		block_h[node] = (unsigned short)h;
+
+	}
+	if (positioned) {
+		l->y = flow_y;
+		l->left = flow_left;
+		l->right = flow_right;
 	}
 }
 
@@ -2503,7 +2569,7 @@ static void layout_flex_children(struct lay *l, unsigned int parent,
 			colw = flex_item_width(l, n, &cs, avail);
 		if (colw > row_right - row_left)
 			colw = row_right - row_left;
-		if (any && x + colw > row_right) {
+		if (pst->flex_wrap != 2 && any && x + colw > row_right) {
 			row_top = row_bottom;
 			row_bottom = row_top;
 			x = row_left;
@@ -2691,6 +2757,17 @@ static void layout_grid_children(struct lay *l, unsigned int parent,
 	l->space_pending = 0;
 }
 
+/* Positioned elements (fixed headers, overlays) are drawn after the normal
+ * flow so they sit above it, like CSS painting order.  Their flow origin is
+ * saved for absolute boxes; fixed boxes only need the viewport rect. */
+struct br_deferred {
+	unsigned int node;
+	int flow_y, flow_left, flow_right;
+	unsigned short link;
+};
+static struct br_deferred deferred[16];
+static int ndeferred;
+
 static void layout_children(struct lay *l, unsigned int parent,
 			    const struct br_style *pst, int depth,
 			    unsigned short link)
@@ -2718,6 +2795,20 @@ static void layout_children(struct lay *l, unsigned int parent,
 		}
 		if (nd->tag == BR_TAG_A && nd->href_off)
 			lk = (unsigned short)n;
+		if (cs.pos) {
+			if (l->draw && ndeferred < 16) {
+				deferred[ndeferred].node = n;
+				deferred[ndeferred].flow_y = l->y;
+				deferred[ndeferred].flow_left = l->left;
+				deferred[ndeferred].flow_right = l->right;
+				deferred[ndeferred].link = lk;
+				ndeferred++;
+			} else {
+				layout_block(l, n, &cs, depth + 1, lk);
+			}
+			n = nd->next;
+			continue;
+		}
 		if (nd->tag == BR_TAG_BR) {
 			flush_line(l);
 			n = nd->next;
@@ -2817,7 +2908,50 @@ static void render_page(int left, int right, int y0)
 	l->nruns = 0;
 	l->space_pending = 0;
 	nhits = 0;
+	ndeferred = 0;
 	layout_children(l, doc.root, &base, 0, 0);
+	{
+		int i;
+
+		for (i = 0; i < ndeferred; i++) {
+			struct br_style st;
+
+			br_style_for(&doc, deferred[i].node, &base, &st);
+			if (st.display == BR_DISPLAY_NONE)
+				continue;
+			l->draw = 1;
+			l->left = deferred[i].flow_left;
+			l->right = deferred[i].flow_right;
+			l->y = deferred[i].flow_y;
+			l->line_x = l->left;
+			l->run_x = l->left;
+			l->line_y = l->y;
+			l->line_h = 0;
+			l->nruns = 0;
+			l->space_pending = 0;
+			l->align = st.align;
+			if (st.pos == 2 && block_h[deferred[i].node]) {
+				struct ngui_rect clip;
+				int ch = block_h[deferred[i].node] + 24;
+
+				clip.x = page_rect.x;
+				clip.y = page_rect.y;
+				clip.w = page_rect.w - 12;
+				if (ch > page_rect.h)
+					ch = page_rect.h;
+				clip.h = ch;
+				ngui_push_clip(&ui, clip);
+				if (st.has_bg)
+					ngui_fill_rect(&ui, clip, st.bg);
+				layout_block(l, deferred[i].node, &st, 0,
+					     deferred[i].link);
+				ngui_pop_clip(&ui);
+			} else {
+				layout_block(l, deferred[i].node, &st, 0,
+					     deferred[i].link);
+			}
+		}
+	}
 }
 
 /* ---- UI ---- */
