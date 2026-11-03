@@ -5,6 +5,7 @@
 #include "browser_html.h"
 
 static int is_space(char c);
+static int is_ident(char c);
 
 /* ---- storage (one document per process) ---- */
 
@@ -572,12 +573,26 @@ const char *br_type(struct br_doc *d, unsigned int node)
 
 /* ---- document setup / node append ---- */
 
+static void rule_index_reset(struct br_doc *d)
+{
+	unsigned int i;
+
+	for (i = 0; i < BR_MAX_RULES; i++)
+		d->rule_next[i] = 0xFFFF;
+	for (i = 0; i < BR_RULE_HASH; i++)
+		d->rule_bucket[i] = 0xFFFF;
+	for (i = 0; i < BR_TAG_MAX; i++)
+		d->rule_tag[i] = 0xFFFF;
+	d->rule_any = 0xFFFF;
+}
+
 void br_doc_init(struct br_doc *d)
 {
 	unsigned int i;
 
 	for (i = 0; i < sizeof(*d); i++)
 		((unsigned char *)d)[i] = 0;
+	rule_index_reset(d);
 	d->nodes = nodes_store;
 	d->text = text_store;
 	d->attrs = attr_store;
@@ -597,6 +612,7 @@ static void doc_reset(struct br_doc *d)
 	d->attrs_used = 1;
 	d->attrs[0] = '\0';
 	d->nrules = 0;
+	rule_index_reset(d);
 	d->title[0] = '\0';
 	d->inline_css_len = 0;
 	d->nvars = 0;
@@ -2042,6 +2058,73 @@ static int media_list_matches(const char *s, unsigned int len)
 	return 0;
 }
 
+static unsigned int rule_hash(const char *s, unsigned int len)
+{
+	unsigned int h = 2166136261u, i;
+
+	for (i = 0; i < len; i++) {
+		char c = s[i];
+
+		if (c >= 'A' && c <= 'Z')
+			c = (char)(c - 'A' + 'a');
+		h ^= (unsigned char)c;
+		h *= 16777619u;
+	}
+	return h % BR_RULE_HASH;
+}
+
+/* Index a parsed rule by the most selective component of its rightmost
+ * compound selector.  br_style_for() then only visits rules that can
+ * possibly match a node instead of scanning every rule. */
+static void rule_index_add(struct br_doc *d, unsigned int idx,
+			   const char *key, unsigned int len)
+{
+	unsigned int i, cpos = 0, clen = 0, ipos = 0, ilen = 0;
+	unsigned short *head;
+
+	for (i = 0; i < len; i++) {
+		if (key[i] == '.' || key[i] == '#') {
+			unsigned int st = i + 1, n = 0;
+
+			while (st + n < len && is_ident(key[st + n]))
+				n++;
+			if (key[i] == '#') {
+				ipos = st;
+				ilen = n;
+			} else if (n) {
+				cpos = st;
+				clen = n;
+			}
+			i = st + n - 1;
+		}
+	}
+	if (ilen)
+		head = &d->rule_bucket[rule_hash(key + ipos, ilen)];
+	else if (clen)
+		head = &d->rule_bucket[rule_hash(key + cpos, clen)];
+	else if (len == 5 && ci_eq_n(key, ":root", 5))
+		head = &d->rule_tag[BR_TAG_HTML];
+	else if (len && is_ident(key[0])) {
+		char name[16];
+		unsigned int n = 0, tag;
+
+		while (n < len && n + 1 < sizeof(name) && is_ident(key[n])) {
+			name[n] = key[n];
+			n++;
+		}
+		name[n] = '\0';
+		tag = br_tag_from_name(name);
+		if (tag != BR_TAG_UNKNOWN && tag < BR_TAG_MAX)
+			head = &d->rule_tag[tag];
+		else
+			head = &d->rule_any;
+	} else {
+		head = &d->rule_any;
+	}
+	d->rule_next[idx] = *head;
+	*head = (unsigned short)idx;
+}
+
 static int css_collect_only;
 
 static void parse_css(struct br_doc *d, const char *s, unsigned int len)
@@ -2165,10 +2248,20 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 				off = store_attr(d, sel, k, 79);
 				if (off) {
 					struct br_rule *r = &d->rules[d->nrules++];
+					unsigned int ks = 0, q;
+
+					for (q = 0; q < k; q++)
+						if (sel[q] == ' ' || sel[q] == '>')
+							ks = q + 1;
 					r->sel_off = off;
+					r->key_off = store_attr(d, sel + ks,
+								 k - ks, 79);
 					r->nd = (unsigned char)nd;
 					for (k = 0; k < nd; k++)
 						r->d[k] = decls[k];
+					rule_index_add(d, d->nrules - 1,
+						       attr_ptr(d, r->key_off),
+						       s_len(attr_ptr(d, r->key_off)));
 				}
 			}
 			j = q + 1;
@@ -2389,6 +2482,93 @@ static int selector_match(struct br_doc *d, unsigned int node, const char *s,
 	return (int)selector_specificity(s, len);
 }
 
+#define RULE_MATCH_MAX 512
+
+struct rule_match {
+	unsigned short idx;
+	short spec;
+};
+
+static struct rule_match rule_matches[RULE_MATCH_MAX];
+static unsigned int nrule_matches;
+
+static void rule_try(struct br_doc *d, unsigned int node, unsigned int idx)
+{
+	struct br_rule *r = &d->rules[idx];
+	const char *key = attr_ptr(d, r->key_off);
+	int spec;
+
+	if (key[0] && !compound_match(d, node, key, s_len(key)))
+		return;
+	spec = selector_match(d, node, attr_ptr(d, r->sel_off),
+			      s_len(attr_ptr(d, r->sel_off)));
+	if (spec < 0)
+		return;
+	if (nrule_matches < RULE_MATCH_MAX) {
+		rule_matches[nrule_matches].idx = (unsigned short)idx;
+		rule_matches[nrule_matches].spec = (short)spec;
+		nrule_matches++;
+	}
+}
+
+static void rule_scan_list(struct br_doc *d, unsigned int node,
+			   unsigned short head)
+{
+	while (head != 0xFFFF) {
+		rule_try(d, node, head);
+		head = d->rule_next[head];
+	}
+}
+
+static void rule_scan_class(struct br_doc *d, unsigned int node,
+			    const char *cls, unsigned int len)
+{
+	if (len)
+		rule_scan_list(d, node,
+			       d->rule_bucket[rule_hash(cls, len)]);
+}
+
+static void rule_collect(struct br_doc *d, unsigned int node)
+{
+	const char *cls = attr_ptr(d, d->nodes[node].class_off);
+	const char *id = attr_ptr(d, d->nodes[node].id_off);
+	unsigned int tag = d->nodes[node].tag;
+	unsigned int i;
+
+	nrule_matches = 0;
+	rule_scan_list(d, node, d->rule_any);
+	if (tag < BR_TAG_MAX)
+		rule_scan_list(d, node, d->rule_tag[tag]);
+	if (id[0])
+		rule_scan_list(d, node,
+			       d->rule_bucket[rule_hash(id, s_len(id))]);
+	i = 0;
+	while (cls[i]) {
+		unsigned int st, n;
+
+		while (cls[i] && is_space(cls[i]))
+			i++;
+		st = i;
+		while (cls[i] && !is_space(cls[i]))
+			i++;
+		n = i - st;
+		if (n)
+			rule_scan_class(d, node, cls + st, n);
+	}
+	/* Rules must cascade in document order even though the index visits
+	 * them in bucket order. */
+	for (i = 1; i < nrule_matches; i++) {
+		struct rule_match m = rule_matches[i];
+		unsigned int j = i;
+
+		while (j > 0 && rule_matches[j - 1].idx > m.idx) {
+			rule_matches[j] = rule_matches[j - 1];
+			j--;
+		}
+		rule_matches[j] = m;
+	}
+}
+
 static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 {
 	switch (dcl->prop) {
@@ -2605,14 +2785,12 @@ void br_style_for(struct br_doc *d, unsigned int node,
 			out->color = c;
 	}
 
-	for (i = 0; i < d->nrules; i++) {
-		struct br_rule *r = &d->rules[i];
-		const char *sel = attr_ptr(d, r->sel_off);
-		int spec = selector_match(d, node, sel, s_len(sel));
+	rule_collect(d, node);
+	for (i = 0; i < nrule_matches; i++) {
+		struct br_rule *r = &d->rules[rule_matches[i].idx];
+		int spec = rule_matches[i].spec;
 		unsigned int k;
 
-		if (spec < 0)
-			continue;
 		for (k = 0; k < r->nd; k++)
 			cascade_decl(out, &r->d[k], spec, best, best_imp);
 	}

@@ -60,6 +60,7 @@ static const struct uhttp_hooks hooks = {
 #define FETCH_REQ   "/share/bfreq"
 #define FETCH_BODY  "/share/bfbody"
 #define FETCH_META  "/share/bfmeta"
+#define FETCH_DONE  "/share/bfdone"
 #define FETCH_MAX   (2u * 1024u * 1024u)
 
 static unsigned int c_len(const char *s)
@@ -113,17 +114,79 @@ static void fetch_fail(unsigned int status, int err, const char *ctype,
 	u_syscall3(SYS_WRITE_FILE, (int)FETCH_META, (int)meta, (int)n);
 }
 
+static void write_meta(unsigned int seq, int with_seq, struct uhttp *h,
+		       int err, unsigned int body_len, unsigned int body_trunc)
+{
+	char meta[1024];
+	unsigned int n = 0;
+
+	if (with_seq) {
+		app_dec(meta, &n, seq, sizeof(meta));
+		app_ch(meta, &n, '\n', sizeof(meta));
+	}
+	app_dec(meta, &n, (unsigned int)h->resp.status, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
+	app_dec(meta, &n, (unsigned int)err, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
+	app_dec(meta, &n, body_trunc, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
+	app_str(meta, &n, h->resp.content_encoding, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
+	app_str(meta, &n, h->resp.content_type, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
+	app_str(meta, &n, h->resp.final_url, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
+	app_dec(meta, &n, body_len, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
+	u_syscall3(SYS_WRITE_FILE, (int)FETCH_META, (int)meta, (int)n);
+}
+
+/* Fetch one URL through a possibly reused keep-alive connection. */
+static void helper_fetch(struct uhttp *h, const char *url, unsigned int cap,
+			 unsigned char *buf, unsigned int *outlen,
+			 unsigned int *outtrunc, int *outerr)
+{
+	unsigned int total = 0;
+	int rv, trunc = 0, err = 0;
+
+	*outlen = 0;
+	*outtrunc = 0;
+	*outerr = 0;
+	rv = uhttp_open(h, url, 0, 0);
+	if (rv == UHTTP_ERR_BUSY) {
+		int tries;
+
+		for (tries = 0; tries < 50 && rv == UHTTP_ERR_BUSY; tries++) {
+			u_sleep_ms(20);
+			rv = uhttp_open(h, url, 0, 0);
+		}
+	}
+	if (rv != 0) {
+		*outerr = rv;
+		return;
+	}
+	for (;;) {
+		rv = uhttp_read(h, buf + total, cap - total,
+				UHTTP_IDLE_TIMEOUT_MS);
+		if (rv > 0) {
+			total += (unsigned int)rv;
+			if (total >= cap) {
+				trunc = 1;
+				break;
+			}
+			continue;
+		}
+		if (rv < 0)
+			err = rv;
+		break;
+	}
+	*outlen = total;
+	*outtrunc = (unsigned int)trunc;
+	*outerr = err;
+}
+
 static void fetch_once(void)
 {
 	static struct uhttp h;
 	char req[768];
-	char meta[768];
-	unsigned char *buf, *body;
-	unsigned int cap = 0, total = 0, n = 0;
+	unsigned char *buf;
+	unsigned int cap = 0;
 	unsigned int body_len = 0, body_trunc = 0;
-	unsigned int i, trunc = 0;
-	int rn, rv, err = 0;
-	const char *enc_out;
+	unsigned int i;
+	int rn, err = 0;
 
 	rn = u_syscall3(SYS_READ_FILE, (int)FETCH_REQ, (int)req,
 			(int)(sizeof(req) - 1));
@@ -154,64 +217,95 @@ static void fetch_once(void)
 
 	uhttp_init(&h);
 	h.user_agent = "Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
-	rv = uhttp_open(&h, req + i, 0, 0);
-	/* The browser cancels a page load by killing our predecessor.  It can
-	 * still own the single NIC receiver for a tick or two, so a fresh
-	 * helper waits briefly instead of failing the new page outright. */
-	if (rv == UHTTP_ERR_BUSY) {
-		int tries;
-
-		for (tries = 0; tries < 50 && rv == UHTTP_ERR_BUSY; tries++) {
-			u_sleep_ms(20);
-			rv = uhttp_open(&h, req + i, 0, 0);
-		}
-	}
-	if (rv != 0) {
-		err = rv;
-		fetch_fail(0, err, h.resp.content_type,
-			   h.resp.content_encoding, h.resp.final_url);
-		uhttp_close(&h);
-		u_mem_free();
-		u_exit(1);
-	}
-
-	for (;;) {
-		rv = uhttp_read(&h, buf + total, cap - total,
-				UHTTP_IDLE_TIMEOUT_MS);
-		if (rv > 0) {
-			total += (unsigned int)rv;
-			if (total >= cap) {
-				trunc = 1;
-				break;
-			}
-			continue;
-		}
-		if (rv < 0) {
-			err = rv;
-		}
-		break;
-	}
-
-	body = buf;
-	body_len = total;
-	body_trunc = trunc;
-	enc_out = h.resp.content_encoding;
+	helper_fetch(&h, req + i, cap, buf, &body_len, &body_trunc, &err);
 	if (body_len)
-		u_syscall3(SYS_WRITE_FILE, (int)FETCH_BODY, (int)body,
+		u_syscall3(SYS_WRITE_FILE, (int)FETCH_BODY, (int)buf,
 			   (int)body_len);
-
-	app_dec(meta, &n, (unsigned int)h.resp.status, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
-	app_dec(meta, &n, (unsigned int)err, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
-	app_dec(meta, &n, body_trunc, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
-	app_str(meta, &n, enc_out, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
-	app_str(meta, &n, h.resp.content_type, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
-	app_str(meta, &n, h.resp.final_url, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
-	app_dec(meta, &n, body_len, sizeof(meta)); app_ch(meta, &n, '\n', sizeof(meta));
-	u_syscall3(SYS_WRITE_FILE, (int)FETCH_META, (int)meta, (int)n);
-
+	write_meta(0, 0, &h, err, body_len, body_trunc);
 	uhttp_close(&h);
 	u_mem_free();
 	u_exit(err ? 1 : 0);
+}
+
+/* Long-lived helper: the browser writes a numbered request, we fetch it
+ * (reusing the same TCP/TLS connection whenever the host is unchanged) and
+ * publish body + meta + a small done marker.  Idle instances exit and
+ * release the NIC after ten seconds. */
+static void fetch_serve(void)
+{
+	static struct uhttp h;
+	char req[768];
+	unsigned char *buf;
+	unsigned int last_seq = 0, idle = 0;
+
+	buf = (unsigned char *)u_mem_alloc(FETCH_MAX);
+	if (!buf)
+		u_exit(1);
+	uhttp_init(&h);
+	h.user_agent = "Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
+	h.keepalive = 1;
+
+	for (;;) {
+		unsigned int seq = 0, cap = 0, body_len = 0, body_trunc = 0;
+		char done[16];
+		unsigned int dn = 0;
+		unsigned int i = 0;
+		char *url;
+		int rn, err = 0;
+
+		rn = u_syscall3(SYS_READ_FILE, (int)FETCH_REQ, (int)req,
+				(int)(sizeof(req) - 1));
+		if (rn <= 0) {
+			url = 0;
+		} else {
+			req[rn] = '\0';
+			while (req[i] >= '0' && req[i] <= '9') {
+				seq = seq * 10 + (unsigned int)(req[i] - '0');
+				i++;
+			}
+			while (req[i] == ' ')
+				i++;
+			while (req[i] >= '0' && req[i] <= '9') {
+				cap = cap * 10 + (unsigned int)(req[i] - '0');
+				i++;
+			}
+			while (req[i] == ' ')
+				i++;
+			while (rn > 0 && (req[rn - 1] == '\n' ||
+					  req[rn - 1] == '\r'))
+				req[--rn] = '\0';
+			url = (i < (unsigned int)rn) ? req + i : 0;
+		}
+		if (!url || !url[0] || seq == last_seq) {
+			idle++;
+			u_sleep_ms(50);
+			if (idle >= 200)
+				break;
+			continue;
+		}
+		idle = 0;
+		last_seq = seq;
+		if (cap == 0 || cap > FETCH_MAX)
+			cap = FETCH_MAX;
+
+		helper_fetch(&h, url, cap, buf, &body_len, &body_trunc, &err);
+		if (body_len)
+			u_syscall3(SYS_WRITE_FILE, (int)FETCH_BODY, (int)buf,
+				   (int)body_len);
+		write_meta(seq, 1, &h, err, body_len, body_trunc);
+		app_dec(done, &dn, seq, sizeof(done));
+		u_syscall3(SYS_WRITE_FILE, (int)FETCH_DONE, (int)done, (int)dn);
+
+		if (err || body_trunc || h.peer_close) {
+			h.keepalive = 0;
+			uhttp_close(&h);
+			h.keepalive = 1;
+		}
+	}
+	h.keepalive = 0;
+	uhttp_close(&h);
+	u_mem_free();
+	u_exit(0);
 }
 
 void _start(const char *arg)
@@ -221,10 +315,11 @@ void _start(const char *arg)
 	unsigned int total = 0;
 	int rv;
 
-	if (arg && c_len(arg) == 7 && arg[0] == '_' &&
-	    arg[1] == '_' && arg[2] == 'f' && arg[3] == 'e' &&
-	    arg[4] == 't' && arg[5] == 'c' && arg[6] == 'h') {
-		fetch_once();
+	if (arg && c_len(arg) == 7 && arg[0] == '_' && arg[1] == '_') {
+		if (arg[2] == 'f')
+			fetch_once();
+		else if (arg[2] == 's')
+			fetch_serve();
 	}
 	if (!arg || !arg[0]) {
 		u_puts("curl: usage curl <http|https://host[:port]/[path]>\n");

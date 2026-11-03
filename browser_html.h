@@ -12,6 +12,8 @@
 #define BR_CSS_SIZE      12288
 #define BR_MAX_RULES     2304
 #define BR_MAX_VARS      512
+#define BR_TAG_MAX       128
+#define BR_RULE_HASH     256
 #define BR_DECLS         16
 #define BR_TITLE_MAX     96
 
@@ -127,6 +129,7 @@ struct br_decl {
 
 struct br_rule {
 	unsigned int sel_off;       /* selector text in the attr arena */
+	unsigned int key_off;       /* rightmost compound, for a fast prefilter */
 	unsigned char nd;
 	struct br_decl d[BR_DECLS];
 };
@@ -148,6 +151,11 @@ struct br_doc {
 	unsigned int var_name[BR_MAX_VARS];
 	unsigned int var_val[BR_MAX_VARS];
 	unsigned int nvars;
+	/* Rule index: rightmost class/id/tag -> linked list of rule indices. */
+	unsigned short rule_next[BR_MAX_RULES];
+	unsigned short rule_bucket[BR_RULE_HASH];
+	unsigned short rule_tag[BR_TAG_MAX];
+	unsigned short rule_any;
 	int truncated;
 	int plain;                  /* text/plain: one preformatted text node */
 };

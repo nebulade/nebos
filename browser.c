@@ -730,6 +730,7 @@ static int inflate_trunc(const unsigned char *src, unsigned int len,
 #define FETCH_REQ  "/share/bfreq"
 #define FETCH_BODY "/share/bfbody"
 #define FETCH_META "/share/bfmeta"
+#define FETCH_DONE "/share/bfdone"
 #define FETCH_ABORT (-2)
 
 struct fetch_meta {
@@ -746,6 +747,8 @@ static void draw(unsigned int *action);
 static void handle_keys(unsigned int *action);
 static void handle_page_click(unsigned int *action);
 static int fetch_helper_tty = -2;
+static int fetch_helper_pid = -1;
+static unsigned int fetch_seq;
 static struct fetch_meta fetch_meta;
 
 static unsigned int meta_uint(char **pp)
@@ -801,13 +804,48 @@ static void worker_wait_ui(void)
 	ngui_end(&ui);
 }
 
+static void fetch_helper_stop(void)
+{
+	int i;
+
+	if (fetch_helper_pid > 0) {
+		u_kill((unsigned int)fetch_helper_pid);
+		for (i = 0; i < 40 && u_alive((unsigned int)fetch_helper_pid); i++)
+			u_sleep_ms(5);
+		/* Let the reaper release the NIC before the next request. */
+		u_sleep_ms(10);
+	}
+	fetch_helper_pid = -1;
+}
+
+static int fetch_helper_start(char *err, unsigned int errcap)
+{
+	if (fetch_helper_pid > 0 &&
+	    u_alive((unsigned int)fetch_helper_pid))
+		return 0;
+	fetch_helper_pid = -1;
+	if (fetch_helper_tty == -2) {
+		int t = u_tty_create();
+
+		fetch_helper_tty = t > 0 ? t : 0;
+	}
+	fetch_helper_pid = u_spawn("/ramfs/bin/curl", "__serve",
+				   fetch_helper_tty, "/");
+	if (fetch_helper_pid <= 0) {
+		fetch_helper_pid = -1;
+		s_copy(err, "cannot start network helper", errcap);
+		return -1;
+	}
+	return 0;
+}
+
 static int worker_fetch(const char *url, unsigned int cap,
 			struct fetch_meta *m, char *err, unsigned int errcap)
 {
-	static char req[768], meta[1024];
+	static char req[768], meta[1024], done[24];
 	char *p;
-	unsigned int n = 0, deadline, i;
-	int rn, pid;
+	unsigned int n = 0, deadline;
+	int rn, mseq, retried = 0;
 	struct sys_stat st;
 
 	if (cancel_fetch || pending_action)
@@ -817,39 +855,50 @@ static int worker_fetch(const char *url, unsigned int cap,
 		s_copy(err, "network helper unavailable", errcap);
 		return -1;
 	}
+	fetch_seq++;
+	if (!fetch_seq)
+		fetch_seq = 1;
+	s_append_dec(req, &n, fetch_seq, sizeof(req));
+	s_append(req, &n, " ", sizeof(req));
 	s_append_dec(req, &n, cap, sizeof(req));
 	s_append(req, &n, " ", sizeof(req));
 	s_append(req, &n, url, sizeof(req));
 	s_append(req, &n, "\n", sizeof(req));
+	u_syscall1(SYS_UNLINK, (int)FETCH_DONE);
 	u_syscall1(SYS_UNLINK, (int)FETCH_META);
 	if (u_syscall3(SYS_WRITE_FILE, (int)FETCH_REQ, (int)req, (int)n) < 0) {
 		s_copy(err, "cannot queue network request", errcap);
 		return -1;
 	}
-	if (fetch_helper_tty == -2) {
-		int t = u_tty_create();
-
-		fetch_helper_tty = t > 0 ? t : 0;
-	}
-	pid = u_spawn("/ramfs/bin/curl", "__fetch", fetch_helper_tty, "/");
-	if (pid <= 0) {
-		s_copy(err, "cannot start network helper", errcap);
+	if (fetch_helper_start(err, errcap) != 0)
 		return -1;
-	}
 	deadline = u_ticks_ms() + UHTTP_TOTAL_TIMEOUT_MS + 5000;
-	while (u_alive(pid)) {
+	for (;;) {
 		worker_wait_ui();
 		if (cancel_fetch || pending_action) {
-			u_kill(pid);
-			for (i = 0; i < 40 && u_alive(pid); i++)
-				u_sleep_ms(5);
-			/* The reaper releases a dead helper's NIC ownership;
-			 * give it a scheduling chance before the next request. */
-			u_sleep_ms(10);
+			fetch_helper_stop();
 			return FETCH_ABORT;
 		}
+		rn = u_syscall3(SYS_READ_FILE, (int)FETCH_DONE, (int)done,
+				(int)(sizeof(done) - 1));
+		if (rn > 0) {
+			done[rn] = '\0';
+			p = done;
+			mseq = (int)meta_uint(&p);
+			if (mseq == (int)fetch_seq)
+				break;
+		}
+		if (!u_alive((unsigned int)fetch_helper_pid)) {
+			fetch_helper_pid = -1;
+			if (!retried && fetch_helper_start(err, errcap) == 0) {
+				retried = 1;
+				continue;
+			}
+			s_copy(err, "network helper stopped", errcap);
+			return -1;
+		}
 		if ((int)(u_ticks_ms() - deadline) >= 0) {
-			u_kill(pid);
+			fetch_helper_stop();
 			s_copy(err, "network request timed out", errcap);
 			return -1;
 		}
@@ -865,6 +914,11 @@ static int worker_fetch(const char *url, unsigned int cap,
 	}
 	meta[rn] = '\0';
 	p = meta;
+	mseq = (int)meta_uint(&p);
+	if (mseq != (int)fetch_seq) {
+		s_copy(err, "stale network response", errcap);
+		return -1;
+	}
 	m->status = (int)meta_uint(&p);
 	m->error = (int)meta_uint(&p);
 	m->trunc = (int)meta_uint(&p);
@@ -3117,6 +3171,7 @@ void _start(const char *arg)
 			continue;
 		u_sleep_ms(10);
 	}
+	fetch_helper_stop();
 	u_win_close();
 	u_exit(0);
 }
