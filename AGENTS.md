@@ -256,10 +256,10 @@ run area), so adding code no longer moves any address.
   the toolkit exports.  Buttons fire on the release edge and keep `active`
   until `ui->released`: inferring release from the sampled `ui->buttons`
   races the WM event queue and drops clicks.  Text fields support mouse
-  drag-selection, Ctrl+Left/Right word jumps, Ctrl+Delete/Ctrl+Backspace word
-  deletion and Ctrl+A select-all; typing or Backspace/Delete replaces a
-  selection.  At the end of the line Ctrl+Delete removes the word before the
-  caret instead of doing nothing.
+  drag-selection, double-click select-all, Ctrl+Left/Right word jumps,
+  Ctrl+Delete/Ctrl+Backspace word deletion and Ctrl+A select-all; typing or
+  Backspace/Delete replaces a selection.  At the end of the line Ctrl+Delete
+  removes the word before the caret instead of doing nothing.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `blit.c/h`, `gpu.c`, `ati.c`, `nvidia.c`,
   `nv50.c`, `pci.h` — VESA LFB + shadow buffer.  Drawing goes into a
   `struct surface` render target: `vga_target()` is the screen's shadow buffer

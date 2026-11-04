@@ -760,6 +760,7 @@ void ngui_input_set(struct ngui_input *in, const char *s)
 	in->scroll = 0;
 	in->anchor = in->cursor;
 	in->dragging = 0;
+	in->last_click_ms = 0;
 }
 
 static int input_word_char(char c)
@@ -897,6 +898,9 @@ static void input_move_to(struct ngui_input *in, unsigned int pos)
 	in->anchor = pos;
 }
 
+/* Two presses in the same field within this window select all of its text. */
+#define NGUI_DOUBLE_CLICK_MS 500
+
 /* Character position under a content-relative x, clamped to the visible
  * part of the field. */
 static unsigned int input_pos_at(const struct ngui_input *in, int inner_x,
@@ -950,14 +954,29 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 
 	if (ui->pressed &&
 	    ngui_rect_contains(&r, ui->press_x, ui->press_y)) {
-		unsigned int pos = input_pos_at(in, inner.x, cols, ui->press_x);
+		unsigned int now = u_ticks_ms();
+		int dbl = in->last_click_ms &&
+			  (unsigned int)(now - in->last_click_ms) <=
+			  NGUI_DOUBLE_CLICK_MS;
 
-		in->cursor = pos;
-		in->anchor = pos;
-		in->dragging = 1;
+		if (dbl) {
+			/* Double click: select the whole text and keep it
+			 * selected while the second press is held. */
+			in->anchor = 0;
+			in->cursor = in->len;
+			in->dragging = 0;
+		} else {
+			unsigned int pos = input_pos_at(in, inner.x, cols,
+							ui->press_x);
+
+			in->cursor = pos;
+			in->anchor = pos;
+			in->dragging = 1;
+		}
+		in->last_click_ms = now;
 		ui->focus = id;
 		ui->focus_claimed = 1;
-		ui->last_blink = u_ticks_ms();
+		ui->last_blink = now;
 		ui->caret_on = 1;
 		focused = 1;
 	} else if (ui->pressed) {
