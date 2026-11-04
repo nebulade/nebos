@@ -35,6 +35,7 @@ static const struct tag_name tag_names[] = {
 	{ "code", BR_TAG_CODE }, { "font", BR_TAG_FONT },
 	{ "small", BR_TAG_SMALL }, { "big", BR_TAG_BIG },
 	{ "br", BR_TAG_BR }, { "hr", BR_TAG_HR }, { "img", BR_TAG_IMG },
+	{ "picture", BR_TAG_PICTURE },
 	{ "h1", BR_TAG_H1 }, { "h2", BR_TAG_H2 }, { "h3", BR_TAG_H3 },
 	{ "h4", BR_TAG_H4 }, { "h5", BR_TAG_H5 }, { "h6", BR_TAG_H6 },
 	{ "ul", BR_TAG_UL }, { "ol", BR_TAG_OL }, { "li", BR_TAG_LI },
@@ -177,6 +178,7 @@ int br_tag_is_block(unsigned int tag)
 	case BR_TAG_FOOTER: case BR_TAG_NAV: case BR_TAG_SECTION:
 	case BR_TAG_ARTICLE: case BR_TAG_ASIDE: case BR_TAG_FIGURE:
 	case BR_TAG_FIGCAPTION: case BR_TAG_DETAILS: case BR_TAG_SUMMARY:
+	case BR_TAG_PICTURE:
 	case BR_TAG_DL: case BR_TAG_DT: case BR_TAG_DD:
 	case BR_TAG_ADDRESS: case BR_TAG_HR:
 		return 1;
@@ -3340,6 +3342,13 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 				i++;
 			if (i < len)
 				i++;
+			if (tag == BR_TAG_UNKNOWN) {
+				while (i < len && html[i] != '>')
+					i++;
+				if (i < len)
+					i++;
+				continue;
+			}
 			{
 				unsigned int k;
 				for (k = sp; k > 0; k--) {
@@ -3378,6 +3387,8 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 				name[k] = html[ns + k];
 			name[n] = '\0';
 			tag = br_tag_from_name(name);
+			if (tag == BR_TAG_UNKNOWN)
+				continue;
 
 			attr_start = ne;
 			{

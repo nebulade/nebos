@@ -2856,6 +2856,15 @@ static void layout_children(struct lay *l, unsigned int parent,
 			} else {
 				layout_block(l, n, &cs, depth + 1, lk);
 			}
+			if (cs.pos == 1 && block_h[n] &&
+			    doc.nodes[n].class_off) {
+				const char *cl = doc.attrs +
+					doc.nodes[n].class_off;
+
+				if (contains_ci(cl, "poster-wrapper") ||
+				    contains_ci(cl, "ts-picture"))
+					l->y += block_h[n];
+			}
 			n = nd->next;
 			continue;
 		}
