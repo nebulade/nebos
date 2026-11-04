@@ -749,12 +749,20 @@ static int build_client_hello(const char *sni)
 	ch_u16(4);
 	ch_u16(2);
 	ch_u16(0x001d);
-	/* signature_algorithms (unused in phase A, syntactically required) */
+	/* signature_algorithms: advertise the ECDSA curves used by modern
+	 * site certificates (nd-aktuell.de uses a P-384 leaf) as well as the
+	 * RSA-PSS schemes.  Signatures are not verified in phase A, but the
+	 * server refuses the handshake when its certificate's scheme is not
+	 * listed. */
 	ch_u16(0x000d);
-	ch_u16(6);
-	ch_u16(4);
-	ch_u16(0x0804);
-	ch_u16(0x0403);
+	ch_u16(14);
+	ch_u16(12);
+	ch_u16(0x0403);                 /* ecdsa_secp256r1_sha256 */
+	ch_u16(0x0503);                 /* ecdsa_secp384r1_sha384 */
+	ch_u16(0x0603);                 /* ecdsa_secp521r1_sha512 */
+	ch_u16(0x0804);                 /* rsa_pss_rsae_sha256 */
+	ch_u16(0x0805);                 /* rsa_pss_rsae_sha384 */
+	ch_u16(0x0806);                 /* rsa_pss_rsae_sha512 */
 	/* key_share */
 	tls_random(x_priv, 32);
 	x25519(pub, x_priv, x25519_base_point);
