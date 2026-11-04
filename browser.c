@@ -134,6 +134,12 @@ static int cancel_fetch;
 static int quit;
 
 static struct ngui_rect page_rect;
+static unsigned short *page_backbuf;
+static int pagebuf_w, pagebuf_h;
+static int page_cache_valid;
+static int page_cache_scroll;
+static unsigned int page_cache_nnode;
+static int page_cache_x, page_cache_y, page_cache_w, page_cache_h;
 static int layout_valid, layout_left, layout_right;
 static unsigned int layout_nnode;
 static int layout_content_h;
@@ -295,6 +301,11 @@ static int heap_start(void)
 		heap_size = heap_used = 0;
 		return -1;
 	}
+	page_backbuf = (unsigned short *)heap_alloc(
+		(unsigned int)ui.w * (unsigned int)ui.h * 2u, 16);
+	pagebuf_w = page_backbuf ? ui.w : 0;
+	pagebuf_h = page_backbuf ? ui.h : 0;
+	page_cache_valid = 0;
 	return 0;
 }
 
@@ -304,6 +315,9 @@ static void heap_clear(void)
 	heap = 0;
 	heap_size = heap_used = 0;
 	image_io_buf = 0;
+	page_backbuf = 0;
+	pagebuf_w = pagebuf_h = 0;
+	page_cache_valid = 0;
 	image_arena = 0;
 	image_arena_size = 0;
 }
@@ -1334,7 +1348,7 @@ static void preload_step(void)
 			image_count++;
 			preload_loaded++;
 			layout_valid = 0;
-		}
+				}
 		ngui_invalidate(&ui);
 		return;
 	}
@@ -2912,7 +2926,6 @@ static void render_page(int left, int right, int y0)
 {
 	struct lay *l = &layout_state;
 	struct br_style base = base_style();
-
 	l->draw = 1;
 	l->ui = &ui;
 	l->left = left;
@@ -3050,12 +3063,41 @@ static int page_hover_node(void)
 	return find_hit(ui.mouse_x, ui.mouse_y);
 }
 
+static void blit_page(struct ngui_rect page, unsigned short *src, int sw)
+{
+	int x, y, w = page.w, h = page.h;
+
+	if (!src || w <= 0 || h <= 0)
+		return;
+	for (y = 0; y < h; y++) {
+		unsigned short *s = src + (page.y + y) * sw + page.x;
+		unsigned short *d = ui.px + (page.y + y) * ui.w + page.x;
+
+		for (x = 0; x + 1 < w; x += 2) {
+			*(unsigned int *)(d + x) = *(unsigned int *)(s + x);
+		}
+		if (x < w)
+			d[x] = s[x];
+	}
+}
+
 static void draw_page(struct ngui_rect page)
 {
 	int left, right, ch;
 	int old_panel, old_dim;
+	unsigned short *saved_px;
+	int saved_w, saved_h, use_buf;
 
 	page_rect = page;
+	if (page_backbuf && pagebuf_w == ui.w && pagebuf_h == ui.h &&
+	    page_cache_valid && layout_valid &&
+	    page_scroll.offset == page_cache_scroll &&
+	    page_cache_nnode == doc.nnode &&
+	    page_cache_x == page.x && page_cache_y == page.y &&
+	    page_cache_w == page.w && page_cache_h == page.h) {
+		blit_page(page, page_backbuf, pagebuf_w);
+		return;
+	}
 	ngui_fill_rect(&ui, page, ui.theme.bg);
 	if (!doc.nnode || (page_loading && doc.nnode <= 1)) {
 		const char *s = page_loading ? "Loading..." : "No page";
@@ -3064,10 +3106,25 @@ static void draw_page(struct ngui_rect page)
 			  page.y + page.h / 2 - 8, s, ui.theme.text_dim);
 		page_scroll.content_h = 0;
 		page_scroll.view_h = page.h;
+		page_cache_valid = 0;
 		return;
 	}
-	if (page.w < 40 || page.h < 40)
+	if (page.w < 40 || page.h < 40) {
+		page_cache_valid = 0;
 		return;
+	}
+
+	saved_px = ui.px;
+	saved_w = ui.w;
+	saved_h = ui.h;
+	use_buf = page_backbuf && pagebuf_w == ui.w && pagebuf_h == ui.h;
+	if (use_buf) {
+		ui.px = page_backbuf;
+		ui.w = pagebuf_w;
+		ui.h = pagebuf_h;
+		ngui_fill_rect(&ui, page, ui.theme.bg);
+	}
+
 	left = page.x + 8;
 	right = page.x + page.w - 16;
 	if (!layout_valid || left != layout_left || right != layout_right ||
@@ -3090,6 +3147,22 @@ static void draw_page(struct ngui_rect page)
 	ngui_scroll_end(&ui, page, &page_scroll);
 	ui.theme.panel_alt = old_panel;
 	ui.theme.text_dim = old_dim;
+
+	if (use_buf) {
+		ui.px = saved_px;
+		ui.w = saved_w;
+		ui.h = saved_h;
+		blit_page(page, page_backbuf, pagebuf_w);
+		page_cache_valid = 1;
+		page_cache_scroll = page_scroll.offset;
+		page_cache_nnode = doc.nnode;
+		page_cache_x = page.x;
+		page_cache_y = page.y;
+		page_cache_w = page.w;
+		page_cache_h = page.h;
+	} else {
+		page_cache_valid = 0;
+	}
 }
 
 static void draw_status(struct ngui_rect r)
