@@ -29,6 +29,9 @@
 #define NGUI_KEY_HOME       0x106
 #define NGUI_KEY_END        0x107
 #define NGUI_KEY_DELETE     0x108
+#define NGUI_KEY_CTRL_LEFT  0x109
+#define NGUI_KEY_CTRL_RIGHT 0x10A
+#define NGUI_KEY_CTRL_DELETE 0x10B
 
 #define NGUI_RGB(r, g, b) \
 	((unsigned short)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3)))
@@ -74,6 +77,8 @@ struct ngui_input {
 	unsigned int len;
 	unsigned int cursor;
 	unsigned int scroll;          /* first visible character */
+	unsigned int anchor;          /* mouse selection anchor (== cursor: none) */
+	int dragging;                 /* a press in the field is extending a selection */
 	const char *placeholder;
 };
 

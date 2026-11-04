@@ -758,12 +758,87 @@ void ngui_input_set(struct ngui_input *in, const char *s)
 	in->len = slen(in->text);
 	in->cursor = in->len;
 	in->scroll = 0;
+	in->anchor = in->cursor;
+	in->dragging = 0;
+}
+
+static int input_word_char(char c)
+{
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+	       (c >= '0' && c <= '9') || c == '_';
+}
+
+/* Next word start after `pos` (Windows edit-control semantics). */
+static unsigned int input_word_next(const struct ngui_input *in,
+				    unsigned int pos)
+{
+	while (pos < in->len && input_word_char(in->text[pos]))
+		pos++;
+	while (pos < in->len && !input_word_char(in->text[pos]))
+		pos++;
+	return pos;
+}
+
+/* Start of the previous word before `pos`. */
+static unsigned int input_word_prev(const struct ngui_input *in,
+				    unsigned int pos)
+{
+	while (pos > 0 && !input_word_char(in->text[pos - 1]))
+		pos--;
+	while (pos > 0 && input_word_char(in->text[pos - 1]))
+		pos--;
+	return pos;
+}
+
+static void input_sel_bounds(const struct ngui_input *in,
+			     unsigned int *a, unsigned int *b)
+{
+	if (in->anchor < in->cursor) {
+		*a = in->anchor;
+		*b = in->cursor;
+	} else {
+		*a = in->cursor;
+		*b = in->anchor;
+	}
+}
+
+/* Remove [a, b) and keep cursor/anchor consistent.  Returns 1 when the text
+ * changed. */
+static int input_delete_range(struct ngui_input *in, unsigned int a,
+			      unsigned int b)
+{
+	unsigned int i;
+
+	if (a >= b || b > in->len)
+		return 0;
+	for (i = b; i < in->len; i++)
+		in->text[i - (b - a)] = in->text[i];
+	in->len -= b - a;
+	in->text[in->len] = '\0';
+	if (in->cursor >= b)
+		in->cursor -= b - a;
+	else if (in->cursor > a)
+		in->cursor = a;
+	if (in->anchor >= b)
+		in->anchor -= b - a;
+	else if (in->anchor > a)
+		in->anchor = a;
+	return 1;
+}
+
+static int input_delete_selection(struct ngui_input *in)
+{
+	unsigned int a, b;
+
+	input_sel_bounds(in, &a, &b);
+	return input_delete_range(in, a, b);
 }
 
 static void input_insert(struct ngui_input *in, char c)
 {
 	unsigned int i;
 
+	input_delete_selection(in);
 	if (in->len + 1 >= NGUI_INPUT_MAX)
 		return;
 	i = in->len;
@@ -775,11 +850,12 @@ static void input_insert(struct ngui_input *in, char c)
 	in->cursor++;
 	in->len++;
 	in->text[in->len] = '\0';
+	in->anchor = in->cursor;
 }
 
 static void input_delete(struct ngui_input *in, int back)
 {
-	unsigned int i, pos;
+	unsigned int pos;
 
 	if (back) {
 		if (in->cursor == 0)
@@ -790,15 +866,50 @@ static void input_delete(struct ngui_input *in, int back)
 			return;
 		pos = in->cursor;
 	}
-	i = pos;
-	while (i + 1 < in->len) {
-		in->text[i] = in->text[i + 1];
-		i++;
-	}
-	in->len--;
-	if (back)
-		in->cursor--;
-	in->text[in->len] = '\0';
+	input_delete_range(in, pos, pos + 1);
+}
+
+static void input_move_to(struct ngui_input *in, unsigned int pos)
+{
+	if (pos > in->len)
+		pos = in->len;
+	in->cursor = pos;
+	in->anchor = pos;
+}
+
+/* Character position under a content-relative x, clamped to the visible
+ * part of the field. */
+static unsigned int input_pos_at(const struct ngui_input *in, int inner_x,
+				 int cols, int x)
+{
+	int col = (x - inner_x) / 8;
+	unsigned int pos;
+
+	if (col < 0)
+		col = 0;
+	if (cols > 0 && col > cols)
+		col = cols;
+	pos = in->scroll + (unsigned int)col;
+	if (pos > in->len)
+		pos = in->len;
+	return pos;
+}
+
+static void input_draw_selection(struct ngui *ui, const struct ngui_input *in,
+				 struct ngui_rect inner, int cols)
+{
+	unsigned int a, b, va, vb;
+
+	input_sel_bounds(in, &a, &b);
+	if (a == b || cols <= 0)
+		return;
+	va = a < in->scroll ? in->scroll : a;
+	vb = b > in->scroll + (unsigned int)cols
+	     ? in->scroll + (unsigned int)cols : b;
+	if (va < vb)
+		ngui_fill_rect(ui, rect_make(inner.x + (int)(va - in->scroll) * 8,
+					     inner.y, (int)(vb - va) * 8, 16),
+			       ui->theme.selection);
 }
 
 int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
@@ -810,23 +921,40 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	int cols, k;
 	int changed = 0;
 
+	inner = rect_make(r.x + 4, r.y + (r.h - 16) / 2, r.w - 8, 16);
+	if (inner.w < 0)
+		inner.w = 0;
+	cols = inner.w / 8;
+	if (cols < 0)
+		cols = 0;
+
 	if (ui->pressed &&
 	    ngui_rect_contains(&r, ui->press_x, ui->press_y)) {
-		int col = (ui->press_x - (r.x + 4)) / 8;
-		unsigned int pos;
+		unsigned int pos = input_pos_at(in, inner.x, cols, ui->press_x);
 
-		if (col < 0)
-			col = 0;
-		pos = in->scroll + (unsigned int)col;
-		if (pos > in->len)
-			pos = in->len;
 		in->cursor = pos;
+		in->anchor = pos;
+		in->dragging = 1;
 		ui->focus = id;
 		ui->focus_claimed = 1;
 		ui->last_blink = u_ticks_ms();
 		ui->caret_on = 1;
 		focused = 1;
+	} else if (ui->pressed) {
+		in->dragging = 0;
 	}
+
+	/* Extend the selection while the button that started in this field is
+	 * still held.  Sampled coordinates may be outside the canvas.  The
+	 * release *event* is authoritative: the sampled button state can lag
+	 * the event queue by a frame. */
+	if (in->dragging && (ui->buttons & 1) && !ui->released) {
+		in->cursor = input_pos_at(in, inner.x, cols, ui->mouse_x);
+		/* Keep redrawing when the pointer leaves the window. */
+		ngui_invalidate(ui);
+	}
+	if (ui->released)
+		in->dragging = 0;
 
 	if (focused) {
 		while ((k = ngui_key(ui)) != 0) {
@@ -840,24 +968,38 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 				break;
 			}
 			if (k == NGUI_KEY_BACKSPACE || k == 0x7F) {
-				input_delete(in, 1);
+				if (!input_delete_selection(in))
+					input_delete(in, 1);
 				changed = 1;
 			} else if (k == NGUI_KEY_DELETE) {
-				input_delete(in, 0);
+				if (!input_delete_selection(in))
+					input_delete(in, 0);
 				changed = 1;
+			} else if (k == NGUI_KEY_CTRL_DELETE) {
+				if (input_delete_selection(in) ||
+				    input_delete_range(in, in->cursor,
+						input_word_next(in, in->cursor)))
+					changed = 1;
 			} else if (k == NGUI_KEY_LEFT) {
-				if (in->cursor > 0)
-					in->cursor--;
+				input_move_to(in, in->cursor > 0 ? in->cursor - 1 : 0);
 			} else if (k == NGUI_KEY_RIGHT) {
-				if (in->cursor < in->len)
-					in->cursor++;
+				input_move_to(in, in->cursor < in->len
+						  ? in->cursor + 1 : in->len);
+			} else if (k == NGUI_KEY_CTRL_LEFT) {
+				input_move_to(in, input_word_prev(in, in->cursor));
+			} else if (k == NGUI_KEY_CTRL_RIGHT) {
+				input_move_to(in, input_word_next(in, in->cursor));
 			} else if (k == NGUI_KEY_HOME) {
-				in->cursor = 0;
+				input_move_to(in, 0);
 			} else if (k == NGUI_KEY_END) {
+				input_move_to(in, in->len);
+			} else if (k == 0x01) {   /* Ctrl+A: select all */
+				in->anchor = 0;
 				in->cursor = in->len;
 			} else if (k == 0x15) {   /* Ctrl+U */
 				in->len = 0;
 				in->cursor = 0;
+				in->anchor = 0;
 				in->text[0] = '\0';
 				changed = 1;
 			} else if (k >= 0x20 && k <= 0x7E) {
@@ -867,15 +1009,9 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 		}
 	}
 
-	inner = rect_make(r.x + 4, r.y + (r.h - 16) / 2, r.w - 8, 16);
-	if (inner.w < 0)
-		inner.w = 0;
 	ngui_fill_rect(ui, r, focused ? ui->theme.panel_alt : ui->theme.panel);
 	ngui_frame(ui, r, focused ? ui->theme.accent : ui->theme.border);
 
-	cols = inner.w / 8;
-	if (cols < 0)
-		cols = 0;
 	if (in->scroll > in->len)
 		in->scroll = in->len;
 	if (in->cursor < in->scroll)
@@ -886,12 +1022,15 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 		in->scroll = in->len;
 
 	ngui_push_clip(ui, inner);
-	if (in->len == 0 && in->placeholder)
+	if (in->len == 0 && in->placeholder) {
 		ngui_text(ui, inner.x, inner.y, in->placeholder,
 			  ui->theme.text_dim);
-	else
+	} else {
+		if (focused)
+			input_draw_selection(ui, in, inner, cols);
 		ngui_text(ui, inner.x, inner.y, in->text + in->scroll,
 			  ui->theme.text);
+	}
 
 	if (focused && ui->caret_on) {
 		int col = (int)in->cursor - (int)in->scroll;

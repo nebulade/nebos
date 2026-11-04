@@ -813,7 +813,7 @@ static void draw_inputs(struct ngui *g, struct ngui_rect card)
 
 	help_x = x + label_w + iw + 24;
 	help_w = card.x + card.w - CARD_PAD - help_x;
-	help_h = 164;
+	help_h = 182;
 
 	if (help_w >= 150) {
 		int hx = help_x;
@@ -831,11 +831,15 @@ static void draw_inputs(struct ngui *g, struct ngui_rect card)
 			  g->theme.text_dim);
 		ngui_text(g, hx + 10, hy + 72, "Arrows - move caret",
 			  g->theme.text_dim);
-		ngui_text(g, hx + 10, hy + 90, "Home / End - line ends",
+		ngui_text(g, hx + 10, hy + 90, "Ctrl+Left/Right - words",
 			  g->theme.text_dim);
-		ngui_text(g, hx + 10, hy + 108, "Ctrl+U - clear",
+		ngui_text(g, hx + 10, hy + 108, "Ctrl+Del - delete word",
 			  g->theme.text_dim);
-		ngui_text(g, hx + 10, hy + 126, "Tab - focus first",
+		ngui_text(g, hx + 10, hy + 126, "Drag - select, Ctrl+A all",
+			  g->theme.text_dim);
+		ngui_text(g, hx + 10, hy + 144, "Home/End, Ctrl+U - ends/clear",
+			  g->theme.text_dim);
+		ngui_text(g, hx + 10, hy + 162, "Tab - focus first",
 			  g->theme.text_dim);
 	}
 

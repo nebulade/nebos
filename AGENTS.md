@@ -254,7 +254,9 @@ run area), so adding code no longer moves any address.
   `gallery` (`gallery.c`) is the live showcase of every control and primitive
   the toolkit exports.  Buttons fire on the release edge and keep `active`
   until `ui->released`: inferring release from the sampled `ui->buttons`
-  races the WM event queue and drops clicks.
+  races the WM event queue and drops clicks.  Text fields support mouse
+  drag-selection, Ctrl+Left/Right word jumps, Ctrl+Delete word deletion and
+  Ctrl+A select-all; typing or Backspace/Delete replaces a selection.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `blit.c/h`, `gpu.c`, `ati.c`, `nvidia.c`,
   `nv50.c`, `pci.h` — VESA LFB + shadow buffer.  Drawing goes into a
   `struct surface` render target: `vga_target()` is the screen's shadow buffer
@@ -891,7 +893,10 @@ so addresses do not collide.
   (modifier byte + 6 keycodes); they are diffed against the previous report
   and decoded through a HID-usage → scancode-set-1 table (including 0xE0
   extended keys), then injected with `io_inject_scancode()` so the
-  terminal/WM see exactly what a PS/2 keyboard would produce.
+  terminal/WM see exactly what a PS/2 keyboard would produce.  Since a boot
+  keyboard only reports changes, `io.c` adds software typematic repeat
+  (500 ms delay, 33 ms rate) for the last make code; real PS/2 hardware
+  repeat keeps resetting the same timer.
   `usbhid_poll()` (from `mouse_poll_update()`) also runs the hotplug
   watcher: root-port connect changes are enumerated (throttled to 250 ms),
   `CCS` low or a few TD errors detach a device.  A full scan (`lsusb`) bumps

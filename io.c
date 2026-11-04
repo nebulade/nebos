@@ -49,6 +49,19 @@ static int shift_pressed;
 static int ctrl_pressed;
 static int kbd_extended;  /* 1 after 0xE0, next byte is extended scancode */
 
+/* Software typematic repeat.  PS/2 keyboards repeat in hardware; the USB HID
+ * backend only reports changes, so a held key would otherwise produce exactly
+ * one event.  Track the last make code here (both backends end up in this
+ * decoder) and re-deliver it after the usual delay/rate. */
+#define KBD_REPEAT_DELAY_MS 500
+#define KBD_REPEAT_RATE_MS  33
+
+static int repeat_key;
+static int repeat_active;
+static unsigned int repeat_ext;
+static unsigned int repeat_sc;
+static unsigned int repeat_at;
+
 #define KBD_BUF_SIZE 16
 static volatile unsigned char kbd_buf[KBD_BUF_SIZE];
 static volatile unsigned int kbd_head, kbd_tail;
@@ -289,33 +302,82 @@ void io_drain_keyboard(void)
 		(void)inb(KB_DATA);
 	kbd_head = kbd_tail = 0;
 	kbd_extended = 0;
+	repeat_active = 0;
+}
+
+static void kbd_repeat_start(int key, unsigned int ext, unsigned int sc)
+{
+	repeat_key = key;
+	repeat_ext = ext;
+	repeat_sc = sc;
+	repeat_at = get_ticks_ms() + KBD_REPEAT_DELAY_MS;
+	repeat_active = 1;
+}
+
+static void kbd_repeat_stop(unsigned int ext, unsigned int sc)
+{
+	if (repeat_active && repeat_ext == ext && repeat_sc == sc)
+		repeat_active = 0;
+}
+
+/* Return a synthetic repeat event when the held key is due.  Called only when
+ * the real scancode queue is empty, so a pending break code is decoded first
+ * and cancels the repeat before it can leak through. */
+static int kbd_repeat_poll(void)
+{
+	unsigned int now;
+
+	if (!repeat_active)
+		return 0;
+	now = get_ticks_ms();
+	if (now - repeat_at > 0x7FFFFFFFu)   /* signed deadline comparison */
+		return 0;
+	repeat_at = now + KBD_REPEAT_RATE_MS;
+	return repeat_key;
 }
 
 /* Process one scancode byte; shared by io_poll_key and io_poll_key_with_hw. */
 static int kbd_process_byte(unsigned char sc)
 {
+	int key;
+
 	if (sc == 0xE0) {
 		kbd_extended = 1;
 		return 0;
 	}
 	if (kbd_extended) {
 		kbd_extended = 0;
-		if (sc & 0x80)
+		if (sc & 0x80) {
+			kbd_repeat_stop(1, sc & 0x7F);
 			return 0;  /* key release */
-		if (sc == 0x4B) return IO_KEY_LEFT;
-		if (sc == 0x4D) return IO_KEY_RIGHT;
-		if (sc == 0x48) return IO_KEY_UP;
-		if (sc == 0x50) return IO_KEY_DOWN;
-		if (sc == 0x49) return IO_KEY_PAGE_UP;
-		if (sc == 0x51) return IO_KEY_PAGE_DOWN;
-		if (sc == 0x47) return IO_KEY_HOME;
-		if (sc == 0x4F) return IO_KEY_END;
-		if (sc == 0x53) return IO_KEY_DELETE;
-		return 0;
+		}
+		if (sc == 0x4B)
+			key = ctrl_pressed ? IO_KEY_CTRL_LEFT : IO_KEY_LEFT;
+		else if (sc == 0x4D)
+			key = ctrl_pressed ? IO_KEY_CTRL_RIGHT : IO_KEY_RIGHT;
+		else if (sc == 0x48)
+			key = IO_KEY_UP;
+		else if (sc == 0x50)
+			key = IO_KEY_DOWN;
+		else if (sc == 0x49)
+			key = IO_KEY_PAGE_UP;
+		else if (sc == 0x51)
+			key = IO_KEY_PAGE_DOWN;
+		else if (sc == 0x47)
+			key = IO_KEY_HOME;
+		else if (sc == 0x4F)
+			key = IO_KEY_END;
+		else if (sc == 0x53)
+			key = ctrl_pressed ? IO_KEY_CTRL_DELETE : IO_KEY_DELETE;
+		else
+			return 0;
+		kbd_repeat_start(key, 1, sc);
+		return key;
 	}
 	if (sc & 0x80) {
 		if (sc == 0xAA || sc == 0xB6) shift_pressed = 0;
 		if (sc == 0x9D) ctrl_pressed = 0;
+		kbd_repeat_stop(0, sc & 0x7F);
 		return 0;
 	}
 	if (sc == 0x2A || sc == 0x36) {
@@ -333,10 +395,14 @@ static int kbd_process_byte(unsigned char sc)
 			if (ctrl_pressed) {
 				/* Ctrl+letter -> control character (e.g. Ctrl+C -> 0x03). */
 				if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))
-					return (unsigned char)(c & 0x1F);
-				return 0;
+					key = (unsigned char)(c & 0x1F);
+				else
+					return 0;
+			} else {
+				key = (unsigned char)c;
 			}
-			return (unsigned char)c;
+			kbd_repeat_start(key, 0, sc);
+			return key;
 		}
 	}
 	return 0;
@@ -345,8 +411,9 @@ static int kbd_process_byte(unsigned char sc)
 int io_poll_key(void)
 {
 	unsigned char sc;
+
 	if (!kbd_buf_get(&sc))
-		return 0;
+		return kbd_repeat_poll();
 	return kbd_process_byte(sc);
 }
 
@@ -377,7 +444,7 @@ int io_poll_key_with_hw(void)
 	__asm__ volatile ("pushl %0; popfl" : : "r"(flags));
 
 	if (!got)
-		return 0;
+		return kbd_repeat_poll();
 	return kbd_process_byte(sc);
 }
 

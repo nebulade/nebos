@@ -581,8 +581,10 @@ ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x16.o ucmd.ld
 	$(OBJCOPY) --strip-all $@ $@
 
 # ngui: the userland immediate-mode GUI toolkit and its apps.
+# -Os: every GUI app links the whole toolkit, and the legacy rootfs pack has
+# a hard 255 KB cap; -Os saves ~10 KB compressed across the pack.
 ngui.o: ngui.c ngui.h ucmd_lib.h syscall.h wm_abi.h font_8x16.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -Os -o $@ $<
 
 ucmd_files.o: ucmd_files.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h
 	$(CC) $(CFLAGS) -o $@ $<

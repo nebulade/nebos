@@ -39,6 +39,9 @@ void io_drain_keyboard(void);
 #define IO_KEY_HOME      0x106
 #define IO_KEY_END       0x107
 #define IO_KEY_DELETE    0x108
+#define IO_KEY_CTRL_LEFT  0x109
+#define IO_KEY_CTRL_RIGHT 0x10A
+#define IO_KEY_CTRL_DELETE 0x10B
 int io_poll_key(void);
 /* Same as io_poll_key but also reads port 0x60 when buffer empty (for full-screen programs). */
 int io_poll_key_with_hw(void);
