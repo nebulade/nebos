@@ -764,6 +764,7 @@ static void doc_reset(struct br_doc *d)
 		d->nodes[i].src_off = d->nodes[i].alt_off = 0;
 		d->nodes[i].color_off = d->nodes[i].rel_off = 0;
 		d->nodes[i].width_attr = d->nodes[i].height_attr = 0;
+		d->nodes[i].name_off = 0;
 		d->nodes[i].width_pct = d->nodes[i].height_pct = 0;
 		d->nodes[i].img_index = -1;
 		d->nodes[i].style_valid = 0;
@@ -847,6 +848,22 @@ static unsigned int parse_uint(const char *s, unsigned int len)
 	return v;
 }
 
+static void note_attr_flag(struct br_node *n, const char *name)
+{
+	if (str_eq(name, "data-collapse-target"))
+		n->attr_flags |= BR_ATTR_COLLAPSE_TARGET;
+	else if (str_eq(name, "data-collapse-trigger"))
+		n->attr_flags |= BR_ATTR_COLLAPSE_TRIGGER;
+	else if (str_eq(name, "is-open"))
+		n->attr_flags |= BR_ATTR_IS_OPEN;
+	else if (str_eq(name, "disabled"))
+		n->attr_flags |= BR_ATTR_DISABLED;
+	else if (str_eq(name, "open"))
+		n->attr_flags |= BR_ATTR_OPEN;
+	else if (str_eq(name, "inert"))
+		n->attr_flags |= BR_ATTR_INERT;
+}
+
 /* Parse attributes from `s` (between the tag name and '>'). */
 static void parse_attrs(struct br_doc *d, struct br_node *n,
 			const char *s, unsigned int len)
@@ -854,7 +871,7 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 	unsigned int i = 0;
 
 	while (i < len) {
-		char name[16];
+		char name[32];
 		unsigned int nl = 0, vstart, vlen;
 		char quote = 0;
 
@@ -875,6 +892,7 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 		if (i >= len || s[i] != '=') {
 			if (str_eq(name, "hidden"))
 				n->flags |= BR_NODE_HIDDEN;
+			note_attr_flag(n, name);
 			continue;
 		}
 		i++;
@@ -900,6 +918,7 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 			n->flags |= BR_NODE_HIDDEN;
 			continue;
 		}
+		note_attr_flag(n, name);
 		if (str_eq(name, "href"))
 			n->href_off = store_attr(d, s + vstart, vlen, 480);
 		else if (str_eq(name, "class"))
@@ -1049,7 +1068,6 @@ static int parse_color(const char *s, unsigned int len, unsigned short *out)
 	}
 	if (i + 3 <= len && ci_eq_n(s + i, "rgb", 3)) {
 		unsigned int v[3], k = 0, a = 255;
-		int is_rgba = (i + 4 <= len && ci_eq_n(s + i, "rgba", 4));
 
 		while (i < len && s[i] != '(')
 			i++;
@@ -1058,53 +1076,69 @@ static int parse_color(const char *s, unsigned int len, unsigned short *out)
 		i++;
 		while (k < 3 && i < len) {
 			unsigned int x = 0;
-			while (i < len && is_space(s[i]))
+			int percent = 0;
+
+			while (i < len && (is_space(s[i]) || s[i] == ','))
 				i++;
+			if (i >= len || s[i] < '0' || s[i] > '9')
+				return 0;
 			while (i < len && s[i] >= '0' && s[i] <= '9') {
 				x = x * 10 + (unsigned int)(s[i] - '0');
 				i++;
 			}
 			if (i < len && s[i] == '%') {
-				x = x * 255 / 100;
+				percent = 1;
 				i++;
 			}
+			if (percent)
+				x = x * 255 / 100;
 			if (x > 255)
 				x = 255;
 			v[k++] = x;
-			while (i < len && s[i] != ',' && s[i] != ')')
-				i++;
-			if (i < len && s[i] == ',')
-				i++;
 		}
-		if (is_rgba && i < len) {
+		/* Optional alpha in both syntaxes:
+		 *   rgba(1, 2, 3, 0.5), rgb(1 2 3 / 50%) */
+		{
 			unsigned int whole = 0, frac = 0, scale = 1;
 			int percent = 0;
 
-			while (i < len && is_space(s[i]))
+			while (i < len && (is_space(s[i]) || s[i] == ','))
 				i++;
-			while (i < len && s[i] >= '0' && s[i] <= '9') {
-				whole = whole * 10 + (unsigned int)(s[i] - '0');
+			if (i < len && s[i] == '/') {
 				i++;
+				while (i < len && is_space(s[i]))
+					i++;
 			}
-			if (i < len && s[i] == '.') {
-				i++;
-				while (i < len && s[i] >= '0' && s[i] <= '9' && scale < 1000) {
-					frac = frac * 10 + (unsigned int)(s[i] - '0');
-					scale *= 10;
+			if (i < len && s[i] >= '0' && s[i] <= '9') {
+				while (i < len && s[i] >= '0' && s[i] <= '9') {
+					whole = whole * 10 +
+						(unsigned int)(s[i] - '0');
 					i++;
 				}
+				if (i < len && s[i] == '.') {
+					i++;
+					while (i < len && s[i] >= '0' &&
+					       s[i] <= '9') {
+						if (scale < 1000) {
+							frac = frac * 10 +
+								(unsigned int)(s[i] - '0');
+							scale *= 10;
+						}
+						i++;
+					}
+				}
+				while (i < len && is_space(s[i]))
+					i++;
+				if (i < len && s[i] == '%')
+					percent = 1;
+				if (percent)
+					a = whole > 100 ? 255 :
+					    whole * 255 / 100;
+				else if (whole >= 1)
+					a = 255;
+				else
+					a = frac * 255 / scale;
 			}
-			while (i < len && is_space(s[i]))
-				i++;
-			if (i < len && s[i] == '%')
-				percent = 1;
-			if (percent) {
-				a = whole > 100 ? 255 : whole * 255 / 100;
-			} else {
-				a = whole >= 1 ? 255 : (frac * 255) / scale;
-			}
-			if (a > 255)
-				a = 255;
 		}
 		if (k == 3) {
 			unsigned int r = v[0], g = v[1], b = v[2];
@@ -1204,7 +1238,7 @@ static int parse_size(const char *s, unsigned int len, unsigned short *val,
 {
 	unsigned int i = 0;
 	unsigned long v = 0;
-	int digits = 0, frac = 0, pct = 0, rem = 0;
+	int digits = 0, frac = 0, pct = 0, rem = 0, vw = 0, bad_unit = 0;
 
 	*val = 0;
 	*kind = 0;
@@ -1248,11 +1282,21 @@ static int parse_size(const char *s, unsigned int len, unsigned short *val,
 		rem = 1;
 	else if (i + 1 < len && s[i] == 'e' && s[i + 1] == 'm')
 		rem = 2;
+	else if (i + 1 < len && s[i] == 'v' && s[i + 1] == 'w')
+		vw = 1;
+	else if (i + 1 < len && s[i] == 'p' && s[i + 1] == 'x')
+		; /* px: already the default scale */
+	else if (i < len && (is_ident(s[i]) || s[i] == '#'))
+		bad_unit = 1;
+	if (bad_unit)
+		return 0;
 	if (rem == 1)
 		v *= root_font_px;
 	else if (rem == 2)
 		v *= 16;
 	v /= 100;
+	if (vw)
+		v = v * viewport_w / 100;
 	if (pct) {
 		if (v > 100)
 			v = 100;
@@ -1288,9 +1332,11 @@ static int parse_font_px(const char *s, unsigned int len)
 	}
 	if (i < len && s[i] == '.') {
 		i++;
-		while (i < len && s[i] >= '0' && s[i] <= '9' && fscale < 1000) {
-			frac = frac * 10 + (s[i] - '0');
-			fscale *= 10;
+		while (i < len && s[i] >= '0' && s[i] <= '9') {
+			if (fscale < 1000) {
+				frac = frac * 10 + (s[i] - '0');
+				fscale *= 10;
+			}
 			i++;
 		}
 	}
@@ -1767,6 +1813,92 @@ static int css_has_var(const char *s, unsigned int len)
 	return 0;
 }
 
+static unsigned int css_skip_comment(const char *s, unsigned int len,
+				     unsigned int i)
+{
+	i += 2;
+	while (i + 1 < len && !(s[i] == '*' && s[i + 1] == '/'))
+		i++;
+	if (i + 1 < len)
+		i += 2;
+	else
+		i = len;
+	return i;
+}
+
+static unsigned int css_skip_string(const char *s, unsigned int len,
+				    unsigned int i)
+{
+	char q = s[i++];
+
+	while (i < len && s[i] != q) {
+		if (s[i] == '\\' && i + 1 < len)
+			i++;
+		i++;
+	}
+	if (i < len)
+		i++;
+	return i;
+}
+
+/* Find the '}' that closes a declaration block.  i points just past the
+ * opening '{'.  Comments and quoted strings are skipped: a brace inside
+ * one must not unbalance the scan (nd-aktuell's CSS comments contain
+ * selectors such as "Highlight-Stories {" without a closing brace). */
+static unsigned int css_block_end(const char *s, unsigned int len,
+				  unsigned int i)
+{
+	int depth = 0;
+
+	while (i < len) {
+		char c = s[i];
+
+		if (c == '/' && i + 1 < len && s[i + 1] == '*') {
+			i = css_skip_comment(s, len, i);
+			continue;
+		}
+		if (c == '"' || c == '\'') {
+			i = css_skip_string(s, len, i);
+			continue;
+		}
+		if (c == '{') {
+			depth++;
+		} else if (c == '}') {
+			if (depth == 0)
+				return i;
+			depth--;
+		}
+		i++;
+	}
+	return len;
+}
+
+/* Skip a block whose opening '{' has already been consumed. */
+static unsigned int css_skip_nested(const char *s, unsigned int len,
+				    unsigned int i)
+{
+	int depth = 1;
+
+	while (i < len && depth) {
+		char c = s[i];
+
+		if (c == '/' && i + 1 < len && s[i + 1] == '*') {
+			i = css_skip_comment(s, len, i);
+			continue;
+		}
+		if (c == '"' || c == '\'') {
+			i = css_skip_string(s, len, i);
+			continue;
+		}
+		if (c == '{')
+			depth++;
+		else if (c == '}')
+			depth--;
+		i++;
+	}
+	return i;
+}
+
 static void parse_decls(struct br_doc *d, const char *s,
 			unsigned int len, struct br_decl *out,
 			unsigned int *nout)
@@ -1794,9 +1926,26 @@ static void parse_decls(struct br_doc *d, const char *s,
 			i++;
 		if (i >= len)
 			break;
+		/* A nested at-rule (@media/@supports) inside the declaration
+		 * block carries its own selector context; skip it rather than
+		 * reading its prelude as a declaration. */
+		if (s[i] == '@') {
+			while (i < len && s[i] != '{' && s[i] != ';')
+				i++;
+			if (i < len && s[i] == '{')
+				i = css_skip_nested(s, len, i + 1);
+			else if (i < len)
+				i++;
+			continue;
+		}
 		pstart = i;
-		while (i < len && s[i] != ':' && s[i] != ';')
+		while (i < len && s[i] != ':' && s[i] != ';' && s[i] != '{')
 			i++;
+		if (i < len && s[i] == '{') {
+			/* Nested style rule: skip its block. */
+			i = css_skip_nested(s, len, i + 1);
+			continue;
+		}
 		pend = i;
 		if (i >= len || s[i] != ':')
 			continue;
@@ -2159,7 +2308,6 @@ static unsigned int skip_at_rule(const char *s, unsigned int len,
 				 unsigned int i)
 {
 	unsigned int j = i;
-	int depth;
 
 	while (j < len && s[j] != '{' && s[j] != ';')
 		j++;
@@ -2167,16 +2315,8 @@ static unsigned int skip_at_rule(const char *s, unsigned int len,
 		return len;
 	if (s[j] == ';')
 		return j + 1;
-	depth = 1;
 	j++;
-	while (j < len && depth) {
-		if (s[j] == '{')
-			depth++;
-		else if (s[j] == '}')
-			depth--;
-		j++;
-	}
-	return j;
+	return css_skip_nested(s, len, j);
 }
 
 static unsigned int viewport_w = 1024;
@@ -2213,9 +2353,14 @@ static unsigned int media_len_px(const char *s, unsigned int len)
 	}
 	if (i < len && s[i] == '.') {
 		i++;
-		while (i < len && s[i] >= '0' && s[i] <= '9' && scale < 1000) {
-			frac = frac * 10 + (unsigned int)(s[i] - '0');
-			scale *= 10;
+		/* Consume every fractional digit even when there are more
+		 * than the three we keep: leaving the tail behind made the
+		 * unit check miss "em" (74.9375em became 74px). */
+		while (i < len && s[i] >= '0' && s[i] <= '9') {
+			if (scale < 1000) {
+				frac = frac * 10 + (unsigned int)(s[i] - '0');
+				scale *= 10;
+			}
 			i++;
 		}
 	}
@@ -2417,19 +2562,12 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 				if (q < len &&
 				    media_list_matches(s + i + 6,
 						       q - (i + 6))) {
-					unsigned int b = q + 1, e = b;
-					int depth = 1;
+					unsigned int b = q + 1;
+					unsigned int e = css_skip_nested(s, len, b);
 
-					while (e < len && depth) {
-						if (s[e] == '{')
-							depth++;
-						else if (s[e] == '}')
-							depth--;
-						e++;
-					}
-					if (depth == 0)
+					if (e > b)
 						parse_css(d, s + b,
-							 (e - 1) - b);
+							  (e - 1) - b);
 					i = e;
 				} else {
 					i = skip_at_rule(s, len, i);
@@ -2447,11 +2585,12 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 		send = i;
 		i++;
 		bstart = i;
-		while (i < len && s[i] != '}')
-			i++;
-		bend = i;
-		if (i < len)
-			i++;
+		/* CSS nesting puts @media (and &-rules) inside a rule.  Scan
+		 * to the matching close brace; stopping at the first '}' left
+		 * the parser out of sync and dropped the rest of the sheet
+		 * (nd-aktuell lost its desktop rules that way). */
+		bend = css_block_end(s, len, i);
+		i = bend < len ? bend + 1 : len;
 		while (sstart < send && is_space(s[sstart]))
 			sstart++;
 		while (send > sstart && is_space(s[send - 1]))
@@ -2469,7 +2608,7 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 		j = sstart;
 		while (j <= send && d->nrules < d->rule_cap) {
 			unsigned int q = j, e, k;
-			char sel[80];
+			char sel[160];
 			unsigned int off;
 
 			while (q < send && s[q] != ',')
@@ -2485,13 +2624,29 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 				 * state/attributes we do not model.  The other
 				 * selectors in the list still apply. */
 				for (k = j; k < e; ) {
-					if (s[k] == '+' || s[k] == '~' ||
-					    s[k] == '[')
+					if (s[k] == '+' || s[k] == '~')
 						break;
 					if (s[k] == ':') {
 						if (k + 5 <= e &&
 						    ci_eq_n(s + k, ":root", 5)) {
 							k += 5;
+							continue;
+						}
+						if (k + 5 <= e &&
+						    ci_eq_n(s + k, ":not(", 5)) {
+							unsigned int n = k + 5;
+							int nd = 1;
+
+							while (n < e && nd) {
+								if (s[n] == '(')
+									nd++;
+								else if (s[n] == ')')
+									nd--;
+								n++;
+							}
+							if (nd)
+								break;
+							k = n;
 							continue;
 						}
 						break;
@@ -2507,7 +2662,7 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 				for (k = 0; k < sizeof(sel) - 1 && j + k < e; k++)
 					sel[k] = s[j + k];
 				sel[k] = '\0';
-				off = store_attr(d, sel, k, 79);
+				off = store_attr(d, sel, k, 159);
 				if (off) {
 					struct br_rule *r = &d->rules[d->nrules++];
 					unsigned int ks = 0, q;
@@ -2517,7 +2672,7 @@ static void parse_css(struct br_doc *d, const char *s, unsigned int len)
 							ks = q + 1;
 					r->sel_off = off;
 					r->key_off = store_attr(d, sel + ks,
-								 k - ks, 79);
+								 k - ks, 159);
 					r->spec = (unsigned short)selector_specificity(sel, k);
 					r->single = 1;
 					{
@@ -2709,6 +2864,49 @@ static int is_ident(char c)
 	       (c >= '0' && c <= '9') || c == '-' || c == '_';
 }
 
+static int attr_is(const char *name, unsigned int nlen, const char *lit)
+{
+	unsigned int n = 0;
+
+	while (lit[n])
+		n++;
+	return n == nlen && ci_eq_n(name, lit, nlen);
+}
+
+static int attr_present(struct br_doc *d, unsigned int node,
+			const char *name, unsigned int nlen)
+{
+	struct br_node *n = &d->nodes[node];
+
+	if (attr_is(name, nlen, "data-collapse-target"))
+		return (n->attr_flags & BR_ATTR_COLLAPSE_TARGET) != 0;
+	if (attr_is(name, nlen, "data-collapse-trigger"))
+		return (n->attr_flags & BR_ATTR_COLLAPSE_TRIGGER) != 0;
+	if (attr_is(name, nlen, "is-open"))
+		return (n->attr_flags & BR_ATTR_IS_OPEN) != 0;
+	if (attr_is(name, nlen, "disabled"))
+		return (n->attr_flags & BR_ATTR_DISABLED) != 0;
+	if (attr_is(name, nlen, "open"))
+		return (n->attr_flags & BR_ATTR_OPEN) != 0;
+	if (attr_is(name, nlen, "inert"))
+		return (n->attr_flags & BR_ATTR_INERT) != 0;
+	if (attr_is(name, nlen, "hidden"))
+		return (n->flags & BR_NODE_HIDDEN) != 0;
+	if (attr_is(name, nlen, "href"))
+		return attr_ptr(d, n->href_off)[0] != 0;
+	if (attr_is(name, nlen, "class"))
+		return attr_ptr(d, n->class_off)[0] != 0;
+	if (attr_is(name, nlen, "id"))
+		return attr_ptr(d, n->id_off)[0] != 0;
+	if (attr_is(name, nlen, "src"))
+		return attr_ptr(d, n->src_off)[0] != 0;
+	if (attr_is(name, nlen, "alt"))
+		return attr_ptr(d, n->alt_off)[0] != 0;
+	if (attr_is(name, nlen, "rel"))
+		return attr_ptr(d, n->rel_off)[0] != 0;
+	return 0;
+}
+
 static int compound_match(struct br_doc *d, unsigned int node, const char *s,
 			  unsigned int len)
 {
@@ -2726,8 +2924,16 @@ static int compound_match(struct br_doc *d, unsigned int node, const char *s,
 			name[n++] = s[i++];
 		name[n] = '\0';
 		tag = br_tag_from_name(name);
-		if (tag != d->nodes[node].tag)
+		if (tag == BR_TAG_UNKNOWN) {
+			const char *raw = attr_ptr(d,
+						   d->nodes[node].name_off);
+
+			if (d->nodes[node].tag != BR_TAG_UNKNOWN ||
+			    !ci_eq_n(raw, name, n) || raw[n] != '\0')
+				return 0;
+		} else if (tag != d->nodes[node].tag) {
 			return 0;
+		}
 		got = 1;
 	}
 	while (i < len) {
@@ -2749,12 +2955,48 @@ static int compound_match(struct br_doc *d, unsigned int node, const char *s,
 			if (!id_eq(d, node, s + st, i - st))
 				return 0;
 			got = 1;
+		} else if (s[i] == '[') {
+			unsigned int st, e;
+
+			i++;
+			st = e = i;
+			while (e < len && s[e] != ']' && s[e] != '=' &&
+			       !is_space(s[e]))
+				e++;
+			if (e == st || !attr_present(d, node, s + st, e - st))
+				return 0;
+			while (i < len && s[i] != ']')
+				i++;
+			if (i < len)
+				i++;
+			got = 1;
 		} else if (s[i] == ':') {
 			if (i + 5 <= len && ci_eq_n(s + i, ":root", 5) &&
 			    (i + 5 == len || !is_ident(s[i + 5]))) {
 				if (d->nodes[node].tag != BR_TAG_HTML)
 					return 0;
 				i += 5;
+				got = 1;
+			} else if (i + 5 <= len && ci_eq_n(s + i, ":not(", 5)) {
+				unsigned int st = i + 5, e = st;
+				int depth = 1;
+
+				while (e < len && depth) {
+					if (s[e] == '(')
+						depth++;
+					else if (s[e] == ')')
+						depth--;
+					if (depth)
+						e++;
+				}
+				if (e >= len)
+					return 0;
+				for (unsigned int z = st; z < e; z++)
+					if (s[z] == ':')
+						return 0;
+				if (compound_match(d, node, s + st, e - st))
+					return 0;
+				i = e + 1;
 				got = 1;
 			} else {
 				return 0;  /* other pseudo-classes are not modelled */
@@ -2773,7 +3015,9 @@ static unsigned int selector_specificity(const char *s, unsigned int len)
 	for (i = 0; i < len; i++) {
 		if (s[i] == '#')
 			spec += 100;
-		else if (s[i] == '.')
+		else if (s[i] == '.' || s[i] == '[' ||
+			 (s[i] == ':' && !(i + 5 <= len &&
+				  ci_eq_n(s + i, ":root", 5))))
 			spec += 10;
 		else if (i == 0 || is_space(s[i - 1]) || s[i - 1] == '>') {
 			if (is_ident(s[i]))
@@ -3316,7 +3560,8 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 			continue;
 		}
 		if (i + 1 < len && html[i + 1] == '/') {
-			unsigned int ns = i + 2, ne, tag;
+			unsigned int ns = i + 2, ne, tag, k, n;
+			char name[32];
 
 			while (ns < len && is_space(html[ns]))
 				ns++;
@@ -3327,38 +3572,36 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 				i++;
 				continue;
 			}
-			{
-				char name[16];
-				unsigned int k, n = ne - ns;
-				if (n >= sizeof(name))
-					n = sizeof(name) - 1;
-				for (k = 0; k < n; k++)
-					name[k] = html[ns + k];
-				name[n] = '\0';
-				tag = br_tag_from_name(name);
-			}
+			n = ne - ns;
+			if (n >= sizeof(name))
+				n = sizeof(name) - 1;
+			for (k = 0; k < n; k++)
+				name[k] = html[ns + k];
+			name[n] = '\0';
+			tag = br_tag_from_name(name);
 			i = ne;
 			while (i < len && html[i] != '>')
 				i++;
 			if (i < len)
 				i++;
-			if (tag == BR_TAG_UNKNOWN) {
-				while (i < len && html[i] != '>')
-					i++;
-				if (i < len)
-					i++;
-				continue;
-			}
-			{
-				unsigned int k;
-				for (k = sp; k > 0; k--) {
-					if (d->nodes[stack[k]].tag == tag) {
+			for (k = sp; k > 0; k--) {
+				struct br_node *nd = &d->nodes[stack[k]];
+
+				if (tag == BR_TAG_UNKNOWN) {
+					const char *raw = attr_ptr(d, nd->name_off);
+
+					if (nd->tag == BR_TAG_UNKNOWN &&
+					    ci_eq_n(raw, name, n) &&
+					    raw[n] == '\0') {
 						sp = k - 1;
 						break;
 					}
+				} else if (nd->tag == tag) {
+					sp = k - 1;
+					break;
 				}
-				stack_recount_pre(d, stack, sp, &pre);
 			}
+			stack_recount_pre(d, stack, sp, &pre);
 			continue;
 		}
 
@@ -3387,8 +3630,6 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 				name[k] = html[ns + k];
 			name[n] = '\0';
 			tag = br_tag_from_name(name);
-			if (tag == BR_TAG_UNKNOWN)
-				continue;
 
 			attr_start = ne;
 			{
@@ -3411,7 +3652,6 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 					selfclose = 1;
 				i = q < len ? q + 1 : len;
 			}
-
 			if (tag == BR_TAG_SCRIPT) {
 				int p = find_ci(html, len, "</script", 8, i);
 				i = p >= 0 ? (unsigned int)p + 8 : len;
@@ -3502,6 +3742,9 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 				parse_attrs(d, &d->nodes[idx],
 					    html + attr_start,
 					    attr_end - attr_start);
+				if (tag == BR_TAG_UNKNOWN)
+					d->nodes[idx].name_off =
+						store_attr(d, name, n, 31);
 				if (!selfclose) {
 					sp++;
 					stack[sp] = (unsigned short)idx;

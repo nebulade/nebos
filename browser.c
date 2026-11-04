@@ -2181,6 +2181,25 @@ static void add_form_run(struct lay *l, unsigned int node,
 		l->line_h = h;
 }
 
+/* A poster wrapper is absolutely positioned over the media slot; the
+ * measured height of its picture is normally added back to the flow.  When a
+ * loading-skeleton sibling already reserves that slot, adding both doubles
+ * the media height and pushes the article text a full screen down. */
+static int has_skeleton_sibling(unsigned int node)
+{
+	unsigned int p = doc.nodes[node].parent, c;
+
+	for (c = doc.nodes[p].first; c; c = doc.nodes[c].next) {
+		if (c == node || doc.nodes[c].type != BR_NODE_ELEM)
+			continue;
+		if (doc.nodes[c].class_off &&
+		    contains_ci(doc.attrs + doc.nodes[c].class_off,
+				"skeleton"))
+			return 1;
+	}
+	return 0;
+}
+
 static void layout_children(struct lay *l, unsigned int parent,
 			    const struct br_style *pst, int depth,
 			    unsigned short link);
@@ -2861,8 +2880,9 @@ static void layout_children(struct lay *l, unsigned int parent,
 				const char *cl = doc.attrs +
 					doc.nodes[n].class_off;
 
-				if (contains_ci(cl, "poster-wrapper") ||
-				    contains_ci(cl, "ts-picture"))
+				if ((contains_ci(cl, "poster-wrapper") ||
+				     contains_ci(cl, "ts-picture")) &&
+				    !has_skeleton_sibling(n))
 					l->y += block_h[n];
 			}
 			n = nd->next;

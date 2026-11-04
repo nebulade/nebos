@@ -27,6 +27,16 @@
 /* Element flag: the HTML hidden attribute is present. */
 #define BR_NODE_HIDDEN   2
 
+/* Extra attribute presence flags (data-collapse-*, state attributes).
+ * Stored separately because struct br_style/selector matching needs them
+ * but the node flags byte is already used. */
+#define BR_ATTR_COLLAPSE_TARGET  0x01
+#define BR_ATTR_COLLAPSE_TRIGGER 0x02
+#define BR_ATTR_IS_OPEN          0x04
+#define BR_ATTR_DISABLED         0x08
+#define BR_ATTR_OPEN             0x10
+#define BR_ATTR_INERT            0x20
+
 /* Display values in struct br_style. */
 #define BR_DISPLAY_INLINE 0
 #define BR_DISPLAY_BLOCK  1
@@ -102,7 +112,7 @@ struct br_node {
 	unsigned char type;
 	unsigned char tag;
 	unsigned char flags;
-	unsigned char spare;
+	unsigned char attr_flags;
 	unsigned short parent;
 	unsigned short first;
 	unsigned short last;
@@ -117,6 +127,7 @@ struct br_node {
 	unsigned int alt_off;
 	unsigned int color_off;
 	unsigned int rel_off;
+	unsigned int name_off;      /* raw tag name for custom elements */
 	unsigned short width_attr;
 	unsigned short height_attr;
 	unsigned char width_pct;
