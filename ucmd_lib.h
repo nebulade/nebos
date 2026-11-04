@@ -397,6 +397,11 @@ static inline int u_sensors(struct sys_sensors *out)
 	return u_syscall1(SYS_SENSORS, (int)out);
 }
 
+static inline int u_tpec_sensors(struct sys_tpec_sensors *out)
+{
+	return u_syscall1(SYS_TPEC_SENSORS, (int)out);
+}
+
 /* Per-process anonymous heap: one growable arena, freed at exit. */
 static inline void *u_mem_alloc(unsigned int bytes)
 {

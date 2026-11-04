@@ -11,9 +11,13 @@
 #include "sched.h"
 #include "sys_fs.h"
 #include "thermal.h"
+#include "tpec.h"
 #include "usb.h"
 #include "usbhid.h"
 #include "vfs.h"
+
+_Static_assert(TPEC_TEMP_COUNT == SYS_TPEC_TEMP_MAX,
+	       "sys_tpec_sensors.temp_c and tpec_info.temp_c must match");
 
 static void copy_str(char *dst, const char *src, unsigned int size)
 {
@@ -145,5 +149,24 @@ int sys_sensors(struct sys_sensors *out)
 		out->temp_c[i] = info.temp_c[i];
 		out->fan_rpm[i] = info.fan_rpm[i];
 	}
+	return 0;
+}
+
+int sys_tpec_sensors(struct sys_tpec_sensors *out)
+{
+	struct tpec_info info;
+	unsigned int i;
+
+	if (!out)
+		return -1;
+	tpec_read(&info);
+	out->present = info.present ? 1u : 0u;
+	copy_str(out->vendor, info.vendor, sizeof(out->vendor));
+	copy_str(out->product, info.product, sizeof(out->product));
+	copy_str(out->version, info.version, sizeof(out->version));
+	for (i = 0; i < SYS_TPEC_TEMP_MAX; i++)
+		out->temp_c[i] = info.temp_c[i];
+	out->fan_rpm = info.fan_rpm;
+	out->fan_level = info.fan_level;
 	return 0;
 }

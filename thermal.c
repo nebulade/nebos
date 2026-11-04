@@ -4,9 +4,12 @@
  * below TjMax in bits 22:16.  Bonnell (Atom 230/330) has no
  * IA32_TEMPERATURE_TARGET MSR, so TjMax has to come from a table; these are
  * the same values Linux's coretemp uses (the 330's DTS is calibrated against
- * 125 C, other Bonnell parts against 90 C).  The DTS "valid" bit is ignored
- * on purpose: coretemp does the same because the delta stays meaningful (the
- * bit can be clear at temperatures below the sensor's range).
+ * 125 C, other Bonnell parts against 90 C).  Nehalem and later (including the
+ * X201's Arrandale) publish TjMax in bits 23:16 of MSR 0x1A2, which is read
+ * for the models that implement it; the table remains the fallback.  The DTS
+ * "valid" bit is ignored on purpose: coretemp does the same because the delta
+ * stays meaningful (the bit can be clear at temperatures below the sensor's
+ * range).
  */
 #include "thermal.h"
 #include "cpu.h"
@@ -14,10 +17,13 @@
 #include "serial.h"
 #include "timer.h"
 
-#define MSR_IA32_THERM_STATUS 0x19C
+#define MSR_IA32_THERM_STATUS        0x19C
+#define MSR_IA32_TEMPERATURE_TARGET  0x1A2
 
 static int thermal_state = -1;  /* -1 unprobed, 0 unsupported, 1 DTS */
 static int thermal_tjmax_c = 100;
+static unsigned int thermal_tjmax_raw;   /* last MSR 0x1A2 sample */
+static int thermal_tjmax_msr;            /* TjMax came from the MSR */
 
 static void cpuid_leaf(unsigned int leaf, unsigned int sub,
 		       unsigned int *a, unsigned int *b, unsigned int *c,
@@ -65,10 +71,45 @@ static int model_has_dts(unsigned int model)
 	case 0x1D:   /* Atom Pineview */
 	case 0x1E:   /* Lynnfield */
 	case 0x1F:   /* Nehalem */
+	case 0x25:   /* Arrandale/Clarkdale (Core i5/i7 M, X201) */
+	case 0x2C:   /* Westmere-EP */
+	case 0x2E:   /* Nehalem-EX */
+	case 0x2F:   /* Westmere-EX */
 		return 1;
 	default:
 		return 0;
 	}
+}
+
+/* Models whose TjMax must be read from IA32_TEMPERATURE_TARGET (0x1A2)
+ * instead of the Bonnell table.  Nehalem and later implement the MSR; older
+ * coretemp-listed parts do not, so a read there could raise #GP.  Linux's
+ * coretemp reads the same MSR and falls back to 100 C when it is missing or
+ * implausible. */
+static int model_has_msr_tjmax(unsigned int model)
+{
+	switch (model) {
+	case 0x1A:
+	case 0x1E:
+	case 0x1F:
+	case 0x25:
+	case 0x2C:
+	case 0x2E:
+	case 0x2F:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+static unsigned int read_tjmax_msr(void)
+{
+	unsigned int lo, hi;
+
+	__asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi)
+			  : "c"(MSR_IA32_TEMPERATURE_TARGET));
+	(void)hi;
+	return (lo >> 16) & 0xFF;
 }
 
 static void read_brand(char out[49])
@@ -114,6 +155,7 @@ void thermal_init(void)
 	unsigned int family, model = 0, stepping = 0;
 	char vendor[13];
 	char brand[49];
+	int msr_probed = 0;
 
 	thermal_state = 0;
 	thermal_tjmax_c = 100;
@@ -148,6 +190,18 @@ void thermal_init(void)
 
 	read_brand(brand);
 	thermal_tjmax_c = pick_tjmax(model, stepping, brand);
+	thermal_tjmax_msr = 0;
+	thermal_tjmax_raw = 0;
+	if (model_has_msr_tjmax(model)) {
+		unsigned int target = read_tjmax_msr();
+
+		thermal_tjmax_raw = target;
+		msr_probed = 1;
+		if (target >= 80 && target <= 125) {
+			thermal_tjmax_c = (int)target;
+			thermal_tjmax_msr = 1;
+		}
+	}
 	thermal_state = 1;
 
 out:
@@ -158,7 +212,16 @@ out:
 		serial_putdec(SERIAL_COM1, stepping);
 		serial_puts(SERIAL_COM1, ", TjMax ");
 		serial_putdec(SERIAL_COM1, (unsigned int)thermal_tjmax_c);
-		serial_puts(SERIAL_COM1, " C\n");
+		serial_puts(SERIAL_COM1, " C");
+		if (msr_probed) {
+			serial_puts(SERIAL_COM1, " (msr 0x1A2=0x");
+			serial_puthex(SERIAL_COM1, thermal_tjmax_raw);
+			serial_puts(SERIAL_COM1,
+				    thermal_tjmax_msr ? ")" : ", out of range)");
+		} else {
+			serial_puts(SERIAL_COM1, " (table)");
+		}
+		serial_puts(SERIAL_COM1, "\n");
 	} else {
 		serial_puts(SERIAL_COM1, "thermal: no Intel DTS, disabled\n");
 	}

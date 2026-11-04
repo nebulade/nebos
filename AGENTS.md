@@ -452,9 +452,13 @@ run area), so adding code no longer moves any address.
 - **CPU temperature**: `thermal.c/h` — Intel DTS through `IA32_THERM_STATUS`
   (MSR `0x19C`).  Each CPU samples itself once a second from its scheduler
   tick (`struct cpu.temp_c`), and `SYS_CPU_TEMP` (`sys_info.c`) exposes the
-  hottest core plus TjMax to ring 3.  TjMax is table-driven (Atom 330 =
-  125 °C, 230 = 100, other Bonnell = 90, otherwise 100) because Bonnell has
-  no `IA32_TEMPERATURE_TARGET`.  The 330's 125 °C is Linux coretemp's
+  hottest core plus TjMax to ring 3.  The model allowlist follows coretemp
+  (Core/Core 2, Nehalem/Westmere including the X201's Arrandale `0x25`, and
+  Bonnell) and is what keeps `rdmsr` away from CPUs that lack the MSR.
+  Nehalem and later read TjMax from `IA32_TEMPERATURE_TARGET` (MSR `0x1A2`,
+  bits 23:16; the X201's i5 M 520 reports 105 °C); Bonnell has no such MSR,
+  so its TjMax stays table-driven (Atom 330 = 125 °C, 230 = 100, other
+  Bonnell = 90, otherwise 100).  The 330's 125 °C is Linux coretemp's
   empirical value; Intel only specifies TJ = 90 °C and Tcase-max = 85.2 °C,
   so `sensors` prints the raw delta and the 90/100/125 °C scales as well as
   the top bar's `CPU 43C` before the clock and `cpuinfo`'s value plus EIST
@@ -463,6 +467,16 @@ run area), so adding code no longer moves any address.
   (the AT3IONT-I exposes three temperatures and three fan tachometers), used
   by `SYS_SENSORS` and the ring-3 `sensors` command to cross-check the DTS
   and show whether the fans turn.  Nothing is written to the fan control.
+  `tpec.c/h` adds the ThinkPad embedded controller of the X201
+  (`SYS_TPEC_SENSORS`): a `_SM_` SMBIOS type 1 check gates the probe to
+  Lenovo/IBM machines, then EC reads through ports 0x62/0x66 return the
+  temperatures at EC 0x78..0x7F / 0xC0..0xC7 (0x80 = absent, 0x00 =
+  unimplemented; revision 3+ at EC 0xEF only uses the first block), the fan
+  tachometer at 0x84 (LSB, always read first) / 0x85 and the 0x2F fan mode.
+  A pending EC output byte (a hotkey event, since there is no SCI handler) is
+  drained before every command, and every wait is bounded; nothing is
+  written to the EC.  `sensors` labels the EC registers and decodes the fan
+  mode (auto / full speed / level).
 - **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
   `0x80000`, API function-pointer struct at `0x7FF00`.  `prog`/`space` are
   **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`), so
@@ -1200,3 +1214,11 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     mask-all step after ACPI init.  UEFI runtime services are not used, so
     `reboot`/`poweroff` still use the legacy ports.  The image is 17 MB: the
     9 MB kernel + rootfs disk and the 8 MB ESP.
+
+25. ThinkPad EC sensor access (`tpec.c`) runs in legacy/SMM mode because
+    there is no ACPI interpreter: an SMI that touches the EC between our port
+    accesses can produce an occasional bad sample, and EC hotkey events are
+    drained/discarded instead of handled.  The PCH thermal sensor
+    (`8086:3B32`, the `intel_ips` MMIO block) is not read because it needs
+    the ME/BIOS to have enabled thermal reporting; the EC and DTS readings
+    cover the package temperature.

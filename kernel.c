@@ -22,6 +22,7 @@
 #include "sys_gfx.h"
 #include "thermal.h"
 #include "timer.h"
+#include "tpec.h"
 #include "tss.h"
 #include "usbhid.h"
 #include "wm.h"
@@ -378,6 +379,9 @@ void kernel_main(void)
 	boot_trace("io");
 	idle_init();
 	thermal_init();
+	/* Board sensors: the ThinkPad EC probe is gated on SMBIOS identifying a
+	 * Lenovo/IBM machine, so it is a no-op everywhere else. */
+	tpec_init();
 	boot_trace("idle");
 
 	/* process_init must run before timer_init: once the PIT is started (sti

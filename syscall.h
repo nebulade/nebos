@@ -135,6 +135,9 @@
 #define SYS_NET_SPEED     100  /* (mbps) -> 0; 0 = auto, 100 = force 100M */
 #define SYS_NET_MAC_SET   101  /* (const mac[6]) -> 0/-1/-2 */
 
+/* ThinkPad embedded-controller sensors (see tpec.c); read-only. */
+#define SYS_TPEC_SENSORS  102  /* (struct sys_tpec_sensors *out) -> 0/-1 */
+
 /* Stat one path (the file service has no open handle). */
 #define SYS_FS_STAT        98  /* (path, struct sys_stat *out) -> 0/<0 */
 
@@ -261,6 +264,20 @@ struct sys_sensors {
 	unsigned int temp_extra;
 	int temp_c[3];
 	unsigned int fan_rpm[3];
+};
+
+/* ThinkPad embedded-controller snapshot (see tpec.c).  temp_c[] follows
+ * thinkpad_acpi's temp1..temp16 (EC 0x78..0x7F, then 0xC0..0xC7); -128 means
+ * the sensor is not present.  fan_level is the raw EC 0x2F value. */
+#define SYS_TPEC_TEMP_MAX 16
+struct sys_tpec_sensors {
+	unsigned int present;
+	char vendor[16];
+	char product[32];
+	char version[32];
+	int temp_c[SYS_TPEC_TEMP_MAX];
+	unsigned int fan_rpm;
+	unsigned int fan_level;
 };
 
 /* Window canvas handed to a ring-3 graphics command (see sys_gfx.c). */
