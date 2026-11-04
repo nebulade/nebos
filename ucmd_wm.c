@@ -139,9 +139,11 @@ static void draw_bar(void)
 		   WM_BTN_WEB_H, "Web");
 	bar_button(WM_BTN_CARDS_X, WM_BTN_CARDS_Y, WM_BTN_CARDS_W,
 		   WM_BTN_CARDS_H, "Cards");
+	bar_button(WM_BTN_GALLERY_X, WM_BTN_GALLERY_Y, WM_BTN_GALLERY_W,
+		   WM_BTN_GALLERY_H, "Gallery");
 	if (bar_msg_until &&
 	    (int)(u_ticks_ms() - bar_msg_until) < 0)
-		usurf_text(&screen, (int)(WM_BTN_CARDS_X + WM_BTN_CARDS_W + 8),
+		usurf_text(&screen, (int)(WM_BTN_GALLERY_X + WM_BTN_GALLERY_W + 8),
 			   5, bar_msg, 0xFFD250u, 0, 0, fbw, WM_BAR_H);
 
 	/* Rainbow separator (same y as the kernel's old bar). */
@@ -196,7 +198,7 @@ static void draw_bar(void)
 			int tx = (int)fbw - 4 - (int)clock_chars * 8 -
 				 (clock_chars ? 8 : 0) - (int)tn * 8;
 
-			if (tx >= WM_BTN_CARDS_X + (int)WM_BTN_CARDS_W + 4)
+			if (tx >= WM_BTN_GALLERY_X + (int)WM_BTN_GALLERY_W + 4)
 				usurf_text(&screen, tx, 5, tb,
 					   temp_color(bar_temp_c), 0, 0,
 					   fbw, WM_BAR_H);
@@ -602,6 +604,10 @@ static void handle_mouse(struct wm_status *st)
 			   mx < WM_BTN_CARDS_X + WM_BTN_CARDS_W &&
 			   my < WM_BTN_CARDS_Y + WM_BTN_CARDS_H) {
 			spawn_app_checked("/ramfs/bin/solitaire");
+		} else if (mx >= WM_BTN_GALLERY_X && my >= WM_BTN_GALLERY_Y &&
+			   mx < WM_BTN_GALLERY_X + WM_BTN_GALLERY_W &&
+			   my < WM_BTN_GALLERY_Y + WM_BTN_GALLERY_H) {
+			spawn_app_checked("/ramfs/bin/gallery");
 		} else {
 			int idx = window_at(mx, my);
 

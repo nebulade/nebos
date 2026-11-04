@@ -1157,7 +1157,7 @@ void ngui_scroll_begin(struct ngui *ui, struct ngui_rect r,
 		int th = scroll_thumb_h(&r, s);
 		int ty = scroll_thumb_y(&r, s);
 
-		bar = rect_make(r.x + r.w - 9, r.y, 8, r.h);
+		bar = rect_make(r.x + r.w - 15, r.y, 14, r.h);
 		if (ui->pressed &&
 		    ngui_rect_contains(&bar, ui->press_x, ui->press_y)) {
 			if (ui->press_y >= ty && ui->press_y < ty + th) {
@@ -1165,6 +1165,30 @@ void ngui_scroll_begin(struct ngui *ui, struct ngui_rect r,
 				s->drag_dy = ui->press_y - ty;
 			} else {
 				int rel = ui->press_y - r.y - th / 2;
+				int avail = r.h - th;
+				int max = s->content_h - s->view_h;
+
+				if (rel < 0)
+					rel = 0;
+				if (rel > avail)
+					rel = avail;
+				if (avail > 0)
+					s->offset = rel * max / avail;
+				s->dragging = 1;
+				s->drag_dy = th / 2;
+				scroll_clamp(s);
+			}
+		}
+		/* Sampled buttons are authoritative while held: some event paths
+		 * deliver the press late or coalesce it with the release.  Start
+		 * the drag from the current pointer position as well. */
+		if (!s->dragging && (ui->buttons & 1) &&
+		    ngui_rect_contains(&bar, ui->mouse_x, ui->mouse_y)) {
+			if (ui->mouse_y >= ty && ui->mouse_y < ty + th) {
+				s->dragging = 1;
+				s->drag_dy = ui->mouse_y - ty;
+			} else {
+				int rel = ui->mouse_y - r.y - th / 2;
 				int avail = r.h - th;
 				int max = s->content_h - s->view_h;
 
@@ -1205,10 +1229,10 @@ void ngui_scroll_end(struct ngui *ui, struct ngui_rect r,
 	if (!scrollable(s))
 		return;
 	{
-		struct ngui_rect bar = rect_make(r.x + r.w - 9, r.y, 8, r.h);
+		struct ngui_rect bar = rect_make(r.x + r.w - 15, r.y, 14, r.h);
 		int th = scroll_thumb_h(&r, s);
 		int ty = scroll_thumb_y(&r, s);
-		struct ngui_rect thumb = rect_make(bar.x, ty, 8, th);
+		struct ngui_rect thumb = rect_make(bar.x, ty, 14, th);
 
 		ngui_fill_rect(ui, bar, ui->theme.panel_alt);
 		ngui_fill_rect(ui, thumb, s->dragging ?

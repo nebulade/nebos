@@ -3117,6 +3117,7 @@ static void draw_page(struct ngui_rect page)
 	page_rect = page;
 	if (page_backbuf && pagebuf_w == ui.w && pagebuf_h == ui.h &&
 	    page_cache_valid && layout_valid &&
+	    !ui.pressed && !(ui.buttons & 1) && !ui.released &&
 	    page_scroll.offset == page_cache_scroll &&
 	    page_cache_nnode == doc.nnode &&
 	    page_cache_x == page.x && page_cache_y == page.y &&
