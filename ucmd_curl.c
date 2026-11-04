@@ -145,13 +145,13 @@ static void helper_fetch(struct uhttp *h, const char *url, unsigned int cap,
 	*outlen = 0;
 	*outtrunc = 0;
 	*outerr = 0;
-	rv = uhttp_open(h, url, 0, 0);
+	rv = uhttp_open(h, url, UHTTP_GZIP, 0);
 	if (rv == UHTTP_ERR_BUSY) {
 		int tries;
 
 		for (tries = 0; tries < 50 && rv == UHTTP_ERR_BUSY; tries++) {
 			u_sleep_ms(20);
-			rv = uhttp_open(h, url, 0, 0);
+			rv = uhttp_open(h, url, UHTTP_GZIP, 0);
 		}
 	}
 	if (rv != 0) {

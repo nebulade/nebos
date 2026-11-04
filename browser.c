@@ -1228,7 +1228,8 @@ static int ancestor_is(unsigned int node, unsigned int tag)
 
 static int load_stylesheets(void)
 {
-	unsigned int i, sheets = 0;
+	static char seen[BR_MAX_SHEETS][BR_URL_MAX];
+	unsigned int i, sheets = 0, nseen = 0;
 
 	for (i = 0; i < doc.nnode && sheets < BR_MAX_SHEETS; i++) {
 		struct br_node *nd = &doc.nodes[i];
@@ -1249,6 +1250,22 @@ static int load_stylesheets(void)
 			continue;
 		if (resolve_link(page_url, href, url, sizeof(url)) != 0)
 			continue;
+		{
+			unsigned int k;
+			int dup = 0;
+
+			for (k = 0; k < nseen; k++)
+				if (s_eq(seen[k], url)) {
+					dup = 1;
+					break;
+				}
+			if (dup)
+				continue;
+			if (nseen < BR_MAX_SHEETS) {
+				s_copy(seen[nseen], url, BR_URL_MAX);
+				nseen++;
+			}
+		}
 		rv = fetch_css(url, &data, &len, err, sizeof(err));
 		if (rv == FETCH_ABORT)
 			return FETCH_ABORT;
@@ -3233,10 +3250,10 @@ static void handle_keys(unsigned int *action)
 {
 	int k;
 
-	if (ngui_focus(&ui))
-		return;
 	if (ngui_scroll_keys(&ui, &page_scroll))
 		ngui_invalidate(&ui);
+	if (ngui_focus(&ui))
+		return;
 	while ((k = ngui_key(&ui)) != 0) {
 		switch (k) {
 		case NGUI_KEY_ESC:
