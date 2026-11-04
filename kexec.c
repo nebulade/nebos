@@ -27,6 +27,7 @@
 #include "bootinfo.h"
 #include "io.h"
 #include "mm.h"
+#include "net.h"
 #include "netdev.h"
 #include "ramfs.h"
 #include "serial.h"
@@ -119,12 +120,19 @@ static int kexec_fail(const char *msg)
 /* Publish the boot-info block the new kernel reads.  The pack source is the
  * staging tail for a full reload, or the running ramfs for a kernel-only one;
  * ramfs_init() takes its own copy and releases the region. */
+static unsigned int pack_ip(const unsigned char ip[4])
+{
+	return (unsigned int)ip[0] | ((unsigned int)ip[1] << 8) |
+	       ((unsigned int)ip[2] << 16) | ((unsigned int)ip[3] << 24);
+}
+
 static void kexec_write_bootinfo(unsigned int pack_addr, unsigned int pack_size)
 {
 	volatile struct boot_info *bi =
 		(volatile struct boot_info *)BOOT_INFO_ADDR;
 	unsigned int words[BOOT_INFO_WORDS];
 	unsigned int rsdp = 0, flags = 0, sum = 0, i;
+	unsigned char ip[4], mask[4], gw[4], dns[4];
 
 	__asm__ volatile ("" : "+r"(bi));
 
@@ -140,6 +148,20 @@ static void kexec_write_bootinfo(unsigned int pack_addr, unsigned int pack_size)
 	words[4] = flags;
 	words[5] = pack_addr;
 	words[6] = pack_size;
+	/* Keep the running IP configuration across the jump: the new kernel's
+	 * boot DHCP only has a four-second link/DHCP window, and a net-dev
+	 * reload otherwise comes back on the static fallback address. */
+	net_get_ip(ip);
+	if (ip[0] || ip[1] || ip[2] || ip[3]) {
+		net_get_mask(mask);
+		net_get_gateway(gw);
+		net_get_dns(dns);
+		flags |= BOOTINFO_FLAG_NET;
+		words[7] = pack_ip(ip);
+		words[8] = pack_ip(mask);
+		words[9] = pack_ip(gw);
+		words[10] = pack_ip(dns);
+	}
 	for (i = 0; i < BOOT_INFO_WORDS; i++)
 		sum += words[i];
 	words[2] = 0u - sum;

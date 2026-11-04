@@ -19,6 +19,9 @@
 
 #define BOOTINFO_FLAG_EFI  0x00000001u
 #define BOOTINFO_FLAG_RGBX 0x00000002u  /* GOP 32bpp byte order R,G,B,X */
+/* The kexec receiver carried the running IPv4 configuration across the
+ * jump: reserved[0..3] hold ip/mask/gateway/DNS (byte 0 in the low byte). */
+#define BOOTINFO_FLAG_NET  0x00000004u
 
 struct boot_info {
 	unsigned int magic;

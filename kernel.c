@@ -13,6 +13,7 @@
 #include "mm.h"
 #include "mouse.h"
 #include "netdev.h"
+#include "net.h"
 #include "dhcp.h"
 #include "netlog.h"
 #include "paging.h"
@@ -326,10 +327,41 @@ static int pit_ticking(void)
 	return 0;
 }
 
+/* A kexec/net-dev reload starts a fresh kernel with zeroed BSS, so the
+ * leased address and resolver would otherwise fall back to the static
+ * default until someone types dhcp.  The previous kernel stashed them in
+ * the boot-info reserved words; apply them before the boot DHCP attempt. */
+static int net_restore_boot_config(void)
+{
+	const volatile unsigned int *p;
+	unsigned char ip[4], mask[4], gw[4], dns[4];
+	unsigned int i;
+
+	if (!bootinfo_valid() || !(bootinfo_flags() & BOOTINFO_FLAG_NET))
+		return 0;
+	p = bootinfo_words();
+	for (i = 0; i < 4; i++) {
+		ip[i] = (unsigned char)(p[7] >> (8 * i));
+		mask[i] = (unsigned char)(p[8] >> (8 * i));
+		gw[i] = (unsigned char)(p[9] >> (8 * i));
+		dns[i] = (unsigned char)(p[10] >> (8 * i));
+	}
+	if (!(ip[0] || ip[1] || ip[2] || ip[3]))
+		return 0;
+	net_configure(ip, mask, gw);
+	if (dns[0] || dns[1] || dns[2] || dns[3])
+		net_set_dns(dns);
+	boot_trace("net retained");
+	/* A resolver is what net-dev users notice missing; without one, let
+	 * the boot DHCP attempt learn it. */
+	return dns[0] || dns[1] || dns[2] || dns[3];
+}
+
 void kernel_main(void);
 void kernel_main(void)
 {
 	unsigned char *p = __bss_start;
+	int net_kept;
 	while (p < __bss_end)
 		*p++ = 0;
 
@@ -476,6 +508,7 @@ void kernel_main(void)
 	/* Probe the NIC (link negotiation is asynchronous now) before the
 	 * kworker starts, so its netlog flushes have a device to use. */
 	netdev_active();
+	net_kept = net_restore_boot_config();
 	boot_trace("net");
 
 	/* The idle process is the kernel_main context; housekeeping runs in
@@ -508,9 +541,9 @@ void kernel_main(void)
 	/* With a NIC present, try DHCP; on failure the static default stays.
 	 * Deliberately after the WM: a missing cable or DHCP server must not
 	 * delay the first frame. */
-	if (netdev_active())
-		dhcp_run(3000);
-	boot_trace("dhcp");
+	if (netdev_active() && !net_kept)
+		dhcp_run(4000);
+	boot_trace(net_kept ? "dhcp skipped" : "dhcp");
 
 	/* Dump the active NIC's counters after the boot DHCP attempt.  With
 	 * the ASIX as the management link this appears in netmon even when
