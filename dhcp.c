@@ -40,6 +40,13 @@ static unsigned int dhcp_rx68;
 static unsigned int dhcp_frames, dhcp_udp, dhcp_other_udp, dhcp_not_udp;
 static unsigned int dhcp_p68, dhcp_short, dhcp_bad_magic, dhcp_bad_xid;
 static unsigned int dhcp_bad_mac;
+/* What the non-UDP frames seen during the wait actually are.  A tagged
+ * OFFER, a fragmented frame and a missing OFFER all look the same from the
+ * dhcp_rx68 counter otherwise. */
+static unsigned int dhcp_arp, dhcp_ip4, dhcp_ip6, dhcp_vlan, dhcp_other;
+static unsigned int dhcp_maxlen;
+static unsigned int dhcp_max_et;
+static unsigned char dhcp_max_hdr[16];
 static unsigned int dhcp_first_sport, dhcp_first_dport;
 static unsigned int dhcp_first_xid;
 static unsigned char dhcp_first_src[4], dhcp_first_dst[4];
@@ -178,6 +185,28 @@ static int dhcp_parse(const unsigned char *frame, unsigned int len,
 	unsigned int sport, dport, plen, i, o;
 
 	dhcp_frames++;
+	{
+		unsigned int et = ((unsigned int)frame[12] << 8) | frame[13];
+
+		if (len > dhcp_maxlen) {
+			unsigned int i;
+
+			dhcp_maxlen = len;
+			dhcp_max_et = et;
+			for (i = 0; i < sizeof(dhcp_max_hdr) && i < len; i++)
+				dhcp_max_hdr[i] = frame[i];
+		}
+		if (et == 0x0806)
+			dhcp_arp++;
+		else if (et == 0x0800)
+			dhcp_ip4++;
+		else if (et == 0x86DD)
+			dhcp_ip6++;
+		else if (et == 0x8100)
+			dhcp_vlan++;
+		else
+			dhcp_other++;
+	}
 	if (!net_udp_parse_any(frame, len, s_ip, d_ip, &sport, &dport, &p, &plen)) {
 		dhcp_not_udp++;
 		return 0;
@@ -357,6 +386,25 @@ static void dhcp_dump_stats(unsigned int xid)
 	io_putstr(", mac ");
 	put_dec(dhcp_bad_mac);
 	io_putchar('\n');
+	io_putstr("dhcp: types arp ");
+	put_dec(dhcp_arp);
+	io_putstr(" ip4 ");
+	put_dec(dhcp_ip4);
+	io_putstr(" ip6 ");
+	put_dec(dhcp_ip6);
+	io_putstr(" vlan ");
+	put_dec(dhcp_vlan);
+	io_putstr(" other ");
+	put_dec(dhcp_other);
+	io_putstr(" maxlen ");
+	put_dec(dhcp_maxlen);
+	io_putstr(" maxet=0x");
+	put_hex2((dhcp_max_et >> 8) & 0xFF);
+	put_hex2(dhcp_max_et & 0xFF);
+	io_putstr(" hdr=");
+	for (i = 0; i < sizeof(dhcp_max_hdr); i++)
+		put_hex2(dhcp_max_hdr[i]);
+	io_putchar('\n');
 	if (dhcp_have_udp) {
 		io_putstr("dhcp: first udp ");
 		put_dec(dhcp_first_sport);
@@ -409,6 +457,15 @@ int dhcp_run(unsigned int timeout_ms)
 	dhcp_frames = dhcp_udp = dhcp_other_udp = dhcp_not_udp = 0;
 	dhcp_p68 = dhcp_short = dhcp_bad_magic = dhcp_bad_xid = 0;
 	dhcp_bad_mac = 0;
+	dhcp_arp = dhcp_ip4 = dhcp_ip6 = dhcp_vlan = dhcp_other = 0;
+	dhcp_maxlen = 0;
+	dhcp_max_et = 0;
+	{
+		unsigned int i;
+
+		for (i = 0; i < sizeof(dhcp_max_hdr); i++)
+			dhcp_max_hdr[i] = 0;
+	}
 	dhcp_have_udp = dhcp_have_p68 = 0;
 
 	/* Do not share the receiver with a raw net command or a stuck
@@ -523,6 +580,7 @@ int dhcp_run(unsigned int timeout_ms)
 	io_putstr("s\n");
 
 	netdev_release();
+	dhcp_dump_stats(xid);
 	return 0;
 }
 

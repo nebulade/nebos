@@ -367,6 +367,7 @@ const struct netdev asix_netdev = {
 	asix_default_ip,
 	asix_default_mask,
 	0,
+	0,
 };
 
 /* Read and parse the configuration descriptor.  The AX88772 has one

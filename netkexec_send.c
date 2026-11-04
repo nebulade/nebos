@@ -162,6 +162,14 @@ int main(int argc, char **argv)
 		perror("socket");
 		return 1;
 	}
+	{
+		int on = 1;
+
+		/* A board with no working unicast RX (or no DHCP lease) can
+		 * still receive broadcasts; 255.255.255.255 then pushes a
+		 * debug kernel over the normal LAN. */
+		setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
+	}
 	memset(&dst, 0, sizeof(dst));
 	dst.sin_family = AF_INET;
 	dst.sin_port = htons((uint16_t)port);

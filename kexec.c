@@ -27,6 +27,7 @@
 #include "bootinfo.h"
 #include "io.h"
 #include "mm.h"
+#include "netdev.h"
 #include "ramfs.h"
 #include "serial.h"
 #include "smp.h"
@@ -124,6 +125,8 @@ static void kexec_write_bootinfo(unsigned int pack_addr, unsigned int pack_size)
 		(volatile struct boot_info *)BOOT_INFO_ADDR;
 	unsigned int words[BOOT_INFO_WORDS];
 	unsigned int rsdp = 0, flags = 0, sum = 0, i;
+
+	__asm__ volatile ("" : "+r"(bi));
 
 	if (bootinfo_valid()) {
 		rsdp = bootinfo_rsdp();
@@ -261,6 +264,10 @@ void kexec_jump(unsigned int entry, unsigned int kernel_size,
 		pack_addr = (unsigned int)ramfs_pack_base();
 		pack_size = ramfs_pack_size();
 	}
+
+	/* Stop NIC DMA before overwriting the kernel: otherwise the old
+	 * receive ring keeps writing into pages the new kernel reuses. */
+	netdev_shutdown();
 
 	/* Park the APs first: the new kernel image is about to overwrite the
 	 * kernel they are executing.  INIT puts them back in real mode where

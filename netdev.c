@@ -100,6 +100,19 @@ const struct netdev *netdev_mgmt(void)
 	return netdev_active();
 }
 
+/* Stop the NICs before kexec overwrites the kernel.  A still-running
+ * receive ring can DMA into pages the new kernel has already reused. */
+void netdev_shutdown(void)
+{
+	const struct netdev *mgmt = netdev_mgmt();
+	const struct netdev *act = netdev_active();
+
+	if (mgmt && mgmt->stop)
+		mgmt->stop();
+	if (act && act != mgmt && act->stop)
+		act->stop();
+}
+
 int netdev_get_mac(unsigned char mac[6])
 {
 	const struct netdev *nd = netdev_active();

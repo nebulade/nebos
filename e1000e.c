@@ -43,6 +43,8 @@
 #define REG_RDLEN     0x02808
 #define REG_RDH       0x02810
 #define REG_RDT       0x02818
+#define REG_RDTR      0x02820
+#define REG_RADV      0x0282C
 #define REG_TDBAL     0x03800
 #define REG_TDBAH     0x03804
 #define REG_TDLEN     0x03808
@@ -107,6 +109,7 @@
 #define RCTL_LPE      0x00000020u
 #define RCTL_BAM      0x00008000u
 #define RCTL_SECRC    0x04000000u
+#define RCTL_RDMTS_HALF 0x00000100u
 
 /* ---- RXCSUM ---- */
 #define RXCSUM_TUOFL  0x00000200u
@@ -188,14 +191,16 @@
 #define PCI_CMD_INT_DISABLE 0x0400u   /* command bit 10: INTx disabled */
 #define E1000E_VENDOR 0x8086u
 
+/* Extended RX descriptor (16 bytes), the layout the e1000e/PCH parts use
+ * when RFCTL.EXTEN is set: the hardware overwrites the buffer address with
+ * MRQ/RSS data and writes status/error, length and VLAN tag back at offsets
+ * 8, 12 and 14.  The legacy 16-byte layout puts status at 12 instead. */
 struct e1000e_rx_desc {
 	volatile unsigned int addr_lo;
 	volatile unsigned int addr_hi;
+	volatile unsigned int status_error;
 	volatile unsigned short length;
-	volatile unsigned short csum;
-	volatile unsigned char status;
-	volatile unsigned char errors;
-	volatile unsigned short special;
+	volatile unsigned short vlan;
 } __attribute__((packed));
 
 struct e1000e_tx_desc {
@@ -1124,6 +1129,21 @@ static void hw_stop(void)
 	delay_ms(10);
 }
 
+static void e1000e_stop(void)
+{
+	unsigned int t0;
+
+	if (!present || !mmio)
+		return;
+	hw_stop();
+	w32(REG_CTRL, r32(REG_CTRL) | CTRL_GIO_MASTER_DISABLE);
+	t0 = get_ticks_ms();
+	while ((r32(REG_STATUS) & STATUS_GIO_MASTER_ENABLE) &&
+	       !timed_out(t0, 100))
+		delay_ms(1);
+	dbg("stopped for kexec");
+}
+
 /* The 82577 PBA register has a 5-bit RX allocation (RXA) and a read-only
  * TX allocation (TXA = PBS - RXA).  Linux uses 26 KB RX on PCH parts,
  * leaving the rest of the packet buffer for TX.  If firmware/ME left RXA at
@@ -1230,7 +1250,7 @@ static int pch_swflag_acquire(void)
 	return 0;
 }
 
-static int hw_reset(int force)
+static int hw_reset(void)
 {
 	unsigned int t0, ctrl;
 	/* Sample the link before hw_stop(): the PHY link is independent of
@@ -1238,10 +1258,9 @@ static int hw_reset(int force)
 	int link_up = pch_lan && (r32(REG_STATUS) & STATUS_LU);
 	int swflag = 0;
 
-	if (link_up && !force) {
-		/* netreset path only.  The probe deliberately stays on this
-		 * warm path: a full PHY+MAC reset wedges the X201 PCH before
-		 * the e1000e log can be flushed. */
+	if (link_up) {
+		/* Warm path at probe and netreset: stop our queues but leave
+		 * the firmware-initialized PHY/MAC alone. */
 		hw_stop();
 		dbg("MAC reset skipped (link up)");
 		return 0;
@@ -1266,9 +1285,7 @@ static int hw_reset(int force)
 	if (pch_lan)
 		swflag = pch_swflag_acquire() == 0;
 
-	/* MAC-only reset: CTRL.PHY_RST is deliberately never set here.  The
-	 * X201 PCH wedges when the LCD/PHY reset is combined with the MAC
-	 * reset, so the PHY state is left to the BIOS/ME and net100. */
+	/* MAC reset (only when the link was down). */
 	ctrl = r32(REG_CTRL);
 	dbg("full reset: MAC only");
 	w32(REG_CTRL, ctrl | CTRL_RST);
@@ -1316,11 +1333,9 @@ static void setup_rings(void)
 	for (i = 0; i < E1000E_NRX; i++) {
 		rx_ring[i].addr_lo = (unsigned int)(rx_bufs + i * E1000E_BUF);
 		rx_ring[i].addr_hi = 0;
+		rx_ring[i].status_error = 0;
 		rx_ring[i].length = 0;
-		rx_ring[i].csum = 0;
-		rx_ring[i].status = 0;
-		rx_ring[i].errors = 0;
-		rx_ring[i].special = 0;
+		rx_ring[i].vlan = 0;
 	}
 	for (i = 0; i < E1000E_NTX; i++) {
 		tx_ring[i].addr_lo = (unsigned int)(tx_bufs + i * E1000E_BUF);
@@ -1407,19 +1422,16 @@ static void tx_desc_config(void)
 }
 
 /* Pin the state of the receive path.  The firmware/ME can leave RFCTL,
- * RXCSUM and RXDCTL in whatever its driver used, and hw_reset() deliberately
- * skips the MAC reset while the link is up.  This driver uses the legacy
- * 16-byte RX descriptor, so RFCTL.EXTEN must be clear: with EXTEN set the
- * 82577 writes the extended layout (status/error at 8, length at 12) and
- * overwrites descriptor bytes 0-7 with RSS/checksum data, which the legacy
- * struct would misread as status/length. */
+ * RXCSUM and RXDCTL in whatever its driver used.  e1000e/PCH parts use the
+ * extended 16-byte RX descriptor write-back, so enable RFCTL.EXTEN and parse
+ * status/error at offset 8 and length at 12 (see struct e1000e_rx_desc). */
 static void rx_desc_config(void)
 {
 	unsigned int rfctl = r32(REG_RFCTL);
 	unsigned int rxcsum = r32(REG_RXCSUM);
 	unsigned int v;
 
-	rfctl &= ~RFCTL_EXTEN;
+	rfctl |= RFCTL_EXTEN;
 	rfctl |= RFCTL_NFSW_DIS | RFCTL_NFSR_DIS |
 		 RFCTL_IPV6_EX_DIS | RFCTL_NEW_IPV6_EXT_DIS;
 	w32(REG_RFCTL, rfctl);
@@ -1430,16 +1442,24 @@ static void rx_desc_config(void)
 	 * reported as TCPE and the reply would be dropped. */
 	w32(REG_RXCSUM, 0);
 
-	/* Write descriptors back promptly (WTHRESH=0), prefetch 31, host
-	 * threshold 1; otherwise firmware-set thresholds can delay DD. */
+	/* The firmware can leave the receive delay timers programmed; the
+	 * driver polls descriptors and wants them written back immediately. */
+	w32(REG_RDTR, 0);
+	w32(REG_RADV, 0);
+
+	/* Match Linux's PCH setting: clear the prefetch/host/write-back
+	 * thresholds and keep only GRAN.  Prefetching descriptors ahead of
+	 * the tail is unsafe with extended write-back, because the hardware
+	 * overwrites the buffer-address field with MRQ/RSS; a prefetched
+	 * descriptor can then carry a garbage address. */
 	v = r32(REG_RXDCTL0);
 	v &= ~(RXDCTL_PTHRESH | RXDCTL_HTHRESH | RXDCTL_WTHRESH);
-	v |= RXDCTL_GRAN | 0x00000100u | 0x1Fu;
+	v |= RXDCTL_GRAN;
 	w32(REG_RXDCTL0, v);
 
 	v = r32(REG_RXDCTL1);
 	v &= ~(RXDCTL_PTHRESH | RXDCTL_HTHRESH | RXDCTL_WTHRESH);
-	v |= RXDCTL_GRAN | 0x00000100u | 0x1Fu;
+	v |= RXDCTL_GRAN;
 	w32(REG_RXDCTL1, v);
 
 	serial_puts(SERIAL_COM1, "e1000e: rfctl ");
@@ -1465,11 +1485,13 @@ static void hw_start(void)
 	ctrl = r32(REG_CTRL);
 	ctrl |= CTRL_SLU;
 	ctrl &= ~(CTRL_FRCSPD | CTRL_FRCDPX);
+	ctrl &= ~CTRL_GIO_MASTER_DISABLE;
+	ctrl &= ~0x40000000u;   /* CTRL.VME: no VLAN insert/strip */
 	w32(REG_CTRL, ctrl);
 
 	rx_desc_config();
 
-	w32(REG_RCTL, RCTL_EN | RCTL_UPE | RCTL_MPE | RCTL_BAM | RCTL_SECRC);
+	w32(REG_RCTL, RCTL_EN | RCTL_BAM | RCTL_SECRC);
 	/* Preserve the reserved/RRTHRESH bits (82577 reset: bit28=1 and
 	 * RRTHRESH=01).  Writing TCTL from scratch cleared them and left the
 	 * transmitter unable to fetch descriptors (TDH stuck at 0). */
@@ -1546,12 +1568,10 @@ static int e1000e_init(void)
 	pch_claim();
 	log_state("state before reset");
 
-	/* Keep the warm path at probe.  The MAC-only full reset used to
-	 * clear inherited RX filter state, but on this PCH it wedges the
-	 * machine when it runs during a kexec reload (the board never
-	 * reaches the WM loop again).  The firmware filter is overridden by
-	 * RCTL.UPE/MPE below, so it is not needed for RX. */
-	if (hw_reset(0) != 0) {
+	/* Warm init: leave the firmware-configured PCH PHY alone.  The RX
+	 * prefetch fix is in rx_desc_config(); a full MAC/PHY reset is not
+	 * needed and wedges this PCH. */
+	if (hw_reset() != 0) {
 		dbg("MAC reset timeout");
 		mmio = 0;
 		return -1;
@@ -1676,14 +1696,13 @@ static void e1000e_get_mac(unsigned char out[6])
 static void rx_rearm(unsigned int entry)
 {
 	struct e1000e_rx_desc *d = &rx_ring[entry];
+	unsigned char *buf = rx_bufs + entry * E1000E_BUF;
 
-	d->addr_lo = (unsigned int)(rx_bufs + entry * E1000E_BUF);
+	d->addr_lo = (unsigned int)buf;
 	d->addr_hi = 0;
+	d->status_error = 0;
 	d->length = 0;
-	d->csum = 0;
-	d->status = 0;
-	d->errors = 0;
-	d->special = 0;
+	d->vlan = 0;
 	__sync_synchronize();
 	w32(REG_RDT, entry);
 }
@@ -1700,7 +1719,9 @@ static int e1000e_rx(unsigned char *buf, unsigned int maxlen)
 	while (guard++ < 8) {
 		unsigned int entry = rx_cur;
 		struct e1000e_rx_desc *d = &rx_ring[entry];
-		unsigned int status = d->status;
+		unsigned int se = d->status_error;
+		unsigned int status = se & 0xFFu;
+		unsigned int errors = (se >> 24) & 0xFFu;
 		unsigned int len;
 
 		if (!(status & RX_DD))
@@ -1708,9 +1729,9 @@ static int e1000e_rx(unsigned char *buf, unsigned int maxlen)
 		__sync_synchronize();
 
 		last_rx_status = status;
-		last_rx_errors = d->errors;
+		last_rx_errors = errors;
 
-		if ((status & RX_EOP) && d->errors == 0) {
+		if ((status & RX_EOP) && errors == 0) {
 			len = d->length;
 			if (len >= 14 && len <= maxlen) {
 				unsigned char *src = rx_bufs +
@@ -2170,12 +2191,10 @@ static void e1000e_dump_regs(void)
 		io_puthex(rx_ring[0].addr_lo);
 		io_putstr(" len=0x");
 		io_puthex(rx_ring[0].length);
-		io_putstr(" status=0x");
-		io_puthex(rx_ring[0].status);
-		io_putstr(" errors=0x");
-		io_puthex(rx_ring[0].errors);
-		io_putstr(" special=0x");
-		io_puthex(rx_ring[0].special);
+		io_putstr(" status_error=0x");
+		io_puthex(rx_ring[0].status_error);
+		io_putstr(" vlan=0x");
+		io_puthex(rx_ring[0].vlan);
 		io_putchar('\n');
 	}
 }
@@ -2187,7 +2206,7 @@ static void e1000e_reset(void)
 		return;
 	}
 	pch_claim();
-	if (hw_reset(0) != 0) {
+	if (hw_reset() != 0) {
 		io_putstr("e1000e: reset timeout\n");
 		return;
 	}
@@ -2219,4 +2238,5 @@ const struct netdev e1000e_netdev = {
 	e1000e_init, e1000e_get_mac, e1000e_rx, e1000e_tx, e1000e_print_info,
 	e1000e_dump_regs, 0, e1000e_reset, e1000e_set_speed, e1000e_set_mac,
 	e1000e_default_ip, e1000e_default_mask, e1000e_dump_rx,
+	e1000e_stop,
 };

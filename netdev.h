@@ -27,6 +27,8 @@ struct netdev {
 	/* Short RX summary for the boot log (a full register dump can
 	 * overflow the netlog ring before the WM starts); may be NULL. */
 	void (*dump_brief)(void);
+	/* Stop DMA before a kexec jump; may be NULL. */
+	void (*stop)(void);
 };
 
 /* First registered driver that probes successfully (probe result is cached);
@@ -37,6 +39,9 @@ const struct netdev *netdev_active(void);
  * direct debug link survives `netdev e1000e`; falls back to the active
  * driver. */
 const struct netdev *netdev_mgmt(void);
+
+/* Quiesce the active and management NIC DMA before a kexec jump. */
+void netdev_shutdown(void);
 
 /* Select a NIC by short driver name ("e1000e", "r8168", "ne2000", "asix").
  * Returns 0 on success; leaves the current driver active on failure. */
