@@ -833,7 +833,7 @@ static void draw_inputs(struct ngui *g, struct ngui_rect card)
 			  g->theme.text_dim);
 		ngui_text(g, hx + 10, hy + 90, "Ctrl+Left/Right - words",
 			  g->theme.text_dim);
-		ngui_text(g, hx + 10, hy + 108, "Ctrl+Del - delete word",
+		ngui_text(g, hx + 10, hy + 108, "Ctrl+Del/Bksp - words",
 			  g->theme.text_dim);
 		ngui_text(g, hx + 10, hy + 126, "Drag - select, Ctrl+A all",
 			  g->theme.text_dim);

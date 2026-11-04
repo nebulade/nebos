@@ -32,6 +32,7 @@
 #define NGUI_KEY_CTRL_LEFT  0x109
 #define NGUI_KEY_CTRL_RIGHT 0x10A
 #define NGUI_KEY_CTRL_DELETE 0x10B
+#define NGUI_KEY_CTRL_BACKSPACE 0x10C
 
 #define NGUI_RGB(r, g, b) \
 	((unsigned short)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3)))

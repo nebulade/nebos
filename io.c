@@ -349,7 +349,13 @@ static int kbd_process_byte(unsigned char sc)
 		kbd_extended = 0;
 		if (sc & 0x80) {
 			kbd_repeat_stop(1, sc & 0x7F);
+			if (sc == 0x9D)   /* right Ctrl release */
+				ctrl_pressed = 0;
 			return 0;  /* key release */
+		}
+		if (sc == 0x1D) {         /* right Ctrl */
+			ctrl_pressed = 1;
+			return 0;
 		}
 		if (sc == 0x4B)
 			key = ctrl_pressed ? IO_KEY_CTRL_LEFT : IO_KEY_LEFT;
@@ -387,6 +393,11 @@ static int kbd_process_byte(unsigned char sc)
 	if (sc == 0x1D) {
 		ctrl_pressed = 1;
 		return 0;
+	}
+	if (sc == 0x0E && ctrl_pressed) {
+		/* Ctrl+Backspace: delete the previous word. */
+		kbd_repeat_start(IO_KEY_CTRL_BACKSPACE, 0, sc);
+		return IO_KEY_CTRL_BACKSPACE;
 	}
 	{
 		char c = (char)scancode_to_ascii[sc];

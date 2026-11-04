@@ -790,6 +790,26 @@ static unsigned int input_word_prev(const struct ngui_input *in,
 	return pos;
 }
 
+/* End of the word to the right of `pos`.  A caret inside a word takes the
+ * rest of that word and its trailing separators; a caret on separators takes
+ * them plus the next word. */
+static unsigned int input_word_delete_end(const struct ngui_input *in,
+					  unsigned int pos)
+{
+	if (pos < in->len && input_word_char(in->text[pos])) {
+		while (pos < in->len && input_word_char(in->text[pos]))
+			pos++;
+		while (pos < in->len && !input_word_char(in->text[pos]))
+			pos++;
+		return pos;
+	}
+	while (pos < in->len && !input_word_char(in->text[pos]))
+		pos++;
+	while (pos < in->len && input_word_char(in->text[pos]))
+		pos++;
+	return pos;
+}
+
 static void input_sel_bounds(const struct ngui_input *in,
 			     unsigned int *a, unsigned int *b)
 {
@@ -975,11 +995,30 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 				if (!input_delete_selection(in))
 					input_delete(in, 0);
 				changed = 1;
-			} else if (k == NGUI_KEY_CTRL_DELETE) {
-				if (input_delete_selection(in) ||
-				    input_delete_range(in, in->cursor,
-						input_word_next(in, in->cursor)))
+			} else if (k == NGUI_KEY_CTRL_BACKSPACE) {
+				if (input_delete_selection(in))
 					changed = 1;
+				else
+					changed = input_delete_range(in,
+						input_word_prev(in, in->cursor),
+						in->cursor);
+			} else if (k == NGUI_KEY_CTRL_DELETE) {
+				if (input_delete_selection(in)) {
+					changed = 1;
+				} else {
+					unsigned int a = in->cursor;
+					unsigned int b = input_word_delete_end(in,
+									      a);
+
+					/* At the end of the line, delete the word
+					 * before the caret instead of doing
+					 * nothing. */
+					if (b == a) {
+						a = input_word_prev(in, in->cursor);
+						b = in->cursor;
+					}
+					changed = input_delete_range(in, a, b);
+				}
 			} else if (k == NGUI_KEY_LEFT) {
 				input_move_to(in, in->cursor > 0 ? in->cursor - 1 : 0);
 			} else if (k == NGUI_KEY_RIGHT) {
