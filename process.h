@@ -85,7 +85,7 @@ struct process {
 /* User-mode virtual address layout (ring-3 processes). */
 #define USER_BASE        0x40000000   /* user program link/load address */
 #define USER_STACK_TOP   0x40200000   /* user stack top (grows down) */
-#define USER_STACK_PAGES 2            /* user stack size in 4 KB pages */
+#define USER_STACK_PAGES 8            /* user stack size in 4 KB pages */
 /* Where sys_gfx maps a command's canvas back buffer (see sys_gfx.c).  The
  * mapping is released by the reaper without freeing the canvas pages: the
  * gfx session owns those. */
