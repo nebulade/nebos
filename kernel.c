@@ -16,6 +16,7 @@
 #include "dhcp.h"
 #include "netlog.h"
 #include "paging.h"
+#include "power.h"
 #include "process.h"
 #include "ramfs.h"
 #include "sched.h"
@@ -377,6 +378,9 @@ void kernel_main(void)
 	boot_val("acpi cpus", acpi_cpu_count());
 	io_init();
 	boot_trace("io");
+	/* P-states/deep C-states first: idle_init() picks its default from
+	 * the power module (deep MWAIT on Nehalem, HLT elsewhere). */
+	power_init();
 	idle_init();
 	thermal_init();
 	/* Board sensors: the ThinkPad EC probe is gated on SMBIOS identifying a

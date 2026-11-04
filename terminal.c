@@ -2,6 +2,7 @@
    Commands are spawned as separate processes for preemptive multitasking. */
 
 #include "io.h"
+#include "power.h"
 #include "bootcon.h"
 #include "dbg.h"
 #include "idle.h"
@@ -93,7 +94,9 @@ static int cmd_dbg(struct term *t, const char *args);
 static int cmd_format(struct term *t, const char *args);
 static int cmd_help(struct term *t, const char *args);
 static int cmd_idle(struct term *t, const char *args);
+static int cmd_cpufreq(struct term *t, const char *args);
 static int cmd_path(struct term *t, const char *args);
+static int cmd_power(struct term *t, const char *args);
 static int cmd_kexec(struct term *t, const char *args);
 static int cmd_kill(struct term *t, const char *args);
 static int cmd_poweroff(struct term *t, const char *args);
@@ -127,7 +130,9 @@ static const struct kcmd cmds[] = {
 	{ "poke",       "poke <addr> <val>",             CK_SPAWN_ARG, CMD_REQARG, 0, program_poke_main, 0, 0 },
 	{ "ps",         "ps",                            CK_CUSTOM, 0, 0, 0, 0, cmd_ps },
 	{ "sched",      "sched",                         CK_CUSTOM, 0, 0, 0, 0, cmd_sched },
-	{ "idle",       "idle [hlt|c2|c3|c2ap|c3ap]",    CK_CUSTOM, 0, 0, 0, 0, cmd_idle },
+	{ "power",      "power",                         CK_CUSTOM, 0, 0, 0, 0, cmd_power },
+	{ "cpufreq",    "cpufreq [auto|min|max|off|n]",  CK_CUSTOM, 0, 0, 0, 0, cmd_cpufreq },
+	{ "idle",       "idle [auto|hlt|c1e|c3|c6]",     CK_CUSTOM, 0, 0, 0, 0, cmd_idle },
 	{ "renice",     "renice <pid> <weight>",         CK_CUSTOM, CMD_REQARG, 0, 0, 0, cmd_renice },
 	{ "kill",       "kill <pid>",                    CK_CUSTOM, 0, 0, 0, 0, cmd_kill },
 	{ "kexec",      "kexec",                         CK_CUSTOM, 0, 0, 0, 0, cmd_kexec },
@@ -547,6 +552,11 @@ static int cmd_idle(struct term *t, const char *args)
 		io_putchar('\n');
 		return 0;
 	}
+	if (arg_is(args, "auto")) {
+		idle_set_mode(IDLE_AUTO);
+		io_putstr("idle auto\n");
+		return 0;
+	}
 	if (arg_is(args, "hlt")) {
 		idle_set_mode(IDLE_C1);
 		io_putstr("idle hlt\n");
@@ -555,14 +565,16 @@ static int cmd_idle(struct term *t, const char *args)
 	{
 		int mode = -1;
 
-		if (arg_is(args, "c2"))
-			mode = IDLE_C2;
+		if (arg_is(args, "c1e"))
+			mode = IDLE_C1E;
 		else if (arg_is(args, "c3"))
 			mode = IDLE_C3;
-		else if (arg_is(args, "c2ap"))
-			mode = IDLE_C2_AP;
+		else if (arg_is(args, "c6"))
+			mode = IDLE_C6;
 		else if (arg_is(args, "c3ap"))
 			mode = IDLE_C3_AP;
+		else if (arg_is(args, "c6ap"))
+			mode = IDLE_C6_AP;
 		if (mode >= 0) {
 			if (idle_set_mode(mode) < 0) {
 				io_putstr("idle: mwait not available\n");
@@ -574,7 +586,22 @@ static int cmd_idle(struct term *t, const char *args)
 			return 0;
 		}
 	}
-	io_putstr("idle: usage idle [hlt|c2|c3|c2ap|c3ap]\n");
+	io_putstr("idle: usage idle [auto|hlt|c1e|c3|c6|c3ap|c6ap]\n");
+	return 0;
+}
+
+static int cmd_power(struct term *t, const char *args)
+{
+	(void)t;
+	(void)args;
+	power_print();
+	return 0;
+}
+
+static int cmd_cpufreq(struct term *t, const char *args)
+{
+	(void)t;
+	power_cpufreq_command(args);
 	return 0;
 }
 

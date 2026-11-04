@@ -214,7 +214,7 @@ out:
 		serial_putdec(SERIAL_COM1, (unsigned int)thermal_tjmax_c);
 		serial_puts(SERIAL_COM1, " C");
 		if (msr_probed) {
-			serial_puts(SERIAL_COM1, " (msr 0x1A2=0x");
+			serial_puts(SERIAL_COM1, " (msr 0x1A2=");
 			serial_puthex(SERIAL_COM1, thermal_tjmax_raw);
 			serial_puts(SERIAL_COM1,
 				    thermal_tjmax_msr ? ")" : ", out of range)");

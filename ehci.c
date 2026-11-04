@@ -47,6 +47,7 @@
 #define CMD_RESET		0x00000002u
 #define CMD_PSE			0x00000010u
 #define CMD_ASE			0x00000020u
+#define CMD_IAAD		0x00000040u
 #define CMD_ITC_8		0x00080000u
 
 /* USBSTS */
@@ -135,6 +136,8 @@ struct ehci_qtd {
 	volatile unsigned int buf_hi[5];   /* 64-bit addressing extension */
 } __attribute__((aligned(32)));
 
+struct ehci_ctrl;
+
 struct ehci_bulk {
 	struct ehci_qh *qh;
 	struct ehci_qtd *qtd;
@@ -145,6 +148,8 @@ struct ehci_bulk {
 	unsigned int buf_len;
 	unsigned int toggle;
 	int armed;
+	int sched;
+	struct ehci_ctrl *owner;
 };
 
 struct ehci_int {
@@ -155,6 +160,7 @@ struct ehci_int {
 	unsigned int buf_len;
 	unsigned int toggle;
 	int active;
+	struct ehci_ctrl *owner;
 };
 
 struct ehci_ctrl {
@@ -193,6 +199,8 @@ struct ehci_ctrl {
 
 	int ctl_busy;
 	int recovering;
+	int sched_on;
+	int sched_refs;
 	unsigned char addr_port[128];
 };
 
@@ -225,6 +233,54 @@ static void wr32(unsigned int addr, unsigned int val)
 static unsigned int op_reg(struct ehci_ctrl *c, unsigned int off)
 {
 	return c->base + c->cap_len + off;
+}
+
+/* The asynchronous schedule is only enabled while a transfer or an armed
+ * interrupt endpoint needs it.  With it off the controller stops fetching
+ * QHs and qTDs, which lets the package reach deep C-states while the
+ * machine is idle; the port hotplug watcher only reads PORTSC and does not
+ * need the schedule. */
+static void ehci_sched_set(struct ehci_ctrl *c, int on)
+{
+	unsigned int v, t0;
+
+	if (on == c->sched_on)
+		return;
+	v = rd32(op_reg(c, EHCI_OP_USBCMD));
+	if (on) {
+		wr32(op_reg(c, EHCI_OP_USBCMD), v | CMD_ASE);
+		t0 = get_ticks_ms();
+		while (!(rd32(op_reg(c, EHCI_OP_USBSTS)) & STS_ASS)) {
+			if (get_ticks_ms() - t0 > 10)
+				break;
+		}
+	} else {
+		/* Clear ASE and let the controller retire the current
+		 * microframe; a pending IAA status must be acknowledged or the
+		 * next enable can stall. */
+		wr32(op_reg(c, EHCI_OP_USBCMD), v & ~CMD_ASE);
+		t0 = get_ticks_ms();
+		while (rd32(op_reg(c, EHCI_OP_USBSTS)) & STS_ASS) {
+			if (get_ticks_ms() - t0 > 10)
+				break;
+		}
+		wr32(op_reg(c, EHCI_OP_USBSTS), STS_IAA);
+	}
+	c->sched_on = on;
+}
+
+static void ehci_sched_get(struct ehci_ctrl *c)
+{
+	c->sched_refs++;
+	ehci_sched_set(c, 1);
+}
+
+static void ehci_sched_put(struct ehci_ctrl *c)
+{
+	if (c->sched_refs > 0)
+		c->sched_refs--;
+	if (!c->sched_refs)
+		ehci_sched_set(c, 0);
 }
 
 static unsigned int port_reg(struct ehci_ctrl *c, unsigned int port)
@@ -372,6 +428,10 @@ static void bulk_stop(struct ehci_bulk *b)
 	if (b->zqtd)
 		b->zqtd->token = 0;
 	b->armed = 0;
+	if (b->sched && b->owner) {
+		ehci_sched_put(b->owner);
+		b->sched = 0;
+	}
 }
 
 static void bulk_reset(struct ehci_bulk *b)
@@ -404,6 +464,10 @@ static void bulk_configure(struct ehci_bulk *b, unsigned int addr,
 
 static void bulk_arm(struct ehci_bulk *b)
 {
+	if (!b->sched && b->owner) {
+		ehci_sched_get(b->owner);
+		b->sched = 1;
+	}
 	b->qh->token = (b->qh->token & QTD_PING) |
 		       (b->toggle ? QTD_TOGGLE : 0);
 	qh_arm(b->qh, b->qtd);
@@ -549,12 +613,18 @@ static void ehci_int_in_stop(unsigned int slot)
 	in = slot_int[slot];
 	if (!in)
 		return;
-	in->active = 0;
-	if (in->qh)
-		qh_disarm(in->qh);
-	if (in->qtd)
-		in->qtd->token = 0;
-	slot_int[slot] = 0;
+	{
+		int was_active = in->active;
+
+		in->active = 0;
+		if (in->qh)
+			qh_disarm(in->qh);
+		if (in->qtd)
+			in->qtd->token = 0;
+		slot_int[slot] = 0;
+		if (was_active && in->owner)
+			ehci_sched_put(in->owner);
+	}
 }
 
 static int ehci_int_in_start(unsigned int ctrl, unsigned int slot,
@@ -589,6 +659,7 @@ static int ehci_int_in_start(unsigned int ctrl, unsigned int slot,
 	int_arm(in);
 	in->active = 1;
 	slot_int[slot] = in;
+	ehci_sched_get(c);
 	return 0;
 }
 
@@ -652,6 +723,7 @@ static int ehci_control(struct ehci_ctrl *c, unsigned int addr,
 	q0 = c->ctl_qtd[0];
 	q1 = c->ctl_qtd[1];
 	q2 = c->ctl_qtd[2];
+	ehci_sched_get(c);
 	c->ctl_busy = 1;
 
 	for (i = 0; i < 8; i++)
@@ -684,6 +756,7 @@ static int ehci_control(struct ehci_ctrl *c, unsigned int addr,
 		qh_disarm(qh);
 		delay_ms(1);
 		c->ctl_busy = 0;
+		ehci_sched_put(c);
 		return -1;
 	}
 	qh_disarm(qh);
@@ -691,6 +764,7 @@ static int ehci_control(struct ehci_ctrl *c, unsigned int addr,
 	if (qtd_error(q0->token) || qtd_error(q2->token) ||
 	    (len && qtd_error(q1->token))) {
 		c->ctl_busy = 0;
+		ehci_sched_put(c);
 		return -1;
 	}
 
@@ -712,6 +786,7 @@ static int ehci_control(struct ehci_ctrl *c, unsigned int addr,
 	}
 
 	c->ctl_busy = 0;
+	ehci_sched_put(c);
 	return (int)actual;
 }
 
@@ -982,6 +1057,10 @@ static int ehci_sched_init(struct ehci_ctrl *c)
 	c->head->info1 = QH_HEAD;
 	c->head->token = QTD_HALT;
 
+	c->bin.owner = c;
+	c->bin.sched = 0;
+	c->bout.owner = c;
+	c->bout.sched = 0;
 	c->bin.qh = c->bin_qh;
 	c->bin.qtd = c->bin_qtd;
 	c->bin.zqtd = 0;
@@ -995,6 +1074,7 @@ static int ehci_sched_init(struct ehci_ctrl *c)
 		c->ints[i].qtd = c->int_qtd[i];
 		c->ints[i].buf = c->int_buf[i];
 		c->ints[i].active = 0;
+		c->ints[i].owner = c;
 	}
 	for (i = 0; i < 128; i++)
 		c->addr_port[i] = 0xFF;
@@ -1038,7 +1118,9 @@ static int ehci_start(struct ehci_ctrl *c)
 	wr32(op_reg(c, EHCI_OP_USBINTR), 0);
 	wr32(op_reg(c, EHCI_OP_USBSTS), 0x3Fu);
 
-	wr32(op_reg(c, EHCI_OP_USBCMD), CMD_RUN | CMD_ASE | CMD_ITC_8);
+	c->sched_on = 0;
+	c->sched_refs = 0;
+	wr32(op_reg(c, EHCI_OP_USBCMD), CMD_RUN | CMD_ITC_8);
 	__asm__ volatile ("" ::: "memory");
 
 	t0 = get_ticks_ms();

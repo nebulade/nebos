@@ -21,6 +21,7 @@
 #include "smp.h"
 #include "spinlock.h"
 #include "syscall.h"
+#include "power.h"
 #include "thermal.h"
 #include "timer.h"
 #include "tss.h"
@@ -764,6 +765,7 @@ int sched_tick_bsp(void)
 
 	thermal_tick();
 	p = c->current;
+	power_tick(p == c->idle, timer_tick_ms());
 	wake_sleepers_locked();
 	r = tick_decide_locked(c, p, 0, timer_tick_ms());
 	sched_lock_release(flags);
@@ -781,6 +783,7 @@ int sched_tick_ap(void)
 
 	thermal_tick();
 	p = c->current;
+	power_tick(p == c->idle, c->tick_ms);
 	r = tick_decide_locked(c, p, 1, c->tick_ms);
 	if (!r && p == c->idle && c->tick_ms != 10) {
 		/* Entered idle without a schedule(): stretch this CPU's LAPIC

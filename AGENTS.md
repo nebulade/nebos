@@ -87,8 +87,9 @@ make clean
    Drives below 0x80 use CHS (the same path the boot sector's kernel load
    used); fixed disks use EDD LBA.
 3. `kernel.c` — `kernel_main` zeroes BSS then inits serial → memory/paging →
-   ACPI/MADT → I/O → idle → processes → timer (PIT; 1 kHz busy, 100 Hz idle + IDT) → SMP AP
-   bring-up → mouse → VGA shadow buffer → terminal.
+   ACPI/MADT → I/O → power → idle → processes → timer (PIT; 1 kHz busy,
+   100 Hz idle + IDT) → SMP AP bring-up → mouse → VGA shadow buffer →
+   terminal.
 4. `mbr.S` — MBR (USB/HDD boot); loads the active partition's boot sector
    (partition 1 at LBA 63).
 5. **UEFI (`efi/`)** — an x86-64 PE32+ `BOOTX64.EFI` loads from the ESP. It
@@ -440,15 +441,33 @@ run area), so adding code no longer moves any address.
   can be plugged in at any time (root-port connect-change watcher); `lsusb`
   re-enumerates the bus, after which `usbhid` re-inits itself via a scan
   generation counter.
-- **Power/idle**: `idle.c` — HLT/C1 by default, `idle c2`/`idle c3`
-  (and the `c2ap`/`c3ap` AP-only variants) switch to MONITOR/MWAIT at runtime
-  (the old USB-legacy SMM hang is addressed by the UHCI/OHCI `0xC0`
-  legacy-SMI disable; test the keyboard before making it the default).  The
-  BSP PIT and each AP's LAPIC timer run at 1 kHz while a process runs and drop
-  to 100 Hz/10 ms while the CPU is idle (`timer_set_hz`,
-  `lapic_timer_set_ms`); the PIT stub advances the global millisecond clock by
-  `timer_tick_advance()`, and `smp_resched_wake()` shortens the idle period
-  when new work arrives.
+- **Power/idle**: `idle.c` — `idle auto` (the default) asks `power.c` for
+  the MWAIT hint: C6 (`0x20`) on the Nehalem/Westmere allowlist, HLT
+  everywhere else.  `idle hlt|c1e|c3|c6` (and the `c3ap`/`c6ap` AP-only
+  variants) are explicit overrides for testing; the Atom boards keep HLT
+  because of the old USB-legacy SMM hang (the UHCI/OHCI `0xC0` legacy-SMI
+  disable addresses it).  Arrandale hints are C1 `0x00`, C1E `0x01`, C3
+  `0x10`, C6 `0x20`.  The BSP PIT and each AP's LAPIC timer run at 1 kHz
+  while a process runs and drop to 100 Hz/10 ms while the CPU is idle
+  (`timer_set_hz`, `lapic_timer_set_ms`); the PIT stub advances the global
+  millisecond clock by `timer_tick_advance()`, and `smp_resched_wake()`
+  shortens the idle period when new work arrives.
+- **Frequency/package power**: `power.c/h` — Nehalem/Westmere P-states and
+  C-state setup, gated on the model allowlist (`0x1A/1E/1F/25/2C/2E/2F`)
+  because the MSRs must not be touched elsewhere.  `power_init()` enables
+  SpeedStep (`MISC_ENABLE` bit 16) and C1E (`POWER_CTL` bit 1), raises the
+  package C-state limit in `PKG_CST_CONFIG_CONTROL` to C6 only when it is
+  unlocked (bit 15), reads min/max ratios from `PLATFORM_INFO`, and starts at
+  the maximum non-turbo ratio.  The per-CPU tick runs a race-to-idle
+  governor: 100 ms windows pick min/max/linear target ratios (short busy
+  streaks jump to max immediately) and each CPU writes its own
+  `IA32_PERF_CTL`.  Nehalem/Westmere take the target ratio in bits 15:8 and
+  the low byte is written as zero (a preserved VID byte made the request
+  silently ineffective); `IA32_PERF_STATUS` reports the current ratio in
+  bits 7:0 (the X201 boot dump shows 0x12 at the 18x max non-turbo ratio).
+  The `power` command prints effective MHz (`APERF`/`MPERF`), the current
+  and requested ratios, per-core C3/C6 residency and package C3/C6;
+  `cpufreq [auto|min|max|off|<ratio>]` overrides the governor.
 - **CPU temperature**: `thermal.c/h` — Intel DTS through `IA32_THERM_STATUS`
   (MSR `0x19C`).  Each CPU samples itself once a second from its scheduler
   tick (`struct cpu.temp_c`), and `SYS_CPU_TEMP` (`sys_info.c`) exposes the
@@ -651,7 +670,7 @@ run area), so adding code no longer moves any address.
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
 `prog`,
 `display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
-`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [hlt|c2|c3|c2ap|c3ap]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [auto|hlt|c1e|c3|c6]`, `power`, `cpufreq [auto|min|max|off|<ratio>]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `netdev [name]` (kernel command: show the active NIC driver or
@@ -864,8 +883,14 @@ so addresses do not collide.
   with CONFIGFLAG; `port_reset` holds PORT_RESET for 50 ms, then clears it
   (QEMU and hardware complete the reset on that write), waits for PED and
   sets PORT_OWNER for a non-high-speed device.  `ehci.c` supports up to four
-  PCI instances.  Bulk `in`/`out` use one qTD per call (up to five 4 KB
-  buffer pages), which is enough for the ASIX AX88772 RX/TX path.
+  PCI instances.  The async schedule is enabled only while a control/bulk
+  transfer or an armed interrupt endpoint needs it (`ehci_sched_get/put`);
+  with nothing attached the controller stops fetching QHs and qTDs, which
+  keeps package C-states reachable (the port watcher only reads PORTSC).
+  Disabling clears ASE and acknowledges `STS_IAA`; leaving the IAA doorbell
+  status set stalls the next enable.  Bulk `in`/`out` use one qTD per call
+  (up to five 4 KB buffer pages), which is enough for the ASIX AX88772 RX/TX
+  path.
   There is no transaction translator: low/full-speed devices behind a
   high-speed hub stay invisible to EHCI (use the companion controller for
   them).

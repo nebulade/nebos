@@ -1,12 +1,14 @@
-/* CPU idle: HLT (C1) by default; optional MONITOR/MWAIT C2/C3. */
+/* CPU idle: automatic deep C-states on Nehalem/Westmere, HLT elsewhere. */
 #ifndef IDLE_H
 #define IDLE_H
 
-#define IDLE_C1 0
-#define IDLE_C2 1
-#define IDLE_C3 2
-#define IDLE_C2_AP 3
-#define IDLE_C3_AP 4
+#define IDLE_C1     0
+#define IDLE_C1E    1
+#define IDLE_C3     2
+#define IDLE_C6     3
+#define IDLE_AUTO   4
+#define IDLE_C3_AP  5
+#define IDLE_C6_AP  6
 
 void idle_init(void);
 void cpu_idle(void);

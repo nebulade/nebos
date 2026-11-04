@@ -299,7 +299,7 @@ void tpec_init(void)
 	log_info();
 	serial_puts(SERIAL_COM1, ": EC ok, fw rev ");
 	serial_putdec(SERIAL_COM1, tpec_ec_rev);
-	serial_puts(SERIAL_COM1, ", fan level 0x");
+	serial_puts(SERIAL_COM1, ", fan level ");
 	serial_puthex(SERIAL_COM1, probe);
 	serial_puts(SERIAL_COM1, "\n");
 }
