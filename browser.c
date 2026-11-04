@@ -3248,9 +3248,13 @@ static void redraw_now(void)
 
 static void handle_keys(unsigned int *action)
 {
-	int k;
+	int k, scrolled = 0;
 
-	if (ngui_scroll_keys(&ui, &page_scroll))
+	/* Batch queued page keys: a slow full-page render must not make a
+	 * held Page Down advance only once every few frames. */
+	while (scrolled < 3 && ngui_scroll_keys(&ui, &page_scroll))
+		scrolled++;
+	if (scrolled)
 		ngui_invalidate(&ui);
 	if (ngui_focus(&ui))
 		return;
