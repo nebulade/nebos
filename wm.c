@@ -1679,8 +1679,8 @@ static void wm_draw_window_clip(struct window *w, unsigned int cx, unsigned int 
 
 	/* Close button. */
 	wm_fill_rect_clip(bx, w->y + 1, WM_CLOSE_W, WM_TITLE_H,
-		cx, cy, cw, ch, 190, 60, 60);
-	fbtext_draw_string_xy_clip(bx + 3, w->y + 3, "x", 255, 255, 255,
+		cx, cy, cw, ch, 198, 64, 64);
+	fbtext_draw_string_xy_clip(bx + 4, w->y + 3, "x", 255, 255, 255,
 		cx, cy, cw, ch);
 
 	/* Content: text cells or the gfx canvas. */

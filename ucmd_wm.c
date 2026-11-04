@@ -11,7 +11,7 @@
 #define COL_BORDER    0xC8C8C8u
 #define COL_TITLE_ON  0x465A96u
 #define COL_TITLE_OFF 0x646464u
-#define COL_CLOSE     0xBE3C3Cu
+#define COL_CLOSE     0xC64040u
 #define COL_WHITE     0xFFFFFFu
 #define COL_BANNER    0x55FF55u
 
@@ -61,6 +61,26 @@ static int free_window_slot(void)
 static unsigned int rgb16(unsigned int r, unsigned int g, unsigned int b)
 {
 	return (r << 16) | (g << 8) | b;
+}
+
+/* Rainbow gradient: hue 0..1535 (6*256) maps to R→Y→G→C→B→M→R, the same
+ * integer interpolation the kernel bar uses. */
+static unsigned int rainbow_rgb(unsigned int hue)
+{
+	unsigned int seg = hue / 256, f = hue % 256;
+	unsigned int r1, g1, b1, r2, g2, b2;
+
+	switch (seg) {
+	case 0: r1=255; g1=0;   b1=0;   r2=255; g2=255; b2=0;   break;
+	case 1: r1=255; g1=255; b1=0;   r2=0;   g2=255; b2=0;   break;
+	case 2: r1=0;   g1=255; b1=0;   r2=0;   g2=255; b2=255; break;
+	case 3: r1=0;   g1=255; b1=255; r2=0;   g2=0;   b2=255; break;
+	case 4: r1=0;   g1=0;   b1=255; r2=255; g2=0;   b2=255; break;
+	default:r1=255; g1=0;   b1=255; r2=255; g2=0;   b2=0;   break;
+	}
+	return rgb16((r1 * (256 - f) + r2 * f) / 256,
+		     (g1 * (256 - f) + g2 * f) / 256,
+		     (b1 * (256 - f) + b2 * f) / 256);
 }
 
 static void fill_clip(int x, int y, unsigned int w, unsigned int h,
@@ -148,23 +168,10 @@ static void draw_bar(void)
 
 	/* Rainbow separator (same y as the kernel's old bar). */
 	for (x = 0; x < fbw; x++) {
-		unsigned int seg = (x * (6 * 256)) / (fbw ? fbw : 1);
-		unsigned int s = seg / 256, f = seg % 256;
-		unsigned int r1, g1, b1, r2, g2, b2, r, g, b;
+		unsigned int c = rainbow_rgb((x * (6 * 256)) / (fbw ? fbw : 1));
 
-		switch (s) {
-		case 0: r1=255; g1=0;   b1=0;   r2=255; g2=255; b2=0;   break;
-		case 1: r1=255; g1=255; b1=0;   r2=0;   g2=255; b2=0;   break;
-		case 2: r1=0;   g1=255; b1=0;   r2=0;   g2=255; b2=255; break;
-		case 3: r1=0;   g1=255; b1=255; r2=0;   g2=0;   b2=255; break;
-		case 4: r1=0;   g1=0;   b1=255; r2=255; g2=0;   b2=255; break;
-		default:r1=255; g1=0;   b1=255; r2=255; g2=0;   b2=0;   break;
-		}
-		r = (r1 * (256 - f) + r2 * f) / 256;
-		g = (g1 * (256 - f) + g2 * f) / 256;
-		b = (b1 * (256 - f) + b2 * f) / 256;
 		for (y = WM_BAR_H - 5; y < WM_BAR_H - 3; y++)
-			usurf_fill(&screen, (int)x, (int)y, 1, 1, rgb16(r, g, b));
+			usurf_fill(&screen, (int)x, (int)y, 1, 1, c);
 	}
 
 	if (bar_kexec_busy) {
@@ -227,7 +234,7 @@ static void draw_window_clip(unsigned int idx, int cx, int cy,
 		   cx, cy, cw, ch);
 	fill_clip((int)bx, y + 1, WM_CLOSE_W, WM_TITLE_H, COL_CLOSE,
 		  cx, cy, cw, ch);
-	usurf_text(&screen, (int)bx + 3, y + 3, "x", COL_WHITE,
+	usurf_text(&screen, (int)bx + 4, y + 3, "x", COL_WHITE,
 		   cx, cy, cw, ch);
 
 	/* Content. */
