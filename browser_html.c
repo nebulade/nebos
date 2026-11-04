@@ -956,6 +956,7 @@ enum {
 	PROP_FLOAT, PROP_FLEX_GROW, PROP_FLEX_COL, PROP_FLEX_WRAP,
 	PROP_GRID_NCOLS, PROP_GRID_GAP, PROP_GRID_SLOT,
 	PROP_POS, PROP_LEFT, PROP_TOP, PROP_LEFT_SET, PROP_TOP_SET,
+	PROP_VIS_HIDDEN, PROP_OPACITY_HIDDEN, PROP_OVERFLOW_HIDDEN,
 	PROP_COUNT
 };
 
@@ -1880,6 +1881,36 @@ static void parse_decls(struct br_doc *d, const char *s,
 			decl_add(out, nout, PROP_DISPLAY,
 				 parse_display(s + vstart, vend - vstart),
 				 important);
+		} else if (str_eq(prop, "visibility")) {
+			int h = contains_ci_len(s + vstart, vend - vstart,
+						"hidden") ||
+				contains_ci_len(s + vstart, vend - vstart,
+						"collapse");
+			decl_add(out, nout, PROP_VIS_HIDDEN, h, important);
+		} else if (str_eq(prop, "opacity")) {
+			unsigned int q;
+			int h = 1, any = 0;
+
+			for (q = vstart; q < vend; q++) {
+				if (s[q] >= '1' && s[q] <= '9') {
+					h = 0;
+					break;
+				}
+				if (s[q] >= '0' && s[q] <= '9')
+					any = 1;
+			}
+			if (!any || contains_ci_len(s + vstart, vend - vstart,
+						    "inherit"))
+				h = 0;
+			decl_add(out, nout, PROP_OPACITY_HIDDEN, h, important);
+		} else if (str_eq(prop, "overflow") ||
+			   str_eq(prop, "overflow-x") ||
+			   str_eq(prop, "overflow-y")) {
+			int h = contains_ci_len(s + vstart, vend - vstart,
+						"hidden") ||
+				contains_ci_len(s + vstart, vend - vstart,
+						"clip");
+			decl_add(out, nout, PROP_OVERFLOW_HIDDEN, h, important);
 		} else if (str_eq(prop, "float")) {
 			int f = 0;
 
@@ -2936,6 +2967,15 @@ static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 	case PROP_DISPLAY:
 		st->display = (unsigned char)dcl->val;
 		break;
+	case PROP_VIS_HIDDEN:
+		st->vis_hidden = (unsigned char)(dcl->val != 0);
+		break;
+	case PROP_OPACITY_HIDDEN:
+		st->opacity_hidden = (unsigned char)(dcl->val != 0);
+		break;
+	case PROP_OVERFLOW_HIDDEN:
+		st->overflow_hidden = (unsigned char)(dcl->val != 0);
+		break;
 	case PROP_MT: st->mt = dcl->val; break;
 	case PROP_MR: st->mr = dcl->val; break;
 	case PROP_MB: st->mb = dcl->val; break;
@@ -3066,6 +3106,8 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	out->grid_ncols = out->grid_gap = out->grid_slot = 0;
 	out->pos = out->left_set = out->top_set = 0;
 	out->left = out->top = 0;
+	out->vis_hidden = out->opacity_hidden = 0;
+	out->overflow_hidden = 0;
 	tag = d->nodes[node].tag;
 	out->display = br_tag_is_block(tag) ? BR_DISPLAY_BLOCK :
 					      BR_DISPLAY_INLINE;
@@ -3165,6 +3207,10 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	}
 
 	if (d->nodes[node].flags & BR_NODE_HIDDEN)
+		out->display = BR_DISPLAY_NONE;
+	if (out->vis_hidden || out->opacity_hidden ||
+	    (out->overflow_hidden && out->height_kind == 1 &&
+	     out->height == 0))
 		out->display = BR_DISPLAY_NONE;
 
 	d->nodes[node].style = *out;

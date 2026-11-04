@@ -72,6 +72,7 @@ struct br_style {
 	unsigned char underline;
 	unsigned char align;        /* BR_ALIGN_* */
 	unsigned char display;      /* BR_DISPLAY_* */
+	unsigned char vis_hidden, opacity_hidden, overflow_hidden;
 	unsigned char float_left;   /* float: left/right */
 	unsigned char flex_grow;    /* flex-grow, 0..100 */
 	unsigned char flex_col;     /* flex-direction: column */
