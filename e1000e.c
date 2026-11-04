@@ -531,6 +531,54 @@ static void pci_disable_aspm(unsigned int bus, unsigned int dev,
 	}
 }
 
+static void pci_af_flr(unsigned int bus, unsigned int dev, unsigned int func)
+{
+	unsigned int status = pci_cfg_read32(bus, dev, func, 0x04) >> 16;
+	unsigned int bar0 = pci_cfg_read32(bus, dev, func, 0x10);
+	unsigned int cmd = pci_cfg_read32(bus, dev, func, 0x04);
+	unsigned int cap, guard = 0;
+
+	if (!(status & 0x10u))
+		return;                       /* no capability list */
+	cap = pci_cfg_read32(bus, dev, func, 0x34) & 0xFCu;
+	while (cap && guard++ < 48) {
+		unsigned int hdr = pci_cfg_read32(bus, dev, func, cap);
+
+		if ((hdr & 0xFFu) == 0x13u) {   /* PCI Advanced Features */
+			unsigned int t0;
+
+			/* AF capability byte is at cap+3 (TP|FLR). */
+			if ((pci_cfg_read32(bus, dev, func, cap) >> 24) & 0x3u) {
+				/* Wait for any pending transaction to drain. */
+				t0 = get_ticks_ms();
+				while (((pci_cfg_read32(bus, dev, func, cap + 4) >>
+					 8) & 1u) && !timed_out(t0, 100))
+					delay_ms(1);
+
+				/* AF Control: bit 0 triggers FLR. */
+				pci_cfg_write8(bus, dev, func, cap + 4, 1);
+				delay_ms(100);
+
+				/* Wait for the function to respond again. */
+				t0 = get_ticks_ms();
+				while (pci_cfg_read32(bus, dev, func, 0) == 0xFFFFFFFFu &&
+				       !timed_out(t0, 1000))
+					delay_ms(1);
+
+				/* FLR may clear BAR0/command; restore them. */
+				if (bar0 && bar0 != 0xFFFFFFFFu)
+					pci_cfg_write32(bus, dev, func, 0x10,
+							bar0 & 0xFFFFFFF0u);
+				pci_cfg_write32(bus, dev, func, 0x04,
+						cmd | 0x0006u | PCI_CMD_INT_DISABLE);
+				dbg("AF FLR done");
+			}
+			return;
+		}
+		cap = (hdr >> 8) & 0xFCu;
+	}
+}
+
 static int probe_pci(void)
 {
 	unsigned int bus, dev, func;
@@ -555,6 +603,12 @@ static int probe_pci(void)
 					continue;
 				if (!supported_device((idf >> 16) & 0xFFFFu))
 					continue;
+
+				/* Function Level Reset clears the RX descriptor
+				 * prefetch cache left by the previous kernel
+				 * (kexec) or firmware.  Linux uses the same AF
+				 * FLR; the PCH advertises TP+FLR. */
+				pci_af_flr(bus, dev, func);
 
 				/* Memory space + bus master. */
 				cmd = pci_cfg_read32(bus, dev, func, 0x04);
