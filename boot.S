@@ -6,7 +6,14 @@
 
 .globl _start
 _start:
-	.byte 0xEB, 0x40, 0x90
+	/* Short jump over the BPB and the fixed header slots to loader_start.
+	 * The displacement is computed so the header layout below can change
+	 * without leaving the jump inside a header field (a hardcoded 0x40
+	 * landed in pack_lba, where 0x0E decoded as a harmless push cs and
+	 * 0x0F as a faulting larw). */
+	.byte 0xEB
+	.byte loader_start - _start - 2
+	.byte 0x90
 	/* ---- BPB (BIOS Parameter Block) ---- */
 	.ascii "NEBOS   "        /* OEM name */
 	.word 512                /* bytes per sector */
