@@ -1291,11 +1291,39 @@ static void preload_begin(void)
 	preload_scroll = 0;
 }
 
+/* Styles are computed top-down during layout, but images inside a hidden
+ * menu/carousel are never visited and keep img_top == 0.  Without this check
+ * the preloader walks the DOM in node order and spends the whole image
+ * budget on logos and off-canvas thumbnails the reader cannot see. */
+static int node_hidden(unsigned int node)
+{
+	unsigned int path[32], n = 0, p = node, i;
+	struct br_style st, parent;
+
+	while (p && n < sizeof(path) / sizeof(path[0])) {
+		path[n++] = p;
+		p = doc.nodes[p].parent;
+	}
+	parent = (struct br_style){0};
+	parent.scale = 1;
+	parent.display = BR_DISPLAY_BLOCK;
+	for (i = n; i > 0; i--) {
+		br_style_for(&doc, path[i - 1], &parent, &st);
+		if (st.display == BR_DISPLAY_NONE || st.vis_hidden ||
+		    st.opacity_hidden)
+			return 1;
+		parent = st;
+	}
+	return 0;
+}
+
 /* Load at most one image per call.  Images below the current viewport are
  * left pending until the page is scrolled; this keeps a long article with
  * many 4K screenshots from stalling on content the user cannot see yet. */
 static void preload_step(void)
 {
+	unsigned int batch = 0;
+
 	while (preload_active && preload_node < doc.nnode) {
 		unsigned int i = preload_node;
 		struct br_node *nd = &doc.nodes[i];
@@ -1309,11 +1337,11 @@ static void preload_step(void)
 		int rv;
 
 		if (nd->type != BR_NODE_ELEM || nd->tag != BR_TAG_IMG ||
-		    nd->img_index >= 0) {
+		    nd->img_index != -1) {
 			preload_node++;
 			continue;
 		}
-		if (ancestor_is(i, BR_TAG_NOSCRIPT)) {
+		if (ancestor_is(i, BR_TAG_NOSCRIPT) || node_hidden(i)) {
 			preload_node++;
 			continue;
 		}
@@ -1331,15 +1359,14 @@ static void preload_step(void)
 			preload_node = doc.nnode;
 			break;
 		}
+		/* Do not stop at the first below-fold image: DOM order is
+		 * not visual order, and a footer/ad image early in the DOM
+		 * used to hide every later article image from the loader. */
 		if (img_top[i] >
 		    (unsigned int)(page_scroll.offset + page_rect.h + 160)) {
-			preload_active = 0;
 			preload_pending = 1;
-			preload_scroll = page_scroll.offset;
-			set_status(post_status_text, post_status_error,
-				   post_status_ttl);
-			ngui_invalidate(&ui);
-			return;
+			preload_node++;
+			continue;
 		}
 		preload_node = i + 1;
 
@@ -1365,13 +1392,25 @@ static void preload_step(void)
 			image_count++;
 			preload_loaded++;
 			layout_valid = 0;
-				}
+		} else {
+			/* Remember failures so a scroll does not retry an
+			 * unreachable tracking/ad image with the full network
+			 * timeout on every pass. */
+			nd->img_index = -2;
+		}
 		ngui_invalidate(&ui);
-		return;
+		/* A full page layout after every image dominates loading on a
+		 * long page.  Decode a small batch, then let the main loop draw
+		 * once for the whole batch. */
+		if (++batch >= 4)
+			return;
 	}
 
 	preload_active = 0;
-	preload_pending = 0;
+	if (preload_pending)
+		preload_scroll = page_scroll.offset;
+	else
+		preload_pending = 0;
 	set_status(post_status_text, post_status_error, post_status_ttl);
 	ngui_invalidate(&ui);
 }
@@ -3397,6 +3436,7 @@ void _start(const char *arg)
 			   page_scroll.offset != preload_scroll) {
 			preload_scroll = page_scroll.offset;
 			preload_pending = 0;
+			preload_node = 0;
 			preload_active = 1;
 		}
 		now = u_ticks_ms();
