@@ -434,6 +434,142 @@ void ngui_frame(struct ngui *ui, struct ngui_rect r, unsigned short color)
 	}
 }
 
+static int ngui_isqrt(int v)
+{
+	int r = 0, bit = 1 << 15;
+
+	if (v <= 0)
+		return 0;
+	while (bit > v)
+		bit >>= 1;
+	while (bit) {
+		if (v >= r + bit) {
+			v -= r + bit;
+			r = (r >> 1) + bit;
+		} else {
+			r >>= 1;
+		}
+		bit >>= 1;
+	}
+	return r;
+}
+
+/* Horizontal inset of one scanline of a corner with the given radius. */
+static int round_inset(int y, int h, int r)
+{
+	int dy, d2;
+
+	if (r <= 0)
+		return 0;
+	if (y < r)
+		dy = r - y - 1;
+	else if (y >= h - r)
+		dy = y - (h - r);
+	else
+		return 0;
+	d2 = r * r - dy * dy;
+	if (d2 < 0)
+		d2 = 0;
+	return r - ngui_isqrt(d2);
+}
+
+void ngui_fill_round_rect(struct ngui *ui, struct ngui_rect r,
+			  int tl, int tr, int br, int bl,
+			  unsigned short color)
+{
+	int y, half;
+
+	if (rect_empty(&r))
+		return;
+	half = r.w < r.h ? r.w / 2 : r.h / 2;
+	if (tl > half) tl = half;
+	if (tr > half) tr = half;
+	if (br > half) br = half;
+	if (bl > half) bl = half;
+	if (tl <= 0 && tr <= 0 && br <= 0 && bl <= 0) {
+		ngui_fill_rect(ui, r, color);
+		return;
+	}
+	for (y = 0; y < r.h; y++) {
+		int li = 0, ri = 0;
+
+		if (y < tl)
+			li = round_inset(y, r.h, tl);
+		if (y < tr)
+			ri = round_inset(y, r.h, tr);
+		if (y >= r.h - bl) {
+			int i = round_inset(y, r.h, bl);
+
+			if (i > li)
+				li = i;
+		}
+		if (y >= r.h - br) {
+			int i = round_inset(y, r.h, br);
+
+			if (i > ri)
+				ri = i;
+		}
+		if (r.w - li - ri > 0)
+			ngui_fill_rect(ui, rect_make(r.x + li, r.y + y,
+					     r.w - li - ri, 1), color);
+	}
+}
+
+void ngui_frame_round(struct ngui *ui, struct ngui_rect r,
+		      int tl, int tr, int br, int bl, int thickness,
+		      unsigned short color)
+{
+	int y, half;
+
+	if (rect_empty(&r))
+		return;
+	if (thickness < 1)
+		thickness = 1;
+	half = r.w < r.h ? r.w / 2 : r.h / 2;
+	if (tl > half) tl = half;
+	if (tr > half) tr = half;
+	if (br > half) br = half;
+	if (bl > half) bl = half;
+	if (tl <= 0 && tr <= 0 && br <= 0 && bl <= 0) {
+		ngui_frame(ui, r, color);
+		return;
+	}
+	for (y = 0; y < r.h; y++) {
+		int li = 0, ri = 0;
+		int x0, x1;
+
+		if (y < tl)
+			li = round_inset(y, r.h, tl);
+		if (y < tr)
+			ri = round_inset(y, r.h, tr);
+		if (y >= r.h - bl) {
+			int i = round_inset(y, r.h, bl);
+
+			if (i > li)
+				li = i;
+		}
+		if (y >= r.h - br) {
+			int i = round_inset(y, r.h, br);
+
+			if (i > ri)
+				ri = i;
+		}
+		x0 = r.x + li;
+		x1 = r.x + r.w - 1 - ri;
+		if (x0 > x1)
+			continue;
+		if (y < thickness || y >= r.h - thickness) {
+			ngui_fill_rect(ui, rect_make(x0, r.y + y,
+					     x1 - x0 + 1, 1), color);
+		} else {
+			ngui_fill_rect(ui, rect_make(x0, r.y + y,
+					     thickness, 1), color);
+			ngui_fill_rect(ui, rect_make(x1 - thickness + 1,
+					     r.y + y, thickness, 1), color);
+		}
+	}
+}
+
 static void ngui_pixel(struct ngui *ui, int x, int y, unsigned short color)
 {
 	if (pixel_visible(ui, x, y))

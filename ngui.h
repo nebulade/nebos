@@ -161,6 +161,12 @@ void ngui_push_clip(struct ngui *ui, struct ngui_rect r);
 void ngui_pop_clip(struct ngui *ui);
 void ngui_fill_rect(struct ngui *ui, struct ngui_rect r, unsigned short color);
 void ngui_frame(struct ngui *ui, struct ngui_rect r, unsigned short color);
+void ngui_fill_round_rect(struct ngui *ui, struct ngui_rect r,
+			  int tl, int tr, int br, int bl,
+			  unsigned short color);
+void ngui_frame_round(struct ngui *ui, struct ngui_rect r,
+		      int tl, int tr, int br, int bl, int thickness,
+		      unsigned short color);
 void ngui_line(struct ngui *ui, int x0, int y0, int x1, int y1,
 	       unsigned short color);
 void ngui_text(struct ngui *ui, int x, int y, const char *s,

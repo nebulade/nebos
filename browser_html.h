@@ -96,6 +96,9 @@ struct br_style {
 	unsigned char no_bullet;    /* list-style: none (inherited) */
 	unsigned char uppercase;    /* text-transform: uppercase (inherited) */
 	unsigned char border_w;
+	/* border-radius in pixels, one entry per corner: TL, TR, BR, BL.
+	 * Percentages are stored as 255 so they clamp to the box half. */
+	unsigned char radius[4];
 	unsigned char width_kind;   /* 0 none, 1 px, 2 percent */
 	unsigned short width;
 	unsigned char max_width_kind;

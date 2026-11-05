@@ -971,7 +971,9 @@ enum {
 	PROP_COLOR, PROP_BG, PROP_SCALE, PROP_BOLD, PROP_ALIGN, PROP_UNDERLINE,
 	PROP_DISPLAY, PROP_MT, PROP_MR, PROP_MB, PROP_ML,
 	PROP_PT, PROP_PR, PROP_PB, PROP_PL,
-	PROP_BORDER_W, PROP_BORDER_COLOR, PROP_LIST_NONE,
+	PROP_BORDER_W, PROP_BORDER_COLOR,
+	PROP_RADIUS_TL, PROP_RADIUS_TR, PROP_RADIUS_BR, PROP_RADIUS_BL,
+	PROP_LIST_NONE,
 	PROP_WIDTH, PROP_WIDTH_KIND, PROP_MAXW, PROP_MAXW_KIND,
 	PROP_HEIGHT, PROP_HEIGHT_KIND, PROP_LH_PCT, PROP_LH_PX, PROP_UPPER,
 	PROP_FLOAT, PROP_FLEX_GROW, PROP_FLEX_COL, PROP_FLEX_WRAP,
@@ -1899,6 +1901,70 @@ static unsigned int css_skip_nested(const char *s, unsigned int len,
 	return i;
 }
 
+/* One border-radius length.  Unlike parse_size(), percentages keep their
+ * kind: the drawer scales them to the box, not the viewport. */
+static int parse_radius_value(const char *s, unsigned int len,
+			      unsigned int *pos, unsigned short *val,
+			      unsigned char *kind)
+{
+	unsigned int i = *pos;
+	unsigned long v = 0;
+	int digits = 0, fdigits = 0, frac = 0, pct = 0, rem = 0;
+
+	while (i < len && is_space(s[i]))
+		i++;
+	while (i < len && s[i] >= '0' && s[i] <= '9') {
+		v = v * 10 + (unsigned int)(s[i] - '0');
+		digits = 1;
+		i++;
+	}
+	if (i < len && s[i] == '.') {
+		i++;
+		while (i < len && s[i] >= '0' && s[i] <= '9') {
+			fdigits = 1;
+			if (frac < 2) {
+				v = v * 10 + (unsigned int)(s[i] - '0');
+				frac++;
+			}
+			i++;
+		}
+	}
+	while (frac < 2) {
+		v *= 10;
+		frac++;
+	}
+	while (i < len && is_space(s[i]))
+		i++;
+	if (i < len && s[i] == '%') {
+		pct = 1;
+		i++;
+	} else if (i + 2 < len && s[i] == 'r' && s[i + 1] == 'e' &&
+		   s[i + 2] == 'm') {
+		rem = 1;
+		i += 3;
+	} else if (i + 1 < len && s[i] == 'e' && s[i + 1] == 'm') {
+		rem = 2;
+		i += 2;
+	} else if (i + 1 < len && s[i] == 'p' && s[i + 1] == 'x') {
+		i += 2;
+	} else if (i < len && is_ident(s[i])) {
+		return 0;
+	}
+	if (!digits && !fdigits)
+		return 0;
+	if (rem == 1)
+		v *= root_font_px;
+	else if (rem == 2)
+		v *= 16;
+	v /= 100;
+	if (v > 2048)
+		v = 2048;
+	*val = (unsigned short)v;
+	*kind = pct ? 2 : 1;
+	*pos = i;
+	return 1;
+}
+
 static void parse_decls(struct br_doc *d, const char *s,
 			unsigned int len, struct br_decl *out,
 			unsigned int *nout)
@@ -2212,6 +2278,86 @@ static void parse_decls(struct br_doc *d, const char *s,
 				    contains_ci_len(s + vstart, vend - vstart,
 						    "none"));
 			decl_add(out, nout, PROP_LIST_NONE, none, important);
+		} else if (str_eq(prop, "border-radius") ||
+			   str_eq(prop, "border-top-left-radius") ||
+			   str_eq(prop, "border-top-right-radius") ||
+			   str_eq(prop, "border-bottom-right-radius") ||
+			   str_eq(prop, "border-bottom-left-radius")) {
+			unsigned short v[4];
+			unsigned char k[4];
+			unsigned int pos = 0;
+			int n = 0;
+
+			while (pos < vend - vstart && n < 4) {
+				while (pos < vend - vstart &&
+				       is_space(s[vstart + pos]))
+					pos++;
+				if (pos >= vend - vstart ||
+				    s[vstart + pos] == '/')
+					break;
+				if (!parse_radius_value(s + vstart,
+							vend - vstart, &pos,
+							&v[n], &k[n]))
+					break;
+				n++;
+			}
+			if (n) {
+				unsigned short r[4];
+				unsigned char rk[4];
+				int i;
+
+				if (n == 1) {
+					for (i = 0; i < 4; i++) {
+						r[i] = v[0];
+						rk[i] = k[0];
+					}
+				} else if (n == 2) {
+					r[0] = r[2] = v[0];
+					r[1] = r[3] = v[1];
+					rk[0] = rk[2] = k[0];
+					rk[1] = rk[3] = k[1];
+				} else if (n == 3) {
+					r[0] = v[0];
+					r[1] = r[3] = v[1];
+					r[2] = v[2];
+					rk[0] = k[0];
+					rk[1] = rk[3] = k[1];
+					rk[2] = k[2];
+				} else {
+					for (i = 0; i < 4; i++) {
+						r[i] = v[i];
+						rk[i] = k[i];
+					}
+				}
+				for (i = 0; i < 4; i++)
+					r[i] = rk[i] == 2 ? 255 :
+					       (r[i] > 255 ? 255 : r[i]);
+				if (str_eq(prop, "border-top-left-radius")) {
+					decl_add(out, nout, PROP_RADIUS_TL,
+						 (short)r[0], important);
+				} else if (str_eq(prop,
+						  "border-top-right-radius")) {
+					decl_add(out, nout, PROP_RADIUS_TR,
+						 (short)r[0], important);
+				} else if (str_eq(prop,
+						  "border-bottom-right-radius")) {
+					decl_add(out, nout, PROP_RADIUS_BR,
+						 (short)r[0], important);
+				} else if (str_eq(prop,
+						  "border-bottom-left-radius")) {
+					decl_add(out, nout, PROP_RADIUS_BL,
+						 (short)r[0], important);
+				} else {
+					decl_add(out, nout, PROP_RADIUS_TL,
+						 (short)r[0], important);
+					decl_add(out, nout, PROP_RADIUS_TR,
+						 (short)r[1], important);
+					decl_add(out, nout, PROP_RADIUS_BR,
+						 (short)r[2], important);
+					decl_add(out, nout, PROP_RADIUS_BL,
+						 (short)r[3], important);
+				}
+			}
 		} else if (str_eq(prop, "border") ||
 			   str_eq(prop, "border-top") ||
 			   str_eq(prop, "border-right") ||
@@ -3238,6 +3384,13 @@ static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 	case PROP_BORDER_COLOR:
 		st->border_color = (unsigned short)dcl->val;
 		break;
+	case PROP_RADIUS_TL:
+	case PROP_RADIUS_TR:
+	case PROP_RADIUS_BR:
+	case PROP_RADIUS_BL:
+		st->radius[dcl->prop - PROP_RADIUS_TL] =
+			(unsigned char)dcl->val;
+		break;
 	case PROP_LIST_NONE:
 		st->no_bullet = (unsigned char)(dcl->val != 0);
 		break;
@@ -3344,6 +3497,8 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	out->float_left = 0;
 	out->border_w = 0;
 	out->border_color = 0;
+	for (i = 0; i < 4; i++)
+		out->radius[i] = 0;
 	out->width = out->max_width = out->height = 0;
 	out->width_kind = out->max_width_kind = out->height_kind = 0;
 	out->mt = out->mr = out->mb = out->ml = 0;

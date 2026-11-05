@@ -2273,6 +2273,20 @@ static int flex_wants_row(unsigned int parent, const struct br_style *pst)
 	return 0;
 }
 
+static int css_radius(const struct br_style *st, int corner,
+		      int w, int h)
+{
+	int r = st->radius[corner];
+
+	if (r <= 0)
+		return 0;
+	if (r > w / 2)
+		r = w / 2;
+	if (r > h / 2)
+		r = h / 2;
+	return r;
+}
+
 static void layout_block(struct lay *l, unsigned int node,
 			 const struct br_style *st, int depth,
 			 unsigned short link)
@@ -2319,14 +2333,27 @@ static void layout_block(struct lay *l, unsigned int node,
 	if (l->draw && block_h[node] &&
 	    top < page_rect.y + page_rect.h &&
 	    top + block_h[node] > page_rect.y) {
-		if (st->has_bg)
-			ngui_fill_rect(l->ui, (struct ngui_rect){l0, top,
-						 r0 - l0, block_h[node]},
-				       st->bg);
-		if (st->border_w)
-			ngui_frame(l->ui, (struct ngui_rect){l0, top,
-						 r0 - l0, block_h[node]},
-				   st->border_color);
+		struct ngui_rect box = {l0, top, r0 - l0, block_h[node]};
+		int rtl = css_radius(st, 0, box.w, box.h);
+		int rtr = css_radius(st, 1, box.w, box.h);
+		int rbr = css_radius(st, 2, box.w, box.h);
+		int rbl = css_radius(st, 3, box.w, box.h);
+
+		if (st->has_bg) {
+			if (rtl || rtr || rbr || rbl)
+				ngui_fill_round_rect(l->ui, box, rtl, rtr,
+						     rbr, rbl, st->bg);
+			else
+				ngui_fill_rect(l->ui, box, st->bg);
+		}
+		if (st->border_w) {
+			if (rtl || rtr || rbr || rbl)
+				ngui_frame_round(l->ui, box, rtl, rtr, rbr,
+						 rbl, st->border_w,
+						 st->border_color);
+			else
+				ngui_frame(l->ui, box, st->border_color);
+		}
 	}
 	l->left = l0 + st->pl;
 	l->right = r0 - st->pr;
