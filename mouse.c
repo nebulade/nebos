@@ -2,6 +2,7 @@
 #include "bootinfo.h"
 #include "cirrus.h"
 #include "cursor_shape.h"
+#include "intel.h"
 #include "radeon.h"
 #include "timer.h"
 #include "usbhid.h"
@@ -225,6 +226,24 @@ static void mouse_cursor_setup(void)
 		return;
 	}
 
+	/* Intel Ironlake (Arrandale/X201) cursor plane.  The cursor image is
+	 * mapped through the GTT by intel_init(); only enable it once a mouse
+	 * is actually present. */
+	if (!bootinfo_efi() && intel_available()) {
+		long nx = 100;
+		long ny = 100;
+
+		mouse_clamp_ptr(&nx, &ny);
+		cur_x = (unsigned int)nx;
+		cur_y = (unsigned int)ny;
+		if (intel_cursor_setup(cur_x, cur_y) == 0) {
+			mouse_hw_cursor = 3;
+			mouse_cursor_flag = 1;
+			return;
+		}
+		mouse_hw_cursor = 0;
+	}
+
 	/* NVIDIA nv50-family (ION/MCP79): no hardware cursor -- the VBIOS keeps
 	   the display engine (see nv50.c); the software cursor is used. */
 
@@ -312,7 +331,9 @@ static void mouse_move(int dx, int dy)
 	if (mouse_hw_cursor) {
 		cur_x = (unsigned int)nx;
 		cur_y = (unsigned int)ny;
-		if (mouse_hw_cursor == 2)
+		if (mouse_hw_cursor == 3)
+			intel_cursor_move(cur_x, cur_y);
+		else if (mouse_hw_cursor == 2)
 			radeon_cursor_move(cur_x, cur_y);
 		else
 			cirrus_cursor_move(cur_x, cur_y);
@@ -423,6 +444,7 @@ const char *mouse_cursor_backend_name(void)
 	switch (mouse_hw_cursor) {
 	case 1:  return "cirrus hw";
 	case 2:  return "radeon hw";
+	case 3:  return "intel hw";
 	default: return "software";
 	}
 }

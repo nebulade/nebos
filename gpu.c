@@ -4,6 +4,7 @@
 #include "pci.h"
 #include "ati.h"
 #include "cirrus.h"
+#include "intel.h"
 #include "nvidia.h"
 
 static int gpu_vendor_id;
@@ -98,6 +99,7 @@ void gpu_init(unsigned int lfb_base)
 			    (active_id >> 16) & 0xFFFF);
 	} else if (active_vendor == PCI_VENDOR_INTEL) {
 		gpu_vendor_id = GPU_VENDOR_INTEL;
+		intel_init(active_bus, active_dev, (active_id >> 16) & 0xFFFF);
 	} else if (active_vendor == PCI_VENDOR_CIRRUS) {
 		gpu_vendor_id = GPU_VENDOR_CIRRUS;
 		cirrus_init();
