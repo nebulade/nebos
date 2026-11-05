@@ -10,6 +10,7 @@
 #include "wm_abi.h"
 
 #define NGUI_INPUT_MAX 128
+#define NGUI_MOTION_REDRAW_MS 33
 
 #define NGUI_INPUT_CHANGED 1
 #define NGUI_INPUT_SUBMIT  2
@@ -127,6 +128,12 @@ struct ngui {
 
 	int last_mouse_x, last_mouse_y;
 	int last_inside, last_focused;
+
+	/* Pointer motion is throttled: a redraw is needed for hover feedback,
+	 * but not for every 200 Hz mouse report.  A pending motion is flushed
+	 * once 33 ms have passed, so the final hover state still appears. */
+	unsigned int motion_ms;
+	int motion_pending;
 };
 
 void ngui_init(struct ngui *ui, unsigned short *fb, int w, int h);

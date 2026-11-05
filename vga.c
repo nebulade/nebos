@@ -395,6 +395,8 @@ void vga_target_damage(unsigned int x, unsigned int y, unsigned int w,
 	mark_dirty_rect_xy(y, h, x, x + w);
 }
 
+static unsigned int vga_pixel_bytes(void);
+
 /* 16bpp: RGB 5:6:5.  32bpp: BGRX byte order (standard VBE / QEMU). */
 static void target_put_pixel(unsigned int x, unsigned int y, unsigned int r, unsigned int g, unsigned int b)
 {
@@ -431,6 +433,38 @@ void vga_put_pixel_rgb(unsigned int x, unsigned int y, unsigned int r, unsigned 
 {
 	vga_cache_boot_fb();
 	target_put_pixel(x, y, r, g, b);
+}
+
+/* Cursor pixels go into the screen shadow without a per-pixel damage mark:
+ * the cursor presents its whole 16x16 rectangle directly to VRAM. */
+void vga_fb_put_pixel(unsigned int x, unsigned int y,
+		      unsigned int r, unsigned int g, unsigned int b)
+{
+	unsigned char *p;
+	unsigned int pb, pitch;
+	unsigned char *fb;
+
+	vga_cache_boot_fb();
+	if (x >= vga_fb_w || y >= vga_fb_h)
+		return;
+	fb = vga_shadow_buf ? vga_shadow_buf : (unsigned char *)vga_fb_lfb;
+	if (!fb)
+		return;
+	pb = vga_pixel_bytes();
+	pitch = vga_shadow_buf ? vga_shadow_pitch : vga_fb_pitch_val;
+	p = fb + (unsigned long)y * pitch + x * pb;
+	if (pb == 2) {
+		unsigned int v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+
+		p[0] = (unsigned char)(v & 0xFF);
+		p[1] = (unsigned char)(v >> 8);
+	} else {
+		p[0] = (unsigned char)b;
+		p[1] = (unsigned char)g;
+		p[2] = (unsigned char)r;
+		if (pb == 4)
+			p[3] = 0xFF;
+	}
 }
 
 void vga_fill_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
@@ -518,6 +552,60 @@ mark:
 			xe = vga_fb_w;
 		mark_dirty_rect_xy(y, h, x, xe);
 	}
+}
+
+/* Present a rectangle out of band: the software cursor calls this on every
+ * move, so its pixels reach VRAM immediately instead of waiting in the damage
+ * list behind a full-window repaint.  The cursor path runs under the BKL, the
+ * same lock the damage flush is called under, so it cannot race a flush. */
+void vga_fb_present_rect(unsigned int x, unsigned int y,
+			 unsigned int w, unsigned int h)
+{
+	unsigned int pb, row_bytes, dwords, tail, row;
+	unsigned char *src, *dst;
+	int use_sse2;
+
+	vga_cache_boot_fb();
+	if (!vga_shadow_buf || !vga_fb_lfb || w == 0 || h == 0)
+		return;
+	if (x >= vga_fb_w || y >= vga_fb_h)
+		return;
+	if (x + w > vga_fb_w)
+		w = vga_fb_w - x;
+	if (y + h > vga_fb_h)
+		h = vga_fb_h - y;
+	pb = vga_pixel_bytes();
+	row_bytes = w * pb;
+	dwords = row_bytes / 4;
+	tail = row_bytes % 4;
+	use_sse2 = cpu_has_sse2();
+
+	for (row = 0; row < h; row++) {
+		src = vga_shadow_buf + (unsigned long)(y + row) * vga_shadow_pitch +
+		      x * pb;
+		dst = (unsigned char *)vga_fb_lfb +
+		      (unsigned long)(y + row) * vga_fb_pitch_val + x * pb;
+		if (lfb_swap_rb && pb == 4) {
+			const unsigned int *s32 = (const unsigned int *)src;
+			unsigned int *d32 = (unsigned int *)dst;
+			unsigned int k;
+
+			for (k = 0; k < dwords; k++)
+				d32[k] = swap_rb32(s32[k]);
+		} else if (use_sse2 && dwords) {
+			vga_fb_copy_row_nt(dst, src, dwords);
+		} else if (dwords) {
+			vga_fb_copy_row(dst, src, dwords);
+		}
+		if (tail) {
+			unsigned int k;
+
+			for (k = dwords * 4; k < row_bytes; k++)
+				dst[k] = src[k];
+		}
+	}
+	if (use_sse2)
+		__asm__ volatile ("sfence" ::: "memory");
 }
 
 void vga_clear_rgb(unsigned int r, unsigned int g, unsigned int b)

@@ -127,6 +127,12 @@ static int mouse_pixel_at(int r, int c)
 
 static void cursor_save_under(void)
 {
+	if (!vga_shadow_is_active()) {
+		/* Boot: the shadow buffer is not up yet, so there is no
+		 * background to save (and the saved buffer is uninitialized). */
+		saved_w = saved_h = 0;
+		return;
+	}
 	saved_x = cur_x;
 	saved_y = cur_y;
 	saved_w = (cur_x + MOUSE_CUR_W <= fbw) ? MOUSE_CUR_W : fbw - cur_x;
@@ -141,6 +147,15 @@ static void cursor_restore_under(void)
 		vga_fb_write_rect(saved_x, saved_y, saved_w, saved_h, cur_saved);
 }
 
+/* Push the rectangle the cursor last touched to VRAM right away.  The cursor
+ * must not wait for the damage queue: over a large canvas (the browser) a
+ * whole-window repaint can sit ahead of it for several flush iterations. */
+static void cursor_present(void)
+{
+	if (saved_w && saved_h)
+		vga_fb_present_rect(saved_x, saved_y, saved_w, saved_h);
+}
+
 static void mouse_draw_cursor(unsigned int x0, unsigned int y0)
 {
 	unsigned int r, c;
@@ -150,9 +165,9 @@ static void mouse_draw_cursor(unsigned int x0, unsigned int y0)
 		for (c = 0; c < MOUSE_CUR_W; c++) {
 			int px = mouse_pixel_at((int)r, (int)c);
 			if (px == MOUSE_PIX_FILL)
-				vga_put_pixel_rgb(x0 + c, y0 + r, 255, 255, 255);
+				vga_fb_put_pixel(x0 + c, y0 + r, 255, 255, 255);
 			else if (px == MOUSE_PIX_OUTLINE)
-				vga_put_pixel_rgb(x0 + c, y0 + r, 0, 0, 0);
+				vga_fb_put_pixel(x0 + c, y0 + r, 0, 0, 0);
 		}
 	}
 }
@@ -225,6 +240,7 @@ static void mouse_cursor_setup(void)
 	}
 	cursor_save_under();
 	mouse_draw_cursor(cur_x, cur_y);
+	cursor_present();
 	mouse_cursor_flag = 1;
 }
 
@@ -307,10 +323,12 @@ static void mouse_move(int dx, int dy)
 		cur_y = (unsigned int)ny;
 	} else {
 		cursor_restore_under();
+		cursor_present();          /* erase the old position in VRAM */
 		cur_x = (unsigned int)nx;
 		cur_y = (unsigned int)ny;
 		cursor_save_under();
 		mouse_draw_cursor(cur_x, cur_y);
+		cursor_present();          /* draw the new position in VRAM */
 	}
 }
 
@@ -433,8 +451,15 @@ void mouse_redraw_cursor(void)
 {
 	if (!mouse_cursor_flag || mouse_hw_cursor)
 		return;
+	/* If the pointer moved while a WM frame owned the shadow, the saved
+	 * rectangle is still the old position and has been restored to the
+	 * background there.  Erase it in VRAM before drawing the new one, so
+	 * a moving cursor does not leave a trail behind a slow frame. */
+	if ((saved_x != cur_x || saved_y != cur_y) && saved_w && saved_h)
+		vga_fb_present_rect(saved_x, saved_y, saved_w, saved_h);
 	cursor_save_under();
 	mouse_draw_cursor(cur_x, cur_y);
+	cursor_present();
 }
 
 void mouse_cursor_erase(void)
@@ -442,6 +467,10 @@ void mouse_cursor_erase(void)
 	if (!mouse_cursor_flag || mouse_hw_cursor)
 		return;
 	cursor_restore_under();
+	/* No direct present here: the caller is about to redraw the scene.
+	 * Keeping the old cursor on screen until that flush avoids a visible
+	 * blink at the start of every window frame.  The restore already
+	 * marked the rectangle dirty, so the flush erases it. */
 }
 
 void mouse_set_auto_draw(int on)

@@ -88,6 +88,17 @@ void vga_fb_read_rect(unsigned int x, unsigned int y, unsigned int w, unsigned i
 void vga_fb_write_rect(unsigned int x, unsigned int y, unsigned int w, unsigned int h,
 		const unsigned char *buf);
 
+/* Copy one rectangle straight from the shadow to VRAM, outside the damage
+ * queue.  The software cursor uses this so it never waits behind a pending
+ * window repaint.  Callers run under the BKL, like the damage flush. */
+void vga_fb_present_rect(unsigned int x, unsigned int y,
+			 unsigned int w, unsigned int h);
+
+/* Write one pixel into the screen shadow without marking damage (the cursor
+ * presents its whole rectangle explicitly). */
+void vga_fb_put_pixel(unsigned int x, unsigned int y,
+		      unsigned int r, unsigned int g, unsigned int b);
+
 /* Initialize shadow buffer (called once from kernel_main after vga_cache_boot_fb). */
 void vga_shadow_init(void);
 

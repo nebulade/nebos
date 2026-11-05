@@ -94,6 +94,7 @@ void ngui_init(struct ngui *ui, unsigned short *fb, int w, int h)
 	ui->dirty = 1;
 	ui->caret_on = 1;
 	ui->last_blink = u_ticks_ms();
+	ui->motion_ms = ui->last_blink;
 	ui->last_mouse_x = -1;
 	ui->last_mouse_y = -1;
 }
@@ -225,9 +226,32 @@ int ngui_begin(struct ngui *ui)
 
 	if (ui->inside != ui->last_inside) {
 		want = 1;
+		ui->motion_pending = 0;
+		ui->motion_ms = now;
 	} else if (ui->inside &&
 		   (ui->mouse_x != ui->last_mouse_x ||
 		    ui->mouse_y != ui->last_mouse_y)) {
+		/* Hover feedback needs a repaint, but not one per mouse
+		 * report: while the pointer keeps moving, redraw at most every
+		 * 33 ms and remember that a final frame is still due.  A held
+		 * button is a drag, which stays at full rate. */
+		if (ui->buttons) {
+			ui->motion_ms = now;
+			ui->motion_pending = 0;
+			want = 1;
+		} else {
+			ui->motion_pending = 1;
+			if ((unsigned int)(now - ui->motion_ms) >=
+			    NGUI_MOTION_REDRAW_MS) {
+				ui->motion_ms = now;
+				ui->motion_pending = 0;
+				want = 1;
+			}
+		}
+	} else if (ui->motion_pending &&
+		   (unsigned int)(now - ui->motion_ms) >= NGUI_MOTION_REDRAW_MS) {
+		ui->motion_ms = now;
+		ui->motion_pending = 0;
 		want = 1;
 	}
 	if (ui->focused != ui->last_focused)
@@ -239,6 +263,8 @@ int ngui_begin(struct ngui *ui)
 
 	if (ui->pressed || ui->released)
 		want = 1;
+	if (want)
+		ui->motion_pending = 0;
 	return want;
 }
 
