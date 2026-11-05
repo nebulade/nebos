@@ -61,6 +61,7 @@ static struct idtr_desc idtr;
 
 extern void pit_irq_stub(void);
 extern void kbd_irq_stub(void);
+extern void mouse_irq_stub(void);
 extern void fdc_irq_stub(void);
 extern void default_irq_stub(void);
 extern void resched_stub(void);
@@ -192,6 +193,7 @@ static void timer_init(void)
 	/* Hardware IRQ handlers. */
 	set_idt_gate(0x20, (unsigned int)pit_irq_stub);
 	set_idt_gate(0x21, (unsigned int)kbd_irq_stub);
+	set_idt_gate(0x2c, (unsigned int)mouse_irq_stub);
 	set_idt_gate(0x26, (unsigned int)fdc_irq_stub);
 
 	/* Local-APIC vectors: the AP timer and reschedule IPI, plus the
@@ -255,7 +257,7 @@ static void kworker_main(void)
 {
 	for (;;) {
 		system_housekeeping();
-		process_sleep_ms(5);
+		process_sleep_ms(2);
 	}
 }
 
@@ -518,7 +520,7 @@ void kernel_main(void)
 		serial_puts(SERIAL_COM1, "kworker: cannot create, using idle fallback\n");
 		kworker_pid = -1;
 	} else {
-		process_set_weight((unsigned int)kworker_pid, 1);
+		process_set_weight((unsigned int)kworker_pid, 4);
 		process_set_affinity((unsigned int)kworker_pid, 1);
 	}
 	boot_trace("kworker");

@@ -3,6 +3,8 @@
 
 void mouse_init(void);
 void mouse_poll_update(void);
+/* IRQ12 handler: PS/2 AUX data, used when a hardware cursor is active. */
+void mouse_irq(void);
 
 int mouse_is_present(void);
 /* 1 when a PS/2 mouse was detected; the protocol accessors below are
@@ -11,7 +13,7 @@ int mouse_ps2_present(void);
 int mouse_streaming_enabled(void);
 unsigned int mouse_device_id(void);
 int mouse_cursor_visible(void);
-/* Active cursor backend: 0 = software, 1 = Cirrus, 2 = Radeon. */
+/* Active cursor backend: 0 = software, 1 = Cirrus, 2 = Radeon, 3 = Intel. */
 int mouse_cursor_backend(void);
 /* Human-readable form of the above ("software", "nvidia hw", ...). */
 const char *mouse_cursor_backend_name(void);

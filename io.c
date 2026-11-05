@@ -4,6 +4,7 @@
 
 #include "io.h"
 #include "fbtext.h"
+#include "mouse.h"
 #include "process.h"
 #include "screen.h"
 #include "timer.h"
@@ -111,12 +112,17 @@ void kbd_irq(void)
 		st = inb(KB_STATUS);
 		if (!(st & 0x01))
 			break;
+		if (st & 0x20) {
+			/* AUX (mouse) byte: the IRQ12 handler or the mouse
+			 * poll owns it while streaming is enabled.  With no
+			 * owner, discard it so it cannot block the keyboard. */
+			if (mouse_streaming_enabled())
+				break;
+			(void)inb(KB_DATA);
+			continue;
+		}
 		{
 			unsigned char sc = inb(KB_DATA);
-			if (st & 0x20) {
-				/* AUX (mouse) byte: not ours, drop it. */
-				continue;
-			}
 			{
 				unsigned int next = (kbd_head + 1) % KBD_BUF_SIZE;
 				if (next != kbd_tail) {

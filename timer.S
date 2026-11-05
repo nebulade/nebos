@@ -21,6 +21,20 @@ kbd_irq_stub:
 	popa
 	iret
 
+.globl mouse_irq_stub
+mouse_irq_stub:
+	pusha
+	movw  $0x10, %ax
+	movw  %ax, %ds
+	movw  %ax, %es
+	movw  %ax, %fs
+	movw  $0x28, %ax
+	movw  %ax, %gs
+	call  mouse_irq
+	IRQ_RETURN_DS 36
+	popa
+	iret
+
 .globl fdc_irq_stub
 fdc_irq_stub:
 	pusha

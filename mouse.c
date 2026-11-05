@@ -29,13 +29,15 @@ static unsigned int mouse_id;
 static int mouse_cursor_flag;
 static unsigned int mouse_pkt_size;
 static unsigned int mouse_buttons;  /* bit0=left bit1=right bit2=middle */
-static int mouse_hw_cursor;         /* 1 = Cirrus, 2 = Radeon hardware cursor */
+static int mouse_hw_cursor;         /* 1 = Cirrus, 2 = Radeon, 3 = Intel */
+static int mouse_irq_mode;          /* PS/2 AUX IRQ12 owns packet input */
+static int mouse_aux_irq_ok;        /* controller config accepted AUX IRQ */
 
 static unsigned int fbw, fbh;
 static unsigned int cur_x, cur_y;
 static unsigned int saved_x, saved_y, saved_w, saved_h;
 static unsigned char cur_saved[MOUSE_CUR_W * MOUSE_CUR_H * 4];
-static unsigned char pkt[3];
+static unsigned char pkt[4];
 static unsigned int pkt_idx;
 
 static inline unsigned char inb(unsigned short port)
@@ -61,6 +63,56 @@ static void enable_aux_port(void)
 {
 	ps2_wait_input_empty();
 	outb(PS2_CMD, 0xA8);
+}
+
+static inline unsigned int mouse_irq_save(void)
+{
+	unsigned int flags;
+
+	__asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags));
+	return flags;
+}
+
+static inline void mouse_irq_restore(unsigned int flags)
+{
+	__asm__ volatile ("pushl %0; popfl" :: "r"(flags));
+}
+
+/* Set the controller's AUX-interrupt bit.  The PIC line stays masked until
+ * mouse_init() has a hardware cursor and streaming is enabled. */
+static int ps2_aux_irq_config(void)
+{
+	unsigned int flags, spin = 100000;
+	unsigned char cfg;
+
+	flags = mouse_irq_save();
+	ps2_wait_input_empty();
+	outb(PS2_CMD, 0x20);
+	while (spin-- && !(inb(PS2_STATUS) & STATUS_OUT_FULL))
+		;
+	if (!(inb(PS2_STATUS) & STATUS_OUT_FULL)) {
+		mouse_irq_restore(flags);
+		return -1;
+	}
+	cfg = inb(PS2_DATA);
+	cfg |= 0x02;                    /* AUX (mouse) interrupt */
+	ps2_wait_input_empty();
+	outb(PS2_CMD, 0x60);
+	ps2_wait_input_empty();
+	outb(PS2_DATA, cfg);
+	mouse_irq_restore(flags);
+	return 0;
+}
+
+static void ps2_aux_irq_unmask(void)
+{
+	unsigned char mask;
+
+	/* Master IRQ2 is the cascade, slave IRQ12 is the AUX line. */
+	mask = inb(0x21);
+	outb(0x21, (unsigned char)(mask & ~0x04));
+	mask = inb(0xA1);
+	outb(0xA1, (unsigned char)(mask & ~0x10));
 }
 
 static void mouse_cmd_write(unsigned char val)
@@ -287,9 +339,12 @@ void mouse_init(void)
 	mouse_id = 0;
 	mouse_cursor_flag = 0;
 	mouse_pkt_size = 3;
+	mouse_irq_mode = 0;
+	mouse_aux_irq_ok = 0;
 	pkt_idx = 0;
 
 	enable_aux_port();
+	mouse_aux_irq_ok = (ps2_aux_irq_config() == 0);
 
 	if (mouse_send_cmd_ack(0xF5) != 0)
 		return;
@@ -310,6 +365,15 @@ void mouse_init(void)
 	if (mouse_send_cmd_ack(0xF4) != 0)
 		return;
 	mouse_streaming_flag = 1;
+
+	/* A hardware cursor makes the IRQ12 path safe: the handler only has
+	 * to write the cursor registers, not touch the shadow buffer or the
+	 * damage list.  Otherwise keep the kworker polling the controller. */
+	if (mouse_hw_cursor && mouse_aux_irq_ok) {
+		pkt_idx = 0;
+		mouse_irq_mode = 1;
+		ps2_aux_irq_unmask();
+	}
 }
 
 /* Move the cursor by a relative delta (PS/2 sign convention: +dx right,
@@ -329,6 +393,10 @@ static void mouse_move(int dx, int dy)
 		return;
 
 	if (mouse_hw_cursor) {
+		/* The PS/2 AUX IRQ can preempt a USB-driven update in the
+		 * kworker; keep the position read/modify/write atomic. */
+		unsigned int flags = mouse_irq_save();
+
 		cur_x = (unsigned int)nx;
 		cur_y = (unsigned int)ny;
 		if (mouse_hw_cursor == 3)
@@ -337,6 +405,7 @@ static void mouse_move(int dx, int dy)
 			radeon_cursor_move(cur_x, cur_y);
 		else
 			cirrus_cursor_move(cur_x, cur_y);
+		mouse_irq_restore(flags);
 	} else if (!mouse_auto_draw) {
 		/* A WM frame is between BEGIN and PRESENT: it erased the
 		 * software cursor and will redraw it at the new position. */
@@ -351,6 +420,53 @@ static void mouse_move(int dx, int dy)
 		mouse_draw_cursor(cur_x, cur_y);
 		cursor_present();          /* draw the new position in VRAM */
 	}
+}
+
+/* Decode one complete PS/2 packet from pkt[] (3 or 4 bytes). */
+static void mouse_handle_packet(void)
+{
+	unsigned char b0 = pkt[0];
+	int dx = (int)(signed char)pkt[1];
+	int dy = (int)(signed char)pkt[2];
+
+	mouse_buttons = b0 & 0x07;
+	if (b0 & 0x10)
+		dx |= ~0xFF;
+	if (b0 & 0x20)
+		dy |= ~0xFF;
+	if ((b0 & 0xC0) != 0)
+		return;
+	mouse_move(dx, dy);
+}
+
+/* IRQ12: PS/2 AUX data.  With a hardware cursor the position update is just
+ * a few MMIO writes, so it is safe and fast in interrupt context.  This path
+ * is only enabled when mouse_irq_mode is set (hardware cursor present). */
+void mouse_irq(void)
+{
+	unsigned int guard = 0;
+
+	if (mouse_irq_mode) {
+		for (;;) {
+			unsigned char st;
+
+			if (guard++ >= 16)
+				break;
+			st = inb(PS2_STATUS);
+			if ((st & (STATUS_OUT_FULL | STATUS_AUX_DATA)) !=
+			    (STATUS_OUT_FULL | STATUS_AUX_DATA))
+				break;
+			pkt[pkt_idx++] = inb(PS2_DATA);
+			if (pkt_idx < mouse_pkt_size)
+				continue;
+			pkt_idx = 0;
+			mouse_handle_packet();
+		}
+	}
+
+	/* Slave first, then the master cascade. */
+	outb(0xA0, 0x20);
+	outb(0x20, 0x20);
 }
 
 void mouse_poll_update(void)
@@ -371,13 +487,13 @@ void mouse_poll_update(void)
 		mouse_move(usb_dx, usb_dy);
 	}
 
+	if (mouse_irq_mode)
+		return;                 /* IRQ12 owns the PS/2 packets */
 	if (!mouse_streaming_flag)
 		return;
 
 	for (;;) {
 		unsigned char st;
-		unsigned char b0;
-		int dx, dy;
 
 		/* Bound the drain: a stuck/emulated controller must not
 		 * wedge the WM loop; leftovers are read next iteration. */
@@ -393,19 +509,7 @@ void mouse_poll_update(void)
 		if (pkt_idx < mouse_pkt_size)
 			continue;
 		pkt_idx = 0;
-
-		b0 = pkt[0];
-		mouse_buttons = b0 & 0x07;
-		dx = (int)(signed char)pkt[1];
-		dy = (int)(signed char)pkt[2];
-		if (b0 & 0x10)
-			dx |= ~0xFF;
-		if (b0 & 0x20)
-			dy |= ~0xFF;
-		if ((b0 & 0xC0) != 0)
-			continue;
-
-		mouse_move(dx, dy);
+		mouse_handle_packet();
 	}
 }
 
