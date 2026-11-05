@@ -405,6 +405,7 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 	struct img_image decoded;
 	unsigned int est, bytes, i;
 	unsigned short *px;
+	unsigned char *alpha = 0;
 	int dw, dh, r;
 
 	if (img_sniff(data, len, &info) != 0) {
@@ -455,6 +456,18 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 		s_copy(bi->err, "out of memory", sizeof(bi->err));
 		return -1;
 	}
+	/* Keep the alpha plane for the scaled image so transparent logos and
+	 * icons composite over the page instead of the browser's dark theme
+	 * background.  Very large alpha images stay flattened to bound the
+	 * heap use. */
+	if (decoded.alpha && (unsigned int)dw * (unsigned int)dh <= (1u << 20)) {
+		alpha = (unsigned char *)heap_alloc((unsigned int)dw *
+						    (unsigned int)dh, 16);
+		if (alpha) {
+			for (i = 0; i < (unsigned int)dw * (unsigned int)dh; i++)
+				alpha[i] = 255;
+		}
+	}
 	for (i = 0; i < (unsigned int)dw * (unsigned int)dh; i++)
 		px[i] = ui.theme.bg;
 
@@ -473,7 +486,8 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 		b.scale = ((unsigned int)dw << 16) / decoded.w;
 		b.bg = ui.theme.bg;
 		b.bg2 = ui.theme.bg;
-		b.flags = IMG_BLIT_OVER_DST;
+		b.dst_a = alpha;
+		b.flags = alpha ? IMG_BLIT_SAVE_ALPHA : IMG_BLIT_OVER_DST;
 		img_draw(&decoded, &b);
 	}
 
@@ -481,7 +495,7 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 	bi->img.w = (unsigned int)dw;
 	bi->img.h = (unsigned int)dh;
 	bi->img.px = px;
-	bi->img.alpha = 0;
+	bi->img.alpha = alpha;
 	bi->img.flags = 0;
 	bi->state = 1;
 	return 0;
@@ -1853,7 +1867,9 @@ static void add_run(struct lay *l, unsigned short off, unsigned short len,
 		r->iw = r->ih = 0;
 		r->scale = st->scale;
 		r->bold = st->bold;
-		r->underline = st->underline;
+		/* A control with its own background is a button, not body copy;
+		 * an inherited link underline would strike through the fill. */
+		r->underline = st->underline && !st->has_bg;
 	}
 	l->line_x += w;
 	l->run_x = l->line_x;
@@ -2339,19 +2355,41 @@ static void layout_block(struct lay *l, unsigned int node,
 		int rbr = css_radius(st, 2, box.w, box.h);
 		int rbl = css_radius(st, 3, box.w, box.h);
 
-		if (st->has_bg) {
-			if (rtl || rtr || rbr || rbl)
-				ngui_fill_round_rect(l->ui, box, rtl, rtr,
-						     rbr, rbl, st->bg);
-			else
-				ngui_fill_rect(l->ui, box, st->bg);
-		}
-		if (st->border_w) {
-			if (rtl || rtr || rbr || rbl)
+		if (rtl || rtr || rbr || rbl) {
+			if (st->has_bg) {
+				int bw = st->border_w;
+
+				if (bw > 0 && st->border_color != st->bg &&
+				    box.w > bw * 2 && box.h > bw * 2) {
+					struct ngui_rect inner = {
+						box.x + bw, box.y + bw,
+						box.w - bw * 2, box.h - bw * 2
+					};
+					int itl = rtl > bw ? rtl - bw : 0;
+					int itr = rtr > bw ? rtr - bw : 0;
+					int ibr = rbr > bw ? rbr - bw : 0;
+					int ibl = rbl > bw ? rbl - bw : 0;
+
+					ngui_fill_round_rect(l->ui, box, rtl,
+							     rtr, rbr, rbl,
+							     st->border_color);
+					ngui_fill_round_rect(l->ui, inner,
+							     itl, itr, ibr,
+							     ibl, st->bg);
+				} else {
+					ngui_fill_round_rect(l->ui, box, rtl,
+							     rtr, rbr, rbl,
+							     st->bg);
+				}
+			} else if (st->border_w) {
 				ngui_frame_round(l->ui, box, rtl, rtr, rbr,
 						 rbl, st->border_w,
 						 st->border_color);
-			else
+			}
+		} else {
+			if (st->has_bg)
+				ngui_fill_rect(l->ui, box, st->bg);
+			if (st->border_w)
 				ngui_frame(l->ui, box, st->border_color);
 		}
 	}
@@ -2436,7 +2474,9 @@ static void layout_block(struct lay *l, unsigned int node,
 	l->align = old_align;
 	l->y += st->mb;
 	if (!l->draw) {
-		int h = l->y - top;
+		/* block_h is the element box, not the flow advance: the bottom
+		 * margin must not be painted as part of the background. */
+		int h = l->y - st->mb - top;
 		if (h < 0)
 			h = 0;
 		if (h > 65535)

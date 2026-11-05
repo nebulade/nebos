@@ -436,12 +436,14 @@ void ngui_frame(struct ngui *ui, struct ngui_rect r, unsigned short color)
 
 static int ngui_isqrt(int v)
 {
-	int r = 0, bit = 1 << 15;
+	int r = 0, bit = 1 << 30;
 
 	if (v <= 0)
 		return 0;
+	/* Classic shift-and-subtract sqrt: bit must be the highest power
+	 * of four that fits in v, and each step consumes two bits. */
 	while (bit > v)
-		bit >>= 1;
+		bit >>= 2;
 	while (bit) {
 		if (v >= r + bit) {
 			v -= r + bit;
@@ -449,7 +451,7 @@ static int ngui_isqrt(int v)
 		} else {
 			r >>= 1;
 		}
-		bit >>= 1;
+		bit >>= 2;
 	}
 	return r;
 }

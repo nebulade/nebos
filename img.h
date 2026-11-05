@@ -75,11 +75,13 @@ struct img_blit {
 	unsigned int bg;         /* RGB565 background for alpha */
 	unsigned int bg2;        /* second checker colour */
 	unsigned int flags;
+	unsigned char *dst_a;    /* optional destination alpha plane */
 };
 
 #define IMG_BLIT_CHECKER  1  /* alpha over a checkered background */
 #define IMG_BLIT_OVER_DST 2  /* alpha over the existing destination pixels */
 #define IMG_BLIT_FAST     4  /* nearest sampling while dragging */
+#define IMG_BLIT_SAVE_ALPHA 8 /* write source alpha to dst_a, keep RGB raw */
 
 void img_mem_init(struct img_mem *m, void *base, unsigned int size);
 unsigned int img_mem_mark(const struct img_mem *m);

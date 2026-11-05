@@ -202,11 +202,18 @@ void img_draw(const struct img_image *im, const struct img_blit *b)
 						(unsigned short)b->bg;
 				else
 					bg = (unsigned short)b->bg;
-				d = (im->alpha && sa < 255) ?
-					blend(sr, sg, sb, sa, bg) :
-					(unsigned short)(((sr >> 3) << 11) |
-							 ((sg >> 2) << 5) |
-							 (sb >> 3));
+				if ((b->flags & IMG_BLIT_SAVE_ALPHA) && b->dst_a) {
+					b->dst_a[di] = (unsigned char)(sa > 255 ? 255 : sa);
+					d = (unsigned short)(((sr >> 3) << 11) |
+							     ((sg >> 2) << 5) |
+							     (sb >> 3));
+				} else {
+					d = (im->alpha && sa < 255) ?
+						blend(sr, sg, sb, sa, bg) :
+						(unsigned short)(((sr >> 3) << 11) |
+								 ((sg >> 2) << 5) |
+								 (sb >> 3));
+				}
 				b->dst[di] = d;
 			}
 		}
