@@ -4137,10 +4137,15 @@ void _start(const char *arg)
 	page_scroll.offset = 0;
 	page_scroll.content_h = 0;
 
-	if (arg && arg[0])
+	if (arg && arg[0]) {
 		navigate(arg, 1);
-	else
+	} else {
 		load_home(1);
+		/* Start ready to type: keep the home page, but leave the address
+		 * bar empty instead of showing "about:home". */
+		ngui_input_set(&url_in, "");
+		ngui_set_focus(&ui, ID_URL);
+	}
 
 	for (;;) {
 		unsigned int action = 0;
