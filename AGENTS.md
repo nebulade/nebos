@@ -318,9 +318,11 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   live showcase of every control and primitive the toolkit exports.  Buttons
   fire on the release edge and keep `active` until `ui->released`: inferring
   release from the sampled `ui->buttons` races the WM event queue and drops
-  clicks.  Text fields support mouse drag-selection, double-click select-all,
-  Ctrl+Left/Right word jumps, Ctrl+Delete/Ctrl+Backspace word deletion and
-  Ctrl+A select-all; typing or Backspace/Delete replaces a selection.  At the
+  clicks.  Text fields use the proportional font with measured caret,
+  selection and horizontal scrolling, and support mouse drag-selection,
+  double-click select-all, Ctrl+Left/Right word jumps,
+  Ctrl+Delete/Ctrl+Backspace word deletion and Ctrl+A select-all; typing or
+  Backspace/Delete replaces a selection.  At the
   end of the line Ctrl+Delete removes the word before the caret instead of
   doing nothing.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `blit.c/h`, `gpu.c`, `ati.c`, `nvidia.c`,
@@ -383,8 +385,10 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   (`uwm_lib`) load faces and leave the 8×16 bitmap fallback when they are
   absent.  The **browser calls `ngui_font_detach` before `heap_reset()` and
   reattaches after `heap_start()`**, because its page heap is reset on every
-  navigation.  Terminal/editor/text fields deliberately keep the 8×16 cell
-  grid.  Host test: `make test-font` (`ufont_test.c`); `make fonts`
+  navigation.  Terminal and editor cells deliberately keep the 8×16 bitmap
+  grid; ngui text fields use the proportional face with measured caret,
+  selection and horizontal scrolling.  Host test: `make test-font`
+  (`ufont_test.c`); `make fonts`
   regenerates the subsets.  No hinting, CFF/variable fonts, shaping, bidi or
   full Unicode yet.
 - **Shell**: `ucmd_term.c` is the windowed shell (rows, scrollback, Tab,
@@ -1202,7 +1206,7 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    `PACK_MAX` 512 KB (not the old ~255 KB low-gap limit).  The browser and
    its ring-3 dependencies are compiled with function sections and linked
    with `--gc-sections`; the current pack with the UI fonts is ~343 KiB
-   (351180 bytes), leaving ~169 KiB under the cap.  Command growth
+   (351472 bytes), leaving ~169 KiB under the cap.  Command growth
    still needs care because `libdeflate-gzip -12` is already required (plain
    `gzip -9` is over the cap).
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
@@ -1352,5 +1356,5 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     bitmap font.  The 256 KB arena is shared by five faces plus glyph masks;
     a very text-heavy page can exhaust it and fall back to re-rasterizing
     evicted glyphs.  The browser must detach/re-attach its font arena around
-    `heap_reset()`, and terminal/editor/text-input cell grids intentionally
-    stay on the 8×16 bitmap font.
+    `heap_reset()`; terminal/editor cell grids stay on the 8×16 bitmap font,
+    while ngui text fields use the proportional face.

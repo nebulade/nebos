@@ -675,16 +675,6 @@ static void ngui_bitmap_glyph(struct ngui *ui, int x, int y, unsigned char c,
 	}
 }
 
-static void ngui_bitmap_text(struct ngui *ui, int x, int y, const char *s,
-			     unsigned short color)
-{
-	unsigned int i;
-
-	for (i = 0; s && s[i]; i++)
-		ngui_bitmap_glyph(ui, x + (int)i * 8, y,
-				  (unsigned char)s[i], color, 1, 0);
-}
-
 static struct ufont_face *ngui_face(struct ngui *ui, int bold, int italic,
 				    int mono)
 {
@@ -1272,39 +1262,72 @@ static void input_move_to(struct ngui_input *in, unsigned int pos)
 /* Two presses in the same field within this window select all of its text. */
 #define NGUI_DOUBLE_CLICK_MS 500
 
-/* Character position under a content-relative x, clamped to the visible
- * part of the field. */
-static unsigned int input_pos_at(const struct ngui_input *in, int inner_x,
-				 int cols, int x)
+static int input_text_w(struct ngui *ui, const char *s, unsigned int n)
 {
-	int col = (x - inner_x) / 8;
-	unsigned int pos;
+	return (int)ngui_text_width_px(ui, s, n, ui->font_px, 0, 0, 0);
+}
 
-	if (col < 0)
-		col = 0;
-	if (cols > 0 && col > cols)
-		col = cols;
-	pos = in->scroll + (unsigned int)col;
-	if (pos > in->len)
-		pos = in->len;
-	return pos;
+/* Character position under a content-relative x, clamped to the visible
+ * part of the field.  Proportional text means the prefix must be measured. */
+static unsigned int input_pos_at(struct ngui *ui, const struct ngui_input *in,
+				 int inner_x, int x)
+{
+	unsigned int i, n, best = 0;
+	int rel = x - inner_x;
+
+	if (rel <= 0 || in->scroll >= in->len)
+		return in->scroll;
+	n = in->len - in->scroll;
+	for (i = 1; i <= n; i++) {
+		if (input_text_w(ui, in->text + in->scroll, i) > rel)
+			break;
+		best = i;
+	}
+	return in->scroll + best;
 }
 
 static void input_draw_selection(struct ngui *ui, const struct ngui_input *in,
-				 struct ngui_rect inner, int cols)
+				 struct ngui_rect inner)
 {
 	unsigned int a, b, va, vb;
+	int xa, xb;
 
 	input_sel_bounds(in, &a, &b);
-	if (a == b || cols <= 0)
+	if (a == b || in->scroll >= in->len)
 		return;
 	va = a < in->scroll ? in->scroll : a;
-	vb = b > in->scroll + (unsigned int)cols
-	     ? in->scroll + (unsigned int)cols : b;
-	if (va < vb)
-		ngui_fill_rect(ui, rect_make(inner.x + (int)(va - in->scroll) * 8,
-					     inner.y, (int)(vb - va) * 8, 16),
+	vb = b < in->len ? b : in->len;
+	if (va >= vb)
+		return;
+	xa = input_text_w(ui, in->text + in->scroll, va - in->scroll);
+	xb = input_text_w(ui, in->text + in->scroll, vb - in->scroll);
+	if (xb > xa)
+		ngui_fill_rect(ui, rect_make(inner.x + xa, inner.y,
+					     xb - xa,
+					     ngui_text_line_height(ui,
+								  ui->font_px,
+								  0)),
 			       ui->theme.selection);
+}
+
+/* Scroll the first-visible-character index until the caret is visible. */
+static void input_scroll_to_cursor(struct ngui *ui, struct ngui_input *in,
+				   int inner_w)
+{
+	if (in->scroll > in->len)
+		in->scroll = in->len;
+	if (in->cursor < in->scroll)
+		in->scroll = in->cursor;
+	if (inner_w <= 0) {
+		in->scroll = in->len;
+		return;
+	}
+	while (in->scroll < in->cursor &&
+	       input_text_w(ui, in->text + in->scroll,
+			    in->cursor - in->scroll) > inner_w)
+		in->scroll++;
+	if (in->scroll > in->len)
+		in->scroll = in->len;
 }
 
 int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
@@ -1313,15 +1336,19 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	struct ngui_rect inner;
 	int focused = (ui->focus == id);
 	int result = 0;
-	int cols, k;
+	int avail, line_h, k;
 	int changed = 0;
 
-	inner = rect_make(r.x + 4, r.y + (r.h - 16) / 2, r.w - 8, 16);
+	line_h = ngui_text_line_height(ui, ui->font_px, 0);
+	if (line_h < 1)
+		line_h = 16;
+	inner = rect_make(r.x + 4, r.y + (r.h - line_h) / 2, r.w - 8,
+			  line_h);
 	if (inner.w < 0)
 		inner.w = 0;
-	cols = inner.w / 8;
-	if (cols < 0)
-		cols = 0;
+	if (inner.h < 1)
+		inner.h = 1;
+	avail = inner.w;
 
 	if (ui->pressed &&
 	    ngui_rect_contains(&r, ui->press_x, ui->press_y)) {
@@ -1337,7 +1364,7 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 			in->cursor = in->len;
 			in->dragging = 0;
 		} else {
-			unsigned int pos = input_pos_at(in, inner.x, cols,
+			unsigned int pos = input_pos_at(ui, in, inner.x,
 							ui->press_x);
 
 			in->cursor = pos;
@@ -1359,7 +1386,7 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	 * release *event* is authoritative: the sampled button state can lag
 	 * the event queue by a frame. */
 	if (in->dragging && (ui->buttons & 1) && !ui->released) {
-		in->cursor = input_pos_at(in, inner.x, cols, ui->mouse_x);
+		in->cursor = input_pos_at(ui, in, inner.x, ui->mouse_x);
 		/* Keep redrawing when the pointer leaves the window. */
 		ngui_invalidate(ui);
 	}
@@ -1441,32 +1468,35 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	ngui_fill_rect(ui, r, focused ? ui->theme.panel_alt : ui->theme.panel);
 	ngui_frame(ui, r, focused ? ui->theme.accent : ui->theme.border);
 
-	if (in->scroll > in->len)
-		in->scroll = in->len;
-	if (in->cursor < in->scroll)
-		in->scroll = in->cursor;
-	if (cols > 0 && in->cursor >= in->scroll + (unsigned int)cols)
-		in->scroll = in->cursor - (unsigned int)cols + 1;
-	if (in->scroll > in->len)
-		in->scroll = in->len;
+	input_scroll_to_cursor(ui, in, avail);
 
 	ngui_push_clip(ui, inner);
 	if (in->len == 0 && in->placeholder) {
-		ngui_bitmap_text(ui, inner.x, inner.y, in->placeholder,
-				 ui->theme.text_dim);
+		ngui_text_px(ui, inner.x, inner.y, in->placeholder,
+			     slen(in->placeholder), ui->theme.text_dim,
+			     ui->font_px, 0, 0, 0);
 	} else {
 		if (focused)
-			input_draw_selection(ui, in, inner, cols);
-		ngui_bitmap_text(ui, inner.x, inner.y, in->text + in->scroll,
-				 ui->theme.text);
+			input_draw_selection(ui, in, inner);
+		ngui_text_px(ui, inner.x, inner.y, in->text + in->scroll,
+			     slen(in->text + in->scroll), ui->theme.text,
+			     ui->font_px, 0, 0, 0);
 	}
 
 	if (focused && ui->caret_on) {
-		int col = (int)in->cursor - (int)in->scroll;
+		int cx = 0;
 
-		if (col >= 0 && col <= cols)
-			ngui_fill_rect(ui, rect_make(inner.x + col * 8, inner.y,
-						     1, 16), ui->theme.accent);
+		if (in->cursor > in->scroll)
+			cx = input_text_w(ui, in->text + in->scroll,
+					  in->cursor - in->scroll);
+		if (cx < 0)
+			cx = 0;
+		if (avail > 0 && cx >= avail)
+			cx = avail - 1;
+		if (avail > 0 && cx < avail)
+			ngui_fill_rect(ui, rect_make(inner.x + cx, inner.y,
+						     1, inner.h),
+				       ui->theme.accent);
 	}
 	ngui_pop_clip(ui);
 

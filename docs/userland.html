@@ -308,10 +308,11 @@
 			TrueType engine in <span class="file">ufont.c</span> with the Arimo
 			and Liberation Mono subsets in the pack. CSS and ngui can select
 			regular/bold/italic/mono faces at 8–48 px; missing faces fall back to
-			the 8×16 bitmap. Terminal contents, the editor and text-input cells
-			stay bitmap. The browser detaches the font arena before
-			<code>heap_reset()</code> and reattaches after the page heap is
-			mapped.
+			the 8×16 bitmap. Terminal contents and the editor stay bitmap;
+			ngui text fields use the proportional face for text, caret,
+			selection and horizontal scrolling. The browser detaches the font
+			arena before <code>heap_reset()</code> and reattaches after the page
+			heap is mapped.
 		</p>
 	</section>
 
