@@ -1447,13 +1447,14 @@ static void load_page(const char *url, int local, int push)
 		history_push(url);
 	set_status("Loading...", 0, 0);
 	ngui_invalidate(&ui);
-	redraw_now();
-
+	/* heap_clear() detaches the fonts, so attach them again before the
+	 * first frame or the URL bar flashes in the 8x16 bitmap fallback. */
 	if (heap_start() != 0) {
 		show_error("Out of memory", "Cannot allocate the page buffer");
 		return;
 	}
 	ngui_font_attach(&ui);
+	redraw_now();
 	browser_rules_alloc();
 	rv = read_url(url, BR_PAGE_MAX, &body, &len, &local, ctype,
 		     sizeof(ctype), final, sizeof(final), err, sizeof(err),
@@ -1546,12 +1547,13 @@ static void load_home(int push)
 	if (push)
 		history_push(page_url);
 	ngui_invalidate(&ui);
-	redraw_now();
+	/* See load_page(): reattach the fonts before the first redraw. */
 	if (heap_start() != 0) {
 		show_error("Out of memory", "Cannot allocate the browser heap");
 		return;
 	}
 	ngui_font_attach(&ui);
+	redraw_now();
 	browser_rules_alloc();
 	{
 		static const char home[] =
