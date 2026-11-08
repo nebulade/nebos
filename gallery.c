@@ -27,7 +27,7 @@
 #define THEME_H         140
 #define ICONS_H         100
 #define BUTTONS_H       140
-#define INPUTS_H        200
+#define INPUTS_H        250
 #define SCROLL_H        220
 #define LAYOUT_H        190
 
@@ -61,6 +61,7 @@ enum {
 	ID_IN_NAME,
 	ID_IN_EMAIL,
 	ID_IN_EVENTS,
+	ID_IN_DISABLED,
 	ID_BTN_RESET_FIELDS,
 
 	ID_NAV_BASE = 0x100,
@@ -118,6 +119,7 @@ static struct ngui_scroll list_scroll;
 static struct ngui_input name_in;
 static struct ngui_input email_in;
 static struct ngui_input events_in;
+static struct ngui_input disabled_in;
 
 static int sec_y[SEC_COUNT];
 static int sec_content_h;
@@ -306,6 +308,7 @@ static void reset_demo(struct ngui *g)
 	ngui_input_set(&name_in, "");
 	ngui_input_set(&email_in, "ada@nebos.org");
 	ngui_input_set(&events_in, "");
+	ngui_input_set(&disabled_in, "Read-only value");
 	ngui_set_focus(g, 0);
 	s_copy(input_feedback, "No events yet - edit a field.",
 		sizeof(input_feedback));
@@ -784,7 +787,7 @@ static void draw_inputs(struct ngui *g, struct ngui_rect card)
 	int field_y = top;
 	int help_x, help_w, help_h;
 	int result;
-	int feedback_y = top + 102;
+	int feedback_y = top + 144;
 
 	if (iw < 220)
 		iw = 220;
@@ -810,10 +813,18 @@ static void draw_inputs(struct ngui *g, struct ngui_rect card)
 			       rect_make(x + label_w, field_y, iw, 24),
 			       &events_in);
 	note_input(g, result, "events", &events_in);
+	field_y += 36;
+
+	ngui_text(g, x, field_y + 4, "Disabled", g->theme.text_dim);
+	/* A disabled field ignores clicks and keys, so it never reports an
+	 * event; the value stays in the same proportional face, dimmed. */
+	gallery_input(g, ID_IN_DISABLED,
+		      rect_make(x + label_w, field_y, iw, 24),
+		      &disabled_in);
 
 	help_x = x + label_w + iw + 24;
 	help_w = card.x + card.w - CARD_PAD - help_x;
-	help_h = 182;
+	help_h = 200;
 
 	if (help_w >= 150) {
 		int hx = help_x;
@@ -841,6 +852,8 @@ static void draw_inputs(struct ngui *g, struct ngui_rect card)
 			  g->theme.text_dim);
 		ngui_text(g, hx + 10, hy + 162, "Tab - focus first",
 			  g->theme.text_dim);
+		ngui_text(g, hx + 10, hy + 180, "Disabled - no input",
+			  g->theme.text_dim);
 	}
 
 	if (input_feedback[0])
@@ -852,20 +865,21 @@ static void draw_inputs(struct ngui *g, struct ngui_rect card)
 				   x, feedback_y, input_feedback,
 				   feedback_error ? g->theme.error :
 						    g->theme.accent);
-	ngui_text_ellipsis(g, rect_make(x, top + 124,
+	ngui_text_ellipsis(g, rect_make(x, top + 166,
 					(help_w >= 150 ?
 					 help_x - x - 12 :
 					 card.w - 2 * CARD_PAD), 16),
-			   x, top + 124,
+			   x, top + 166,
 			   "Return submits, Esc cancels, Ctrl+U clears.",
 			   g->theme.text_dim);
 
 	if (gallery_button(g, ID_BTN_RESET_FIELDS,
-			   rect_make(x, top + 144, 104, 26),
+			   rect_make(x, top + 186, 104, 26),
 			   "Reset fields")) {
 		ngui_input_set(&name_in, "");
 		ngui_input_set(&email_in, "ada@nebos.org");
 		ngui_input_set(&events_in, "");
+		ngui_input_set(&disabled_in, "Read-only value");
 		ngui_set_focus(g, 0);
 		s_copy(input_feedback, "Fields reset to their defaults.",
 			sizeof(input_feedback));
@@ -873,7 +887,7 @@ static void draw_inputs(struct ngui *g, struct ngui_rect card)
 		event_set("input fields reset");
 	}
 	if (help_w >= 150)
-		ngui_text(g, x + 120, top + 150,
+		ngui_text(g, x + 120, top + 192,
 			  "ngui_input_set() rewrites a field.",
 			  g->theme.border);
 }
@@ -1259,6 +1273,9 @@ void _start(const char *arg)
 	name_in.placeholder = "Type a name";
 	email_in.placeholder = "you@example.com";
 	events_in.placeholder = "Type and press Return";
+	disabled_in.placeholder = "Cannot edit";
+	disabled_in.disabled = 1;
+	ngui_input_set(&disabled_in, "Read-only value");
 
 	gallery_layout();
 	page.content_h = sec_content_h;

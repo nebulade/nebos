@@ -83,6 +83,7 @@ struct ngui_input {
 	unsigned int scroll;          /* first visible character */
 	unsigned int anchor;          /* mouse selection anchor (== cursor: none) */
 	int dragging;                 /* a press in the field is extending a selection */
+	int disabled;                 /* ignore input and paint the value dimmed */
 	const char *placeholder;
 	unsigned int last_click_ms;   /* previous press, for double-click select-all */
 };

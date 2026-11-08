@@ -648,8 +648,8 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   C string on the top of the user stack (`process_create_user(..., arg)`), so
   `_start(const char *arg)` needs no crt0.  `ngui.c/h` is the shared userland
   GUI toolkit linked into `ucmd_files.c`, `ucmd_mines.c`, `ucmd_solitaire.c`
-  and the external `gallery.elf` (buttons, menu items, text fields, icons,
-  layout cuts and scroll panes); `files` opens
+  and the external `gallery.elf` (buttons, menu items, text fields with a
+  disabled state, icons, layout cuts and scroll panes); `files` opens
   the selected text file through
   `/ramfs/bin/edit`, image files through `/ramfs/bin/view`, and `.htm`/`.html`
   files through `/ramfs/bin/browser`.  `ngui_end_ex()`
@@ -657,8 +657,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   apps that poll input without redrawing.
 - **Gallery**: `gallery.c` is the ngui widget gallery: typography and
   truncation, the drawing primitives and clip stack, the theme palette, all
-  nine icons, live buttons/icon buttons, text fields with event feedback, a
-  nested draggable scroll pane and the `ngui_cut_*` layout helpers.  The real
+  nine icons, live buttons/icon buttons, text fields (including a disabled,
+  read-only field) with event feedback, a nested draggable scroll pane and the
+  `ngui_cut_*` layout helpers.  The real
   ELF ships in the pack as `bin/gallery.app`; `ucmd_gallery.c` is the tiny
   `bin/gallery` launcher, which prefers `/share/GALLERY` (development upload
   via `make gallery-dev`), then the pack copy, then the `GALLERY` disk

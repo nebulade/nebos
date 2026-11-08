@@ -1334,7 +1334,7 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 		    struct ngui_input *in)
 {
 	struct ngui_rect inner;
-	int focused = (ui->focus == id);
+	int focused = !in->disabled && (ui->focus == id);
 	int result = 0;
 	int avail, line_h, k;
 	int changed = 0;
@@ -1350,8 +1350,14 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 		inner.h = 1;
 	avail = inner.w;
 
-	if (ui->pressed &&
-	    ngui_rect_contains(&r, ui->press_x, ui->press_y)) {
+	if (in->disabled) {
+		/* A field that became disabled while focused gives the focus
+		 * back, and a press cannot start a drag or a selection. */
+		if (ui->focus == id)
+			ngui_set_focus(ui, 0);
+		in->dragging = 0;
+	} else if (ui->pressed &&
+		   ngui_rect_contains(&r, ui->press_x, ui->press_y)) {
 		unsigned int now = u_ticks_ms();
 		int dbl = in->last_click_ms &&
 			  (unsigned int)(now - in->last_click_ms) <=
@@ -1385,7 +1391,8 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	 * still held.  Sampled coordinates may be outside the canvas.  The
 	 * release *event* is authoritative: the sampled button state can lag
 	 * the event queue by a frame. */
-	if (in->dragging && (ui->buttons & 1) && !ui->released) {
+	if (!in->disabled && in->dragging && (ui->buttons & 1) &&
+	    !ui->released) {
 		in->cursor = input_pos_at(ui, in, inner.x, ui->mouse_x);
 		/* Keep redrawing when the pointer leaves the window. */
 		ngui_invalidate(ui);
@@ -1468,7 +1475,8 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	ngui_fill_rect(ui, r, focused ? ui->theme.panel_alt : ui->theme.panel);
 	ngui_frame(ui, r, focused ? ui->theme.accent : ui->theme.border);
 
-	input_scroll_to_cursor(ui, in, avail);
+	if (!in->disabled)
+		input_scroll_to_cursor(ui, in, avail);
 
 	ngui_push_clip(ui, inner);
 	if (in->len == 0 && in->placeholder) {
@@ -1479,7 +1487,9 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 		if (focused)
 			input_draw_selection(ui, in, inner);
 		ngui_text_px(ui, inner.x, inner.y, in->text + in->scroll,
-			     slen(in->text + in->scroll), ui->theme.text,
+			     slen(in->text + in->scroll),
+			     in->disabled ? ui->theme.text_dim :
+					    ui->theme.text,
 			     ui->font_px, 0, 0, 0);
 	}
 

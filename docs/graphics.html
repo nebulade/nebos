@@ -266,7 +266,7 @@
 			<code>solitaire</code> and the real <code>gallery.elf</code>.
 		</p>
 		<ul>
-			<li><strong>Text fields</strong> support drag-selection, double-click select-all, Ctrl+Left/Right word jumps, Ctrl+Delete/Backspace word deletion and Ctrl+A. They use the proportional face with measured caret, selection and horizontal scrolling; the terminal and editor keep the 8×16 cell grid.</li>
+			<li><strong>Text fields</strong> support drag-selection, double-click select-all, Ctrl+Left/Right word jumps, Ctrl+Delete/Backspace word deletion and Ctrl+A. They use the proportional face with measured caret, selection and horizontal scrolling; a field marked <code>disabled</code> ignores pointer and keyboard input, drops the focus and paints its value dimmed in the same proportional face. The terminal and editor keep the 8×16 cell grid.</li>
 			<li><strong>Clip stack</strong> keeps nested panes and popups inside their parents.</li>
 			<li><strong>Layout cuts</strong> split a rectangle into rows, columns and fixed margins without a constraint solver.</li>
 			<li><strong>No retained widget tree.</strong> Apps redraw from state every frame, which keeps the toolkit small and predictable.</li>
@@ -281,8 +281,8 @@
 			<code>font-style</code> and <code>font-family: monospace</code> to
 			the faces. Missing fonts fall back to the 8×16 bitmap. The browser
 			detaches the font arena before <code>heap_reset()</code> and
-			reattaches after <code>heap_start()</code>; terminal content, the
-			editor and text fields keep the bitmap cells.
+			reattaches after <code>heap_start()</code>; terminal content and
+			the editor keep the bitmap cells.
 		</p>
 	</section>
 
