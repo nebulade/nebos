@@ -85,7 +85,7 @@
 					<tr><td>PS/2</td><td><span class="file">mouse.c</span>, <span class="file">io.c</span></td><td>i8042</td><td>IRQ 1 keyboard, IRQ 12 mouse; polling fallback</td></tr>
 					<tr><td>Serial</td><td><span class="file">serial.c</span></td><td>16550 UART, COM1</td><td>IRQ 4 ring buffer + polled transmitter</td></tr>
 					<tr><td>Thermal</td><td><span class="file">thermal.c</span></td><td>Intel DTS MSR</td><td>Sampled once a second from the scheduler tick</td></tr>
-					<tr><td>Board sensors</td><td><span class="file">it87.c</span>, <span class="file">tpec.c</span></td><td>Super I/O, ThinkPad EC</td><td>Polled read-only</td></tr>
+					<tr><td>Board sensors</td><td><span class="file">it87.c</span>, <span class="file">tpec.c</span></td><td>Super I/O, ThinkPad EC (temps, fan, battery, AC)</td><td>Polled; only the EC page selector is written, then restored</td></tr>
 				</tbody>
 			</table>
 		</div>
@@ -316,13 +316,16 @@
 		<ul>
 			<li><strong>DTS.</strong> <span class="file">thermal.c</span> reads <code>IA32_THERM_STATUS</code> on an allowlist of Core/Core 2, Nehalem/Westmere and Bonnell models. TjMax comes from <code>IA32_TEMPERATURE_TARGET</code> on Nehalem and later; Bonnell uses a table.</li>
 			<li><strong>IT87xx.</strong> <span class="file">it87.c</span> reads the Super I/O temperatures and fan tachometers on the ASUS AT3IONT-I. Nothing is written to fan control.</li>
-			<li><strong>ThinkPad EC.</strong> <span class="file">tpec.c</span> is gated on an SMBIOS Lenovo/IBM match and reads temperatures and fan mode through ports <code>0x62/0x66</code>. It drains pending output bytes and uses bounded waits; nothing is written.</li>
+			<li><strong>ThinkPad EC.</strong> <span class="file">tpec.c</span> is gated on an SMBIOS Lenovo/IBM match and reads temperatures and fan mode through ports <code>0x62/0x66</code>. It drains pending output bytes and uses bounded waits. Battery/AC state comes from <code>0x38/0x39</code> (present, charging, discharging), <code>0x46</code> bit 4 (AC online), and the page-selected 16-byte window at <code>0xA0..0xAF</code>; <code>0x81</code> selects the battery and page (0 dynamic, 1 mode, 2 design, 5 manufacturer, 6 model). That page selector is the only EC write, and it is restored when it changed.</li>
 			<li><strong>MTRRs.</strong> <span class="file">mtrr.c</span> manages write-combining ranges for the framebuffer and reports the effective mapping.</li>
 		</ul>
 		<p>
 			<code>sensors</code> prints DTS values on the 90/100/125 °C scales,
-			board sensors and EC registers; <code>power</code> prints ratios,
-			effective MHz and C-state residency.
+			board sensors and EC registers; <code>powerinfo</code> prints the
+			AC adapter and battery state from <code>SYS_POWER_INFO</code>;
+			<code>power</code> prints ratios, effective MHz and C-state
+			residency. The WM top bar shows the first present battery
+			with a valid percentage next to the CPU temperature.
 		</p>
 	</section>
 

@@ -264,7 +264,7 @@ make net-cmds                   # replace /ramfs only</code></pre>
 			<li><strong>Network console.</strong> <code>make netmon</code> listens to UDP 19290 for serial and terminal output; <code>netconsole host &lt;ip&gt;</code> narrows the target.</li>
 			<li><strong>dbg.</strong> The ring-0 serial monitor accepts <code>r addr len</code>, <code>w addr b0 …</code>, <code>i port</code>, <code>o port val</code>, <code>h</code> and <code>q</code>.</li>
 			<li><strong>Panic.</strong> A ring-0 fault dumps vector, error code, registers, CRs, EIP bytes and stack candidates to the LFB and COM1. Resolve addresses with <code>nm kernel.elf</code> / <code>addr2line -e kernel.elf</code>.</li>
-			<li><strong>Profiling.</strong> <code>gfxbench</code> times fill/copy/cell/canvas/flush; <code>top</code>, <code>sched</code>, <code>sensors</code>, <code>power</code> and <code>lspci</code>/<code>lsusb</code> expose live state.</li>
+			<li><strong>Profiling.</strong> <code>gfxbench</code> times fill/copy/cell/canvas/flush; <code>top</code>, <code>sched</code>, <code>sensors</code>, <code>powerinfo</code>, <code>power</code> and <code>lspci</code>/<code>lsusb</code> expose live state.</li>
 			<li><strong>Memory.</strong> <code>peek addr len</code> hex-dumps identity-mapped memory (MMIO too); <code>poke addr val</code> writes one dword and prints the read-back.</li>
 		</ul>
 	</section>

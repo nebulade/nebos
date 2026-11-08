@@ -535,22 +535,30 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   Bonnell = 90, otherwise 100).  The 330's 125 °C is Linux coretemp's
   empirical value; Intel only specifies TJ = 90 °C and Tcase-max = 85.2 °C,
   so `sensors` prints the raw delta and the 90/100/125 °C scales as well as
-  the top bar's `CPU 43C` before the clock and `cpuinfo`'s value plus EIST
-  state.  Platforms without DTS (QEMU, Pentium) hide it.
+  the top bar's `CPU 43C` before the clock (with `BAT 87%` to its left on
+  ThinkPads) and `cpuinfo`'s value plus EIST state.  Platforms without DTS
+  (QEMU, Pentium) hide it.
 - **Board sensors**: `it87.c/h` — read-only probe of the IT87xx Super I/O
   (the AT3IONT-I exposes three temperatures and three fan tachometers), used
   by `SYS_SENSORS` and the ring-3 `sensors` command to cross-check the DTS
   and show whether the fans turn.  Nothing is written to the fan control.
   `tpec.c/h` adds the ThinkPad embedded controller of the X201
-  (`SYS_TPEC_SENSORS`): a `_SM_` SMBIOS type 1 check gates the probe to
-  Lenovo/IBM machines, then EC reads through ports 0x62/0x66 return the
-  temperatures at EC 0x78..0x7F / 0xC0..0xC7 (0x80 = absent, 0x00 =
-  unimplemented; revision 3+ at EC 0xEF only uses the first block), the fan
-  tachometer at 0x84 (LSB, always read first) / 0x85 and the 0x2F fan mode.
-  A pending EC output byte (a hotkey event, since there is no SCI handler) is
-  drained before every command, and every wait is bounded; nothing is
-  written to the EC.  `sensors` labels the EC registers and decodes the fan
-  mode (auto / full speed / level).
+  (`SYS_TPEC_SENSORS` for temperatures/fan, `SYS_POWER_INFO` for AC/battery):
+  a `_SM_` SMBIOS type 1 check gates the probe to Lenovo/IBM machines, then
+  EC reads through ports 0x62/0x66 return the temperatures at EC 0x78..0x7F /
+  0xC0..0xC7 (0x80 = absent, 0x00 = unimplemented; revision 3+ at EC 0xEF
+  only uses the first block), the fan tachometer at 0x84 (LSB, always read
+  first) / 0x85 and the 0x2F fan mode.  The power path reads 0x38/0x39
+  (bit 7 present, bit 6 discharging, bit 5 charging) and 0x46 bit 4 (AC
+  online), then selects the 0x81 battery information page (high nibble
+  battery, low nibble page: 0 dynamic, 1 mode, 2 design, 5 manufacturer,
+  6 model) and reads the 16-byte window at 0xA0..0xAF.  A pending EC output
+  byte (a hotkey event, since there is no SCI handler) is drained before
+  every command, and every wait is bounded; the only EC write is the 0x81
+  page selector, restored when it changed.  `sensors` labels the EC
+  registers and decodes the fan mode (auto / full speed / level); the ring-3
+  `powerinfo` command prints AC/battery details and the WM top bar shows the
+  first present battery with a valid percentage.
 - **Ring-3 address space**: the ELF image and 8 KB stack live in the 2 MB
   `USER_BASE` (`0x40000000`)..`USER_STACK_TOP` (`0x40200000`) window, which is
   too small for a full-frame image.  `SYS_MEM_ALLOC`/`SYS_MEM_GROW`/`SYS_MEM_FREE`
@@ -714,7 +722,7 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`,
 `display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
-`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [auto|hlt|c1e|c3|c6]`, `power`, `cpufreq [auto|min|max|off|<ratio>]`, `spin [ms]`, `help`, `clear`, `serial test`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [auto|hlt|c1e|c3|c6]`, `power`, `powerinfo`, `cpufreq [auto|min|max|off|<ratio>]`, `spin [ms]`, `help`, `clear`, `serial test`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `netdev [name]` (kernel command: show the active NIC driver or
@@ -745,7 +753,7 @@ nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`, `spin`,
-`clock`, `colors`, `files`, `gallery`, `view`, `sensors`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
+`clock`, `colors`, `files`, `gallery`, `view`, `sensors`, `powerinfo`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
 `netreset`, `websrv`, `curl`, `solitaire` and `hello` are files in `/ramfs/bin`
 (packed by the Makefile), found through the shell's PATH; the rest are kernel
@@ -1157,9 +1165,9 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    legacy path; a larger pack needs the UEFI/kexec path or a chunked
    high-memory loader.  The browser and its ring-3 dependencies are compiled
    with function sections and linked with `--gc-sections`; the current pack
-   is ~245 KB, leaving ~16 KB under the cap.  Command growth still needs
-   care because `libdeflate-gzip -12` is already required (plain `gzip -9`
-   is over the cap).
+   is ~241 KiB (246711 bytes), leaving ~14 KB under the cap.  Command growth
+   still needs care because `libdeflate-gzip -12` is already required (plain
+   `gzip -9` is over the cap).
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
     board that exposes only MP tables stays UP (deliberate; there is no test
     hardware).
@@ -1273,10 +1281,12 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     `reboot`/`poweroff` still use the legacy ports.  The image is 17 MB: the
     9 MB kernel + rootfs disk and the 8 MB ESP.
 
-24. ThinkPad EC sensor access (`tpec.c`) runs in legacy/SMM mode because
-    there is no ACPI interpreter: an SMI that touches the EC between our port
-    accesses can produce an occasional bad sample, and EC hotkey events are
-    drained/discarded instead of handled.  The PCH thermal sensor
+24. ThinkPad EC sensor and battery access (`tpec.c`) runs in legacy/SMM mode
+    because there is no ACPI interpreter: an SMI that touches the EC between
+    our port accesses can produce an occasional bad sample (the battery
+    reader validates its values and the next 1 Hz poll corrects the bar), and
+    the 0x81 page-selector write can race the firmware's own battery poll.
+    EC hotkey events are drained/discarded instead of handled.  The PCH thermal sensor
     (`8086:3B32`, the `intel_ips` MMIO block) is not read because it needs
     the ME/BIOS to have enabled thermal reporting; the EC and DTS readings
     cover the package temperature.

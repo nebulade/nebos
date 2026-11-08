@@ -527,7 +527,7 @@ UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
         ucmd_netinfo ucmd_netip ucmd_netdns ucmd_host ucmd_dhcp \
         ucmd_netsend ucmd_netrecv ucmd_ping ucmd_pong ucmd_netlog \
         ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_net100 ucmd_netmac ucmd_curl \
-        ucmd_files ucmd_view ucmd_sensors ucmd_mines ucmd_solitaire \
+        ucmd_files ucmd_view ucmd_sensors ucmd_powerinfo ucmd_mines ucmd_solitaire \
         ucmd_gallery ucmd_websrv ucmd_browser
 
 # Keep the linked ELFs around (make would treat them as disposable

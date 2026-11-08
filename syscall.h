@@ -129,6 +129,11 @@
 /* ThinkPad embedded-controller sensors (see tpec.c); read-only. */
 #define SYS_TPEC_SENSORS  102  /* (struct sys_tpec_sensors *out) -> 0/-1 */
 
+/* ThinkPad AC/battery snapshot (see tpec.c).  SYS_POWER_F_DETAIL also reads
+ * design capacity, the capacity unit and the manufacturer/model strings. */
+#define SYS_POWER_INFO     103  /* (struct sys_powerinfo *out, flags) -> 0/-1 */
+#define SYS_POWER_F_DETAIL 0x1
+
 /* Stat one path (the file service has no open handle). */
 #define SYS_FS_STAT        98  /* (path, struct sys_stat *out) -> 0/<0 */
 
@@ -269,6 +274,40 @@ struct sys_tpec_sensors {
 	int temp_c[SYS_TPEC_TEMP_MAX];
 	unsigned int fan_rpm;
 	unsigned int fan_level;
+};
+
+/* ThinkPad AC/battery snapshot.  rate is the signed present rate in the same
+ * unit as the capacities; unit_mwh (when unit_known) selects mWh/mW vs
+ * mAh/mA.  percent is valid only when percent_valid is set. */
+#define SYS_POWER_BATT_MAX 2
+struct sys_battery {
+	unsigned int present;
+	unsigned int error;
+	unsigned int status;      /* raw EC 0x38/0x39 byte */
+	unsigned int charging;
+	unsigned int discharging;
+	unsigned int percent;
+	unsigned int percent_valid;
+	unsigned int remaining;
+	unsigned int full;
+	unsigned int design;
+	unsigned int voltage_mv;
+	int rate;
+	unsigned int unit_known;
+	unsigned int unit_mwh;
+	char manufacturer[16];
+	char model[16];
+};
+
+struct sys_powerinfo {
+	unsigned int present;     /* ThinkPad EC found */
+	int ac_online;            /* -1 unknown, 0 offline, 1 online */
+	unsigned int ec_rev;
+	char vendor[16];
+	char product[32];
+	char version[32];
+	unsigned int battery_count;
+	struct sys_battery battery[SYS_POWER_BATT_MAX];
 };
 
 /* Wall clock for the ring-3 clock (see rtc.c). */

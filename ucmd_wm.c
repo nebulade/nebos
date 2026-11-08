@@ -34,6 +34,9 @@ static int full_redraw = 1;
 static int boot_term_spawned;
 static unsigned int bar_kexec_busy, bar_kexec_progress, bar_kexec_total;
 static int bar_temp_c = -1;
+static int bar_batt_pct = -1;
+static int bar_batt_charging;
+static int bar_batt_ac;
 static char bar_msg[24];
 static unsigned int bar_msg_until;
 static int bar_msg_dirty;
@@ -140,6 +143,36 @@ static unsigned int temp_text(char *b, int c)
 	return n;
 }
 
+/* "BAT 87%" (no libc printf here). */
+static unsigned int batt_text(char *b, int pct)
+{
+	unsigned int n = 0, v = (unsigned int)pct;
+
+	b[n++] = 'B';
+	b[n++] = 'A';
+	b[n++] = 'T';
+	b[n++] = ' ';
+	if (v >= 100)
+		b[n++] = (char)('0' + (v / 100) % 10);
+	if (v >= 10)
+		b[n++] = (char)('0' + (v / 10) % 10);
+	b[n++] = (char)('0' + v % 10);
+	b[n++] = '%';
+	b[n] = '\0';
+	return n;
+}
+
+static unsigned int batt_color(int pct, int charging, int ac)
+{
+	if (pct <= 10)
+		return 0xFF5050u;
+	if (pct <= 20)
+		return 0xFFD250u;
+	if (charging || ac)
+		return 0x55FF55u;
+	return 0x55D2FFu;
+}
+
 static void draw_bar(void)
 {
 	char dt[48];
@@ -192,25 +225,42 @@ static void draw_bar(void)
 			   0xFFC864u, 0, 0, fbw, WM_BAR_H);
 	} else {
 		unsigned int clock_chars = 0;
+		int right = (int)fbw - 4;
+		int min_x = WM_BTN_GALLERY_X + (int)WM_BTN_GALLERY_W + 4;
 
 		if (u_rtc_datetime(dt, sizeof(dt)) == 0) {
 			n = 0;
 			while (dt[n] && n < sizeof(dt) - 1)
 				n++;
-			usurf_text(&screen, (int)fbw - (int)n * 8 - 4, 5, dt,
+			usurf_text(&screen, right - (int)n * 8, 5, dt,
 				   COL_BANNER, 0, 0, fbw, WM_BAR_H);
 			clock_chars = n;
 		}
+		if (clock_chars)
+			right -= (int)clock_chars * 8 + 8;
 		if (bar_temp_c >= 0) {
 			char tb[12];
 			unsigned int tn = temp_text(tb, bar_temp_c);
-			int tx = (int)fbw - 4 - (int)clock_chars * 8 -
-				 (clock_chars ? 8 : 0) - (int)tn * 8;
+			int tx = right - (int)tn * 8;
 
-			if (tx >= WM_BTN_GALLERY_X + (int)WM_BTN_GALLERY_W + 4)
+			if (tx >= min_x) {
 				usurf_text(&screen, tx, 5, tb,
 					   temp_color(bar_temp_c), 0, 0,
 					   fbw, WM_BAR_H);
+				right = tx - 8;
+			}
+		}
+		if (bar_batt_pct >= 0) {
+			char bb[10];
+			unsigned int bn = batt_text(bb, bar_batt_pct);
+			int bx = right - (int)bn * 8;
+
+			if (bx >= min_x)
+				usurf_text(&screen, bx, 5, bb,
+					   batt_color(bar_batt_pct,
+						      bar_batt_charging,
+						      bar_batt_ac),
+					   0, 0, fbw, WM_BAR_H);
 		}
 	}
 }
@@ -603,8 +653,8 @@ static void do_update(struct wm_status *st)
 			}
 		}
 	}
-	/* The RTC is slow (CMOS polling) and the temperature only changes
-	 * once a second; query both at 1 Hz instead of every 10 ms. */
+	/* The RTC is slow (CMOS polling) and the temperature/battery state only
+	 * changes once a second; query them at 1 Hz instead of every 10 ms. */
 	{
 		static unsigned int last_rtc_ms;
 		unsigned int now_ms = u_ticks_ms();
@@ -627,6 +677,37 @@ static void do_update(struct wm_status *st)
 				    ct.temp_c != bar_temp_c) {
 					bar_temp_c = ct.temp_c;
 					bar_dirty = 1;
+				}
+			}
+			{
+				struct sys_powerinfo pi;
+				int pct = -1, charging = 0, ac = 0;
+				unsigned int bi;
+
+				if (u_power_info(&pi, 0) == 0) {
+					ac = pi.ac_online > 0;
+					if (pi.present) {
+						for (bi = 0; bi < SYS_POWER_BATT_MAX;
+						     bi++) {
+							struct sys_battery *b =
+								&pi.battery[bi];
+
+							if (!b->present ||
+							    !b->percent_valid)
+								continue;
+							pct = (int)b->percent;
+							charging = (int)b->charging;
+							break;
+						}
+					}
+					if (pct != bar_batt_pct ||
+					    charging != bar_batt_charging ||
+					    ac != bar_batt_ac) {
+						bar_batt_pct = pct;
+						bar_batt_charging = charging;
+						bar_batt_ac = ac;
+						bar_dirty = 1;
+					}
 				}
 			}
 		}

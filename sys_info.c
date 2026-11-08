@@ -18,6 +18,8 @@
 
 _Static_assert(TPEC_TEMP_COUNT == SYS_TPEC_TEMP_MAX,
 	       "sys_tpec_sensors.temp_c and tpec_info.temp_c must match");
+_Static_assert(TPEC_BATTERY_COUNT == SYS_POWER_BATT_MAX,
+	       "sys_powerinfo.battery and tpec_power.battery must match");
 
 static void copy_str(char *dst, const char *src, unsigned int size)
 {
@@ -168,5 +170,48 @@ int sys_tpec_sensors(struct sys_tpec_sensors *out)
 		out->temp_c[i] = info.temp_c[i];
 	out->fan_rpm = info.fan_rpm;
 	out->fan_level = info.fan_level;
+	return 0;
+}
+
+int sys_powerinfo(struct sys_powerinfo *out, unsigned int flags)
+{
+	struct tpec_power p;
+	unsigned int i;
+
+	if (!out)
+		return -1;
+	tpec_power_read(&p, (flags & SYS_POWER_F_DETAIL) != 0);
+
+	for (i = 0; i < sizeof(*out); i++)
+		((unsigned char *)out)[i] = 0;
+	out->present = p.present ? 1u : 0u;
+	out->ac_online = p.ac_online;
+	out->ec_rev = p.ec_rev;
+	copy_str(out->vendor, p.vendor, sizeof(out->vendor));
+	copy_str(out->product, p.product, sizeof(out->product));
+	copy_str(out->version, p.version, sizeof(out->version));
+	out->battery_count = p.battery_count;
+	for (i = 0; i < SYS_POWER_BATT_MAX; i++) {
+		struct sys_battery *d = &out->battery[i];
+		const struct tpec_battery *s = &p.battery[i];
+
+		d->present = s->present ? 1u : 0u;
+		d->error = s->error ? 1u : 0u;
+		d->status = s->status;
+		d->charging = s->charging ? 1u : 0u;
+		d->discharging = s->discharging ? 1u : 0u;
+		d->percent = s->percent > 0 ? (unsigned int)s->percent : 0u;
+		d->percent_valid = s->percent_valid ? 1u : 0u;
+		d->remaining = s->remaining;
+		d->full = s->full;
+		d->design = s->design;
+		d->voltage_mv = s->voltage_mv;
+		d->rate = s->rate;
+		d->unit_known = s->unit_known ? 1u : 0u;
+		d->unit_mwh = s->unit_mwh ? 1u : 0u;
+		copy_str(d->manufacturer, s->manufacturer,
+			 sizeof(d->manufacturer));
+		copy_str(d->model, s->model, sizeof(d->model));
+	}
 	return 0;
 }

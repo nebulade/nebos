@@ -273,6 +273,12 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 					  sizeof(struct sys_tpec_sensors), 1))
 			return -1;
 		return sys_tpec_sensors((struct sys_tpec_sensors *)a1);
+	case SYS_POWER_INFO:
+		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)a1,
+					  sizeof(struct sys_powerinfo), 1))
+			return -1;
+		return sys_powerinfo((struct sys_powerinfo *)a1,
+				     (unsigned int)a2);
 	case SYS_WIN_KEY_WAIT:
 		return sys_win_key_wait((unsigned int)a1);
 	case SYS_SCHEDINFO:

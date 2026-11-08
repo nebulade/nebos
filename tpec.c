@@ -1,10 +1,10 @@
-/* Read-only ThinkPad embedded-controller sensors (see tpec.h).
+/* ThinkPad embedded-controller sensors and power sources (see tpec.h).
  *
  * The X201 (i5 M 520, Arrandale) has no IT87xx Super I/O like the
- * AT3IONT-I.  Its board temperatures and the fan tachometer live behind the
- * ACPI embedded controller, which Linux's thinkpad_acpi reads through the
- * same ports: command/status 0x66, data 0x62.  The EC protocol is simple
- * enough to drive directly:
+ * AT3IONT-I.  Its board temperatures, fan tachometer, battery and AC state
+ * live behind the ACPI embedded controller, which Linux's thinkpad_acpi
+ * reads through the same ports: command/status 0x66, data 0x62.  The EC
+ * protocol is simple enough to drive directly:
  *
  *   write 0x80 (read) to 0x66, then the register index to 0x62,
  *   wait for OBF (0x01) and read the byte back from 0x62.
@@ -18,14 +18,21 @@
  *    never replace it with the register we asked for.
  *  - Firmware keeps running in legacy/SMM mode (we have no ACPI interpreter),
  *    so an SMI can access the EC between our port accesses.  The status
- *    handshake plus bounded polling keeps that to an occasional bad sample;
- *    nothing is written, so the EC state cannot be corrupted.
+ *    handshake plus bounded polling keeps that to an occasional bad sample.
+ *    Temperature/fan reads are read-only; the battery reader writes only the
+ *    H8 information-page selector at 0x81 and restores it afterwards.
  *
- * EC register map (thinkpad_acpi): 0x78..0x7F and 0xC0..0xC7 temperatures
+ * EC register map (thinkpad_acpi/H8): 0x78..0x7F and 0xC0..0xC7 temperatures
  * (0x80 = sensor not present, 0x00 = register not implemented), 0x84/0x85
  * fan tachometer LSB/MSB and 0x2F fan control (bit 7 automatic, bit 6
  * disengaged/full speed, bits 2:0 level).  EC 0xEF is the functional
  * revision: revision 3 and later only implement the 0x78..0x7F sensors.
+ *
+ * Battery/AC: 0x38/0x39 are the battery 0/1 status bytes (bit 7 present,
+ * bit 6 discharging, bit 5 charging) and 0x46 bit 4 is the AC-adapter
+ * state.  Battery data is a 16-byte window at 0xA0..0xAF selected by 0x81:
+ * the high nibble is the battery (0x00/0x10), the low nibble the page
+ * (0 dynamic, 1 mode, 2 static design data, 5 manufacturer, 6 model).
  */
 #include "tpec.h"
 #include "paging.h"
@@ -38,6 +45,7 @@
 #define EC_OBF  0x01   /* output buffer full */
 #define EC_IBF  0x02   /* input buffer full */
 #define EC_READ 0x80
+#define EC_WRITE 0x81
 
 #define TP_FAN_LEVEL  0x2F
 #define TP_FAN_LSB    0x84
@@ -45,6 +53,24 @@
 #define TP_TEMP_LO    0x78   /* temp_c[0..7] */
 #define TP_TEMP_HI    0xC0   /* temp_c[8..15] */
 #define TP_EC_REV     0xEF   /* EC functional revision */
+
+#define TP_BAT0_STATUS 0x38  /* bit 7 present, 6 discharging, 5 charging */
+#define TP_BAT1_STATUS 0x39
+#define TP_AC_STATUS   0x46  /* bit 4: AC adapter online */
+#define TP_BAT_PAGE    0x81  /* information-page selector */
+#define TP_BAT_DATA    0xA0  /* 16-byte selected page */
+
+#define TP_BAT_PAGE_DYNAMIC 0
+#define TP_BAT_PAGE_MODE    1
+#define TP_BAT_PAGE_STATIC  2
+#define TP_BAT_PAGE_MFR     5
+#define TP_BAT_PAGE_MODEL   6
+
+#define TP_BAT_REMAINING 0x00
+#define TP_BAT_FULL      0x02
+#define TP_BAT_RSOC      0x06
+#define TP_BAT_RATE      0x08
+#define TP_BAT_VOLTAGE   0x0A
 
 /* Enough for a slow EC command (tens of milliseconds of port polls) but
  * short enough that a dead controller cannot stall the boot or a syscall. */
@@ -237,6 +263,68 @@ static int ec_read(unsigned char reg, unsigned char *out)
 	return 0;
 }
 
+/* ACPI EC "write EC RAM": command 0x81, then the register index and value. */
+static int ec_write(unsigned char reg, unsigned char val)
+{
+	if (ec_drain())
+		return -1;
+	if (ec_wait(EC_IBF, 0))
+		return -1;
+	port_outb(EC_STS, EC_WRITE);
+	if (ec_wait(EC_IBF, 0))
+		return -1;
+	port_outb(EC_DATA, reg);
+	if (ec_wait(EC_IBF, 0))
+		return -1;
+	port_outb(EC_DATA, val);
+	if (ec_wait(EC_IBF, 0))
+		return -1;
+	return 0;
+}
+
+static int ec_read16(unsigned char reg, unsigned int *out)
+{
+	unsigned char lo, hi;
+
+	if (ec_read(reg, &lo) != 0 || ec_read((unsigned char)(reg + 1), &hi) != 0)
+		return -1;
+	*out = (unsigned int)lo | ((unsigned int)hi << 8);
+	return 0;
+}
+
+/* Select an H8 battery information page.  Only writes 0x81 when the page
+ * already differs; *dirty remembers that the original page must be restored. */
+static int ec_battery_page(unsigned int battery, unsigned int page, int *dirty)
+{
+	unsigned char cur;
+	unsigned char want = (unsigned char)((battery << 4) | page);
+
+	if (ec_read(TP_BAT_PAGE, &cur) == 0 && cur == want)
+		return 0;
+	if (ec_write(TP_BAT_PAGE, want) != 0)
+		return -1;
+	*dirty = 1;
+	return 0;
+}
+
+static void ec_read_string(char *dst, unsigned int size, unsigned char reg)
+{
+	unsigned int i = 0;
+
+	while (i + 1 < size) {
+		unsigned char b;
+
+		if (ec_read((unsigned char)(reg + i), &b) != 0)
+			break;
+		if (b == 0x00 || b == 0xFF)
+			break;
+		dst[i++] = (char)b;
+	}
+	while (i && dst[i - 1] == ' ')
+		i--;
+	dst[i] = '\0';
+}
+
 static int str_eq(const char *a, const char *b)
 {
 	while (*a && *a == *b) {
@@ -365,4 +453,156 @@ void tpec_read(struct tpec_info *out)
 	}
 	if (ec_read(TP_FAN_LEVEL, &b) == 0)
 		out->fan_level = b;
+}
+
+static void tpec_copy_ident(char *dst, unsigned int size, const char *src)
+{
+	unsigned int i;
+
+	for (i = 0; i + 1 < size && src[i]; i++)
+		dst[i] = src[i];
+	dst[i] = '\0';
+}
+
+static void tpec_read_battery(struct tpec_battery *b, unsigned int index,
+			      int detail, int *page_dirty)
+{
+	unsigned char st;
+	unsigned int v;
+	unsigned int remaining = 0, full = 0, rsoc = 0xFFFF;
+	int have_remaining = 0, have_full = 0, have_rsoc = 0;
+	int have_voltage = 0;
+
+	if (ec_read((unsigned char)(TP_BAT0_STATUS + index), &st) != 0) {
+		b->error = 1;
+		return;
+	}
+	b->status = st;
+	b->present = (st & 0x80) ? 1 : 0;
+	b->charging = (st & 0x20) ? 1 : 0;
+	b->discharging = (st & 0x40) ? 1 : 0;
+	if (!b->present)
+		return;
+
+	if (ec_battery_page(index, TP_BAT_PAGE_DYNAMIC, page_dirty) != 0) {
+		b->error = 1;
+		return;
+	}
+	if (ec_read16((unsigned char)(TP_BAT_DATA + TP_BAT_REMAINING), &v) == 0) {
+		remaining = v;
+		have_remaining = (v != 0xFFFF);
+	}
+	if (ec_read16((unsigned char)(TP_BAT_DATA + TP_BAT_FULL), &v) == 0) {
+		full = v;
+		have_full = (v != 0xFFFF);
+	}
+	if (ec_read16((unsigned char)(TP_BAT_DATA + TP_BAT_RSOC), &v) == 0) {
+		rsoc = v;
+		have_rsoc = (v != 0xFFFF);
+	}
+	if (ec_read16((unsigned char)(TP_BAT_DATA + TP_BAT_RATE), &v) == 0) {
+		if (v != 0xFFFF)
+			b->rate = (int)(short)v;
+	} else {
+		b->error = 1;
+	}
+	if (ec_read16((unsigned char)(TP_BAT_DATA + TP_BAT_VOLTAGE), &v) == 0 &&
+	    v != 0xFFFF) {
+		b->voltage_mv = v;
+		have_voltage = 1;
+	} else {
+		b->error = 1;
+	}
+	b->remaining = have_remaining ? remaining : 0;
+	b->full = have_full ? full : 0;
+	if (!have_remaining || !have_full || !have_voltage)
+		b->error = 1;
+
+	/* Percentage is unit-independent (both capacities use the same unit).
+	 * Reject the 0xFFFF "unknown" marker and obviously inconsistent reads;
+	 * fall back to the SBS relative state of charge if that is sane. */
+	if (have_full && have_remaining && full > 0 && full != 0xFFFF &&
+	    remaining != 0xFFFF && remaining <= full + full / 4) {
+		b->percent = (int)((remaining * 100u + full / 2u) / full);
+		if (b->percent > 100)
+			b->percent = 100;
+		b->percent_valid = 1;
+	} else if (have_rsoc && rsoc <= 100) {
+		b->percent = (int)rsoc;
+		b->percent_valid = 1;
+	}
+
+	if (!detail)
+		return;
+	if (ec_battery_page(index, TP_BAT_PAGE_MODE, page_dirty) == 0) {
+		if (ec_read16(TP_BAT_DATA, &v) == 0 && v != 0xFFFF) {
+			b->unit_known = 1;
+			b->unit_mwh = (int)((v >> 15) & 1);
+		}
+	} else {
+		b->error = 1;
+	}
+	if (ec_battery_page(index, TP_BAT_PAGE_STATIC, page_dirty) == 0) {
+		if (ec_read16(TP_BAT_DATA, &v) == 0 && v != 0xFFFF)
+			b->design = v;
+	} else {
+		b->error = 1;
+	}
+
+	/* The vendor DSDT's GBIF/GBST report mWh/mW when the mode bit is set:
+	 * capacities are scaled by 10 (the 10.8 V pack) and the rate by the
+	 * measured voltage.  Match that so powerinfo shows the same units as
+	 * the firmware's ACPI battery interface.  The percentage above was
+	 * already computed from the raw values, so the scale does not matter. */
+	if (b->unit_mwh) {
+		b->remaining *= 10;
+		b->full *= 10;
+		b->design *= 10;
+		if (b->voltage_mv)
+			b->rate = (b->rate * (int)b->voltage_mv) / 1000;
+	}
+	if (ec_battery_page(index, TP_BAT_PAGE_MFR, page_dirty) == 0)
+		ec_read_string(b->manufacturer, sizeof(b->manufacturer),
+			       TP_BAT_DATA);
+	else
+		b->error = 1;
+	if (ec_battery_page(index, TP_BAT_PAGE_MODEL, page_dirty) == 0)
+		ec_read_string(b->model, sizeof(b->model), TP_BAT_DATA);
+	else
+		b->error = 1;
+}
+
+void tpec_power_read(struct tpec_power *out, int detail)
+{
+	unsigned int i;
+	unsigned char saved_page = 0, ac;
+	int have_saved = 0, page_dirty = 0;
+
+	for (i = 0; i < sizeof(*out); i++)
+		((unsigned char *)out)[i] = 0;
+	out->ac_online = -1;
+
+	if (tpec_state < 0)
+		tpec_init();
+	if (!tpec_state)
+		return;
+
+	out->present = 1;
+	out->ec_rev = tpec_ec_rev;
+	tpec_copy_ident(out->vendor, sizeof(out->vendor), tpec_vendor);
+	tpec_copy_ident(out->product, sizeof(out->product), tpec_product);
+	tpec_copy_ident(out->version, sizeof(out->version), tpec_version);
+
+	if (ec_read(TP_AC_STATUS, &ac) == 0)
+		out->ac_online = (ac & 0x10) ? 1 : 0;
+	if (ec_read(TP_BAT_PAGE, &saved_page) == 0)
+		have_saved = 1;
+
+	for (i = 0; i < TPEC_BATTERY_COUNT; i++) {
+		tpec_read_battery(&out->battery[i], i, detail, &page_dirty);
+		if (out->battery[i].present)
+			out->battery_count++;
+	}
+	if (page_dirty)
+		(void)ec_write(TP_BAT_PAGE, have_saved ? saved_page : 0);
 }
