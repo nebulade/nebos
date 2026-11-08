@@ -76,6 +76,19 @@
 #define SYS_RTC_HMS      56  /* (struct sys_time *out) -> 0/-1 */
 #define SYS_RTC_GET     104  /* (struct sys_datetime *out) -> 0/-1 */
 #define SYS_RTC_SET     105  /* (const struct sys_datetime *in) -> 0/-1 */
+#define SYS_NTP_SYNC    106  /* (const char *server, unsigned timeout_ms,
+				struct sys_datetime *out) -> SYS_NTP_*;
+				the service owns the NIC for the duration */
+
+/* SYS_NTP_SYNC results. */
+#define SYS_NTP_OK       0
+#define SYS_NTP_ENONIC  (-1)  /* no NIC */
+#define SYS_NTP_ENAME   (-2)  /* server name could not be resolved */
+#define SYS_NTP_EARP    (-3)  /* no ARP reply for the next hop */
+#define SYS_NTP_ETX     (-4)  /* NIC transmit failed */
+#define SYS_NTP_ETIMEOUT (-5) /* no NTP reply */
+#define SYS_NTP_EREPLY  (-6)  /* malformed, unsynchronised or KoD reply */
+#define SYS_NTP_EBUSY   (-7)  /* another process owns the receiver */
 
 /* Window-manager service (see wm_abi.h).  Only the kernel-spawned WM process
  * may call the WM_* entries; ordinary commands get -1. */

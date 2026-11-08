@@ -16,6 +16,7 @@
 #include "netdev.h"
 #include "netkexec.h"
 #include "netlog.h"
+#include "ntp.h"
 #include "process.h"
 #include "tcp.h"
 #include "timer.h"
@@ -272,6 +273,34 @@ int sys_dns_resolve(const char *name, unsigned char ip[4])
 	net_enter();
 	r = dns_resolve(name, ip);
 	net_exit();
+	return r;
+}
+
+/* SNTP sync for ring-3 callers.  The service owns the receiver for the
+ * duration (unless the caller already does), so settime does not have to
+ * take SYS_NET_ACQUIRE itself.  A second network user gets SYS_NTP_EBUSY. */
+int sys_ntp_sync(const char *server, unsigned int timeout_ms,
+		 struct sys_datetime *out)
+{
+	unsigned int pid = caller_pid();
+	int acquired = 0;
+	int r;
+
+	if (!netdev_active())
+		return SYS_NTP_ENONIC;
+	if (netdev_in_use()) {
+		if (netdev_owner() != pid)
+			return SYS_NTP_EBUSY;
+	} else {
+		netdev_acquire();
+		acquired = 1;
+	}
+
+	net_enter();
+	r = ntp_sync(server, timeout_ms, out);
+	net_exit();
+	if (acquired)
+		netdev_release();
 	return r;
 }
 

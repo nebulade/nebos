@@ -1,9 +1,11 @@
 /* settime: Date & Time editor.
  *
  * A small ngui canvas window that reads the CMOS RTC through SYS_RTC_GET and
- * writes it through SYS_RTC_SET.  The RTC stores a two-digit year, so the
- * kernel expands it with a 1970-2069 window; this app accepts the same range
- * so a dead-battery default such as 1980 or 1990 can be corrected. */
+ * writes it through SYS_RTC_SET.  The "Sync NTP" button fetches UTC from an
+ * SNTP server through SYS_NTP_SYNC and writes the returned time to the RTC.
+ * The RTC stores a two-digit year, so the kernel expands it with a 1970-2069
+ * window; this app accepts the same range so a dead-battery default such as
+ * 1980 or 1990 can be corrected. */
 
 #include "ucmd_lib.h"
 #include "ngui.h"
@@ -12,13 +14,17 @@
 #define ID_TIME 2
 #define ID_SET  3
 #define ID_NOW  4
+#define ID_NTP  5
+#define ID_SERVER 6
 
 #define ACT_SET (1u << 0)
 #define ACT_NOW (1u << 1)
+#define ACT_NTP (1u << 2)
 
 static struct ngui ui;
 static struct ngui_input date_in;
 static struct ngui_input time_in;
+static struct ngui_input ntp_in;
 static struct sys_datetime current;
 static char status[64];
 static int status_error;
@@ -89,25 +95,30 @@ static void set_status(const char *msg, int err)
 	ngui_invalidate(&ui);
 }
 
-static void load_current(int fill_fields)
+static void set_fields(const struct sys_datetime *dt)
 {
-	struct sys_datetime dt;
 	char b[24];
 	char *p;
+
+	p = put_date(b, dt);
+	*p = '\0';
+	ngui_input_set(&date_in, b);
+	p = put_time(b, dt);
+	*p = '\0';
+	ngui_input_set(&time_in, b);
+}
+
+static void load_current(int fill)
+{
+	struct sys_datetime dt;
 
 	if (u_rtc_get(&dt) != 0) {
 		set_status("Cannot read the RTC", 1);
 		return;
 	}
 	current = dt;
-	if (!fill_fields)
-		return;
-	p = put_date(b, &dt);
-	*p = '\0';
-	ngui_input_set(&date_in, b);
-	p = put_time(b, &dt);
-	*p = '\0';
-	ngui_input_set(&time_in, b);
+	if (fill)
+		set_fields(&dt);
 }
 
 static int parse_num(const char *s, unsigned int n, unsigned int *out)
@@ -205,9 +216,31 @@ static void apply_now(void)
 	set_status("Date and time updated", 0);
 }
 
+static const char *ntp_error(int r)
+{
+	switch (r) {
+	case SYS_NTP_ENONIC:
+		return "NTP: no network adapter";
+	case SYS_NTP_ENAME:
+		return "NTP: cannot resolve the server";
+	case SYS_NTP_EARP:
+		return "NTP: server is unreachable (ARP)";
+	case SYS_NTP_ETX:
+		return "NTP: transmit failed";
+	case SYS_NTP_ETIMEOUT:
+		return "NTP: server did not respond";
+	case SYS_NTP_EREPLY:
+		return "NTP: invalid server reply";
+	case SYS_NTP_EBUSY:
+		return "NTP: network is busy";
+	default:
+		return "NTP: sync failed";
+	}
+}
+
 static unsigned int draw(void)
 {
-	struct ngui_rect body, r, date_r, time_r, set_r, now_r;
+	struct ngui_rect body, r, date_r, time_r, server_r, set_r, now_r, ntp_r;
 	unsigned int action = 0;
 	char line[64];
 	char *p;
@@ -246,23 +279,36 @@ static unsigned int draw(void)
 	time_r = ngui_cut_top(&body, 32);
 	ngui_cut_top(&body, 8);
 
+	r = ngui_cut_top(&body, 18);
+	ngui_text(&ui, r.x, r.y, "NTP server (UTC)", ui.theme.text_dim);
+	server_r = ngui_cut_top(&body, 32);
+	ngui_cut_top(&body, 8);
+
 	if (ngui_text_input(&ui, ID_DATE, date_r, &date_in) &
 	    NGUI_INPUT_SUBMIT)
 		action |= ACT_SET;
 	if (ngui_text_input(&ui, ID_TIME, time_r, &time_in) &
 	    NGUI_INPUT_SUBMIT)
 		action |= ACT_SET;
+	if (ngui_text_input(&ui, ID_SERVER, server_r, &ntp_in) &
+	    NGUI_INPUT_SUBMIT)
+		action |= ACT_NTP;
 
 	r = ngui_cut_top(&body, 40);
 	set_r = r;
-	set_r.w = 96;
+	set_r.w = 88;
 	now_r = r;
-	now_r.x = r.x + 104;
-	now_r.w = 96;
+	now_r.x = r.x + 96;
+	now_r.w = 88;
+	ntp_r = r;
+	ntp_r.x = r.x + 192;
+	ntp_r.w = 112;
 	if (ngui_button(&ui, ID_SET, set_r, "Set"))
 		action |= ACT_SET;
 	if (ngui_button(&ui, ID_NOW, now_r, "Now"))
 		action |= ACT_NOW;
+	if (ngui_button(&ui, ID_NTP, ntp_r, "Sync NTP"))
+		action |= ACT_NTP;
 
 	r = ngui_cut_top(&body, 24);
 	if (status[0] && status_until &&
@@ -272,10 +318,68 @@ static unsigned int draw(void)
 
 	r = ngui_cut_top(&body, 20);
 	ngui_text(&ui, r.x, r.y,
+		  "Sync NTP fetches UTC and writes the RTC.",
+		  ui.theme.text_dim);
+	r = ngui_cut_top(&body, 20);
+	ngui_text(&ui, r.x, r.y,
 		  "RTC year range: 1970-2069.  Enter applies the change.",
 		  ui.theme.text_dim);
 
 	return action;
+}
+
+static void set_contact_status(const char *server)
+{
+	static const char prefix[] = "Contacting ";
+	unsigned int i, n;
+
+	for (i = 0; prefix[i] && i + 1 < sizeof(status); i++)
+		status[i] = prefix[i];
+	for (n = 0; server[n] && i + 3 < sizeof(status); n++)
+		status[i++] = server[n];
+	status[i++] = '.';
+	status[i++] = '.';
+	status[i++] = '.';
+	status[i] = '\0';
+	status_error = 0;
+	status_until = u_ticks_ms() + 30000;
+	ngui_invalidate(&ui);
+}
+
+/* Publish the contact status before the blocking syscall. */
+static void paint_frame(void)
+{
+	if (!ngui_begin(&ui))
+		return;
+	draw();
+	ngui_end(&ui);
+}
+
+static void sync_ntp(void)
+{
+	struct sys_datetime dt;
+	const char *server = ntp_in.text[0] ? ntp_in.text : "pool.ntp.org";
+	int r;
+
+	set_contact_status(server);
+	paint_frame();
+
+	r = u_ntp_sync(ntp_in.text, 5000, &dt);
+	if (r != 0) {
+		set_status(ntp_error(r), 1);
+		return;
+	}
+	if (dt.year < 1970 || dt.year > 2069) {
+		set_status("NTP time is outside the RTC range", 1);
+		return;
+	}
+	if (u_rtc_set(&dt) != 0) {
+		set_status("NTP time received, RTC write failed", 1);
+		return;
+	}
+	current = dt;
+	set_fields(&dt);
+	set_status("NTP time applied (UTC)", 0);
 }
 
 void _start(const char *arg)
@@ -284,7 +388,7 @@ void _start(const char *arg)
 	int quit = 0;
 
 	(void)arg;
-	if (u_win_create(460, 320, "Date & Time", &wi) != 0) {
+	if (u_win_create(460, 400, "Date & Time", &wi) != 0) {
 		u_puts("settime: no graphics window\n");
 		u_exit(1);
 	}
@@ -292,17 +396,11 @@ void _start(const char *arg)
 	ngui_font_attach(&ui);
 	date_in.placeholder = "YYYY-MM-DD";
 	time_in.placeholder = "HH:MM:SS";
+	ntp_in.placeholder = "pool.ntp.org";
+	ngui_input_set(&ntp_in, "pool.ntp.org");
 
 	if (u_rtc_get(&current) == 0) {
-		char b[24];
-		char *p;
-
-		p = put_date(b, &current);
-		*p = '\0';
-		ngui_input_set(&date_in, b);
-		p = put_time(b, &current);
-		*p = '\0';
-		ngui_input_set(&time_in, b);
+		set_fields(&current);
 	} else {
 		set_status("Cannot read the RTC", 1);
 	}
@@ -337,6 +435,8 @@ void _start(const char *arg)
 			apply_now();
 		if (action & ACT_NOW)
 			load_current(1);
+		if (action & ACT_NTP)
+			sync_ntp();
 		if (quit)
 			break;
 		u_sleep_ms(10);

@@ -231,6 +231,22 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 			d[i] = in[i];
 		return rtc_set_datetime(&dt);
 	}
+	case SYS_NTP_SYNC: {
+		struct sys_datetime dt;
+		struct sys_datetime *out = (struct sys_datetime *)a3;
+		char server[64];
+		int r;
+
+		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)out,
+					  sizeof(dt), 1))
+			return -1;
+		if (copy_user_string(server, sizeof(server), (const char *)a1) != 0)
+			return -1;
+		r = sys_ntp_sync(server, (unsigned int)a2, &dt);
+		if (r == 0)
+			*out = dt;
+		return r;
+	}
 	case SYS_WM_ATTACH:
 		return sys_wm_attach((struct wm_screen_info *)a1);
 	case SYS_WM_INFO:

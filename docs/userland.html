@@ -222,7 +222,7 @@
 					<tr><td>Console &amp; time</td><td>1–4, 56, 69, 104–105</td><td>putstr, ticks, sleep, exit, RTC time/date get/set</td></tr>
 					<tr><td>Files</td><td>5–11, 48, 98</td><td>whole-file read/write, list, unlink, mkdir/rmdir, mounts, cwd, stat</td></tr>
 					<tr><td>System info</td><td>12–16, 49–51, 91–92, 102–103</td><td>memory, E820, mouse, storage, blkdev, procinfo, cursor, CPU temp, sensors, EC sensors, AC/battery</td></tr>
-					<tr><td>Network</td><td>17–47</td><td>NIC config/acquire, raw frames, DHCP/DNS, TCP client, ARP, cwd</td></tr>
+					<tr><td>Network</td><td>17–47, 106</td><td>NIC config/acquire, raw frames, DHCP/DNS/NTP, TCP client, ARP, cwd</td></tr>
 					<tr><td>Window &amp; WM</td><td>55, 57–72, 80, 83–87</td><td>key poll, WM attach/info/map/present/create_term, window create/present/input/resize</td></tr>
 					<tr><td>Process &amp; memory</td><td>73–79, 81, 88–90</td><td>TTY, spawn, alive, kill, chdir, scheduler info, heap alloc/grow/free</td></tr>
 					<tr><td>TCP server</td><td>93–97, 99–101</td><td>listen, accept, server recv/send/close, peer, speed, MAC set</td></tr>
@@ -327,7 +327,7 @@
 			<li><strong>view</strong> — fit/1:1/zoom/pan image viewer, animated GIF playback.</li>
 			<li><strong>edit</strong> — text editor that draws its own text with the 8x16 font.</li>
 			<li><strong>clock</strong> / <strong>colors</strong> — small window canvas demos.</li>
-			<li><strong>settime</strong> — Date &amp; Time editor opened by clicking the top-bar clock. It reads and writes the CMOS RTC through <code>SYS_RTC_GET</code>/<code>SYS_RTC_SET</code>; the two-digit RTC year is expanded over 1970–2069 so dead-battery defaults such as 1980/1990 can be corrected.</li>
+			<li><strong>settime</strong> — Date &amp; Time editor opened by clicking the top-bar clock. It reads and writes the CMOS RTC through <code>SYS_RTC_GET</code>/<code>SYS_RTC_SET</code>; the <em>Sync NTP</em> button asks the kernel's SNTP client (<code>SYS_NTP_SYNC</code>, 106) for UTC and writes the result to the RTC. The two-digit RTC year is expanded over 1970–2069 so dead-battery defaults such as 1980/1990 can be corrected.</li>
 			<li><strong>wm</strong> / <strong>term</strong> — the ring-3 window manager and terminal launcher used by the desktop.</li>
 		</ul>
 		<p>

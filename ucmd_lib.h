@@ -194,6 +194,14 @@ static inline int u_rtc_set(const struct sys_datetime *t)
 	return u_syscall1(SYS_RTC_SET, (int)t);
 }
 
+/* Fetch the UTC time from an SNTP server (empty name = pool.ntp.org) and
+ * fill `dt`.  Returns SYS_NTP_*; the kernel owns the NIC for the duration. */
+static inline int u_ntp_sync(const char *server, unsigned int timeout_ms,
+			     struct sys_datetime *dt)
+{
+	return u_syscall3(SYS_NTP_SYNC, (int)server, (int)timeout_ms, (int)dt);
+}
+
 /* Window-manager service (only the kernel-spawned /ramfs/bin/wm may use it). */
 static inline int u_wm_attach(struct wm_screen_info *out)
 {

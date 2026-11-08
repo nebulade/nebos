@@ -407,8 +407,10 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   sees the right century.  `SYS_RTC_GET`/`SYS_RTC_SET` (104/105)
   expose the full `struct sys_datetime`; `SYS_RTC_HMS`/`SYS_RTC_DATETIME`
   (56/69) stay the small read-only views.  The WM top-bar date/time is a
-  click target that spawns `/ramfs/bin/settime`; the `date` command prints
-  the classic `date` line and a small `+FORMAT` subset.
+  click target that spawns `/ramfs/bin/settime`, whose "Sync NTP" button
+  fetches UTC through `SYS_NTP_SYNC` and writes it with `SYS_RTC_SET`; the
+  `date` command prints the classic `date` line and a small `+FORMAT`
+  subset.
 - **Fonts**: `ufont.c/h`, `ufont_ttf.c`, `ufont_draw.c`, `ufont_file.c` — a
   fixed-point (26.6, no FPU) TrueType parser and antialiased rasterizer for
   ring-3 text.  Latin-1 only for now; the faces are the Arimo regular/bold/
@@ -498,7 +500,13 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `netinfo`/`netrecv`/`netsend`/`netip`/`dhcp`/`pong`/`ping`/`netregs`
   commands.  `dns.c/h` — a minimal resolver (one recursive A query over UDP,
   name-compression aware; `netdns` shows/sets the server, `host <name>`
-  resolves).  `tcp.c/h` — a minimal TCP *client* (connect/send/recv/close, in-order
+  resolves).  `ntp.c/h` — a minimal SNTP client (RFC 4330): one 48-byte
+  request to UDP port 123, three one-second tries, origin-timestamp
+  validation and the reply's transmit timestamp converted from the 1900
+  epoch to UTC.  `SYS_NTP_SYNC` exposes it to the Date & Time app; the
+  default server is `pool.ntp.org`, the service takes the NIC receiver for
+  the duration and is refused with `SYS_NTP_EBUSY` while another command
+  owns it.  `tcp.c/h` — a minimal TCP *client* (connect/send/recv/close, in-order
   receive with an 8 KB receive queue so data arriving during a send is never
   lost, one segment of retransmit; the caller owns the NIC).
   `curl` — the ring-3 command: `http://` or `https://` GET with DNS, ARP,
@@ -821,8 +829,8 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   tests: `make test-images` (`img_test.c`, corpus in `testdata/images/`,
   generator `tools/gen_img_tests.py`).
 - **Network service**: `sys_net.c/h` — the NIC and the stack stay in the
-  kernel; ring-3 commands get `SYS_NET_INFO`/config, the DNS and DHCP clients
-  and the raw frame paths (`NET_TX/RX/DECODE/REPLY/LOOPBACK/REGS/RESET`), so
+  kernel; ring-3 commands get `SYS_NET_INFO`/config, the DNS, DHCP and NTP
+  clients and the raw frame paths (`NET_TX/RX/DECODE/REPLY/LOOPBACK/REGS/RESET`), so
   the packet-level commands ported unchanged.  The receiver is owned by one
   process at a time (`netdev_acquire`): the background kexec watcher pauses
   while a command owns it, and the reaper force-releases it if that process
@@ -830,7 +838,7 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   The TCP client is exposed as `TCP_CONNECT/PEER_MSS/SEND/RECV/CLOSE` (one
   connection at a time, `tcp.c` keeps the state) plus `NET_NEXT_HOP`/`NET_ARP`
   for the route to the peer.  Calls that wait inside the stack (ARP, DNS,
-  DHCP, TCP) re-enable interrupts for the duration: the syscall stub enters
+  DHCP, NTP, TCP) re-enable interrupts for the duration: the syscall stub enters
   with them off, and the deadlines spin on `get_ticks_ms()` -- a frozen tick
   counter would never satisfy them.  The netdev ownership already serializes
   net users, so being preempted mid-wait is safe.
@@ -1347,8 +1355,8 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    compressed pack directly to `0x900000` with INT 15h AH=87h, so the cap is
    `PACK_MAX` 1 MB (not the old ~255 KB low-gap limit).  The browser and
    its ring-3 dependencies are compiled with function sections and linked
-   with `--gc-sections`; the current pack with the UI fonts is ~444 KiB
-   (455092 bytes), leaving ~580 KiB under the cap.  `libdeflate-gzip -12` is
+   with `--gc-sections`; the current pack with the UI fonts is ~445 KiB
+   (455591 bytes), leaving ~580 KiB under the cap.  `libdeflate-gzip -12` is
    still preferred for the extra headroom, though the 1 MB cap leaves room
    for `gzip -9` as a fallback.
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP

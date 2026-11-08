@@ -31,6 +31,8 @@ int sys_net_mac_set(const unsigned char mac[6]);
 int sys_dhcp_run(unsigned int timeout_ms);
 int sys_dhcp_info(unsigned char server[4], unsigned int *lease);
 int sys_dns_resolve(const char *name, unsigned char ip[4]);
+int sys_ntp_sync(const char *server, unsigned int timeout_ms,
+		 struct sys_datetime *out);
 int sys_netlog(const char *text);
 int sys_netlog_conf(int enabled, const unsigned char *ip);
 int sys_tcp_connect(const unsigned char mac[6], const unsigned char ip[4],

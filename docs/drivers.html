@@ -384,8 +384,11 @@
 			the full <code>struct sys_datetime</code>; the older
 			<code>SYS_RTC_HMS</code>/<code>SYS_RTC_DATETIME</code> calls remain
 			the small read-only views. The WM’s top-bar date/time is a click
-			target that opens <code>bin/settime</code>, and the <code>date</code>
-			command prints the same clock in the classic Linux format.
+			target that opens <code>bin/settime</code>; its <em>Sync NTP</em>
+			button fetches UTC through <code>SYS_NTP_SYNC</code> (106), backed
+			by the SNTP client in <span class="file">ntp.c</span>, and writes
+			it with <code>SYS_RTC_SET</code>. The <code>date</code> command
+			prints the same clock in the classic Linux format.
 		</p>
 	</section>
 

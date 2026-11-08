@@ -324,7 +324,7 @@
 			</div>
 			<div class="card">
 				<h3>clock / colors / settime</h3>
-				<p>Small canvas demos: an analog clock, a colour test window, and the Date &amp; Time editor. Clicking the top-bar date/time opens <code>settime</code>, which reads and writes the CMOS RTC.</p>
+				<p>Small canvas demos: an analog clock, a colour test window, and the Date &amp; Time editor. Clicking the top-bar date/time opens <code>settime</code>, which reads and writes the CMOS RTC and can fetch UTC from an SNTP server.</p>
 			</div>
 			<div class="card">
 				<h3>browser</h3>
@@ -368,7 +368,7 @@
 			<li><code>cpu.c</code> — SSE2 probing</li>
 			<li><code>wm.c</code>, <code>wm.h</code>, <code>wm_abi.h</code> — kernel window server and shared ABI</li>
 			<li><code>ucmd_wm.c</code>, <code>uwm_lib.c</code> — ring-3 WM</li>
-			<li><code>ucmd_settime.c</code>, <code>rtc.c</code> — Date &amp; Time editor and RTC access</li>
+			<li><code>ucmd_settime.c</code>, <code>rtc.c</code>, <code>ntp.c</code> — Date &amp; Time editor, RTC access and SNTP sync</li>
 			<li><code>gfx.c</code>, <code>gfx.h</code> — RGB565 window canvases</li>
 			<li><code>sys_wm.c</code>, <code>sys_wm.h</code> — WM/window ABI</li>
 			<li><code>browser.c</code>, <code>browser_html.c</code> — HTML/CSS renderer and inline SVG</li>
