@@ -30,6 +30,9 @@ struct window {
 	/* Pointer press/release edges for a generic canvas window. */
 	struct win_event ptr_events[8];
 	unsigned int ptr_head, ptr_tail;
+	/* Content-relative damage union since the WM last ACKed a present. */
+	unsigned int canvas_dmg_x, canvas_dmg_y;
+	unsigned int canvas_dmg_w, canvas_dmg_h;
 	/* Ring-3 WM content mapping/bookkeeping. */
 	unsigned int content_gen; /* bumped when the content kind/session changes */
 	unsigned int mapped_kind;
@@ -64,7 +67,7 @@ int  wm_server_begin(void);
 int  wm_server_present(const struct wm_present_info *in);
 int  wm_server_sync(void);
 int  wm_server_win_create(const struct win_create *in, struct win_info *out);
-int  wm_server_win_present(void);
+int  wm_server_win_present(const struct wm_win_present *in);
 int  wm_server_win_close(void);
 int  wm_server_win_info(struct win_info *out);
 int  wm_server_win_ack_resize(void);

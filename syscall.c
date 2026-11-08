@@ -238,7 +238,7 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 		return sys_win_create((const struct win_create *)a1,
 				      (struct win_info *)a2);
 	case SYS_WIN_PRESENT:
-		return sys_win_present();
+		return sys_win_present((const struct wm_win_present *)a1);
 	case SYS_WIN_CLOSE:
 		return sys_win_close();
 	case SYS_WM_RESIZE:

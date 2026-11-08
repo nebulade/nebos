@@ -37,6 +37,7 @@ static int bar_temp_c = -1;
 static char bar_msg[24];
 static unsigned int bar_msg_until;
 static int bar_msg_dirty;
+static unsigned int stat_frames, stat_ms, stat_px, stat_max, stat_last;
 
 static void bar_notice(const char *msg)
 {
@@ -239,17 +240,23 @@ static void draw_window_clip(unsigned int idx, int cx, int cy,
 		   cx, cy, cw, ch);
 
 	/* Content: every window presents an RGB565 canvas (the terminal
-	 * renders its cells into one; gfx commands own theirs). */
-	fill_clip((int)content_x, (int)cony, content_w, content_h,
-		  0x000000u, cx, cy, cw, ch);
+	 * renders its cells into one; gfx commands own theirs).  A mapped
+	 * canvas covers the whole content area, so it does not need the black
+	 * underlay. */
 	if (u->mapped && u->map.kind == WM_KIND_GFX) {
 		struct uwm_canvas c;
 
 		c.px = (const unsigned short *)u->map.va;
 		c.w = u->map.w;
 		c.h = u->map.h;
+		if (c.w != content_w || c.h != content_h)
+			fill_clip((int)content_x, (int)cony, content_w, content_h,
+				  0x000000u, cx, cy, cw, ch);
 		usurf_canvas(&screen, &c, (int)content_x, (int)cony,
 			     cx, cy, cw, ch);
+	} else {
+		fill_clip((int)content_x, (int)cony, content_w, content_h,
+			  0x000000u, cx, cy, cw, ch);
 	}
 
 	/* Resize grip (bottom-right corner). */
@@ -267,12 +274,82 @@ static void draw_window_clip(unsigned int idx, int cx, int cy,
 	}
 }
 
-static void draw_rect(int x, int y, unsigned int w, unsigned int h)
+/* Front-to-back window order: the focused window is on top, the others
+ * follow in descending slot order.  Painting and hit-testing share it. */
+static unsigned int build_order(int *order)
+{
+	unsigned int i, n = 0;
+
+	for (i = 0; i < WM_MAX_WINDOWS; i++)
+		if (wins[i].info.used && wins[i].info.focused)
+			order[n++] = (int)i;
+	for (i = WM_MAX_WINDOWS; i-- > 0;)
+		if (wins[i].info.used && !wins[i].info.focused)
+			order[n++] = (int)i;
+	return n;
+}
+
+struct orect {
+	int x, y;
+	unsigned int w, h;
+};
+
+#define OCC_MAX 64
+
+/* r minus cut, split into up to four disjoint rectangles. */
+static unsigned int rect_sub(struct orect *out, const struct orect *r,
+			     const struct orect *cut)
+{
+	int rx0 = r->x, ry0 = r->y;
+	int rx1 = r->x + (int)r->w, ry1 = r->y + (int)r->h;
+	int cx0 = cut->x, cy0 = cut->y;
+	int cx1 = cut->x + (int)cut->w, cy1 = cut->y + (int)cut->h;
+	unsigned int n = 0;
+
+	if (cx0 < rx0) cx0 = rx0;
+	if (cy0 < ry0) cy0 = ry0;
+	if (cx1 > rx1) cx1 = rx1;
+	if (cy1 > ry1) cy1 = ry1;
+	if (cx1 <= cx0 || cy1 <= cy0) {
+		out[0] = *r;
+		return 1;
+	}
+	if (cy0 > ry0) {
+		out[n].x = rx0;
+		out[n].y = ry0;
+		out[n].w = (unsigned int)(rx1 - rx0);
+		out[n].h = (unsigned int)(cy0 - ry0);
+		n++;
+	}
+	if (cy1 < ry1) {
+		out[n].x = rx0;
+		out[n].y = cy1;
+		out[n].w = (unsigned int)(rx1 - rx0);
+		out[n].h = (unsigned int)(ry1 - cy1);
+		n++;
+	}
+	if (cx0 > rx0) {
+		out[n].x = rx0;
+		out[n].y = cy0;
+		out[n].w = (unsigned int)(cx0 - rx0);
+		out[n].h = (unsigned int)(cy1 - cy0);
+		n++;
+	}
+	if (cx1 < rx1) {
+		out[n].x = cx1;
+		out[n].y = cy0;
+		out[n].w = (unsigned int)(rx1 - cx1);
+		out[n].h = (unsigned int)(cy1 - cy0);
+		n++;
+	}
+	return n;
+}
+
+/* Back-to-front repaint, used only if the visible-region list overflows. */
+static void draw_rect_naive(int x, int y, unsigned int w, unsigned int h)
 {
 	unsigned int i;
 
-	if (w == 0 || h == 0 || x >= (int)fbw || y >= (int)fbh)
-		return;
 	usurf_fill(&screen, x, y, w, h, COL_BG);
 	for (i = 0; i < WM_MAX_WINDOWS; i++)
 		if (wins[i].info.used && !wins[i].info.focused &&
@@ -290,26 +367,92 @@ static void draw_rect(int x, int y, unsigned int w, unsigned int h)
 			draw_window_clip(i, x, y, w, h);
 }
 
+static void draw_rect(int x, int y, unsigned int w, unsigned int h)
+{
+	static struct orect cur[OCC_MAX], nxt[OCC_MAX];
+	struct orect dmg;
+	int order[WM_MAX_WINDOWS];
+	unsigned int n, i, j, ncur, nnext;
+	int overflow = 0;
+	int x0 = x, y0 = y, x1 = x + (int)w, y1 = y + (int)h;
+
+	if (w == 0 || h == 0)
+		return;
+	if (x0 < 0) x0 = 0;
+	if (y0 < 0) y0 = 0;
+	if (x1 > (int)fbw) x1 = (int)fbw;
+	if (y1 > (int)fbh) y1 = (int)fbh;
+	if (x1 <= x0 || y1 <= y0)
+		return;
+	dmg.x = x0;
+	dmg.y = y0;
+	dmg.w = (unsigned int)(x1 - x0);
+	dmg.h = (unsigned int)(y1 - y0);
+	usurf_fill(&screen, dmg.x, dmg.y, dmg.w, dmg.h, COL_BG);
+
+	n = build_order(order);
+	for (i = 0; i < n; i++) {
+		struct uwin *u = &wins[order[i]];
+		int wx0 = u->info.x, wy0 = u->info.y;
+		int wx1 = wx0 + (int)u->info.w, wy1 = wy0 + (int)u->info.h;
+
+		if (wx0 < dmg.x) wx0 = dmg.x;
+		if (wy0 < dmg.y) wy0 = dmg.y;
+		if (wx1 > x1) wx1 = x1;
+		if (wy1 > y1) wy1 = y1;
+		if (wx1 <= wx0 || wy1 <= wy0)
+			continue;
+		cur[0].x = wx0;
+		cur[0].y = wy0;
+		cur[0].w = (unsigned int)(wx1 - wx0);
+		cur[0].h = (unsigned int)(wy1 - wy0);
+		ncur = 1;
+		for (j = 0; j < i && ncur; j++) {
+			struct uwin *f = &wins[order[j]];
+			struct orect fr;
+			unsigned int k;
+
+			fr.x = f->info.x;
+			fr.y = f->info.y;
+			fr.w = f->info.w;
+			fr.h = f->info.h;
+			nnext = 0;
+			for (k = 0; k < ncur; k++) {
+				if (nnext + 4 > OCC_MAX) {
+					overflow = 1;
+					break;
+				}
+				nnext += rect_sub(&nxt[nnext], &cur[k], &fr);
+			}
+			if (overflow)
+				break;
+			for (k = 0; k < nnext; k++)
+				cur[k] = nxt[k];
+			ncur = nnext;
+		}
+		if (overflow)
+			break;
+		for (j = 0; j < ncur; j++)
+			draw_window_clip((unsigned int)order[i], cur[j].x,
+					 cur[j].y, cur[j].w, cur[j].h);
+	}
+	if (overflow)
+		draw_rect_naive(dmg.x, dmg.y, dmg.w, dmg.h);
+}
+
 static int window_at(unsigned int mx, unsigned int my)
 {
-	unsigned int i;
+	int order[WM_MAX_WINDOWS];
+	unsigned int n = build_order(order), i;
 
-	for (i = 0; i < WM_MAX_WINDOWS; i++)
-		if (wins[i].info.used && wins[i].info.focused &&
-		    mx >= (unsigned int)wins[i].info.x &&
-		    my >= (unsigned int)wins[i].info.y &&
-		    mx < (unsigned int)(wins[i].info.x + (int)wins[i].info.w) &&
-		    my < (unsigned int)(wins[i].info.y + (int)wins[i].info.h))
-			return (int)i;
-	/* Inactive windows are painted in slot order, so the highest slot is
-	 * the topmost one under the cursor. */
-	for (i = WM_MAX_WINDOWS; i-- > 0; )
-		if (wins[i].info.used && !wins[i].info.focused &&
-		    mx >= (unsigned int)wins[i].info.x &&
-		    my >= (unsigned int)wins[i].info.y &&
-		    mx < (unsigned int)(wins[i].info.x + (int)wins[i].info.w) &&
-		    my < (unsigned int)(wins[i].info.y + (int)wins[i].info.h))
-			return (int)i;
+	for (i = 0; i < n; i++) {
+		struct wm_window_info *w = &wins[order[i]].info;
+
+		if (mx >= (unsigned int)w->x && my >= (unsigned int)w->y &&
+		    mx < (unsigned int)(w->x + (int)w->w) &&
+		    my < (unsigned int)(w->y + (int)w->h))
+			return order[i];
+	}
 	return -1;
 }
 
@@ -353,6 +496,38 @@ static void add_rect(struct wm_present_info *p, int x, int y,
 		p->rect[3].w = (unsigned int)(x1 - x0);
 		p->rect[3].h = (unsigned int)(y1 - y0);
 	}
+}
+
+/* A focused window is topmost, so the shadow contains exactly its pixels in
+ * the old rectangle.  Move that block and repaint only the old part the new
+ * rectangle does not cover. */
+static void move_window_pixels(struct uwin *u, int ox, int oy, int nx, int ny)
+{
+	struct wm_present_info present;
+	struct orect oldr, newr, pieces[4];
+	unsigned int np, k;
+
+	if (u_wm_begin() != 0)
+		return;
+	usurf_copy(&screen, nx, ny, ox, oy, u->info.w, u->info.h);
+	oldr.x = ox;
+	oldr.y = oy;
+	oldr.w = u->info.w;
+	oldr.h = u->info.h;
+	newr.x = nx;
+	newr.y = ny;
+	newr.w = u->info.w;
+	newr.h = u->info.h;
+	np = rect_sub(pieces, &oldr, &newr);
+	for (k = 0; k < np; k++)
+		draw_rect(pieces[k].x, pieces[k].y, pieces[k].w, pieces[k].h);
+	present.count = 0;
+	present.immediate = 1;
+	add_rect(&present, nx, ny, u->info.w, u->info.h);
+	for (k = 0; k < np; k++)
+		add_rect(&present, pieces[k].x, pieces[k].y,
+			 pieces[k].w, pieces[k].h);
+	u_wm_present(&present);
 }
 
 static void do_update(struct wm_status *st)
@@ -464,13 +639,7 @@ static void do_update(struct wm_status *st)
 		full_redraw = 0;
 		need = 1;
 		{
-			usurf_fill(&screen, 0, 0, fbw, fbh, COL_BG);
-			for (i = 0; i < WM_MAX_WINDOWS; i++)
-				if (wins[i].info.used && !wins[i].info.focused)
-					draw_window_clip(i, 0, 0, fbw, fbh);
-			for (i = 0; i < WM_MAX_WINDOWS; i++)
-				if (wins[i].info.used && wins[i].info.focused)
-					draw_window_clip(i, 0, 0, fbw, fbh);
+			draw_rect(0, 0, fbw, fbh);
 			draw_bar();
 			present.count = 0;
 			add_rect(&present, 0, 0, fbw, fbh);
@@ -699,17 +868,21 @@ static void handle_mouse(struct wm_status *st)
 				u_wm_set_geom((unsigned int)drag_id, nx, ny);
 				u->info.x = nx;
 				u->info.y = ny;
-				present.count = 0;
-				present.immediate = 1;
-				add_rect(&present, ox, oy, u->info.w, u->info.h);
-				add_rect(&present, nx, ny, u->info.w, u->info.h);
-				if (u_wm_begin() == 0) {
-					for (i = 0; i < present.count; i++)
-						draw_rect(present.rect[i].x,
-							  present.rect[i].y,
-							  present.rect[i].w,
-							  present.rect[i].h);
-					u_wm_present(&present);
+				if (u->info.focused) {
+					move_window_pixels(u, ox, oy, nx, ny);
+				} else {
+					present.count = 0;
+					present.immediate = 1;
+					add_rect(&present, ox, oy, u->info.w, u->info.h);
+					add_rect(&present, nx, ny, u->info.w, u->info.h);
+					if (u_wm_begin() == 0) {
+						for (i = 0; i < present.count; i++)
+							draw_rect(present.rect[i].x,
+								  present.rect[i].y,
+								  present.rect[i].w,
+								  present.rect[i].h);
+						u_wm_present(&present);
+					}
 				}
 			}
 		} else {
@@ -720,6 +893,54 @@ static void handle_mouse(struct wm_status *st)
 		resize_id = -1;
 	}
 	prev_buttons = buttons;
+}
+
+static char *put_str(char *p, const char *s)
+{
+	while (*s)
+		*p++ = *s++;
+	return p;
+}
+
+static char *put_dec(char *p, unsigned int v)
+{
+	char b[10];
+	unsigned int n = 0;
+
+	do {
+		b[n++] = (char)('0' + v % 10);
+		v /= 10;
+	} while (v);
+	while (n)
+		*p++ = b[--n];
+	return p;
+}
+
+/* Expose the last interval in /share so the target can be measured without
+ * a serial console. */
+static void write_stats(void)
+{
+	char b[80], *p = b;
+	unsigned int now = u_ticks_ms();
+
+	p = put_str(p, "t=");
+	p = put_dec(p, now / 1000);
+	p = put_str(p, "s frames=");
+	p = put_dec(p, stat_frames);
+	p = put_str(p, " ms=");
+	p = put_dec(p, stat_ms);
+	p = put_str(p, " max=");
+	p = put_dec(p, stat_max);
+	p = put_str(p, " px=");
+	p = put_dec(p, stat_px);
+	p = put_str(p, "\n");
+	u_syscall3(SYS_WRITE_FILE, (int)"/share/wmstats", (int)b,
+		   (int)(p - b));
+	/* Also mirror the line to the non-blocking netconsole ring (UDP 19290)
+	 * so a serial-less board can be measured from the host.  Do not use
+	 * SYS_NETLOG here: a direct NIC send can block while the WM holds the
+	 * BKL and would make the whole board unresponsive. */
+	u_puts(b);
 }
 
 void _start(const char *arg)
@@ -741,12 +962,33 @@ void _start(const char *arg)
 	full_redraw = 1;
 
 	for (;;) {
+		unsigned int t0, t1;
+
 		if (u_wm_poll(&st) != 0)
 			u_exit(1);
 		if (st.full_redraw)
 			full_redraw = 1;
+		usurf_pixels = 0;
+		t0 = u_ticks_ms();
 		handle_mouse(&st);
 		do_update(&st);
+		t1 = u_ticks_ms();
+		if (usurf_pixels) {
+			unsigned int dt = t1 - t0;
+
+			stat_frames++;
+			stat_ms += dt;
+			stat_px += usurf_pixels;
+			if (dt > stat_max)
+				stat_max = dt;
+		}
+		if (t1 - stat_last >= 2000) {
+			stat_last = t1;
+			if (stat_frames) {
+				write_stats();
+				stat_frames = stat_ms = stat_px = stat_max = 0;
+			}
+		}
 		u_sleep_ms(10);
 	}
 }

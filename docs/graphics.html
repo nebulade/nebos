@@ -181,6 +181,33 @@
 			<li><strong>Canvas windows</strong> are generic: the app gets a back buffer, pointer position/buttons/focus and queued press/release edges with capture.</li>
 			<li><strong>Focus and z-order</strong> are explicit; closing a window kills its session and frees its canvas.</li>
 		</ul>
+
+		<h3>Compositing cost</h3>
+		<p>
+			The WM keeps a front-to-back order: the focused window first, then
+			the remaining windows in descending slot order. For each damage
+			rectangle it fills the desktop once and walks that order, subtracting
+			every window in front from the region still uncovered. A window is
+			drawn only in its exposed pieces, so a fully occluded window costs
+			nothing and the stack is never repainted back-to-front. The kernel
+			pointer hit-test uses the same order. A focused-window drag copies
+			its shadow block to the new position and repaints only the old
+			strips the new rectangle does not cover, instead of compositing the
+			window at both positions.
+		</p>
+		<p>
+			<code>SYS_WIN_PRESENT</code> carries a content-relative damage
+			rectangle. The terminal tracks its dirty rows, so a keystroke copies
+			and composites one 8×16 row block instead of the whole 512×512
+			canvas. The kernel unions the rectangles between WM polls and
+			<code>SYS_WM_INFO</code> returns that union; a present with
+			<code>w == 0</code> or <code>h == 0</code> still means the whole
+			canvas. The WM overwrites <code>/share/wmstats</code> every two
+			seconds with the interval's frame count, compositing time, worst
+			frame and pixels drawn (<code>usurf_pixels</code>), which is the
+			on-target compositor measurement; the same line is mirrored to
+			the non-blocking netconsole ring (UDP 19290).
+		</p>
 	</section>
 
 	<section id="canvas">
@@ -189,9 +216,11 @@
 			<code>SYS_WIN_CREATE</code> maps the calling command's window canvas
 			read/write at <code>0x50000000</code>. The process draws RGB565
 			pixels and publishes a finished frame with
-			<code>SYS_WIN_PRESENT</code>. Present copies the back buffer into
-			the composited front canvas with interrupts off, so a half-drawn
-			frame can never reach the screen. Frames carry monotonic sequence
+			<code>SYS_WIN_PRESENT</code>, optionally passing a content-relative
+			rectangle (<code>struct wm_win_present</code>) for the changed
+			region. Present copies that region from the back buffer into the
+			composited front canvas with interrupts off, so a half-drawn frame
+			can never reach the screen. Frames carry monotonic sequence
 			counters, so the WM cannot lose one.
 		</p>
 		<p>

@@ -170,6 +170,7 @@ static void wm_free_canvas_window(unsigned int idx)
 	}
 	w->pending_pages = 0;
 	w->resize_pending = 0;
+	w->canvas_dmg_w = w->canvas_dmg_h = 0;
 	gfx_free(&w->canvas);
 	w->canvas_window = 0;
 }
@@ -242,6 +243,8 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	w->pending_back = 0;
 	w->pending_pages = 0;
 	w->resize_pending = 0;
+	w->canvas_dmg_x = w->canvas_dmg_y = 0;
+	w->canvas_dmg_w = w->canvas_dmg_h = 0;
 	w->pw = cw + 2;
 	w->ph = ch + WM_TITLE_H + 2;
 	w->x = 24 + i * 32;
@@ -272,12 +275,12 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	return 0;
 }
 
-int wm_server_win_present(void)
+int wm_server_win_present(const struct wm_win_present *in)
 {
 	int idx = wm_window_for_pid(current_proc()->pid);
 	struct window *w;
 	const unsigned short *src;
-	unsigned int n, i;
+	unsigned int x = 0, y = 0, rw, rh, row;
 
 	if (idx < 0)
 		return -1;
@@ -285,12 +288,55 @@ int wm_server_win_present(void)
 	if (!w->canvas_window || !w->back || !w->canvas.px ||
 	    w->resize_pending)
 		return -1;
+	rw = w->canvas.w;
+	rh = w->canvas.h;
+	if (in && in->w && in->h) {
+		x = in->x;
+		y = in->y;
+		rw = in->w;
+		rh = in->h;
+		if (x >= w->canvas.w || y >= w->canvas.h)
+			return -1;
+		if (rw > w->canvas.w - x)
+			rw = w->canvas.w - x;
+		if (rh > w->canvas.h - y)
+			rh = w->canvas.h - y;
+	}
+
 	src = (const unsigned short *)USER_WIN_BASE;
-	n = w->canvas.w * w->canvas.h;
-	for (i = 0; i + 1 < n; i += 2)
-		((unsigned int *)w->canvas.px)[i / 2] = ((const unsigned int *)src)[i / 2];
-	if (n & 1)
-		w->canvas.px[n - 1] = src[n - 1];
+	for (row = 0; row < rh; row++) {
+		const unsigned short *s = src + (unsigned long)(y + row) *
+					       w->canvas.w + x;
+		unsigned short *d = w->canvas.px +
+				    (unsigned long)(y + row) * w->canvas.w + x;
+		unsigned int n = rw;
+
+		__asm__ volatile ("cld; rep movsw"
+				  : "+D"(d), "+c"(n), "+S"(s)
+				  :
+				  : "memory");
+	}
+
+	if (!w->canvas_dmg_w || !w->canvas_dmg_h) {
+		w->canvas_dmg_x = x;
+		w->canvas_dmg_y = y;
+		w->canvas_dmg_w = rw;
+		w->canvas_dmg_h = rh;
+	} else {
+		unsigned int x1 = w->canvas_dmg_x + w->canvas_dmg_w;
+		unsigned int y1 = w->canvas_dmg_y + w->canvas_dmg_h;
+
+		if (x < w->canvas_dmg_x)
+			w->canvas_dmg_x = x;
+		if (y < w->canvas_dmg_y)
+			w->canvas_dmg_y = y;
+		if (x + rw > x1)
+			x1 = x + rw;
+		if (y + rh > y1)
+			y1 = y + rh;
+		w->canvas_dmg_w = x1 - w->canvas_dmg_x;
+		w->canvas_dmg_h = y1 - w->canvas_dmg_y;
+	}
 	w->canvas.seq++;
 	return 0;
 }
@@ -376,6 +422,7 @@ int wm_server_win_ack_resize(void)
 	w->pending_back = 0;
 	w->pending_pages = 0;
 	w->resize_pending = 0;
+	w->canvas_dmg_w = w->canvas_dmg_h = 0;
 	return 0;
 }
 
@@ -454,6 +501,8 @@ int wm_server_resize(unsigned int index, unsigned int cw, unsigned int ch)
 	w->canvas = nf;
 	w->canvas.seq = 1;
 	w->canvas.drawn = 0;
+	w->canvas_dmg_x = w->canvas_dmg_y = 0;
+	w->canvas_dmg_w = w->canvas_dmg_h = 0;
 	w->pending_back = nb;
 	w->pending_pages = pages;
 	w->resize_pending = 1;
@@ -607,10 +656,15 @@ int wm_server_info(unsigned int index, struct wm_window_info *out)
 	out->content_h = g->h;
 	out->dirty = (g->seq != g->drawn);
 	out->dirty_seq = g->seq;
-	out->dmg_x = 0;
-	out->dmg_y = 0;
-	out->dmg_w = g->w;
-	out->dmg_h = g->h;
+	if (out->dirty && w->canvas_dmg_w && w->canvas_dmg_h) {
+		out->dmg_x = w->canvas_dmg_x;
+		out->dmg_y = w->canvas_dmg_y;
+		out->dmg_w = w->canvas_dmg_w;
+		out->dmg_h = w->canvas_dmg_h;
+	} else if (out->dirty) {
+		out->dmg_w = g->w;
+		out->dmg_h = g->h;
+	}
 	return 1;
 }
 
@@ -681,8 +735,10 @@ int wm_server_ack(unsigned int index, unsigned int seq)
 	w = &windows[index];
 	if (!w->used || !w->canvas_window)
 		return -1;
-	if (seq == w->canvas.seq)
+	if (seq == w->canvas.seq) {
 		w->canvas.drawn = seq;
+		w->canvas_dmg_w = w->canvas_dmg_h = 0;
+	}
 	return 0;
 }
 

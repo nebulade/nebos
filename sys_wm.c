@@ -164,9 +164,16 @@ int sys_win_create(const struct win_create *in, struct win_info *out)
 	return r;
 }
 
-int sys_win_present(void)
+int sys_win_present(const struct wm_win_present *in)
 {
-	return wm_server_win_present();
+	struct wm_win_present p;
+
+	if (!in)
+		return wm_server_win_present(0);
+	if (!user_ok(in, sizeof(p), 0))
+		return -1;
+	copy_from_user(&p, in, sizeof(p));
+	return wm_server_win_present(&p);
 }
 
 int sys_win_close(void)

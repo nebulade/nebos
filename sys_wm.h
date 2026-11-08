@@ -19,7 +19,7 @@ int sys_wm_key_poll(void);
 int sys_wm_sync(void);
 
 int sys_win_create(const struct win_create *in, struct win_info *out);
-int sys_win_present(void);
+int sys_win_present(const struct wm_win_present *in);
 int sys_win_close(void);
 int sys_win_info(struct win_info *out);
 int sys_win_ack_resize(void);

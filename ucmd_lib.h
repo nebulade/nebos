@@ -267,7 +267,20 @@ static inline int u_win_create(unsigned int w, unsigned int h, const char *title
 
 static inline int u_win_present(void)
 {
-	return u_syscall0(SYS_WIN_PRESENT);
+	return u_syscall1(SYS_WIN_PRESENT, 0);
+}
+
+/* Publish only the content-relative rectangle that changed. */
+static inline int u_win_present_rect(int x, int y, unsigned int w,
+				     unsigned int h)
+{
+	struct wm_win_present in;
+
+	in.x = (unsigned int)x;
+	in.y = (unsigned int)y;
+	in.w = w;
+	in.h = h;
+	return u_syscall1(SYS_WIN_PRESENT, (int)&in);
 }
 
 static inline int u_win_close(void)

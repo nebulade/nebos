@@ -16,6 +16,8 @@ static const unsigned char pal_b[16] = {
 	0, 0, 170, 0, 170, 170, 0, 170, 85, 255, 85, 255, 85, 255, 85, 255
 };
 
+unsigned int usurf_pixels;
+
 void usurf_init(struct usurf *s, void *px, unsigned int w, unsigned int h,
 		unsigned int pitch, unsigned int bpp)
 {
@@ -33,6 +35,7 @@ static void put_px(struct usurf *s, unsigned int x, unsigned int y,
 
 	if (x >= s->w || y >= s->h)
 		return;
+	usurf_pixels++;
 	p = s->px + (unsigned long)y * s->pitch;
 	if (s->bpp == 16) {
 		unsigned int v = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
@@ -71,29 +74,46 @@ void usurf_fill(struct usurf *s, int x, int y, unsigned int w,
 	if ((unsigned int)y + h > s->h)
 		h = s->h - (unsigned int)y;
 
-	if (s->bpp == 16) {
+	usurf_pixels += w * h;
+	if (s->bpp == 32) {
+		unsigned int v = 0xFF000000u | (r << 16) | (g << 8) | b;
+
+		for (j = 0; j < h; j++) {
+			unsigned int *p = (unsigned int *)(s->px +
+				(unsigned long)((unsigned int)y + j) * s->pitch) +
+				(unsigned int)x;
+			unsigned int n = w;
+
+			__asm__ volatile ("cld; rep stosl"
+					  : "+D"(p), "+c"(n)
+					  : "a"(v)
+					  : "memory");
+		}
+	} else if (s->bpp == 16) {
 		unsigned short v = (unsigned short)(((r >> 3) << 11) |
 					((g >> 2) << 5) | (b >> 3));
+
 		for (j = 0; j < h; j++) {
 			unsigned short *p = (unsigned short *)(s->px +
 				(unsigned long)((unsigned int)y + j) * s->pitch) +
 				(unsigned int)x;
-			for (i = 0; i < w; i++)
-				p[i] = v;
+			unsigned int n = w;
+
+			__asm__ volatile ("cld; rep stosw"
+					  : "+D"(p), "+c"(n)
+					  : "a"(v)
+					  : "memory");
 		}
 	} else {
-		unsigned int pb = s->bpp / 8;
 		for (j = 0; j < h; j++) {
 			unsigned char *p = s->px +
 				(unsigned long)((unsigned int)y + j) * s->pitch +
-				(unsigned int)x * pb;
+				(unsigned int)x * 3;
 			for (i = 0; i < w; i++) {
 				p[0] = (unsigned char)b;
 				p[1] = (unsigned char)g;
 				p[2] = (unsigned char)r;
-				if (pb == 4)
-					p[3] = 0xFF;
-				p += pb;
+				p += 3;
 			}
 		}
 	}
@@ -111,6 +131,7 @@ void usurf_copy(struct usurf *s, int dx, int dy, int sx, int sy,
 	    (unsigned int)dy + h > s->h || (unsigned int)sy + h > s->h)
 		return;
 
+	usurf_pixels += w * h;
 	backwards = (dy > sy) || (dy == sy && dx > sx);
 	{
 		unsigned int i;
@@ -123,15 +144,46 @@ void usurf_copy(struct usurf *s, int dx, int dy, int sx, int sy,
 					     (unsigned int)sx * pb;
 			unsigned char *dst = s->px + (unsigned long)dyy * s->pitch +
 					     (unsigned int)dx * pb;
-			unsigned int n = w * pb;
+			unsigned int n = w;
 
-			if (backwards) {
-				while (n--)
-					dst[n] = src[n];
+			if (pb == 4) {
+				unsigned int *d = (unsigned int *)dst;
+				const unsigned int *s32 = (const unsigned int *)src;
+
+				if (backwards) {
+					while (n--)
+						d[n] = s32[n];
+				} else {
+					__asm__ volatile ("cld; rep movsl"
+							  : "+D"(d), "+c"(n), "+S"(s32)
+							  :
+							  : "memory");
+				}
+			} else if (pb == 2) {
+				unsigned short *d = (unsigned short *)dst;
+				const unsigned short *s16 = (const unsigned short *)src;
+
+				if (backwards) {
+					while (n--)
+						d[n] = s16[n];
+				} else {
+					__asm__ volatile ("cld; rep movsw"
+							  : "+D"(d), "+c"(n), "+S"(s16)
+							  :
+							  : "memory");
+				}
 			} else {
-				unsigned int k;
-				for (k = 0; k < n; k++)
-					dst[k] = src[k];
+				unsigned int k = w * 3;
+
+				if (backwards) {
+					while (k--)
+						dst[k] = src[k];
+				} else {
+					__asm__ volatile ("cld; rep movsb"
+							  : "+D"(dst), "+c"(k), "+S"(src)
+							  :
+							  : "memory");
+				}
 			}
 		}
 	}
@@ -223,7 +275,7 @@ void usurf_canvas(struct usurf *s, const struct uwm_canvas *c,
 		  int x0, int y0,
 		  int cx, int cy, unsigned int cw, unsigned int ch)
 {
-	int x, y;
+	int y;
 	int sx0 = 0, sy0 = 0;
 	int sx1 = (int)c->w, sy1 = (int)c->h;
 
@@ -238,19 +290,49 @@ void usurf_canvas(struct usurf *s, const struct uwm_canvas *c,
 	if (sx1 <= sx0 || sy1 <= sy0)
 		return;
 
+	usurf_pixels += (unsigned int)(sx1 - sx0) * (unsigned int)(sy1 - sy0);
 	for (y = sy0; y < sy1; y++) {
-		for (x = sx0; x < sx1; x++) {
-			unsigned int p = c->px[(unsigned int)y * c->w +
-					       (unsigned int)x];
-			unsigned int r5 = (p >> 11) & 0x1F;
-			unsigned int g6 = (p >> 5) & 0x3F;
-			unsigned int b5 = p & 0x1F;
-			unsigned int r = (r5 << 3) | (r5 >> 2);
-			unsigned int g = (g6 << 2) | (g6 >> 4);
-			unsigned int b = (b5 << 3) | (b5 >> 2);
+		const unsigned short *src = c->px + (unsigned int)y * c->w +
+					    (unsigned int)sx0;
+		unsigned int yy = (unsigned int)(y0 + y);
+		unsigned int xx = (unsigned int)(x0 + sx0);
+		unsigned char *row = s->px + (unsigned long)yy * s->pitch;
+		unsigned int n = (unsigned int)(sx1 - sx0);
+		unsigned int i;
 
-			put_px(s, (unsigned int)(x0 + x),
-			       (unsigned int)(y0 + y), r, g, b);
+		if (s->bpp == 32) {
+			unsigned int *d = (unsigned int *)row + xx;
+
+			for (i = 0; i < n; i++) {
+				unsigned int p = src[i];
+				unsigned int r5 = (p >> 11) & 0x1F;
+				unsigned int g6 = (p >> 5) & 0x3F;
+				unsigned int b5 = p & 0x1F;
+
+				d[i] = 0xFF000000u |
+				       (((r5 << 3) | (r5 >> 2)) << 16) |
+				       (((g6 << 2) | (g6 >> 4)) << 8) |
+				       ((b5 << 3) | (b5 >> 2));
+			}
+		} else if (s->bpp == 16) {
+			unsigned short *d = (unsigned short *)row + xx;
+
+			for (i = 0; i < n; i++)
+				d[i] = src[i];
+		} else {
+			unsigned char *d = row + xx * 3;
+
+			for (i = 0; i < n; i++) {
+				unsigned int p = src[i];
+				unsigned int r5 = (p >> 11) & 0x1F;
+				unsigned int g6 = (p >> 5) & 0x3F;
+				unsigned int b5 = p & 0x1F;
+
+				d[0] = (unsigned char)((b5 << 3) | (b5 >> 2));
+				d[1] = (unsigned char)((g6 << 2) | (g6 >> 4));
+				d[2] = (unsigned char)((r5 << 3) | (r5 >> 2));
+				d += 3;
+			}
 		}
 	}
 }

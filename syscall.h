@@ -91,7 +91,8 @@
 #define SYS_WM_SYNC        68  /* () -> 0/-1; run deferred gfx cleanup */
 #define SYS_RTC_DATETIME   69  /* (char *buf, unsigned max) -> 0/-1 */
 #define SYS_WIN_CREATE     70  /* (struct win_create *in, struct win_info *out) */
-#define SYS_WIN_PRESENT    71  /* () -> 0/-1; publish the back canvas */
+#define SYS_WIN_PRESENT    71  /* (const struct wm_win_present *in) -> 0/-1;
+				  NULL or w/h 0 publishes the whole canvas */
 #define SYS_WIN_CLOSE      72  /* () -> 0/-1; close the caller's window */
 #define SYS_WM_RESIZE      83  /* (index, struct wm_size *content) -> 0/-1 */
 #define SYS_WIN_INFO       84  /* (struct win_info *out) -> 0/-1 */

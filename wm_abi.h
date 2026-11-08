@@ -94,6 +94,13 @@ struct wm_window_info {
 	char title[16];
 };
 
+/* SYS_WIN_PRESENT argument: the content-relative part of the canvas that
+ * changed since the last present.  w == 0 or h == 0 means the whole canvas,
+ * so a caller that does not track damage keeps the old behaviour. */
+struct wm_win_present {
+	unsigned int x, y, w, h;
+};
+
 struct wm_map_info {
 	void *va;
 	unsigned int kind;

@@ -15,6 +15,9 @@ struct uwm_canvas {
 	unsigned int w, h;
 };
 
+/* Pixels written by the compositor primitives; the WM uses it for stats. */
+extern unsigned int usurf_pixels;
+
 void usurf_init(struct usurf *s, void *px, unsigned int w, unsigned int h,
 		unsigned int pitch, unsigned int bpp);
 void usurf_fill(struct usurf *s, int x, int y, unsigned int w,

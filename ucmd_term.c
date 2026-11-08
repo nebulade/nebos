@@ -73,11 +73,39 @@ static char hist[HIST_MAX][LINE_MAX];
 static unsigned int hist_count, hist_next;
 static int fg_pid = -1;
 static int dirty = 1;
+static int dirty_full = 1;   /* the whole canvas changed */
+static int dmg_valid;
+static unsigned int dmg_y0, dmg_y1;  /* damage rows, inclusive */
 static int cursor_on = 1;
 static unsigned int last_blink;
 static int sb_drag;
 static int sb_grab_ofs;
 static int wrap_pending;   /* the row is full; the next glyph wraps */
+
+static void mark_full(void)
+{
+	dirty = 1;
+	dirty_full = 1;
+	dmg_valid = 0;
+}
+
+static void mark_row(unsigned int y)
+{
+	if (y >= rows)
+		return;
+	dirty = 1;
+	if (dirty_full)
+		return;
+	if (!dmg_valid) {
+		dmg_y0 = dmg_y1 = y;
+		dmg_valid = 1;
+	} else {
+		if (y < dmg_y0)
+			dmg_y0 = y;
+		if (y > dmg_y1)
+			dmg_y1 = y;
+	}
+}
 
 /* ---- Row log ---- */
 
@@ -128,6 +156,7 @@ static void append_blank_row(void)
 	int was_full = (row_count >= row_cap);
 
 	row_add_blank();
+	mark_full();   /* the scrollbar thumb may change size */
 	if (was_full) {
 		/* Every logical row moved down one slot; keep the input-line
 		 * anchor pointing at the same row. */
@@ -154,7 +183,7 @@ static void scroll_by(int delta)
 		nv = maxs;
 	if (nv != view) {
 		view = nv;
-		dirty = 1;
+		mark_full();
 	}
 }
 
@@ -170,6 +199,7 @@ static void cell_put(unsigned int x, unsigned int y, char ch)
 	r->cells[x] = (unsigned short)(0x0A00 | (unsigned char)ch);
 	if (x + 1 > r->len)
 		r->len = x + 1;
+	mark_row(y);
 }
 
 static void term_scroll(void)
@@ -180,26 +210,38 @@ static void term_scroll(void)
 
 static void term_newline(void)
 {
+	unsigned int old = cy;
+
 	row_at(origin_row() + cy)->wrapped = 0;
 	wrap_pending = 0;
 	cx = 0;
 	cy++;
-	if (cy >= rows)
+	if (cy >= rows) {
 		term_scroll();
-	dirty = 1;
+		mark_full();
+	} else {
+		mark_row(old);
+		mark_row(cy);
+	}
 }
 
 /* The next glyph does not fit: the row continues on the next one, and the
  * two rows form one logical line that reflow must re-wrap as a unit. */
 static void term_wrap(void)
 {
+	unsigned int old = cy;
+
 	row_at(origin_row() + cy)->wrapped = 1;
 	wrap_pending = 0;
 	cx = 0;
 	cy++;
-	if (cy >= rows)
+	if (cy >= rows) {
 		term_scroll();
-	dirty = 1;
+		mark_full();
+	} else {
+		mark_row(old);
+		mark_row(cy);
+	}
 }
 
 static void term_putc(char c)
@@ -211,7 +253,7 @@ static void term_putc(char c)
 	if (c == '\r') {
 		wrap_pending = 0;
 		cx = 0;
-		dirty = 1;
+		mark_row(cy);
 		return;
 	}
 	if (c == '\b') {
@@ -219,7 +261,6 @@ static void term_putc(char c)
 		if (cx > 0)
 			cx--;
 		cell_put(cx, cy, ' ');
-		dirty = 1;
 		return;
 	}
 	if (c == '\t') {
@@ -237,7 +278,6 @@ static void term_putc(char c)
 	cx++;
 	if (cx >= cols)
 		wrap_pending = 1;   /* stay on this row until the next glyph */
-	dirty = 1;
 }
 
 static void term_puts(const char *s)
@@ -257,7 +297,7 @@ static void term_erase_screen(void)
 		row_blank(row_at(origin_row() + i));
 	cx = cy = 0;
 	wrap_pending = 0;
-	dirty = 1;
+	mark_full();
 }
 
 /* The `clear` builtin: drop the screen and the whole scrollback. */
@@ -270,11 +310,13 @@ static void term_reset(void)
 		row_add_blank();
 	cx = cy = 0;
 	wrap_pending = 0;
-	dirty = 1;
+	mark_full();
 }
 
 static void cursor_set(unsigned int row, unsigned int col)
 {
+	unsigned int old = cy;
+
 	if (row >= rows)
 		row = rows - 1;
 	if (col >= cols)
@@ -282,7 +324,8 @@ static void cursor_set(unsigned int row, unsigned int col)
 	cy = row;
 	cx = col;
 	wrap_pending = 0;
-	dirty = 1;
+	mark_row(old);
+	mark_row(cy);
 }
 
 /* Parse the exact "ESC[row;colH" cursor sequence used by io_set_cursor. */
@@ -356,10 +399,8 @@ static void drain_tty(void)
 	char buf[BUF_MAX];
 	int n;
 
-	while ((n = u_tty_read(tty, buf, sizeof(buf))) > 0) {
+	while ((n = u_tty_read(tty, buf, sizeof(buf))) > 0)
 		tty_feed(buf, (unsigned int)n);
-		dirty = 1;
-	}
 }
 
 /* ---- Scrollbar ---- */
@@ -421,7 +462,7 @@ static void sb_set_from_y(int y)
 	}
 	if (nv != view) {
 		view = nv;
-		dirty = 1;
+		mark_full();
 	}
 }
 
@@ -451,14 +492,14 @@ static void handle_pointer(void)
 		} else if (e.type == WIN_EV_POINTER_UP) {
 			if (sb_drag) {
 				sb_drag = 0;
-				dirty = 1;
+				mark_full();
 			}
 		}
 	}
 	if (sb_drag && u_win_pointer(&p) == 0) {
 		if (!(p.buttons & 1)) {
 			sb_drag = 0;
-			dirty = 1;
+			mark_full();
 		} else {
 			sb_set_from_y(p.y);
 		}
@@ -469,16 +510,28 @@ static void handle_pointer(void)
 
 static void render(void)
 {
-	unsigned int x, y, maxs, start;
+	unsigned int x, y, y0, y1, maxs, start;
 
 	if (!dirty)
 		return;
 	maxs = row_count - rows;
-	if (view > maxs)
+	if (view > maxs) {
 		view = maxs;
+		dirty_full = 1;
+	}
 	start = origin_row() - view;
+	if (dirty_full) {
+		y0 = 0;
+		y1 = rows - 1;
+	} else if (dmg_valid) {
+		y0 = dmg_y0;
+		y1 = dmg_y1;
+	} else {
+		dirty = 0;
+		return;
+	}
 
-	for (y = 0; y < rows; y++) {
+	for (y = y0; y <= y1; y++) {
 		unsigned int idx = start + y;
 		unsigned short *dst = &view_cells[y * cols];
 
@@ -498,18 +551,28 @@ static void render(void)
 		}
 	}
 
-	usurf_fill(&surf, 0, 0, wi.width, wi.height, 0x000000u);
-	usurf_cells(&surf, view_cells, cols, rows, 0, 0, 0, 0,
-		    wi.width, wi.height);
-	if (view == 0 && cursor_on && cy < rows) {
+	if (dirty_full)
+		usurf_fill(&surf, 0, 0, wi.width, wi.height, 0x000000u);
+	else
+		usurf_fill(&surf, 0, (int)(y0 * 16), wi.width,
+			   (y1 - y0 + 1) * 16, 0x000000u);
+	usurf_cells(&surf, &view_cells[y0 * cols], cols, y1 - y0 + 1,
+		    0, (int)(y0 * 16), 0, 0, wi.width, wi.height);
+	if (view == 0 && cursor_on && cy >= y0 && cy <= y1) {
 		unsigned int ccx = (cx < cols) ? cx : (cols ? cols - 1 : 0);
 
 		usurf_fill(&surf, (int)ccx * 8, (int)cy * 16, 2, 16,
 			   0xFFFFFFu);
 	}
 	draw_scrollbar();
-	u_win_present();
+	if (dirty_full)
+		u_win_present();
+	else
+		u_win_present_rect(0, (int)(y0 * 16), wi.width,
+				   (y1 - y0 + 1) * 16);
 	dirty = 0;
+	dirty_full = 0;
+	dmg_valid = 0;
 }
 
 static void line_show(void)
@@ -517,9 +580,10 @@ static void line_show(void)
 	unsigned int i, x, base, k;
 	struct trow *r;
 
+	mark_row(cy);
 	if (view) {
 		view = 0;
-		dirty = 1;
+		mark_full();
 	}
 	base = line_abs;
 	if (base < origin_row())
@@ -533,8 +597,11 @@ static void line_show(void)
 	r->wrapped = 0;
 	/* The input line is the tail of the log: rows after its start are
 	 * leftovers of the previous, possibly longer, version of the line. */
-	for (k = 1; base + k < row_count; k++)
+	for (k = 1; base + k < row_count; k++) {
 		row_blank(row_at(base + k));
+		if (base + k >= origin_row())
+			mark_row(base + k - origin_row());
+	}
 
 	cx = line_col;
 	cy = base - origin_row();
@@ -545,7 +612,7 @@ static void line_show(void)
 		term_putc(line[i]);
 	for (x = cx; x < cols; x++)
 		cell_put(x, cy, ' ');
-	dirty = 1;
+	mark_row(cy);
 }
 
 /* ---- Reflow ---- */
@@ -713,7 +780,7 @@ static void finish_resize(unsigned int new_rows, struct pos_map *cur,
 		lin->abs = row_count - 1;
 	line_abs = lin->abs;
 	line_col = (lin->col < cols) ? lin->col : cols - 1;
-	dirty = 1;
+	mark_full();
 }
 
 static void handle_resize(void)
@@ -788,7 +855,7 @@ static void prompt(void)
 	line_abs = origin_row() + cy;
 	line_col = cx;
 	hist_browse = 0;
-	dirty = 1;
+	mark_row(cy);
 }
 
 static void print_num(unsigned int n)
@@ -1249,7 +1316,7 @@ static void handle_key(int k)
 	if (view) {
 		/* Typing always means the prompt: jump back to the tail. */
 		view = 0;
-		dirty = 1;
+		mark_full();
 	}
 	if (k == 0x03) {
 		if (fg_pid > 0) {
@@ -1402,7 +1469,7 @@ void _start(const char *arg)
 			last_blink = now;
 			cursor_on = !cursor_on;
 			if (view == 0)
-				dirty = 1;
+				mark_row(cy);
 		}
 		render();
 		u_sleep_ms((got || sb_drag) ? 1 : 10);

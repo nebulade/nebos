@@ -279,19 +279,33 @@ run area), so adding code no longer moves any address.
   console stays visible until the WM attaches (`wm_server_attach` disables
   it), so a missing `/ramfs/bin/wm` leaves the kernel boot log on screen and
   the supervisor retries.  `wm_server_present` flushes the damage rects;
-  `wm_server_key_wait/poll` provide keys.  `terminal.c` keeps the privileged
-  kernel command registry for the ring-3 terminal (`SYS_SPAWN_KCMD` /
-  `term_kcmd_spawn`), but the kernel terminal entry/shell and the cell-window
-  ABI are gone.
+  `wm_server_key_wait/poll` provide keys.  The WM keeps a front-to-back order
+  (focused first, then descending slot); every damage rectangle is painted
+  by subtracting the windows in front, so an occluded window is never
+  repainted and the stack is not drawn back-to-front.  A focused-window drag
+  copies its shadow block (`usurf_copy`) and repaints only the old strips the
+  new rectangle does not cover.  The kernel hit-test uses the same order.
+  `terminal.c` keeps the privileged kernel command
+  registry for the ring-3 terminal (`SYS_SPAWN_KCMD` / `term_kcmd_spawn`),
+  but the kernel terminal entry/shell and the cell-window ABI are gone.
 - **Window canvas API**: `gfx.c/h` allocates the RGB565 front/back canvases;
   `sys_wm.c` is the ABI bridge.  `SYS_WIN_CREATE` gives a command its window
-  canvas mapped RW at `USER_WIN_BASE` (`0x50000000`); `SYS_WIN_PRESENT` copies
-  the back buffer into the front canvas with interrupts off, so a half-drawn
-  frame can never reach the screen.  `SYS_WIN_INFO`, `SYS_WIN_ACK_RESIZE`,
-  `SYS_WIN_POINTER`, `SYS_WIN_EVENT`, `SYS_WIN_KEY_WAIT` and the generic
-  `SYS_KEY_POLL` handle input.  The WM composites the front canvas; presented
-  frames carry monotonic seq counters, so the WM can never lose one.  Closing
-  a window kills its owner; the reaper frees the canvas.  `clock`, `colors`,
+  canvas mapped RW at `USER_WIN_BASE` (`0x50000000`).  `SYS_WIN_PRESENT`
+  optionally takes a content-relative `struct wm_win_present`; the kernel
+  copies only that rectangle into the front canvas (with interrupts off, so
+  a half-drawn frame can never reach the screen), unions it into
+  `canvas_dmg_*`, and `SYS_WM_INFO` returns the union to the WM.  A present
+  with `w`/`h` zero means the whole canvas.  The terminal tracks dirty rows
+  and presents only those; `uwm_lib.c` uses row-based RGB565 conversion,
+  `rep stos`/`rep movs` fills and copies, and counts composited pixels in
+  `usurf_pixels`.  The WM writes the last two-second interval to
+  `/share/wmstats` (`frames`, `ms`, `max`, `px`) and mirrors the line to the
+  non-blocking netconsole ring (UDP 19290) for on-target measurement.
+  `SYS_WIN_INFO`, `SYS_WIN_ACK_RESIZE`, `SYS_WIN_POINTER`, `SYS_WIN_EVENT`,
+  `SYS_WIN_KEY_WAIT` and the generic `SYS_KEY_POLL` handle input.  The WM
+  composites the front canvas; presented frames carry monotonic seq
+  counters, so the WM can never lose one.  Closing a window kills its owner;
+  the reaper frees the canvas.  `clock`, `colors`,
   `term`, `files` and the other apps are canvas clients.  The old
   `SYS_GFX_BEGIN/PRESENT/END` terminal-takeover service and the kernel
   text-canvas renderer are removed.  Pointer input: `SYS_WIN_POINTER` reports
@@ -906,7 +920,10 @@ narrows it to one host (datagrams carry the broadcast MAC, so the board needs
 no ARP entry for it), `netconsole off`/`on` toggles it, and `netlog <text>`
 sends an ad-hoc line.  Nothing is sent before the NIC is up, the producer
 never blocks (a full buffer drops characters and reports it), and the flush
-pauses while a net command owns the receiver.
+pauses while a net command owns the receiver.  The producer path is
+`netlog_char` (via `screen_putchar`/`serial_putc`) and is non-blocking;
+`SYS_NETLOG` is the direct-send command path — never call it from the WM or
+from any BKL holder, because a blocking NIC TX can wedge the whole board.
 
 ## USB HID (mouse + keyboard) / host controllers
 
