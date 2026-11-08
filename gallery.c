@@ -287,7 +287,7 @@ static int gallery_input(struct ngui *g, unsigned int id,
 static void center_text(struct ngui *g, struct ngui_rect r, const char *s,
 			unsigned short color)
 {
-	int tw = (int)ngui_text_width(s);
+	int tw = (int)ngui_text_width_ui(g, s);
 	int x = r.x + (r.w - tw) / 2;
 	int y = r.y + (r.h - 16) / 2;
 
@@ -413,7 +413,7 @@ static void draw_nav(struct ngui *g, struct ngui_rect r)
 		       g->theme.border);
 
 	for (i = 0; i < SEC_COUNT; i++) {
-		int w = (int)ngui_text_width(sec_titles[i]) + 20;
+		int w = (int)ngui_text_width_ui(g, sec_titles[i]) + 20;
 
 		if (x + w > r.x + r.w - 12)
 			break;
@@ -451,7 +451,7 @@ static void draw_section_head(struct ngui *g, int x, int y, int w, int idx)
 	ngui_text_styled(g, x + 34, y + 6, sec_titles[idx],
 			 s_len(sec_titles[idx]), g->theme.text, 1, 1);
 
-	dx = x + 34 + (int)ngui_text_width(sec_titles[idx]) + 14;
+	dx = x + 34 + (int)ngui_text_width_ui(g, sec_titles[idx]) + 14;
 	if (dx < x + w - 16)
 		ngui_text_ellipsis(g, rect_make(dx, y + 6, x + w - dx, 16),
 				   dx, y + 6, sec_descs[idx],
@@ -520,7 +520,7 @@ static void draw_typography(struct ngui *g, struct ngui_rect card)
 	ngui_text(g, x, y + 2, "ngui_text_width", g->theme.text_dim);
 	n = 0;
 	s_append(buf, &n, "ngui_text_width(\"ngui\") = ", sizeof(buf));
-	s_append_uint(buf, &n, ngui_text_width("ngui"), sizeof(buf));
+	s_append_uint(buf, &n, ngui_text_width_ui(g, "ngui"), sizeof(buf));
 	s_append(buf, &n, " px", sizeof(buf));
 	ngui_text_ellipsis(g, rect_make(value_x, y + 2, value_w, 16),
 			   value_x, y + 2, buf, g->theme.text);
@@ -666,7 +666,7 @@ static void draw_icons(struct ngui *g, struct ngui_rect card)
 			ngui_invalidate(g);
 		}
 
-		tw = (int)ngui_text_width(icon_names[i]);
+		tw = (int)ngui_text_width_ui(g, icon_names[i]);
 		tx = cx + (cell - tw) / 2;
 		lr = rect_make(cx + 2, ly, cell - 4, 16);
 		if (tx < lr.x)
@@ -683,7 +683,7 @@ static void draw_icons(struct ngui *g, struct ngui_rect card)
 			   "Click an icon button - every one is live",
 			   g->theme.text_dim);
 	if (card.w > 650) {
-		int cw = (int)ngui_text_width(count);
+		int cw = (int)ngui_text_width_ui(g, count);
 
 		ngui_text(g, card.x + card.w - CARD_PAD - cw,
 			  card.y + 74, count, g->theme.text_dim);
@@ -743,7 +743,7 @@ static void draw_buttons(struct ngui *g, struct ngui_rect card)
 	s_append_uint(num, &n, (unsigned int)button_clicks, sizeof(num));
 	if (card.w > 620) {
 		int right = card.x + card.w - CARD_PAD;
-		int vw = (int)ngui_text_width_n(num, n, 2);
+		int vw = (int)ngui_text_width_px(g, num, n, g->font_px * 2, 1, 0, 0);
 
 		ngui_text(g, right - 96, card.y + 18, "TOTAL CLICKS",
 			  g->theme.text_dim);
@@ -1138,7 +1138,7 @@ static void draw_status(struct ngui *g, struct ngui_rect r)
 		      sizeof(right));
 	s_append(right, &m, "%", sizeof(right));
 
-	rw = (int)ngui_text_width(right);
+	rw = (int)ngui_text_width_ui(g, right);
 	rx = r.x + r.w - rw - 10;
 	ngui_text(g, rx, r.y + 4, right, g->theme.text_dim);
 
@@ -1254,6 +1254,7 @@ void _start(const char *arg)
 
 	ngui_init(&ui, (unsigned short *)wi.fb, (int)wi.width,
 		  (int)wi.height);
+	ngui_font_attach(&ui);
 
 	name_in.placeholder = "Type a name";
 	email_in.placeholder = "you@example.com";

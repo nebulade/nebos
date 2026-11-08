@@ -261,7 +261,7 @@ static void format_status(char *buf, unsigned int cap)
 static void draw_message(struct ngui *ui, struct ngui_rect body,
 			 const char *msg)
 {
-	int tw = (int)ngui_text_width(msg);
+	int tw = (int)ngui_text_width_ui(ui, msg);
 	int x = body.x + (body.w - tw) / 2;
 	int y = body.y + body.h / 2 - 8;
 
@@ -270,7 +270,7 @@ static void draw_message(struct ngui *ui, struct ngui_rect body,
 	ngui_text(ui, x, y, msg, ui->theme.text);
 	if (!v.loading) {
 		const char *hint = "Esc closes";
-		int hw = (int)ngui_text_width(hint);
+		int hw = (int)ngui_text_width_ui(ui, hint);
 
 		ngui_text(ui, body.x + (body.w - hw) / 2, y + 24, hint,
 			  ui->theme.text_dim);
@@ -438,6 +438,7 @@ static void error_exit(const char *msg)
 		u_exit(1);
 	}
 	ngui_init(&ui, (unsigned short *)wi.fb, (int)wi.width, (int)wi.height);
+	ngui_font_attach(&ui);
 	v.error = 1;
 	s_copy(v.err, msg, sizeof(v.err));
 	v.have_img = 0;
@@ -520,6 +521,7 @@ void _start(const char *arg)
 		u_exit(1);
 	}
 	ngui_init(&v.ui, (unsigned short *)wi.fb, (int)wi.width, (int)wi.height);
+	ngui_font_attach(&v.ui);
 	v.fit = 1;
 	v.zoom = 65536;
 	v.loading = 1;

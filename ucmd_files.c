@@ -661,21 +661,21 @@ static void draw_toolbar(struct ngui *g, struct ngui_rect r, unsigned int *actio
 	} else {
 		int w;
 
-		w = (int)ngui_text_width("Up") + 18;
+		w = (int)ngui_text_width_ui(g, "Up") + 18;
 		if (ngui_button(g, ID_UP, (struct ngui_rect){x, y, w, h}, "Up"))
 			*action |= ACT_UP;
 		x += w + 6;
-		w = (int)ngui_text_width("Home") + 18;
+		w = (int)ngui_text_width_ui(g, "Home") + 18;
 		if (ngui_button(g, ID_HOME, (struct ngui_rect){x, y, w, h},
 				"Home"))
 			*action |= ACT_HOME;
 		x += w + 6;
-		w = (int)ngui_text_width("Refresh") + 18;
+		w = (int)ngui_text_width_ui(g, "Refresh") + 18;
 		if (ngui_button(g, ID_REFRESH, (struct ngui_rect){x, y, w, h},
 				"Refresh"))
 			*action |= ACT_REFRESH;
 		x += w + 6;
-		w = (int)ngui_text_width("New Folder") + 18;
+		w = (int)ngui_text_width_ui(g, "New Folder") + 18;
 		if (ngui_button(g, ID_NEW, (struct ngui_rect){x, y, w, h},
 				"New Folder"))
 			*action |= ACT_NEW;
@@ -857,7 +857,7 @@ static void draw_list(struct ngui *g, struct ngui_rect r, unsigned int *action)
 		} else {
 			format_size(e->size, detail, sizeof(detail));
 		}
-		detail_x = r.x + row_w - 6 - (int)ngui_text_width(detail);
+		detail_x = r.x + row_w - 6 - (int)ngui_text_width_ui(g, detail);
 		if (detail_x < r.x + 30) {
 			detail[0] = '\0';
 			detail_x = r.x + row_w;
@@ -1081,6 +1081,7 @@ void _start(const char *arg)
 		u_exit(1);
 	}
 	ngui_init(&ui, (unsigned short *)wi.fb, (int)wi.width, (int)wi.height);
+	ngui_font_attach(&ui);
 	path_in.placeholder = "/path";
 	new_in.placeholder = "NAME";
 	list_scroll.offset = 0;

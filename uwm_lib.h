@@ -4,10 +4,14 @@
 #ifndef UWM_LIB_H
 #define UWM_LIB_H
 
+struct ufont_face;
+
 struct usurf {
 	unsigned char *px;
 	unsigned int w, h, pitch;
 	unsigned int bpp;          /* 16, 24 or 32 */
+	struct ufont_face *font;   /* NULL = 8x16 bitmap text */
+	int font_px;
 };
 
 struct uwm_canvas {
@@ -31,6 +35,8 @@ void usurf_glyph(struct usurf *s, int x, int y, unsigned char c,
 void usurf_text(struct usurf *s, int x, int y, const char *str,
 		unsigned int fg,
 		int cx, int cy, unsigned int cw, unsigned int ch);
+unsigned int usurf_text_width(struct usurf *s, const char *str);
+void usurf_font_attach(struct usurf *s, const char *path, int px);
 void usurf_cells(struct usurf *s, const unsigned short *cells,
 		 unsigned int cols, unsigned int rows,
 		 int x0, int y0,

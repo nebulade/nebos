@@ -13,6 +13,8 @@ tls_test
 img_test
 img_test_asan
 text_canvas_test
+ufont_test
+ufont_test_asan
 libc.a
 malloc_test
 mkrootfs

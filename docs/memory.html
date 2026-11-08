@@ -130,9 +130,9 @@
 					<tr><td><code>0x6000</code></td><td>AP real/protected-mode trampoline</td><td>SIPI vector <code>0x06</code>; image ends below <code>0x6C00</code></td></tr>
 					<tr><td><code>0x6C00</code></td><td>AP trampoline real-mode stack top</td><td>Grows down</td></tr>
 					<tr><td><code>0x6F00</code></td><td>AP startup info block</td><td>CR3, stack top, C entry, CPU index</td></tr>
-					<tr><td><code>0x60000</code></td><td>Legacy rootfs staging</td><td><code>0x60000..0x9FBFF</code>, compressed pack only</td></tr>
+					<tr><td><code>0x60000</code></td><td>Former rootfs staging</td><td>No longer used by the loader; kernel BSS/stack may use it</td></tr>
 					<tr><td><code>_end</code></td><td>Kernel end</td><td><code>kernel.ld</code> asserts <code>_end ≤ 0x90000</code></td></tr>
-					<tr><td><code>0x900000</code></td><td>Boot pack after relocation; dynamic stacks and kexec staging</td><td>Freed after <code>ramfs_init</code> takes its copy</td></tr>
+					<tr><td><code>0x900000</code></td><td>Boot pack (written directly by the legacy stage); dynamic stacks and kexec staging</td><td>Freed after <code>ramfs_init</code> takes its copy</td></tr>
 					<tr><td><code>0x100000</code></td><td>VGA shadow buffer base</td><td><code>VGA_SHADOW_BASE</code>; 8 MB reserved</td></tr>
 					<tr><td><code>0x40000000</code></td><td>Ring-3 ELF link/load address</td><td><code>USER_BASE</code>, 2 MB window up to <code>0x40200000</code></td></tr>
 					<tr><td><code>0x50000000</code></td><td>Ring-3 window canvas</td><td><code>USER_WIN_BASE</code>, 4 MB slot</td></tr>
@@ -293,7 +293,7 @@
 	<section id="pack">
 		<h2>Rootfs pack lifetime</h2>
 		<ol>
-			<li>The boot path places the gzip pack in RAM: the legacy stage in the low gap and then <code>0x900000</code>, UEFI at the top of RAM below 128 MB, kexec in its staging buffer.</li>
+			<li>The boot path places the gzip pack in RAM: the legacy stage copies it directly to <code>0x900000</code> with <code>INT 15h AH=87h</code>, UEFI at the top of RAM below 128 MB, kexec in its staging buffer.</li>
 			<li><code>mm_init</code> reserves <code>[pack_addr, pack_addr + pack_size)</code> so the frame allocator cannot reuse it.</li>
 			<li><code>ramfs_init</code> takes a private page-allocated copy, validates the <code>NBROOT1</code> header and inflates the pack into it.</li>
 			<li><code>mm_free_range</code> releases the boot region when it is above the VGA shadow reserve. The private copy lives until <code>ramfs_replace</code> or reboot.</li>

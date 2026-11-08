@@ -1038,7 +1038,8 @@ static int str_eq(const char *a, const char *b)
 /* ---- CSS ---- */
 
 enum {
-	PROP_COLOR, PROP_BG, PROP_SCALE, PROP_BOLD, PROP_ALIGN, PROP_UNDERLINE,
+	PROP_COLOR, PROP_BG, PROP_FONT_PX, PROP_BOLD, PROP_ITALIC, PROP_MONO,
+	PROP_ALIGN, PROP_UNDERLINE,
 	PROP_DISPLAY, PROP_MT, PROP_MR, PROP_MB, PROP_ML,
 	PROP_PT, PROP_PR, PROP_PB, PROP_PL,
 	PROP_BORDER_W, PROP_BORDER_COLOR,
@@ -2199,8 +2200,8 @@ static void parse_decls(struct br_doc *d, const char *s,
 		} else if (str_eq(prop, "font-size")) {
 			int px = parse_font_px(s + vstart, vend - vstart);
 			if (px > 0)
-				decl_add(out, nout, PROP_SCALE,
-					 px >= 24 ? 2 : 1, important);
+				decl_add(out, nout, PROP_FONT_PX, px,
+					 important);
 		} else if (str_eq(prop, "font-weight")) {
 			int bold = 0;
 			unsigned int j;
@@ -2217,6 +2218,19 @@ static void parse_decls(struct br_doc *d, const char *s,
 					bold = 1;
 			}
 			decl_add(out, nout, PROP_BOLD, bold, important);
+		} else if (str_eq(prop, "font-style")) {
+			int italic = (vend - vstart >= 6 &&
+				      ci_eq_n(s + vstart, "italic", 6));
+
+			decl_add(out, nout, PROP_ITALIC, italic, important);
+		} else if (str_eq(prop, "font-family")) {
+			unsigned int j;
+			int mono = 0;
+
+			for (j = vstart; j + 4 <= vend; j++)
+				if (ci_eq_n(s + j, "mono", 4))
+					mono = 1;
+			decl_add(out, nout, PROP_MONO, mono, important);
 		} else if (str_eq(prop, "text-align")) {
 			int a = BR_ALIGN_LEFT;
 			if (vend - vstart >= 6 &&
@@ -3517,11 +3531,22 @@ static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 		st->bg = (unsigned short)dcl->val;
 		st->has_bg = 1;
 		break;
-	case PROP_SCALE:
-		st->scale = (unsigned char)(dcl->val >= 2 ? 2 : 1);
+	case PROP_FONT_PX:
+		if (dcl->val < 8)
+			st->font_px = 8;
+		else if (dcl->val > 48)
+			st->font_px = 48;
+		else
+			st->font_px = (unsigned char)dcl->val;
 		break;
 	case PROP_BOLD:
 		st->bold = (unsigned char)(dcl->val != 0);
+		break;
+	case PROP_ITALIC:
+		st->italic = (unsigned char)(dcl->val != 0);
+		break;
+	case PROP_MONO:
+		st->mono = (unsigned char)(dcl->val != 0);
 		break;
 	case PROP_ALIGN:
 		st->align = (unsigned char)dcl->val;
@@ -3711,15 +3736,23 @@ void br_style_for(struct br_doc *d, unsigned int node,
 		out->mt = out->mb = 8;
 		break;
 	case BR_TAG_H1:
-		out->scale = 2; out->bold = 1;
+		out->font_px = 32; out->bold = 1;
 		out->mt = 10; out->mb = 6;
 		break;
 	case BR_TAG_H2:
-		out->scale = 2; out->bold = 1;
+		out->font_px = 24; out->bold = 1;
 		out->mt = 8; out->mb = 4;
 		break;
 	case BR_TAG_H3: case BR_TAG_H4: case BR_TAG_H5: case BR_TAG_H6:
 		out->bold = 1; out->mt = 6; out->mb = 3;
+		if (tag == BR_TAG_H3)
+			out->font_px = 19;
+		else if (tag == BR_TAG_H4)
+			out->font_px = 17;
+		else if (tag == BR_TAG_H5)
+			out->font_px = 15;
+		else
+			out->font_px = 13;
 		break;
 	case BR_TAG_UL: case BR_TAG_OL:
 		out->mt = out->mb = 6; out->pl = 20;
@@ -3733,6 +3766,7 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	case BR_TAG_PRE:
 		out->mt = out->mb = 8; out->pl = 8;
 		out->has_bg = 1; out->bg = theme_panel;
+		out->mono = 1;
 		break;
 	case BR_TAG_CENTER:
 		out->align = BR_ALIGN_CENTER;
@@ -3743,8 +3777,18 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	case BR_TAG_B: case BR_TAG_STRONG:
 		out->bold = 1;
 		break;
+	case BR_TAG_I: case BR_TAG_EM:
+		out->italic = 1;
+		break;
 	case BR_TAG_CODE:
 		out->color = 0x8010;
+		out->mono = 1;
+		break;
+	case BR_TAG_SMALL:
+		out->font_px = 13;
+		break;
+	case BR_TAG_BIG:
+		out->font_px = 20;
 		break;
 	case BR_TAG_TD: case BR_TAG_TH:
 		out->pr = 12;

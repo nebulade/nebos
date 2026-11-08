@@ -303,6 +303,16 @@
 			<li><strong>clock</strong> / <strong>colors</strong> — small window canvas demos.</li>
 			<li><strong>wm</strong> / <strong>term</strong> — the ring-3 window manager and terminal launcher used by the desktop.</li>
 		</ul>
+		<p>
+			The WM chrome, ngui labels and the browser use the fixed-point
+			TrueType engine in <span class="file">ufont.c</span> with the Arimo
+			and Liberation Mono subsets in the pack. CSS and ngui can select
+			regular/bold/italic/mono faces at 8–48 px; missing faces fall back to
+			the 8×16 bitmap. Terminal contents, the editor and text-input cells
+			stay bitmap. The browser detaches the font arena before
+			<code>heap_reset()</code> and reattaches after the page heap is
+			mapped.
+		</p>
 	</section>
 
 	<section id="browser">
@@ -316,7 +326,7 @@
 			drawing and scrolling.
 		</p>
 		<ul>
-			<li><strong>HTML/CSS subset.</strong> External and inline stylesheets, tag/class/id and descendant/child selectors, colours, backgrounds, font size, weights, margins, padding, borders, alignment, percentage widths, basic floats and <code>@media</code> blocks evaluated at a fixed 1000 px viewport.</li>
+			<li><strong>HTML/CSS subset.</strong> External and inline stylesheets, tag/class/id and descendant/child selectors, colours, backgrounds, real <code>font-size</code> (8–48 px), bold/italic faces, <code>font-family: monospace</code>, margins, padding, borders, alignment, percentage widths, basic floats and <code>@media</code> blocks evaluated at a fixed 1000 px viewport. Text is Latin-1; there is no shaping, bidi or <code>@font-face</code> yet.</li>
 			<li><strong>Not supported.</strong> JavaScript, forms, pseudo-classes, border-radius clipping of descendants, gradients/box-shadow/transitions and CSS <code>color-mix</code>. Flex rows, card grids, basic tables, inline SVG and CSS variables are supported.</li>
 			<li><strong>Caps.</strong> 2 MB page body, 832 KB CSS, 6144 DOM nodes, 4608 rules, 16 images. Each image gets an <code>img_estimate()</code>-sized decode arena that is freed after the scaled bitmap is made; navigation calls <code>heap_reset()</code> and unmaps the page heap.</li>
 			<li><strong>Fetching.</strong> Each network fetch starts a one-shot helper process and a fresh TCP/TLS connection; images load one per loop within the viewport plus 160 px.</li>
@@ -345,6 +355,8 @@
 			<li><code>ucmd.ld</code> — ring-3 link address</li>
 			<li><code>Makefile</code> — <code>UCMDS</code> and pack rules</li>
 			<li><code>ucmd_*.c</code> — commands</li>
+			<li><code>ufont.c</code>, <code>ufont_ttf.c</code> — fixed-point TrueType text</li>
+			<li><code>ngui.c</code> — GUI toolkit; <code>fonts/*.ttf</code> — UI subsets</li>
 			<li><code>browser.c</code>, <code>browser_html.c</code>, <code>gallery.c</code></li>
 		</ul>
 	</section>

@@ -106,12 +106,10 @@ static void fill_clip(int x, int y, unsigned int w, unsigned int h,
 static void bar_button(unsigned int x, unsigned int y, unsigned int w,
 		       unsigned int h, const char *label)
 {
-	unsigned int n = 0;
+	int tw = (int)usurf_text_width(&screen, label);
 
 	usurf_fill(&screen, x, y, w, h, 0x963CD2u);
-	while (label[n])
-		n++;
-	usurf_text(&screen, (int)(x + (w - n * 8) / 2), (int)(y + 3),
+	usurf_text(&screen, (int)x + ((int)w - tw) / 2, (int)(y + 3),
 		   label, COL_WHITE, 0, 0, fbw, WM_BAR_H);
 }
 
@@ -221,8 +219,9 @@ static void draw_bar(void)
 			dt[n + i] = (i < dots) ? '.' : ' ';
 		n += 12;
 		dt[n] = '\0';
-		usurf_text(&screen, (int)fbw - (int)n * 8 - 4, 5, dt,
-			   0xFFC864u, 0, 0, fbw, WM_BAR_H);
+		usurf_text(&screen,
+			   (int)fbw - (int)usurf_text_width(&screen, dt) - 4,
+			   5, dt, 0xFFC864u, 0, 0, fbw, WM_BAR_H);
 	} else {
 		unsigned int clock_chars = 0;
 		int right = (int)fbw - 4;
@@ -232,16 +231,19 @@ static void draw_bar(void)
 			n = 0;
 			while (dt[n] && n < sizeof(dt) - 1)
 				n++;
-			usurf_text(&screen, right - (int)n * 8, 5, dt,
-				   COL_BANNER, 0, 0, fbw, WM_BAR_H);
-			clock_chars = n;
+			usurf_text(&screen,
+				   right - (int)usurf_text_width(&screen, dt),
+				   5, dt, COL_BANNER, 0, 0, fbw, WM_BAR_H);
+			clock_chars = (unsigned int)usurf_text_width(&screen, dt);
 		}
 		if (clock_chars)
-			right -= (int)clock_chars * 8 + 8;
+			right -= (int)clock_chars + 8;
 		if (bar_temp_c >= 0) {
 			char tb[12];
-			unsigned int tn = temp_text(tb, bar_temp_c);
-			int tx = right - (int)tn * 8;
+			int tx;
+
+			(void)temp_text(tb, bar_temp_c);
+			tx = right - (int)usurf_text_width(&screen, tb);
 
 			if (tx >= min_x) {
 				usurf_text(&screen, tx, 5, tb,
@@ -252,8 +254,10 @@ static void draw_bar(void)
 		}
 		if (bar_batt_pct >= 0) {
 			char bb[10];
-			unsigned int bn = batt_text(bb, bar_batt_pct);
-			int bx = right - (int)bn * 8;
+			int bx;
+
+			(void)batt_text(bb, bar_batt_pct);
+			bx = right - (int)usurf_text_width(&screen, bb);
 
 			if (bx >= min_x)
 				usurf_text(&screen, bx, 5, bb,
@@ -1029,6 +1033,7 @@ void _start(const char *arg)
 	if (u_wm_attach(&si) != 0)
 		u_exit(1);
 	usurf_init(&screen, si.fb, si.width, si.height, si.pitch, si.bpp);
+	usurf_font_attach(&screen, "/ramfs/fonts/sans.ttf", 14);
 	fbw = si.width;
 	fbh = si.height;
 	for (i = 0; i < WM_MAX_WINDOWS; i++) {

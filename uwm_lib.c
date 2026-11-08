@@ -3,6 +3,7 @@
 
 #include "uwm_lib.h"
 #include "font_8x16.h"
+#include "ufont.h"
 
 #define FONT_H 16
 
@@ -26,6 +27,30 @@ void usurf_init(struct usurf *s, void *px, unsigned int w, unsigned int h,
 	s->h = h;
 	s->pitch = pitch;
 	s->bpp = bpp;
+	s->font = 0;
+	s->font_px = 16;
+}
+
+void usurf_font_attach(struct usurf *s, const char *path, int px)
+{
+	if (!s)
+		return;
+	s->font_px = px;
+	s->font = ufont_face_open_path(path);
+}
+
+unsigned int usurf_text_width(struct usurf *s, const char *str)
+{
+	unsigned int n = 0;
+
+	if (!str)
+		return 0;
+	if (s && s->font)
+		return (unsigned int)ufont_text_width(s->font, s->font_px,
+						     str, -1, 0);
+	while (str[n])
+		n++;
+	return n * 8;
 }
 
 static void put_px(struct usurf *s, unsigned int x, unsigned int y,
@@ -226,10 +251,34 @@ void usurf_text(struct usurf *s, int x, int y, const char *str,
 		int cx, int cy, unsigned int cw, unsigned int ch)
 {
 	unsigned int i = 0;
+	struct ufont_metrics m;
+	int ascent, pen = 0;
 
+	if (!s || !str)
+		return;
+	if (!s->font) {
+		while (str[i]) {
+			usurf_glyph(s, x + (int)i * 8, y,
+				    (unsigned char)str[i], fg, 0, 1,
+				    FONT_H, cx, cy, cw, ch);
+			i++;
+		}
+		return;
+	}
+	ufont_metrics(s->font, s->font_px, &m);
+	ascent = m.ascent;
 	while (str[i]) {
-		usurf_glyph(s, x + (int)i * 8, y, (unsigned char)str[i],
-			    fg, 0, 1, FONT_H, cx, cy, cw, ch);
+		const struct ufont_glyph *g =
+			ufont_glyph(s->font, s->font_px,
+				    (unsigned char)str[i]);
+
+		if (g) {
+			usurf_pixels += (unsigned int)ufont_blit_rgb(
+				s->px, (int)s->w, (int)s->h, (int)s->pitch,
+				(int)s->bpp, x + (pen >> 6), y + ascent,
+				g, fg, cx, cy, cw, ch);
+			pen += g->advance;
+		}
 		i++;
 	}
 }

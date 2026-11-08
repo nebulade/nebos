@@ -2,14 +2,15 @@
  * VESA real-mode stage: runs at 0x7E00 before protected mode.
  *
  * Called by the boot sector in real mode (CS=0, IP=0x7E00).
- * Probes the E820 map, loads the compressed command-pack rootfs into the
- * low gap at 0x60000..0x9FBFF (16 KB staging chunks at 0x3000, BIOS disk
- * reads only), walks the VBE mode list and picks the best mode (highest
- * resolution, >= 16 bpp, LFB, fits in VRAM), writes the mode info to 0x600
- * and the boot info to 0x500, then enables A20, enters protected mode,
- * copies the pack above the 8 MB VGA-shadow reserve (PACK_HIGH_ADDR) and
- * jumps to kernel_entry.  Relocating the pack before the kernel runs lets
- * the kernel's BSS/boot stack extend past 0x60000.
+ * Probes the E820 map, loads the compressed command-pack rootfs in 16 KB
+ * chunks through the 0x3000 staging buffer and copies each chunk straight
+ * above the 8 MB VGA-shadow reserve (PACK_HIGH_ADDR) with the BIOS block
+ * move (INT 15h AH=87h), walks the VBE mode list and picks the best mode (highest resolution,
+ * >= 16 bpp, LFB, fits in VRAM), writes the mode info to 0x600 and the boot
+ * info to 0x500, then enables A20, enters protected mode and jumps to
+ * kernel_entry.  Because the pack never occupies the low gap behind the
+ * kernel, the pack size is bounded by RAM, not by 0x60000..0x9FBFF, and the
+ * kernel BSS/boot stack may extend far past 0x60000.
  *
  * If no VESA mode works, boots in text mode (valid=0 at 0x600).
  */
@@ -24,8 +25,7 @@
 
 /* Rootfs/boot-info constants (must match rootfs.h / bootinfo.h). */
 .equ ROOTFS_VERSION,   1
-.equ PACK_LOW_ADDR,    0x60000       /* low gap behind the kernel */
-.equ PACK_LOW_MAX,     0x3FBFF       /* 0x60000..0x9FBFF */
+.equ PACK_MAX,         0x80000       /* 512 KB compressed rootfs cap */
 .equ PACK_HIGH_ADDR,   0x900000      /* above the 8 MB VGA-shadow reserve */
 .equ BOOT_INFO_MAGIC,  0x4E425349
 .equ BOOT_INFO_VERSION, 2
@@ -90,11 +90,15 @@ e820_loop:
 	jmp   e820_loop
 e820_done:
 
-	/* ---- Rootfs: load the command pack into the low gap ----
+	/* ---- Rootfs: load the command pack directly to high memory ----
 	 * The pack is a gzip blob behind a one-sector NBROOT1 header (rootfs.h).
-	 * Keep the destination at 0x60000..0x9FBFF: above the kernel BSS/boot
-	 * stack, below the EBDA, and inside the low 1 MB the frame allocator
-	 * already reserves. */
+	 * Each 16 KB chunk is read into 0x3000 and copied to PACK_HIGH_ADDR with
+	 * INT 15h AH=87h, so the size is no longer limited by the
+	 * 0x60000..0x9FBFF low gap.  A20 must be on before the first high write;
+	 * the old path enabled it only at stage_finish.  The kernel sanitizes
+	 * CR4/EFER after this BIOS call (the X201 leaves translation state
+	 * behind). */
+	call  enable_a20
 	xorw  %ax, %ax
 	movw  %ax, %ds
 	movw  %ax, %es
@@ -159,7 +163,7 @@ e820_done:
 	movl  12(%esi), %eax          /* pack_bytes */
 	testl %eax, %eax
 	jz    pack_fail
-	cmpl  $PACK_LOW_MAX, %eax
+	cmpl  $PACK_MAX, %eax
 	ja    pack_fail
 	movl  %eax, pack_bytes
 	movw  $msg_dot, %si
@@ -187,10 +191,11 @@ load_loop:
 	movl  chunk_sectors, %eax
 	shll  $9, %eax
 	movl  %eax, copy_len
-	movl  $PACK_LOW_ADDR, %eax
+	movl  $PACK_HIGH_ADDR, %eax
 	addl  pack_off, %eax
 	movl  %eax, copy_dst
-	call  copy_low
+	call  bios_copy
+	jc    pack_fail
 	movl  chunk_sectors, %eax
 	shll  $9, %eax
 	addl  %eax, pack_off
@@ -199,7 +204,7 @@ load_loop:
 	jmp   load_loop
 
 load_ok:
-	movl  $PACK_LOW_ADDR, pack_addr
+	movl  $PACK_HIGH_ADDR, pack_addr
 	movw  $msg_ok, %si
 	call  print_str
 	jmp   pack_done
@@ -348,8 +353,8 @@ vesa_no_vbe:
 	movb  $0, (%bx)
 
 stage_finish:
-	/* The pack is loaded; enable A20 and enter protected mode. */
-	call  enable_a20
+	/* The pack is loaded (A20 is already on); finish boot info and enter
+	 * protected mode. */
 	call  write_bootinfo
 	jmp   enter_pm
 
@@ -465,27 +470,31 @@ print_str:
 	popw  %ax
 	ret
 
-/* ---- Copy the 16 KB staging chunk to the low pack destination --------- */
-copy_low:
-	/* Read the stage variables with DS=0 first; only then switch DS to the
-	 * staging segment.  Save both segment registers: the load loop and the
-	 * progress prints keep using DS=0/ES=0. */
+/* ---- Copy a chunk to high memory with INT 15h AH=87h ------------------
+ * in: copy_dst (24-bit), copy_len; source is 0x3000.
+ * Copies in 16-bit words; returns with CF set on failure.  The kernel's
+ * paging_prepare_cpu() sanitizes the CR4/EFER state this BIOS call can
+ * leave behind on the X201. */
+bios_copy:
 	movl  copy_dst, %eax
+	movw  %ax, bios_gdt + 0x1A      /* dest base 15:0 */
+	shrl  $16, %eax
+	movb  %al, bios_gdt + 0x1C      /* dest base 23:16 */
 	movl  copy_len, %ecx
-	movl  %eax, %ebx
-	shrl  $4, %eax
-	pushw %ds
-	pushw %es
+	addl  $1, %ecx                  /* round up for an odd final byte */
+	shrl  $1, %ecx                  /* AH=87h counts words */
+	jz    bios_copy_done
+	xorw  %ax, %ax
 	movw  %ax, %es
-	andl  $0x0000000F, %ebx
-	movw  %bx, %di
-	movw  $0x0300, %ax
-	movw  %ax, %ds
-	xorw  %si, %si
-	cld
-	rep movsb
-	popw  %es
-	popw  %ds
+	movw  $bios_gdt, %si
+	movw  $0x8700, %ax
+	int   $0x15
+	jc    bios_copy_fail
+bios_copy_done:
+	clc
+	ret
+bios_copy_fail:
+	stc
 	ret
 
 /* ---- Hex print (EAX, 8 digits) ----------------------------------------- */
@@ -565,33 +574,6 @@ stage2_pm:
 	movw  %ax, %gs
 	movw  %ax, %ss
 	movl  $__boot_stack_top, %esp
-
-	/* Move the pack out of the low gap before the kernel clears its BSS
-	 * or uses the boot stack (both may now live above 0x60000). */
-	cld
-	movl  pack_addr, %esi
-	testl %esi, %esi
-	jz    2f
-	movl  pack_bytes, %ecx
-	testl %ecx, %ecx
-	jz    2f
-	movl  $PACK_HIGH_ADDR, %edi
-	rep   movsb
-	movl  $PACK_HIGH_ADDR, pack_addr
-
-	/* Rewrite boot info: zero checksum, new pack address, recompute the
-	 * twelve-word sum (must match bootinfo.h / write_bootinfo). */
-	movl  $0, 0x508
-	movl  $PACK_HIGH_ADDR, 0x514
-	xorl  %eax, %eax
-	movl  $0x500, %esi
-	movl  $BOOT_INFO_WORDS, %ecx
-1:	addl  (%esi), %eax
-	addl  $4, %esi
-	loop  1b
-	negl  %eax
-	movl  %eax, 0x508
-2:
 	jmp   kernel_entry
 
 .align 4
@@ -605,6 +587,28 @@ stage2_gdt_end:
 stage2_gdtr:
 	.word stage2_gdt_end - stage2_gdt - 1
 	.long stage2_gdt
+
+/* ---- INT 15h AH=87h descriptor table (48 bytes) -----------------------
+ * 16 zero bytes, source descriptor at 0x10 (0x3000, 64 KB), destination
+ * at 0x18 (patched per chunk), 16 zero bytes. */
+.align 16
+bios_gdt:
+	.quad 0
+	.quad 0
+	/* source: limit 0xFFFF, base 0x3000, access 0x93, 16-bit data */
+	.word 0xFFFF
+	.word 0x3000
+	.byte 0x00
+	.byte 0x93
+	.word 0x0000
+	/* destination: limit 0xFFFF, base patched, access 0x93 */
+	.word 0xFFFF
+	.word 0x0000
+	.byte 0x00
+	.byte 0x93
+	.word 0x0000
+	.quad 0
+	.quad 0
 
 /* ---- Stage variables --------------------------------------------------- */
 .align 4

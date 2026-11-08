@@ -1,0 +1,40 @@
+NebOS UI fonts
+==============
+
+The window manager, ngui applications and the browser use the fixed-point
+TrueType engine in ufont.c / ufont_ttf.c.  The kernel boot console keeps the
+built-in 8x8 font; the terminal, editor and text fields keep the 8x16 bitmap
+font for their cell grids.
+
+Files
+-----
+
+  sans.ttf      Arimo Regular, Latin-1 + common punctuation
+  sans-b.ttf    Arimo Bold
+  sans-i.ttf    Arimo Italic
+  sans-bi.ttf   Arimo BoldItalic
+  mono.ttf      Liberation Mono Regular (browser <pre>/<code>)
+
+The Arimo faces are Copyright 2020 The Arimo Project Authors and are
+distributed under the Apache License 2.0 (see LICENSE-Apache-2.0).  Liberation
+Mono is copyright (c) 2012 Red Hat, Inc. with Reserved Font Name Liberation
+and is distributed under the SIL Open Font License 1.1 (see LICENSE-OFL).
+The subsetting removes unused glyphs and OpenType layout features and keeps
+the files small enough for the rootfs pack.
+
+Regenerating
+------------
+
+Install fonttools (`python3 -m pip install fonttools`) and run:
+
+  make fonts
+
+or manually:
+
+  pyftsubset /usr/share/fonts/croscore/Arimo-Regular.ttf \
+    --unicodes='U+0020-00FF,U+20AC,U+2013-2014,U+2018-2019,U+201C-201D,U+2022,U+2026,U+00A0' \
+    --layout-features='' --output-file=fonts/sans.ttf
+
+The checked-in files are the canonical build inputs; a normal `make` does not
+need fonttools or the original system fonts.  Do not edit the generated TTFs
+by hand.

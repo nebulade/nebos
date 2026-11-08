@@ -2042,8 +2042,10 @@ static int menu_bar_button(struct ngui *ui, unsigned int id,
 
 static void draw_menu_bar(struct ngui *ui, const struct sol_layout *l)
 {
-	struct ngui_rect gr = rect_make(6, 2, 44, 18);
-	struct ngui_rect hr = rect_make(52, 2, 44, 18);
+	int gw = (int)ngui_text_width_ui(ui, "Game") + 18;
+	int hw = (int)ngui_text_width_ui(ui, "Help") + 18;
+	struct ngui_rect gr = rect_make(6, 2, gw, 18);
+	struct ngui_rect hr = rect_make(6 + gw + 2, 2, hw, 18);
 
 	(void)l;
 	ngui_fill_rect(ui, rect_make(0, 0, ui->w, MENU_H), C_MENU);
@@ -2635,6 +2637,7 @@ void _start(const char *arg)
 
 	ngui_init(&ui, (unsigned short *)info.fb, (int)info.width,
 		  (int)info.height);
+	ngui_font_attach(&ui);
 	setup_theme(&ui);
 	draw_three = 0;
 	deck_style = 0;

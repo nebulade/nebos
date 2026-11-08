@@ -82,8 +82,10 @@ struct br_style {
 	unsigned short bg;
 	unsigned short border_color;
 	unsigned char has_bg;
-	unsigned char scale;        /* 1 or 2 */
+	unsigned char font_px;      /* 8..48 */
 	unsigned char bold;
+	unsigned char italic;
+	unsigned char mono;
 	unsigned char underline;
 	unsigned char align;        /* BR_ALIGN_* */
 	unsigned char display;      /* BR_DISPLAY_* */

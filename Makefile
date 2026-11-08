@@ -24,6 +24,9 @@ LIBC_HEADERS = libc/include/stddef.h libc/include/stdint.h \
                libc/include/assert.h libc/include/ucmd_heap.h
 LIBC_OBJS = libc/malloc.o libc/string.o libc/strdup.o \
             libc/stdlib.o libc/ucmd_mem.o
+
+# Fixed-point TrueType text engine, linked only into GUI commands.
+UFONT_OBJS = ufont.o ufont_ttf.o ufont_draw.o ufont_file.o
 ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
@@ -46,7 +49,7 @@ EFI_LDFLAGS = -nostdlib -Wl,--subsystem,10 -Wl,-e,efi_main \
               -Wl,--image-base,0x0 -Wl,--dynamicbase \
               -Wl,--enable-reloc-section -Wl,--no-insert-timestamp
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-ehci run-ehci-asix run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan kernel-dev kernel-net-dev rootfs
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-ehci run-ehci-asix run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan test-libc test-font test-font-asan fonts kernel-dev kernel-net-dev rootfs
 
 all: floppy.img usb.img final.bin root.img
 
@@ -413,6 +416,11 @@ floppy.img: boot.bin kernel.bin rootfs.bin
 	PAD=$$(( SECTORS * 512 - $$(stat -c%s kernel.bin) )); \
 	dd if=/dev/zero bs=1 count=$$PAD 2>/dev/null >> $@; \
 	cat rootfs.bin >> $@; \
+	SIZE=$$(stat -c%s $@); \
+	if [ $$SIZE -gt 1474560 ]; then \
+		echo "error: floppy.img is $$SIZE bytes; max is 1474560"; \
+		rm -f $@; exit 1; \
+	fi; \
 	truncate -s 1474560 $@; \
 	rm -f $@.boot.tmp
 
@@ -554,6 +562,32 @@ libc.a: $(LIBC_OBJS)
 	rm -f $@
 	ar rcs $@ $^
 
+ufont.o: ufont.c ufont.h ufont_internal.h $(LIBC_HEADERS)
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -Ilibc/include -o $@ $<
+
+ufont_ttf.o: ufont_ttf.c ufont_internal.h $(LIBC_HEADERS)
+	$(CC) $(CFLAGS) -O2 $(SECTION_CFLAGS) -Ilibc/include -o $@ $<
+
+ufont_draw.o: ufont_draw.c ufont.h $(LIBC_HEADERS)
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -Ilibc/include -o $@ $<
+
+ufont_file.o: ufont_file.c ufont.h ucmd_lib.h syscall.h $(LIBC_HEADERS)
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -Ilibc/include -o $@ $<
+
+UFONT_TEST_SRCS = ufont_test.c ufont.c ufont_ttf.c ufont_draw.c
+ufont_test: $(UFONT_TEST_SRCS) ufont.h ufont_internal.h
+	gcc -O2 -Wall -Wextra -I. -o $@ $(UFONT_TEST_SRCS)
+
+test-font: ufont_test
+	./ufont_test
+
+test-font-asan: $(UFONT_TEST_SRCS) ufont.h ufont_internal.h
+	gcc -O1 -g -fsanitize=address,undefined -I. -o ufont_test_asan $(UFONT_TEST_SRCS)
+	./ufont_test_asan
+
+fonts:
+	tools/subset_fonts.sh
+
 ucmd_%.o: ucmd_%.c ucmd_lib.h syscall.h $(LIBC_HEADERS)
 	$(CC) $(CFLAGS) -Ilibc/include -o $@ $<
 
@@ -578,47 +612,47 @@ ucmd_edit.elf: ucmd_edit.o font_8x16.o ucmd.ld
 ucmd_wm.o: ucmd_wm.c ucmd_lib.h syscall.h wm_abi.h uwm_lib.h version.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-uwm_lib.o: uwm_lib.c uwm_lib.h font_8x16.h
-	$(CC) $(CFLAGS) -o $@ $<
+uwm_lib.o: uwm_lib.c uwm_lib.h font_8x16.h ufont.h
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -Ilibc/include -o $@ $<
 
-ucmd_wm.elf: ucmd_wm.o uwm_lib.o font_8x16.o ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+ucmd_wm.elf: ucmd_wm.o uwm_lib.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 ucmd_term.o: ucmd_term.c ucmd_lib.h syscall.h wm_abi.h uwm_lib.h io.h vfs.h $(LIBC_HEADERS)
 	$(CC) $(CFLAGS) -Ilibc/include -o $@ $<
 
-ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x16.o ucmd.ld libc.a
+ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
 	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # ngui: the userland immediate-mode GUI toolkit and its apps.
-# -Os: every GUI app links the whole toolkit, and the legacy rootfs pack has
-# a hard 255 KB cap; -Os saves ~10 KB compressed across the pack.
-ngui.o: ngui.c ngui.h ucmd_lib.h syscall.h wm_abi.h font_8x16.h
-	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -o $@ $<
+# -Os: every GUI app links the whole toolkit, and the rootfs pack has a
+# 512 KB cap; -Os saves ~10 KB compressed across the pack.
+ngui.o: ngui.c ngui.h ucmd_lib.h syscall.h wm_abi.h font_8x16.h ufont.h
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -Ilibc/include -o $@ $<
 
 ucmd_files.o: ucmd_files.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ucmd_files.elf: ucmd_files.o ngui.o font_8x16.o ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+ucmd_files.elf: ucmd_files.o ngui.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # mines is a second ngui canvas app; it links the same toolkit.
 ucmd_mines.o: ucmd_mines.c ucmd_lib.h syscall.h wm_abi.h ngui.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-ucmd_mines.elf: ucmd_mines.o ngui.o font_8x16.o ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+ucmd_mines.elf: ucmd_mines.o ngui.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # solitaire: a Windows 95 style Klondike game on the same canvas toolkit.
 ucmd_solitaire.o: ucmd_solitaire.c ucmd_lib.h syscall.h wm_abi.h ngui.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-ucmd_solitaire.elf: ucmd_solitaire.o ngui.o font_8x16.o ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+ucmd_solitaire.elf: ucmd_solitaire.o ngui.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # gallery: a live showcase of every ngui widget and primitive.  The real ELF
@@ -627,8 +661,8 @@ ucmd_solitaire.elf: ucmd_solitaire.o ngui.o font_8x16.o ucmd.ld
 gallery.o: gallery.c ucmd_lib.h syscall.h wm_abi.h ngui.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-gallery.elf: gallery.o ngui.o font_8x16.o ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+gallery.elf: gallery.o ngui.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # Image library: pure freestanding decoders + RGB565 compositing.  Only the
@@ -645,7 +679,7 @@ img_jpeg.o: CFLAGS += -fwrapv
 ucmd_view.o: ucmd_view.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h img_file.h $(LIBC_HEADERS)
 	$(CC) $(CFLAGS) -Ilibc/include -o $@ $<
 
-ucmd_view.elf: ucmd_view.o $(IMGLIB_OBJS) inflate.o ngui.o font_8x16.o ucmd.ld libc.a
+ucmd_view.elf: ucmd_view.o $(IMGLIB_OBJS) inflate.o ngui.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
 	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
@@ -666,14 +700,14 @@ ucmd_curl.elf: ucmd_curl.o uhttp.o $(TLSLIB_OBJS) ucmd.ld libc.a
 # image library, TLS and uhttp.  ucmd_browser.c is the tiny PATH launcher.
 # Compile this graph with function sections and link it with --gc-sections:
 # unreachable image, TLS and UI paths are dropped, leaving room under the
-# legacy rootfs pack's low-memory cap.
+# 512 KB rootfs pack cap.
 browser_html.o: browser_html.c browser_html.h
 	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -o $@ $<
 
 browser.o: browser.c ucmd_lib.h syscall.h wm_abi.h ngui.h browser_html.h uhttp.h img.h inflate.h $(LIBC_HEADERS)
 	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -Ilibc/include -o $@ $<
 
-browser.elf: browser.o browser_html.o uhttp.o ngui.o font_8x16.o $(IMGLIB_OBJS) inflate.o $(TLSLIB_OBJS) ucmd.ld libc.a
+browser.elf: browser.o browser_html.o uhttp.o ngui.o font_8x16.o $(UFONT_OBJS) $(IMGLIB_OBJS) inflate.o $(TLSLIB_OBJS) ucmd.ld libc.a
 	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
@@ -744,26 +778,32 @@ mkpack: mkpack.c
 # Command pack (the system rootfs): the ring-3 command ELFs plus hello and the
 # browser/gallery apps, packed into bin/<name>.  See mkpack.c, rootfs.h and
 # ramfs.h.
+FONT_FILES = fonts/sans.ttf fonts/sans-b.ttf fonts/sans-i.ttf \
+             fonts/sans-bi.ttf fonts/mono.ttf
+
 PACK_FILES = $(foreach f,$(UCMDS),bin/$(patsubst ucmd_%,%,$(f))=$(f).elf) \
              bin/hello=hello.elf \
              bin/browser.app=browser.elf \
-             bin/gallery.app=gallery.elf
+             bin/gallery.app=gallery.elf \
+             $(foreach f,$(FONT_FILES),$(f)=$(f))
 
-cmds.pack: $(addsuffix .elf,$(UCMDS)) hello.elf browser.elf gallery.elf mkpack
+cmds.pack: $(addsuffix .elf,$(UCMDS)) hello.elf browser.elf gallery.elf \
+           $(FONT_FILES) mkpack
 	./mkpack $@ $(PACK_FILES)
 
 # The boot-time rootfs is gzip-compressed; the raw cmds.pack is still what
 # cmds-dev/net-cmds send for a runtime replacement.  Prefer libdeflate's
 # level 12 when it is installed: it saves about 8 KB over gzip -9 on the
-# current pack, which matters for the legacy low-memory pack (0x3FBFF).
+# current pack.  The high-memory rootfs loader supports up to 512 KB, which
+# leaves room for the font subsystem without touching the kernel image.
 CMDS_GZ     = $(shell command -v libdeflate-gzip >/dev/null 2>&1 && \
 		     echo "libdeflate-gzip -12 -n -c" || echo "gzip -9 -n -c")
-CMDS_GZ_MAX = 261119
+CMDS_GZ_MAX = 524288
 cmds_pack_gz.bin: cmds.pack
 	$(CMDS_GZ) $< > $@
 	@sz=$$(stat -c%s $@); \
 	if [ $$sz -gt $(CMDS_GZ_MAX) ]; then \
-		echo "error: cmds_pack_gz.bin is $$sz bytes; the legacy low pack cap is $(CMDS_GZ_MAX) (install libdeflate-gzip)"; \
+		echo "error: cmds_pack_gz.bin is $$sz bytes; the legacy rootfs cap is $(CMDS_GZ_MAX)"; \
 		rm -f $@; exit 1; \
 	fi
 
@@ -1024,4 +1064,4 @@ kernel-net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o disk.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img hello.elf cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h libc.a libc/*.o malloc_test
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o disk.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img hello.elf cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h libc.a libc/*.o malloc_test ufont.o ufont_ttf.o ufont_draw.o ufont_file.o ufont_test ufont_test_asan

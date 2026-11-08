@@ -3,6 +3,7 @@
 #include "ngui.h"
 #include "ucmd_lib.h"
 #include "font_8x16.h"
+#include "ufont.h"
 
 const struct ngui_theme ngui_theme_dark = {
 	.bg          = NGUI_RGB(24, 28, 40),
@@ -90,6 +91,7 @@ void ngui_init(struct ngui *ui, unsigned short *fb, int w, int h)
 	ui->w = w;
 	ui->h = h;
 	ui->theme = ngui_theme_dark;
+	ui->font_px = 14;
 	ui->nclip = 0;
 	ui->dirty = 1;
 	ui->caret_on = 1;
@@ -97,6 +99,38 @@ void ngui_init(struct ngui *ui, unsigned short *fb, int w, int h)
 	ui->motion_ms = ui->last_blink;
 	ui->last_mouse_x = -1;
 	ui->last_mouse_y = -1;
+}
+
+void ngui_font_attach(struct ngui *ui)
+{
+	if (!ui || ui->font)
+		return;
+	ui->font_px = 14;
+	ui->font = ufont_face_open_path("/ramfs/fonts/sans.ttf");
+	if (!ui->font)
+		return;
+	ui->font_bold = ufont_face_open_path("/ramfs/fonts/sans-b.ttf");
+	ui->font_italic = ufont_face_open_path("/ramfs/fonts/sans-i.ttf");
+	ui->font_bold_italic = ufont_face_open_path("/ramfs/fonts/sans-bi.ttf");
+	ui->font_mono = ufont_face_open_path("/ramfs/fonts/mono.ttf");
+	if (!ui->font_bold)
+		ui->font_bold = ui->font;
+	if (!ui->font_italic)
+		ui->font_italic = ui->font;
+	if (!ui->font_bold_italic)
+		ui->font_bold_italic = ui->font_bold;
+}
+
+void ngui_font_detach(struct ngui *ui)
+{
+	if (!ui)
+		return;
+	ui->font = 0;
+	ui->font_bold = 0;
+	ui->font_italic = 0;
+	ui->font_bold_italic = 0;
+	ui->font_mono = 0;
+	ufont_reset();
 }
 
 void ngui_invalidate(struct ngui *ui)
@@ -609,8 +643,8 @@ void ngui_line(struct ngui *ui, int x0, int y0, int x1, int y1,
 	}
 }
 
-static void ngui_glyph(struct ngui *ui, int x, int y, unsigned char c,
-		       unsigned short color, int scale, int bold)
+static void ngui_bitmap_glyph(struct ngui *ui, int x, int y, unsigned char c,
+			      unsigned short color, int scale, int bold)
 {
 	const unsigned char *g = &font_8x16[(unsigned int)c * FONT_8X16_ROWS];
 	int row, col, sx, sy;
@@ -641,6 +675,101 @@ static void ngui_glyph(struct ngui *ui, int x, int y, unsigned char c,
 	}
 }
 
+static void ngui_bitmap_text(struct ngui *ui, int x, int y, const char *s,
+			     unsigned short color)
+{
+	unsigned int i;
+
+	for (i = 0; s && s[i]; i++)
+		ngui_bitmap_glyph(ui, x + (int)i * 8, y,
+				  (unsigned char)s[i], color, 1, 0);
+}
+
+static struct ufont_face *ngui_face(struct ngui *ui, int bold, int italic,
+				    int mono)
+{
+	struct ufont_face *f;
+
+	if (!ui)
+		return 0;
+	if (mono && ui->font_mono)
+		f = ui->font_mono;
+	else if (bold && italic)
+		f = ui->font_bold_italic;
+	else if (bold)
+		f = ui->font_bold;
+	else if (italic)
+		f = ui->font_italic;
+	else
+		f = ui->font;
+	if (!f)
+		f = ui->font;
+	return f;
+}
+
+static void ngui_clip_bounds(struct ngui *ui, int *cx, int *cy,
+			     int *cw, int *ch)
+{
+	struct ngui_rect r = { 0, 0, ui->w, ui->h };
+	int i;
+
+	for (i = 0; i < ui->nclip; i++) {
+		struct ngui_rect out;
+
+		if (!rect_intersect(&r, &ui->clip[i], &out)) {
+			r.w = r.h = 0;
+			break;
+		}
+		r = out;
+	}
+	*cx = r.x;
+	*cy = r.y;
+	*cw = r.w;
+	*ch = r.h;
+}
+
+int ngui_text_ascent(struct ngui *ui, int px, int mono)
+{
+	struct ufont_face *f = ngui_face(ui, 0, 0, mono);
+	struct ufont_metrics m;
+
+	if (f) {
+		ufont_metrics(f, px, &m);
+		return m.ascent;
+	}
+	return 16 * (px >= 24 ? 2 : 1);
+}
+
+int ngui_text_line_height(struct ngui *ui, int px, int mono)
+{
+	struct ufont_face *f = ngui_face(ui, 0, 0, mono);
+	struct ufont_metrics m;
+
+	if (f) {
+		ufont_metrics(f, px, &m);
+		return m.line_height;
+	}
+	return 16 * (px >= 24 ? 2 : 1);
+}
+
+unsigned int ngui_text_width_px(struct ngui *ui, const char *s, unsigned int n,
+				int px, int bold, int italic, int mono)
+{
+	struct ufont_face *f = ngui_face(ui, bold, italic, mono);
+	int scale;
+
+	if (f)
+		return (unsigned int)ufont_text_width(f, px, s, (int)n, 0);
+	scale = px >= 24 ? 2 : 1;
+	return n * 8u * (unsigned int)scale;
+}
+
+unsigned int ngui_text_width_ui(struct ngui *ui, const char *s)
+{
+	return ngui_text_width_px(ui, s, slen(s),
+				  ui ? ui->font_px : 14, 0, 0, 0);
+}
+
 unsigned int ngui_text_width(const char *s)
 {
 	return slen(s) * 8;
@@ -654,13 +783,46 @@ unsigned int ngui_text_width_n(const char *s, unsigned int n, int scale)
 	return n * 8u * (unsigned int)scale;
 }
 
+void ngui_text_px(struct ngui *ui, int x, int y, const char *s,
+		  unsigned int n, unsigned short color, int px, int bold,
+		  int italic, int mono)
+{
+	struct ufont_face *f = ngui_face(ui, bold, italic, mono);
+	int scale, i, pen = 0, ascent;
+	int cx, cy, cw, ch;
+
+	if (!ui || !ui->px || !s)
+		return;
+	if (!f) {
+		scale = px >= 24 ? 2 : 1;
+		for (i = 0; i < (int)n && s[i]; i++)
+			ngui_bitmap_glyph(ui, x + i * 8 * scale, y,
+					  (unsigned char)s[i], color,
+					  scale, bold);
+		return;
+	}
+	ascent = ngui_text_ascent(ui, px, mono);
+	ngui_clip_bounds(ui, &cx, &cy, &cw, &ch);
+	for (i = 0; i < (int)n && s[i]; i++) {
+		const struct ufont_glyph *g =
+			ufont_glyph(f, px, (unsigned char)s[i]);
+
+		if (!g) {
+			pen += 8 << 6;
+			continue;
+		}
+		ufont_blit_rgb565(ui->px, ui->w, ui->h,
+				  x + (pen >> 6), y + ascent, g, color,
+				  cx, cy, cw, ch);
+		pen += g->advance;
+	}
+}
+
 void ngui_text_n(struct ngui *ui, int x, int y, const char *s, unsigned int n,
 		 unsigned short color)
 {
-	unsigned int i;
-
-	for (i = 0; i < n && s && s[i]; i++)
-		ngui_glyph(ui, x + (int)i * 8, y, (unsigned char)s[i], color, 1, 0);
+	ngui_text_px(ui, x, y, s, n, color,
+		     ui ? ui->font_px : 14, 0, 0, 0);
 }
 
 void ngui_text(struct ngui *ui, int x, int y, const char *s,
@@ -672,13 +834,21 @@ void ngui_text(struct ngui *ui, int x, int y, const char *s,
 void ngui_text_styled(struct ngui *ui, int x, int y, const char *s,
 		      unsigned int n, unsigned short color, int scale, int bold)
 {
-	unsigned int i;
-
 	if (scale < 1)
 		scale = 1;
-	for (i = 0; i < n && s && s[i]; i++)
-		ngui_glyph(ui, x + (int)i * 8 * scale, y, (unsigned char)s[i],
-			   color, scale, bold);
+	if (ui && ui->font) {
+		ngui_text_px(ui, x, y, s, n, color,
+			     ui->font_px * scale, bold, 0, 0);
+		return;
+	}
+	{
+		unsigned int i;
+
+		for (i = 0; i < n && s && s[i]; i++)
+			ngui_bitmap_glyph(ui, x + (int)i * 8 * scale, y,
+					  (unsigned char)s[i], color,
+					  scale, bold);
+	}
 }
 
 /* Draw a string upside down.  The whole n-character block is rotated, so the
@@ -716,22 +886,55 @@ void ngui_text_ellipsis(struct ngui *ui, struct ngui_rect r, int x, int y,
 			const char *s, unsigned short color)
 {
 	unsigned int n = slen(s);
-	int max = (r.x + r.w - x) / 8;
-	unsigned int i;
+	int avail = r.x + r.w - x;
+	unsigned int i, best = 0;
+	int dots;
 
-	if (max <= 0)
+	if (avail <= 0)
 		return;
-	if (n <= (unsigned int)max || max < 4) {
-		for (i = 0; i < n && (int)i < max; i++)
-			ngui_glyph(ui, x + (int)i * 8, y,
-				   (unsigned char)s[i], color, 1, 0);
+	if (ui && ui->font) {
+		dots = (int)ngui_text_width_px(ui, "...", 3, ui->font_px,
+					      0, 0, 0);
+		for (i = 0; i <= n; i++) {
+			int w = (int)ngui_text_width_px(ui, s, i, ui->font_px,
+							0, 0, 0);
+
+			if (w > avail)
+				break;
+			best = i;
+		}
+		if (best == n) {
+			ngui_text_n(ui, x, y, s, n, color);
+			return;
+		}
+		while (best > 0 &&
+		       (int)ngui_text_width_px(ui, s, best, ui->font_px,
+					       0, 0, 0) + dots > avail)
+			best--;
+		ngui_text_n(ui, x, y, s, best, color);
+		ngui_text_n(ui, x + (int)ngui_text_width_px(ui, s, best,
+							   ui->font_px, 0, 0, 0),
+			    y, "...", 3, color);
 		return;
 	}
-	for (i = 0; i < (unsigned int)(max - 3); i++)
-		ngui_glyph(ui, x + (int)i * 8, y, (unsigned char)s[i], color, 1, 0);
-	ngui_glyph(ui, x + (max - 3) * 8, y, '.', color, 1, 0);
-	ngui_glyph(ui, x + (max - 2) * 8, y, '.', color, 1, 0);
-	ngui_glyph(ui, x + (max - 1) * 8, y, '.', color, 1, 0);
+	{
+		int max = avail / 8;
+
+		if (max <= 0)
+			return;
+		if (n <= (unsigned int)max || max < 4) {
+			for (i = 0; i < n && (int)i < max; i++)
+				ngui_bitmap_glyph(ui, x + (int)i * 8, y,
+						  (unsigned char)s[i], color, 1, 0);
+			return;
+		}
+		for (i = 0; i < (unsigned int)(max - 3); i++)
+			ngui_bitmap_glyph(ui, x + (int)i * 8, y,
+					  (unsigned char)s[i], color, 1, 0);
+		ngui_bitmap_glyph(ui, x + (max - 3) * 8, y, '.', color, 1, 0);
+		ngui_bitmap_glyph(ui, x + (max - 2) * 8, y, '.', color, 1, 0);
+		ngui_bitmap_glyph(ui, x + (max - 1) * 8, y, '.', color, 1, 0);
+	}
 }
 
 void ngui_icon(struct ngui *ui, struct ngui_rect r, enum ngui_icon icon,
@@ -822,9 +1025,11 @@ int ngui_button(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	ngui_frame(ui, r, hot ? ui->theme.accent : ui->theme.border);
 
 	if (label && label[0]) {
-		tw = (int)ngui_text_width(label);
+		tw = (int)ngui_text_width_ui(ui, label);
 		tx = r.x + (r.w - tw) / 2;
-		ty = r.y + (r.h - 16) / 2;
+		ty = r.y + (r.h - ngui_text_line_height(ui, ui->font_px, 0)) / 2;
+		if (ty < r.y)
+			ty = r.y;
 		ngui_push_clip(ui, r);
 		ngui_text(ui, tx, ty, label, ui->theme.text);
 		ngui_pop_clip(ui);
@@ -864,7 +1069,9 @@ int ngui_menu_item(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	fg = selected ? NGUI_RGB(255, 255, 255) : ui->theme.text;
 	ngui_fill_rect(ui, r, bg);
 
-	ty = r.y + (r.h - 16) / 2;
+	ty = r.y + (r.h - ngui_text_line_height(ui, ui->font_px, 0)) / 2;
+	if (ty < r.y)
+		ty = r.y;
 	ngui_push_clip(ui, r);
 	if (checked) {
 		ngui_line(ui, r.x + 8, ty + 10, r.x + 10, ty + 13, fg);
@@ -873,7 +1080,7 @@ int ngui_menu_item(struct ngui *ui, unsigned int id, struct ngui_rect r,
 	if (label)
 		ngui_text(ui, r.x + 22, ty, label, fg);
 	if (shortcut) {
-		int sw = (int)ngui_text_width(shortcut);
+		int sw = (int)ngui_text_width_ui(ui, shortcut);
 
 		ngui_text(ui, r.x + r.w - 8 - sw, ty, shortcut, fg);
 	}
@@ -1245,13 +1452,13 @@ int ngui_text_input(struct ngui *ui, unsigned int id, struct ngui_rect r,
 
 	ngui_push_clip(ui, inner);
 	if (in->len == 0 && in->placeholder) {
-		ngui_text(ui, inner.x, inner.y, in->placeholder,
-			  ui->theme.text_dim);
+		ngui_bitmap_text(ui, inner.x, inner.y, in->placeholder,
+				 ui->theme.text_dim);
 	} else {
 		if (focused)
 			input_draw_selection(ui, in, inner, cols);
-		ngui_text(ui, inner.x, inner.y, in->text + in->scroll,
-			  ui->theme.text);
+		ngui_bitmap_text(ui, inner.x, inner.y, in->text + in->scroll,
+				 ui->theme.text);
 	}
 
 	if (focused && ui->caret_on) {

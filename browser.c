@@ -145,7 +145,8 @@ struct lay_run {
 	char lit[28];
 	short img;
 	unsigned short iw, ih;
-	unsigned char scale, bold, underline;
+	unsigned short w;
+	unsigned char font_px, bold, italic, mono, underline;
 	unsigned char has_lit;
 };
 
@@ -294,6 +295,7 @@ static int heap_start(void)
 
 static void heap_clear(void)
 {
+	ngui_font_detach(&ui);
 	heap_reset();
 	image_io_buf = 0;
 	page_backbuf = 0;
@@ -1274,7 +1276,7 @@ static int node_hidden(unsigned int node)
 		p = doc.nodes[p].parent;
 	}
 	parent = (struct br_style){0};
-	parent.scale = 1;
+	parent.font_px = 16;
 	parent.display = BR_DISPLAY_BLOCK;
 	for (i = n; i > 0; i--) {
 		br_style_for(&doc, path[i - 1], &parent, &st);
@@ -1450,6 +1452,7 @@ static void load_page(const char *url, int local, int push)
 		show_error("Out of memory", "Cannot allocate the page buffer");
 		return;
 	}
+	ngui_font_attach(&ui);
 	browser_rules_alloc();
 	rv = read_url(url, BR_PAGE_MAX, &body, &len, &local, ctype,
 		     sizeof(ctype), final, sizeof(final), err, sizeof(err),
@@ -1546,6 +1549,7 @@ static void load_home(int push)
 		show_error("Out of memory", "Cannot allocate the browser heap");
 		return;
 	}
+	ngui_font_attach(&ui);
 	browser_rules_alloc();
 	{
 		static const char home[] =
@@ -1643,8 +1647,10 @@ static struct br_style base_style(void)
 	s.bg = ui.theme.bg;
 	s.has_bg = 0;
 	s.border_color = 0;
-	s.scale = 1;
+	s.font_px = 16;
 	s.bold = 0;
+	s.italic = 0;
+	s.mono = 0;
 	s.underline = 0;
 	s.align = BR_ALIGN_LEFT;
 	s.display = BR_DISPLAY_BLOCK;
@@ -1666,11 +1672,7 @@ static int run_width(const struct lay_run *r)
 		return r->iw;
 	if (r->img == -2)
 		return r->iw;
-	{
-		unsigned int n = r->has_lit ? s_len(r->lit) : r->len;
-		return (int)(n * (unsigned int)(8 * r->scale) +
-			     (r->bold ? 1u : 0u));
-	}
+	return (int)r->w;
 }
 
 static void flush_line(struct lay *l)
@@ -1711,9 +1713,10 @@ static void flush_line(struct lay *l)
 				ngui_frame(l->ui,
 					(struct ngui_rect){x, l->line_y, w, hh},
 					l->ui->theme.border);
-				ngui_text_styled(l->ui, x + 6, l->line_y + 2,
-						 r->lit, s_len(r->lit), r->color,
-						 r->scale, r->bold);
+				ngui_text_px(l->ui, x + 6, l->line_y + 2,
+					     r->lit, s_len(r->lit), r->color,
+					     r->font_px, r->bold, r->italic,
+					     r->mono);
 			} else if (r->img >= 0) {
 				struct br_image *bi = &images[r->img];
 				if (bi->state == 1) {
@@ -1739,19 +1742,24 @@ static void flush_line(struct lay *l)
 						doc.text + r->off;
 				unsigned int n = r->has_lit ? s_len(r->lit) :
 						r->len;
-				ngui_text_styled(l->ui, x, l->line_y, s, n,
-						 r->color, r->scale, r->bold);
+				ngui_text_px(l->ui, x, l->line_y, s, n,
+					     r->color, r->font_px, r->bold,
+					     r->italic, r->mono);
 				if (r->underline)
 					ngui_fill_rect(l->ui,
 						(struct ngui_rect){x,
-						 l->line_y + 16 * r->scale - 2,
+						 l->line_y +
+						 ngui_text_ascent(l->ui,
+								  r->font_px,
+								  r->mono) + 2,
 						 w, 1}, r->color);
 			}
 			if (r->href) {
 				if (nhits < HIT_MAX) {
 					struct hit *h = &hits[nhits];
 					int hh = r->img >= 0 ? r->ih :
-						 16 * r->scale;
+						 ngui_text_line_height(l->ui,
+						 r->font_px, r->mono);
 					int merge = nhits > 0 &&
 						hits[nhits - 1].node == r->href &&
 						hits[nhits - 1].y == l->line_y &&
@@ -1789,8 +1797,9 @@ static void add_run(struct lay *l, unsigned short off, unsigned short len,
 		    const char *lit)
 {
 	unsigned int n = lit ? s_len(lit) : len;
-	int w = (int)(n * (unsigned int)(8 * st->scale) +
-		      (st->bold ? 1u : 0u));
+	const char *tp = lit ? lit : doc.text + off;
+	int w = (int)ngui_text_width_px(l->ui, tp, n, st->font_px,
+					st->bold, st->italic, st->mono);
 
 	if (l->nruns >= (int)(sizeof(l->runs) / sizeof(l->runs[0])))
 		flush_line(l);
@@ -1820,23 +1829,32 @@ static void add_run(struct lay *l, unsigned short off, unsigned short len,
 		}
 		r->img = -1;
 		r->iw = r->ih = 0;
-		r->scale = st->scale;
+		r->font_px = st->font_px;
 		r->bold = st->bold;
+		r->italic = st->italic;
+		r->mono = st->mono;
 		/* A control with its own background is a button, not body copy;
 		 * an inherited link underline would strike through the fill. */
 		r->underline = st->underline && !st->has_bg;
+		r->w = (unsigned short)w;
+		if (r->has_lit)
+			r->w = (unsigned short)ngui_text_width_px(
+				l->ui, r->lit, s_len(r->lit), r->font_px,
+				r->bold, r->italic, r->mono);
+		w = r->w;
 	}
 	l->line_x += w;
 	l->run_x = l->line_x;
 	{
-		int lh = 16 * st->scale;
+		int lh = ngui_text_line_height(l->ui, st->font_px, st->mono);
 
 		if (st->line_h_px)
 			lh = st->line_h_px;
 		else if (st->line_h_pct)
-			lh = (16 * st->scale) * st->line_h_pct / 100;
-		if (lh < 16 * st->scale)
-			lh = 16 * st->scale;
+			lh = st->font_px * st->line_h_pct / 100;
+		if (lh < ngui_text_line_height(l->ui, st->font_px, st->mono))
+			lh = ngui_text_line_height(l->ui, st->font_px,
+						   st->mono);
 		if (l->line_h < lh)
 			l->line_h = lh;
 	}
@@ -1852,8 +1870,11 @@ static void add_image_run(struct lay *l, unsigned int node,
 	if (idx >= 0 && idx < image_count && images[idx].state == 1)
 		bi = &images[idx];
 	if (l->space_pending && (l->nruns > 0 || l->line_x > l->left)) {
-		if (l->line_x + 8 <= l->right)
-			l->line_x += 8;
+		int sp = (int)ngui_text_width_px(l->ui, " ", 1, st->font_px,
+						 st->bold, st->italic,
+						 st->mono);
+		if (l->line_x + sp <= l->right)
+			l->line_x += sp;
 	}
 	l->space_pending = 0;
 	if (!bi) {
@@ -1868,14 +1889,16 @@ static void add_image_run(struct lay *l, unsigned int node,
 		s_append(tmp, &n, "[", sizeof(tmp));
 		s_append(tmp, &n, alt[0] ? alt : "image", sizeof(tmp));
 		s_append(tmp, &n, "]", sizeof(tmp));
-		w = (int)(n * (unsigned int)(8 * gs.scale));
+		w = (int)ngui_text_width_px(l->ui, tmp, n, gs.font_px,
+					    gs.bold, gs.italic, gs.mono);
 		if (l->line_x + w > l->right &&
 		    (l->nruns > 0 || l->line_x > l->left))
 			flush_line(l);
 		add_run(l, 0, 0, &gs, href, tmp);
 		if (!l->draw) {
 			int t = l->line_y < 0 ? 0 : l->line_y;
-			int hh = 16 * gs.scale;
+			int hh = ngui_text_line_height(l->ui, gs.font_px,
+						       gs.mono);
 
 			if (t > 65535)
 				t = 65535;
@@ -1983,8 +2006,11 @@ static void add_image_run(struct lay *l, unsigned int node,
 		r->img = (short)idx;
 		r->iw = (unsigned short)dw;
 		r->ih = (unsigned short)dh;
-		r->scale = 1;
-		r->bold = 0;
+		r->w = (unsigned short)dw;
+		r->font_px = st->font_px;
+		r->bold = st->bold;
+		r->italic = st->italic;
+		r->mono = st->mono;
 		r->underline = 0;
 	}
 	l->line_x += dw;
@@ -1993,16 +2019,68 @@ static void add_image_run(struct lay *l, unsigned int node,
 		l->line_h = dh;
 }
 
+static int text_width(struct lay *l, const char *s, unsigned int n,
+		      const struct br_style *st)
+{
+	return (int)ngui_text_width_px(l->ui, s, n, st->font_px,
+				       st->bold, st->italic, st->mono);
+}
+
+/* Longest prefix that fits in maxw, at least one byte. */
+static unsigned int fit_prefix(struct lay *l, const char *s, unsigned int n,
+			       const struct br_style *st, int maxw)
+{
+	unsigned int take = 0;
+
+	while (take < n) {
+		if (text_width(l, s, take + 1, st) > maxw)
+			break;
+		take++;
+	}
+	return take ? take : 1;
+}
+
+static void emit_word(struct lay *l, const char *s, unsigned int start,
+		      unsigned int n, unsigned int base,
+		      const struct br_style *st, unsigned short href)
+{
+	int avail = l->right - l->left;
+	int w = text_width(l, s + start, n, st);
+	unsigned int off = start;
+
+	if (l->line_x + w > l->right &&
+	    (l->nruns > 0 || l->line_x > l->left))
+		flush_line(l);
+	if (w <= avail) {
+		if (n)
+			add_run(l, (unsigned short)(base + start),
+				(unsigned short)n, st, href, 0);
+		return;
+	}
+	while (n > 0) {
+		unsigned int take = fit_prefix(l, s + off, n, st, avail);
+
+		add_run(l, (unsigned short)(base + off),
+			(unsigned short)take, st, href, 0);
+		off += take;
+		n -= take;
+		if (n)
+			flush_line(l);
+	}
+}
+
 static void emit_text(struct lay *l, const char *s, unsigned int len,
 		      const struct br_style *st, unsigned short href, int pre)
 {
 	unsigned int i = 0;
 	unsigned int base;
-	int cw = 8 * st->scale;
-	int adv = cw + (st->bold ? 1 : 0);
+	int space_w = (int)ngui_text_width_px(l->ui, " ", 1, st->font_px,
+					      st->bold, st->italic, st->mono);
 
 	if (!s || !len)
 		return;
+	if (space_w <= 0)
+		space_w = 8;
 	base = (unsigned int)(s - doc.text);
 	if (st->uppercase) {
 		char *p = (char *)s;
@@ -2022,52 +2100,23 @@ static void emit_text(struct lay *l, const char *s, unsigned int len,
 				continue;
 			}
 			if (s[i] == ' ') {
-				if (l->line_x + cw > l->right &&
+				if (l->line_x + space_w > l->right &&
 				    (l->nruns > 0 || l->line_x > l->left))
 					flush_line(l);
 				else
-					l->line_x += cw;
+					l->line_x += space_w;
 				i++;
 				continue;
 			}
 			start = i;
 			while (i < len && s[i] != ' ' && s[i] != '\n')
 				i++;
-			{
-				unsigned int n = i - start;
-				int w = (int)(n * (unsigned int)adv);
-
-				if (l->line_x + w > l->right &&
-				    (l->nruns > 0 || l->line_x > l->left))
-					flush_line(l);
-				if (w > l->right - l->left) {
-					int maxc = (l->right - l->left) / adv;
-					unsigned int off = start;
-					if (maxc < 1)
-						maxc = 1;
-					while (n > 0) {
-						unsigned int take = n >
-							(unsigned int)maxc ?
-							(unsigned int)maxc : n;
-						add_run(l, (unsigned short)(base + off),
-							(unsigned short)take,
-							st, href, 0);
-						off += take;
-						n -= take;
-						if (n)
-							flush_line(l);
-					}
-				} else {
-					add_run(l, (unsigned short)(base + start),
-						(unsigned short)n, st, href, 0);
-				}
-			}
+			emit_word(l, s, start, i - start, base, st, href);
 		}
 		return;
 	}
 	while (i < len) {
 		unsigned int start, n;
-		int w;
 
 		if (s[i] == ' ') {
 			l->space_pending = 1;
@@ -2078,36 +2127,13 @@ static void emit_text(struct lay *l, const char *s, unsigned int len,
 		while (i < len && s[i] != ' ')
 			i++;
 		n = i - start;
-		w = (int)(n * (unsigned int)adv);
 		if (l->space_pending &&
 		    (l->nruns > 0 || l->line_x > l->left)) {
-			if (l->line_x + cw <= l->right)
-				l->line_x += cw;
+			if (l->line_x + space_w <= l->right)
+				l->line_x += space_w;
 		}
 		l->space_pending = 0;
-		if (l->line_x + w > l->right &&
-		    (l->nruns > 0 || l->line_x > l->left))
-			flush_line(l);
-		if (w > l->right - l->left) {
-			int maxc = (l->right - l->left) / adv;
-			unsigned int off = start;
-
-			if (maxc < 1)
-				maxc = 1;
-			while (n > 0) {
-				unsigned int take = n > (unsigned int)maxc ?
-					(unsigned int)maxc : n;
-				add_run(l, (unsigned short)(base + off),
-					(unsigned short)take, st, href, 0);
-				off += take;
-				n -= take;
-				if (n)
-					flush_line(l);
-			}
-		} else if (n) {
-			add_run(l, (unsigned short)(base + start),
-				(unsigned short)n, st, href, 0);
-		}
+		emit_word(l, s, start, n, base, st, href);
 	}
 }
 
@@ -2148,11 +2174,15 @@ static void add_form_run(struct lay *l, unsigned int node,
 {
 	const char *text = form_text(node);
 	struct lay_run *r;
-	int tw, w, h = 20, i;
+	int tw, w, h, i;
 
 	if (!text)
 		return;
-	tw = (int)s_len(text) * 8 * st->scale;
+	tw = (int)ngui_text_width_px(l->ui, text, s_len(text), st->font_px,
+				     st->bold, st->italic, st->mono);
+	h = ngui_text_line_height(l->ui, st->font_px, st->mono) + 4;
+	if (h < 20)
+		h = 20;
 	if (st->width_kind == 1)
 		w = st->width;
 	else if (st->width_kind == 2)
@@ -2182,8 +2212,11 @@ static void add_form_run(struct lay *l, unsigned int node,
 	r->img = -2;
 	r->iw = (unsigned short)w;
 	r->ih = (unsigned short)h;
-	r->scale = st->scale;
+	r->w = (unsigned short)w;
+	r->font_px = st->font_px;
 	r->bold = st->bold;
+	r->italic = st->italic;
+	r->mono = st->mono;
 	r->underline = 0;
 	l->line_x += w;
 	l->run_x = l->line_x;
@@ -2459,19 +2492,18 @@ static void draw_svg(struct ngui *ui, unsigned node,
 			unsigned int t = nd->first;
 			const char *s;
 			unsigned int n, tw;
-			int scale = st.scale ? st.scale : 1;
+			int px = st.font_px ? st.font_px : 16;
 			int tx, ty, anchor;
 
 			if (!t || doc.nodes[t].type != BR_NODE_TEXT)
 				continue;
 			s = doc.text + doc.nodes[t].text_off;
 			n = doc.nodes[t].text_len;
-			tw = ngui_text_width_n(s, n, scale);
-			if (st.bold)
-				tw += n;
+			tw = ngui_text_width_px(ui, s, n, px, st.bold,
+						st.italic, st.mono);
 			tx = ox + (int)nd->svg_x * dw / vw;
 			ty = oy + (int)nd->svg_y * dh / vh -
-			     12 * scale;
+			     ngui_text_ascent(ui, px, st.mono);
 			anchor = st.align;
 			if (nd->attr_flags & BR_ATTR_ANCHOR_MIDDLE)
 				anchor = BR_ALIGN_CENTER;
@@ -2481,8 +2513,8 @@ static void draw_svg(struct ngui *ui, unsigned node,
 				tx -= (int)tw / 2;
 			else if (anchor == BR_ALIGN_RIGHT)
 				tx -= (int)tw;
-			ngui_text_styled(ui, tx, ty, s, n, st.color,
-					 scale, st.bold);
+			ngui_text_px(ui, tx, ty, s, n, st.color, px,
+				     st.bold, st.italic, st.mono);
 		}
 	}
 }
@@ -2652,7 +2684,7 @@ static void layout_block(struct lay *l, unsigned int node,
 				}
 			}
 			if (l->draw) {
-				int mw = (int)s_len(m) * 8;
+				int mw = (int)ngui_text_width_ui(l->ui, m);
 				ngui_text(l->ui, l->left - mw - 6, l->y, m,
 					  st->color);
 			}
@@ -2716,8 +2748,8 @@ static int text_node_blank(const struct br_node *nd)
  * text/image widths in the subtree, plus padding and margins.  This keeps
  * Bootstrap's floated nav items on one line instead of giving each the whole
  * row. */
-static int intrinsic_width(unsigned int node, const struct br_style *pst,
-			   int depth)
+static int intrinsic_width(struct ngui *ui, unsigned int node,
+			   const struct br_style *pst, int depth)
 {
 	unsigned int c;
 	int w = 0;
@@ -2729,8 +2761,10 @@ static int intrinsic_width(unsigned int node, const struct br_style *pst,
 		struct br_style cs;
 
 		if (nd->type == BR_NODE_TEXT) {
-			w += (int)nd->text_len * (8 * pst->scale) +
-			     (pst->bold ? 1 : 0);
+			w += (int)ngui_text_width_px(ui,
+				doc.text + nd->text_off, nd->text_len,
+				pst->font_px, pst->bold, pst->italic,
+				pst->mono);
 			continue;
 		}
 		br_style_for(&doc, c, pst, &cs);
@@ -2755,7 +2789,7 @@ static int intrinsic_width(unsigned int node, const struct br_style *pst,
 			continue;
 		}
 		w += cs.pl + cs.pr + cs.ml + cs.mr;
-		w += intrinsic_width(c, &cs, depth + 1);
+		w += intrinsic_width(ui, c, &cs, depth + 1);
 		if (w > 4096)
 			break;
 	}
@@ -2805,7 +2839,7 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 		else if (cs.width_kind == 1)
 			colw = (int)cs.width;
 		else {
-			colw = intrinsic_width(n, &cs, 0) +
+			colw = intrinsic_width(l->ui, n, &cs, 0) +
 			       cs.pl + cs.pr + cs.ml + cs.mr + 8;
 			if (colw < 8)
 				colw = 8;
@@ -2877,7 +2911,7 @@ static int flex_item_width(struct lay *l, unsigned int n,
 		else
 			w = 64;
 	} else {
-		w = intrinsic_width(n, cs, 0);
+		w = intrinsic_width(l->ui, n, cs, 0);
 		w += cs->pl + cs->pr + cs->ml + cs->mr;
 	}
 	if (w < 24)
@@ -3331,15 +3365,60 @@ static void layout_grid_auto(struct lay *l, unsigned int parent,
 	l->space_pending = 0;
 }
 
-/* Table rows: cells share the row line, with widths proportional to their
- * intrinsic content.  Border-collapse and colspans are not modelled, but a
- * two-column reference table reads as a table instead of a vertical list. */
+/* Column widths are the widest cell in each column across every row, so all
+ * rows line up.  The table model is still deliberately basic: no colspan,
+ * border-collapse or percentage columns. */
+static void table_columns(struct lay *l, unsigned int table,
+			  const struct br_style *pst, int *raw, int maxcols,
+			  int *out_cols, int *out_total)
+{
+	unsigned int r, c;
+	int cols = 0, total = 0;
+
+	for (c = 0; c < (unsigned int)maxcols; c++)
+		raw[c] = 0;
+	for (r = doc.nodes[table].first; r; r = doc.nodes[r].next) {
+		struct br_node *rn = &doc.nodes[r];
+		int col = 0;
+
+		if (rn->type != BR_NODE_ELEM || rn->tag != BR_TAG_TR)
+			continue;
+		for (c = rn->first; c; c = doc.nodes[c].next) {
+			struct br_node *cn = &doc.nodes[c];
+			struct br_style cs;
+			int w;
+
+			if (cn->type != BR_NODE_ELEM ||
+			    (cn->tag != BR_TAG_TD && cn->tag != BR_TAG_TH))
+				continue;
+			if (col >= maxcols)
+				break;
+			br_style_for(&doc, c, pst, &cs);
+			if (cs.display == BR_DISPLAY_NONE)
+				continue;
+			w = intrinsic_width(l->ui, c, &cs, 0) + cs.pl + cs.pr +
+			    cs.ml + cs.mr;
+			if (w < 24)
+				w = 24;
+			if (w > raw[col])
+				raw[col] = w;
+			if (col + 1 > cols)
+				cols = col + 1;
+			col++;
+		}
+	}
+	for (c = 0; c < (unsigned int)cols; c++)
+		total += raw[c];
+	*out_cols = cols;
+	*out_total = total;
+}
+
 static void layout_table_row(struct lay *l, unsigned int row,
 			     const struct br_style *pst, int depth,
 			     unsigned short link)
 {
 	unsigned int n, cell[12];
-	int raw[12], ncell = 0, total = 0;
+	int raw[12], ncell = 0, total = 0, cols = 0;
 	int row_left = l->left, row_right = l->right;
 	int avail = row_right - row_left;
 	int x = row_left, y = l->y, bottom = l->y;
@@ -3366,16 +3445,26 @@ static void layout_table_row(struct lay *l, unsigned int row,
 			return;
 		}
 		cell[ncell] = n;
-		raw[ncell] = intrinsic_width(n, &cs, 0) + cs.pl + cs.pr +
-			     cs.ml + cs.mr;
-		if (raw[ncell] < 24)
-			raw[ncell] = 24;
-		total += raw[ncell];
 		ncell++;
 	}
-	if (ncell < 2 || total <= 0 || avail < 32) {
+	if (ncell < 2 || avail < 32) {
 		layout_children(l, row, pst, depth, link);
 		return;
+	}
+	table_columns(l, doc.nodes[row].parent, pst, raw, 12, &cols, &total);
+	if (cols < 2 || total <= 0) {
+		int c;
+
+		for (c = 0; c < ncell; c++) {
+			struct br_style cs;
+
+			br_style_for(&doc, cell[c], pst, &cs);
+			raw[c] = intrinsic_width(l->ui, cell[c], &cs, 0) +
+				 cs.pl + cs.pr + cs.ml + cs.mr;
+			if (raw[c] < 24)
+				raw[c] = 24;
+			total += raw[c];
+		}
 	}
 	for (n = 0; n < (unsigned int)ncell; n++) {
 		struct br_style cs;
@@ -3384,8 +3473,6 @@ static void layout_table_row(struct lay *l, unsigned int row,
 		br_style_for(&doc, cell[n], pst, &cs);
 		if (w < 24)
 			w = 24;
-		if (n == (unsigned int)ncell - 1)
-			w = row_right - x;
 		if (w < 8)
 			w = 8;
 		l->left = x;
@@ -3740,7 +3827,7 @@ static void draw_page(struct ngui_rect page)
 	ngui_fill_rect(&ui, page, ui.theme.bg);
 	if (!doc.nnode || (page_loading && doc.nnode <= 1)) {
 		const char *s = page_loading ? "Loading..." : "No page";
-		int w = (int)ngui_text_width(s);
+		int w = (int)ngui_text_width_ui(&ui, s);
 		ngui_text(&ui, page.x + (page.w - w) / 2,
 			  page.y + page.h / 2 - 8, s, ui.theme.text_dim);
 		page_scroll.content_h = 0;
@@ -3840,7 +3927,7 @@ static void draw_status(struct ngui_rect r)
 	       (starts_with(page_url, "https://") ? "HTTPS" : "HTTP");
 	ngui_text_ellipsis(&ui, r, r.x + 6, r.y + 1, msg, color);
 	{
-		int kw = (int)ngui_text_width(kind);
+		int kw = (int)ngui_text_width_ui(&ui, kind);
 		ngui_text(&ui, r.x + r.w - 6 - kw, r.y + 1, kind,
 			  ui.theme.text_dim);
 	}

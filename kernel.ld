@@ -28,11 +28,8 @@ SECTIONS
 	}
 	_end = .;
 }
-/* The legacy stage stages the compressed rootfs at 0x60000 before copying it
- * to PACK_HIGH_ADDR; the loaded image (text/rodata/data) must not reach that
- * staging area.  BSS and the boot stack may extend past it: the stage copy
- * happens before the kernel clears BSS and starts using its stack.  Keep the
- * kernel end below 0x90000 so the top of the staging gap and the EBDA stay
- * untouched. */
-ASSERT(__bss_start <= 0x60000, "Kernel image too large: legacy pack staging would overwrite it");
-ASSERT(_end <= 0x90000, "Kernel too large: would reach the top of the low-memory staging gap");
+/* The legacy stage now copies each rootfs chunk straight to PACK_HIGH_ADDR,
+ * so the old 0x60000..0x9FBFF low staging gap is no longer used.  BSS and
+ * the boot stack may occupy that range.  Keep the kernel end below 0x90000
+ * so the top of the low-memory gap and the EBDA stay untouched. */
+ASSERT(_end <= 0x90000, "Kernel too large: would reach the top of the low-memory gap");

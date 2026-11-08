@@ -570,7 +570,7 @@ static void draw_footer(struct ngui *ui, const struct mines_layout *l)
 		msg = "left: reveal  right: flag";
 		color = C_DIM;
 	}
-	tw = (int)ngui_text_width(msg);
+	tw = (int)ngui_text_width_ui(ui, msg);
 	x = (ui->w - tw) / 2;
 	if (x < 4)
 		x = 4;
@@ -649,6 +649,7 @@ void _start(const char *arg)
 	}
 	ngui_init(&ui, (unsigned short *)info.fb, (int)info.width,
 		  (int)info.height);
+	ngui_font_attach(&ui);
 	reset_game();
 	quit = 0;
 	prev_right = 0;

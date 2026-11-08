@@ -38,6 +38,8 @@
 #define NGUI_RGB(r, g, b) \
 	((unsigned short)((((r) >> 3) << 11) | (((g) >> 2) << 5) | ((b) >> 3)))
 
+struct ufont_face;
+
 struct ngui_rect {
 	int x, y, w, h;
 };
@@ -98,6 +100,16 @@ struct ngui {
 	int w, h;
 	struct ngui_theme theme;
 
+	/* Fonts are owned by ufont.c's heap arena.  ngui_font_attach() opens
+	 * them; ngui_font_detach() frees the arena (the browser calls it before
+	 * heap_reset()).  NULL means the 8x16 bitmap fallback. */
+	struct ufont_face *font;
+	struct ufont_face *font_bold;
+	struct ufont_face *font_italic;
+	struct ufont_face *font_bold_italic;
+	struct ufont_face *font_mono;
+	int font_px;
+
 	/* Current pointer state, content-relative. */
 	int mouse_x, mouse_y;
 	unsigned int buttons;
@@ -137,6 +149,8 @@ struct ngui {
 };
 
 void ngui_init(struct ngui *ui, unsigned short *fb, int w, int h);
+void ngui_font_attach(struct ngui *ui);  /* opens /ramfs/fonts; no-op if absent */
+void ngui_font_detach(struct ngui *ui);  /* frees the ufont arena */
 int  ngui_begin(struct ngui *ui);       /* 1 = app should redraw */
 void ngui_end(struct ngui *ui);
 /* Same bookkeeping, but only publish the canvas when `present` is nonzero.
@@ -175,12 +189,21 @@ void ngui_text_n(struct ngui *ui, int x, int y, const char *s,
 		 unsigned int n, unsigned short color);
 void ngui_text_styled(struct ngui *ui, int x, int y, const char *s,
 		      unsigned int n, unsigned short color, int scale, int bold);
+/* Browser-oriented style: arbitrary pixel size, optional italic and mono. */
+void ngui_text_px(struct ngui *ui, int x, int y, const char *s,
+		  unsigned int n, unsigned short color, int px, int bold,
+		  int italic, int mono);
 void ngui_text_rot180(struct ngui *ui, int x, int y, const char *s,
 		      unsigned int n, unsigned short color);
 void ngui_text_ellipsis(struct ngui *ui, struct ngui_rect r, int x, int y,
 			const char *s, unsigned short color);
 unsigned int ngui_text_width(const char *s);
 unsigned int ngui_text_width_n(const char *s, unsigned int n, int scale);
+unsigned int ngui_text_width_ui(struct ngui *ui, const char *s);
+unsigned int ngui_text_width_px(struct ngui *ui, const char *s, unsigned int n,
+				int px, int bold, int italic, int mono);
+int ngui_text_ascent(struct ngui *ui, int px, int mono);
+int ngui_text_line_height(struct ngui *ui, int px, int mono);
 void ngui_icon(struct ngui *ui, struct ngui_rect r, enum ngui_icon icon,
 	       unsigned short color);
 

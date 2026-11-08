@@ -75,6 +75,9 @@ make flash      # write the dual-boot image (legacy BIOS + UEFI) to a USB stick
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make test-images  # host image-decoder + blit tests (ASan variant: test-images-asan)
 make test-libc  # host stress test for the ring-3 malloc
+make test-font  # host TrueType parser/rasterizer specimen test
+make test-font-asan  # ASan/UBSan variant
+make fonts      # regenerate fonts/*.ttf with pyftsubset + system fonts
 make clean
 ```
 
@@ -114,17 +117,18 @@ make clean
 1. `boot.S` — 512-byte boot sector (FAT16 BPB). Loads contiguous kernel sectors
    to `0x7E00` (CHS for floppy, INT 13h AH=42h LBA for hard disk), jumps there.
 2. `vesa_stage.S` — real-mode VESA stage. Probes INT 15h E820 into `0x1000`,
-   reads the `NBROOT1` rootfs header at the boot sector's `pack_lba` field
-   and stages the gzip pack in the low gap at `0x60000..0x9FBFF`
-   (16 KB staging chunks at `0x3000`, `rep movsb`; no protected-mode BIOS
-   call), picks the best VBE mode (≥16 bpp, LFB, fits VRAM, ≤1280px), writes
-   mode info to `0x600` and the 12-dword `struct boot_info`
-   (magic/checksum/rsdp/flags/pack range) to `0x500`, enables A20, enters
-   protected mode, copies the pack to `PACK_HIGH_ADDR` (`0x900000`, above the
-   VGA-shadow reserve) and rewrites the boot-info pack address before jumping
-   to `kernel_entry` (`entry.S`, re-points ESP to the current stack top, then
-   `kernel_main`).  The copy lets the kernel image's BSS/boot stack extend
-   past `0x60000`.  The stage prints
+   enables A20, reads the `NBROOT1` rootfs header at the boot sector's
+   `pack_lba` field and copies the gzip pack directly to `PACK_HIGH_ADDR`
+   (`0x900000`, above the 8 MB VGA-shadow reserve) in 16 KB chunks through
+   the `0x3000` staging buffer with INT 15h AH=87h.  The BIOS block move uses
+   24-bit descriptor bases; `paging_prepare_cpu()` clears the CR4/EFER state
+   the X201's BIOS leaves behind.  The stage then picks the best VBE mode
+   (≥16 bpp, LFB, fits VRAM, ≤1280px), writes mode info to `0x600` and the
+   12-dword `struct boot_info` (magic/checksum/rsdp/flags/pack range) to
+   `0x500`, enters protected mode and jumps to `kernel_entry` (`entry.S`,
+   re-points ESP to the current stack top, then `kernel_main`).  The pack
+   never occupies the low gap, so the cap is `PACK_MAX` (512 KB) and the
+   kernel BSS/boot stack may extend past `0x60000`.  The stage prints
    `Loading rootfs [d=<drive> lba=<hex> e=<0|1> m=<C|L>]...`, then a dot
    after the header and one per 16 KB chunk, so a BIOS hang is localised.
    Drives below 0x80 use CHS (the same path the boot sector's kernel load
@@ -167,10 +171,10 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 | `0x6000`  | AP real/protected-mode trampoline (`ap_tramp.S`/`ap_tramp.ld`; SIPI vector 0x06, image ends below `0x6C00`) |
 | `0x6C00`  | AP trampoline real-mode stack top (grows down) |
 | `0x6F00`  | AP startup info block (CR3, stack top, C entry, CPU index) |
-| `0x60000` | Legacy rootfs pack staging (`vesa_stage.S`; compressed gzip data, up to `PACK_LOW_MAX` 0x3FBFF, ending below the EBDA at `0x9FC00`).  Temporary: copied to `0x900000` in protected mode before the kernel starts, so the kernel BSS/boot stack may extend past this address |
-| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs `__bss_start <= 0x60000` so the loaded image stays below the legacy staging gap, and `_end <= 0x90000` so the top of the staging gap and the EBDA stay untouched).  BSS and the boot stack may extend past `0x60000` |
+| `0x60000` | No longer a rootfs staging area: the legacy stage copies each 16 KB chunk straight to `0x900000`.  The kernel BSS/boot stack may use this range |
+| `_end`    | Kernel end (linker symbol; `kernel.ld` keeps `_end <= 0x90000` so the top of the low-memory gap and the EBDA stay untouched).  BSS and the boot stack may extend past `0x60000` |
 | (in-image) | Bootstrap/protected-mode stack: 8 KB `.stack` NOLOAD section, `__boot_stack_top`/`__boot_stack_bottom` (travels with the kernel) |
-| `0x900000`| Legacy boot-time rootfs pack after `vesa_stage.S` relocates it (reserved by `mm_init` until `ramfs_init` takes its copy, then freed; process stacks and kexec staging also start here) |
+| `0x900000`| Legacy boot-time rootfs pack written directly by `vesa_stage.S` (reserved by `mm_init` until `ramfs_init` takes its copy, then freed; process stacks and kexec staging also start here) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
 The legacy stage uses `0x3000..0x6FFF` as a 16 KB-chunk rootfs staging
@@ -179,8 +183,7 @@ buffer (`0x4000`) and AP trampoline (`0x6000`) reinitialize those addresses
 later.
 
 The boot-time rootfs pack placement depends on the boot path: the legacy
-stage stages it in the low gap `0x60000..0x9FBFF` and copies it to
-`0x900000` before the kernel starts, the UEFI loader puts it at the top of
+stage copies it directly to `0x900000`, the UEFI loader puts it at the top of
 RAM below 128 MB, and kexec leaves it in the staging buffer
 (≥ `0x900000`).  `mm_init` reserves `[pack_addr, pack_addr+pack_size)` from
 boot info when it is above the low 1 MB, so the legacy pack is protected
@@ -369,7 +372,21 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   buffer (`screen.c`, used by `io.c`'s fallback screen and `bootcon`).  The
   ring-3 terminal renders its own rows into its canvas; the kernel window
   manager has no text-cell content path.  `screen_damage_*` remains for the
-  boot console's own bookkeeping.
+  boot console's own bookkeeping.  The kernel console stays 8×8; userland
+  proportional text uses `ufont` (below).
+- **Fonts**: `ufont.c/h`, `ufont_ttf.c`, `ufont_draw.c`, `ufont_file.c` — a
+  fixed-point (26.6, no FPU) TrueType parser and antialiased rasterizer for
+  ring-3 text.  Latin-1 only for now; the faces are the Arimo regular/bold/
+  italic/bold-italic and Liberation Mono subsets in `fonts/`, packed into
+  `/ramfs/fonts`.  `ufont` owns one 256 KB `malloc` arena for face data and
+  glyph masks; `ngui_font_attach/detach` (ngui) and `usurf_font_attach`
+  (`uwm_lib`) load faces and leave the 8×16 bitmap fallback when they are
+  absent.  The **browser calls `ngui_font_detach` before `heap_reset()` and
+  reattaches after `heap_start()`**, because its page heap is reset on every
+  navigation.  Terminal/editor/text fields deliberately keep the 8×16 cell
+  grid.  Host test: `make test-font` (`ufont_test.c`); `make fonts`
+  regenerates the subsets.  No hinting, CFF/variable fonts, shaping, bidi or
+  full Unicode yet.
 - **Shell**: `ucmd_term.c` is the windowed shell (rows, scrollback, Tab,
   builtins `cd`, `path`, `help`, `clear`).  `terminal.c` keeps the privileged
   kernel command registry and `term_kcmd_spawn()` used through `SYS_SPAWN_KCMD`;
@@ -590,8 +607,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `USER_BASE` (`0x40000000`), packed by `mkpack` into `cmds.pack` (as
   `bin/<name>`), gzipped to `cmds_pack_gz.bin` and wrapped by `mkrootfs`
   with a `NBROOT1` header.  The pack is the system rootfs: the boot path
-  loads it into RAM (legacy low gap / UEFI / kexec staging) and `ramfs_init`
-  takes a private page-allocated copy, mounted read-only at `/ramfs`.  The
+  loads it into RAM (legacy high-memory AH=87h copy / UEFI / kexec staging)
+  and `ramfs_init` takes a private page-allocated copy, mounted read-only at
+  `/ramfs`.  The
   shell finds them through PATH (`/ramfs/bin` by default), loads the whole
   ELF through the VFS and spawns it as a ring-3 process; `hello` is just
   `bin/hello`.  New command: add `ucmd_<name>.c` to UCMDS — the pack, the
@@ -824,15 +842,15 @@ The commands live in `cmds.pack` (`bin/<name>` entries, built by `mkpack`),
 compressed with `libdeflate-gzip -12` when it is installed (falling back to
 `gzip -9`) to `cmds_pack_gz.bin` and wrapped by `mkrootfs` with a
 one-sector `NBROOT1` header (magic, version, exact `pack_bytes`, checksum,
-gzip flag).  The build rejects a legacy pack above the `PACK_LOW_MAX` cap;
-`libdeflate` buys several KB over `gzip -9` and is currently needed to fit.
-The boot path loads the gz pack into RAM — the legacy stage stages it in
-the low gap at `0x60000` and relocates it to `0x900000` before the kernel
-starts, the UEFI loader via an embedded copy at the top of
-RAM below 128 MB, kexec via its staging buffer — and `ramfs_init()` inflates
-it into page-allocated memory and mounts it read-only at `/ramfs`.  The
-kernel image no longer contains it, so the pack no longer moves `_end`; the
-legacy staging gap has its own size cap (known issue 9).
+gzip flag).  The build rejects a pack above the `PACK_MAX` cap (512 KB);
+`libdeflate` buys several KB over `gzip -9` and is still preferred.  The boot
+path loads the gz pack into RAM — the legacy stage copies it directly to
+`0x900000` with INT 15h AH=87h, the UEFI loader via an embedded copy at the
+top of RAM below 128 MB, kexec via its staging buffer — and `ramfs_init()`
+inflates it into page-allocated memory and mounts it read-only at `/ramfs`.
+The kernel image no longer contains it, so the pack no longer moves `_end`;
+the high-memory legacy path supports up to 512 KB (known issue 8).  The UI
+font subsets live in the pack under `fonts/`.
 
 `rootfs.bin` is the floppy append (header + pack); `cmds.img` is the 8 MB
 rootfs partition image written to USB partition 2.  `cmds-dev`/`net-cmds`
@@ -1179,13 +1197,12 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
 8. The rootfs pack is inflated into one contiguous page-allocated run at
    boot, capped by `RAMFS_MAX_DECOMPRESSED` (8 MB); a larger pack fails to
    load (the USB rootfs partition is 8 MB, so this only bites if the cap is
-   raised without a bigger partition).  The legacy stage still stages the
-   compressed pack through the `0x60000..0x9FBFF` gap before copying it to
-   `0x900000`, so `PACK_LOW_MAX` (0x3FBFF, ~255 KB compressed) still caps the
-   legacy path; a larger pack needs the UEFI/kexec path or a chunked
-   high-memory loader.  The browser and its ring-3 dependencies are compiled
-   with function sections and linked with `--gc-sections`; the current pack
-   is ~243 KiB (248428 bytes), leaving ~12 KB under the cap.  Command growth
+   raised without a bigger partition).  The legacy stage now copies the
+   compressed pack directly to `0x900000` with INT 15h AH=87h, so the cap is
+   `PACK_MAX` 512 KB (not the old ~255 KB low-gap limit).  The browser and
+   its ring-3 dependencies are compiled with function sections and linked
+   with `--gc-sections`; the current pack with the UI fonts is ~343 KiB
+   (351180 bytes), leaving ~169 KiB under the cap.  Command growth
    still needs care because `libdeflate-gzip -12` is already required (plain
    `gzip -9` is over the cap).
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
@@ -1260,8 +1277,12 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     a float without a width uses a text-width estimate.  `@media` width
     blocks are evaluated against a fixed 1000 px desktop viewport (so
     narrow/adaptive pages get the desktop rules, not their mobile layout),
-    and pseudo-classes are never matched.  `font-size` maps to 1x/2x only,
-    `em`/`rem` both use a 16 px root, and `line-height` is approximate.
+    and pseudo-classes are never matched.  `font-size` now maps to real pixel
+    sizes (8..48), `font-weight` selects the bold face, `font-style: italic`
+    selects the italic face, `font-family: monospace` selects Liberation Mono,
+    and `em`/`rem` use a 16 px root.  Text is Latin-1 only (non-Latin-1
+    characters become `?`); there is no shaping, bidi, `@font-face` or
+    full-Unicode fallback.
     Pages that need flex alignment/justification, multi-row grid templates
     or CSS variables inside `calc()`/`color-mix()` can still lay out
     imperfectly.  Images are decoded into a per-image `img_estimate()`-sized
@@ -1324,3 +1345,12 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     block headers are charged to the same cap.  The `libc.a` members are only
     pulled into commands that reference them; the legacy pack still needs
     every added byte checked against `CMDS_GZ_MAX`.
+
+26. Fonts: `ufont` is a Latin-1-only, unhinted fixed-point TrueType subset;
+    there is no shaping/bidi/kerning, CFF or variable-font support, and no
+    full-Unicode fallback.  Small sizes (below ~12 px) are softer than the
+    bitmap font.  The 256 KB arena is shared by five faces plus glyph masks;
+    a very text-heavy page can exhaust it and fall back to re-rasterizing
+    evicted glyphs.  The browser must detach/re-attach its font arena around
+    `heap_reset()`, and terminal/editor/text-input cell grids intentionally
+    stay on the 8×16 bitmap font.
