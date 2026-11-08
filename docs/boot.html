@@ -197,7 +197,7 @@
 			<li>Selects a GOP mode with BGRX or RGBX 32bpp, width at most 1280, <code>pitch × height</code> at most 8 MB, and a framebuffer below 4 GB.</li>
 			<li>Calls <code>GetMemoryMap</code> and converts the firmware map into the kernel's E820 format at <code>0x1000</code>.</li>
 			<li>Stages the kernel image below 4 GB and writes the boot-info and framebuffer blocks.</li>
-			<li>Calls <code>ExitBootServices</code>, copies the embedded rootfs pack to the top of RAM below 512 MB, and copies a 192-byte trampoline to <code>0x800</code>.</li>
+			<li>Allocates the rootfs pack buffer as loader data below the 512 MB identity window while boot services are still live, copies the embedded pack into it, calls <code>ExitBootServices</code>, then copies a 192-byte trampoline to <code>0x800</code>.</li>
 			<li>Leaves IA-32e mode (clears <code>CR0.PG</code>, <code>EFER.LME</code>, <code>CR4.PAE/PGE/PCIDE/SMEP/SMAP/LA57</code>), copies the kernel to <code>0x7E00</code>, and jumps to <code>kernel_entry</code>.</li>
 		</ol>
 		<p>

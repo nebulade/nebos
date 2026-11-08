@@ -75,6 +75,23 @@
 				 PORTSC_OCC | PORTSC_PRC | PORTSC_PLC | \
 				 PORTSC_CEC | PORTSC_PED)
 
+/* Bits that may be written back while preserving the port state:
+ * read-only status (CCS, OCA, speed, device-removable) and the
+ * read/write-state fields (PLS, PP, PIC, wake enables).  Everything else
+ * -- especially PR/WPR (RW1S) and PED (RW1CS) -- must be written as 0 or
+ * the write changes the port state.  Linux's
+ * xhci_port_state_to_neutral() does the same. */
+#define PORTSC_RO_MASK		(PORTSC_CCS | 0x00000008u | \
+				 (PORTSC_SPEED_MASK << PORTSC_SPEED_SHIFT) | \
+				 0x40000000u)
+#define PORTSC_RWS_MASK		(0x000001E0u | PORTSC_PP | 0x0000C000u | \
+				 0x0E000000u)
+
+static unsigned int portsc_neutral(unsigned int ps)
+{
+	return (ps & PORTSC_RO_MASK) | (ps & PORTSC_RWS_MASK);
+}
+
 /* TRB types */
 #define TRB_NORMAL		1
 #define TRB_SETUP		2
@@ -111,8 +128,6 @@
 #define EP_BULK_IN		6
 #define EP_INT_IN		7
 
-#define XHCI_CTRL_MPS		8
-
 struct xhci_trb {
 	unsigned int p0;
 	unsigned int p1;
@@ -123,7 +138,8 @@ struct xhci_trb {
 struct xhci_slot {
 	int used;
 	unsigned int slot_id;
-	unsigned int addr;
+	unsigned int addr;	/* logical address used by usb.c */
+	unsigned int dev_addr;	/* address assigned by the xHC */
 	unsigned int port;
 	unsigned int speed;
 	unsigned int dc;	/* device context page */
@@ -246,6 +262,14 @@ static void dbg(const char *s) { (void)s; }
 static void dbg_hex(const char *s, unsigned int v) { (void)s; (void)v; }
 static void dbg_dec(const char *s, unsigned int v) { (void)s; (void)v; }
 #endif
+
+static void delay_ms(unsigned int ms)
+{
+	unsigned int t0 = get_ticks_ms();
+
+	while (get_ticks_ms() - t0 < ms)
+		;
+}
 
 /* ---- MMIO helpers ------------------------------------------------------ */
 static unsigned int mmio_rd(unsigned int off)
@@ -388,10 +412,24 @@ static void xhci_poll_locked(void)
 			unsigned int ep = (ev->control >> 16) & 0x1F;
 
 			if (ctl_busy && slot == ctl_slot && ep == 1) {
-				if (ev->p0 == ctl_data_trb) {
+				if (ev->p0 == ctl_setup_trb) {
+					/* The setup stage is its own TD and
+					 * completes first; only an error stops
+					 * the transfer. */
+					if (code != CC_SUCCESS &&
+					    code != CC_SHORT_PACKET) {
+						ctl_status = code;
+						ctl_done = 1;
+					}
+				} else if (ev->p0 == ctl_data_trb) {
 					ctl_actual = (ctl_req_len >= residual) ?
 						ctl_req_len - residual : 0;
 					ctl_data_seen = 1;
+					if (code != CC_SUCCESS &&
+					    code != CC_SHORT_PACKET) {
+						ctl_status = code;
+						ctl_done = 1;
+					}
 				} else if (ev->p0 == ctl_status_trb) {
 					if (!ctl_data_seen)
 						ctl_actual =
@@ -550,6 +588,19 @@ static unsigned int port_speed(unsigned int port)
 	return sp ? sp : 1;
 }
 
+/* Default control-pipe max packet size for the BSR Address Device command.
+ * High speed must be 64; full speed uses the USB core's 64-byte guess (the
+ * descriptor read then corrects it); low speed is 8.  Using 8 for a
+ * high/full-speed slot leaves EP0 unusable on real xHCs. */
+static unsigned int ep0_mps_for_speed(unsigned int speed)
+{
+	if (speed == 2)		/* low speed */
+		return 8;
+	if (speed >= 4)		/* SuperSpeed / SuperSpeedPlus */
+		return 512;
+	return 64;		/* full speed (guess) and high speed */
+}
+
 static int xhci_config_ep(struct xhci_slot *s, unsigned int ep_index,
 			  unsigned int type, unsigned int mps,
 			  unsigned int interval, unsigned int ring)
@@ -567,7 +618,7 @@ static int xhci_config_ep(struct xhci_slot *s, unsigned int ep_index,
 	zero_page(input_ctx, 4096);
 	*(unsigned int *)input_ctx = 0;
 	*(unsigned int *)(input_ctx + 4) = SLOT_FLAG | ep_flag;
-	fill_slot_ctx(s->addr, s->port, s->speed, last);
+	fill_slot_ctx(s->dev_addr, s->port, s->speed, last);
 	fill_ep_ctx(ep_index, type, mps, interval, ring);
 	spin_unlock_irqrestore(&xhci_lock, flags);
 
@@ -579,7 +630,14 @@ static int xhci_config_ep(struct xhci_slot *s, unsigned int ep_index,
 }
 
 /* ---- slots ------------------------------------------------------------- */
-static struct xhci_slot *new_slot(void)
+/* Create a slot.  bsr=1: Address Device with Block Set Address Request,
+ * leaving the slot in the Default state at device address 0 (new
+ * enumeration scheme).  bsr=0: the command carries target_addr and moves
+ * Enabled -> Addressed directly (traditional scheme), which is what Linux
+ * does when the port is addressed before the first descriptor read.
+ * mps == 0 means "derive it from the port speed". */
+static struct xhci_slot *new_slot_common(unsigned int target_addr,
+					 unsigned int mps, int bsr)
 {
 	struct xhci_slot *s;
 	unsigned int slot_id, dc, ep0, flags;
@@ -620,7 +678,10 @@ static struct xhci_slot *new_slot(void)
 	s->ep0_enq = 0;
 	s->ep0_cycle = 1;
 	s->ep_mask = 0;
+	s->dev_addr = 0;
 	ring_init(ep0, XHCI_EP0_TRBS, &s->ep0_enq, &s->ep0_cycle);
+	if (!mps)
+		mps = ep0_mps_for_speed(s->speed);
 
 	ram_wr64(dcbaa + slot_id * 8, dc);
 
@@ -629,22 +690,37 @@ static struct xhci_slot *new_slot(void)
 	*(unsigned int *)input_ctx = 0;
 	*(unsigned int *)(input_ctx + 4) = SLOT_FLAG | EP0_FLAG;
 	fill_slot_ctx(0, s->port, s->speed, 1);
-	fill_ep0_ctx(XHCI_CTRL_MPS, ep0, s->ep0_enq, s->ep0_cycle);
+	fill_ep0_ctx(mps, ep0, s->ep0_enq, s->ep0_cycle);
 	spin_unlock_irqrestore(&xhci_lock, flags);
 
 	rc = xhci_cmd(input_ctx, 0,
-		      TRB_TYPE(TRB_ADDR_DEV) | (slot_id << 24) | TRB_BSR, 0);
+		      TRB_TYPE(TRB_ADDR_DEV) | (slot_id << 24) |
+		      (bsr ? TRB_BSR : 0), 0);
 	if (rc != 0) {
-		dbg("xhci: address default failed\n");
+		dbg(bsr ? "xhci: address default failed\n" :
+		    "xhci: address device failed\n");
+		ram_wr64(dcbaa + slot_id * 8, 0);
+		xhci_cmd(0, 0,
+			 TRB_TYPE(TRB_DISABLE_SLOT) | (slot_id << 24), 0);
 		mm_free_page(dc);
 		mm_free_page(ep0);
 		s->used = 0;
 		return 0;
 	}
 
-	addr_slot[0] = slot_id;
+	/* The xHC assigns the USB device address (the input slot context
+	 * address is 0); keep it for later Configure Endpoint commands. */
+	s->dev_addr = ((unsigned int *)s->dc)[3] & 0xFF;
+	s->addr = bsr ? 0 : target_addr;
+	addr_slot[s->addr] = slot_id;
 	port_slot[s->port] = slot_id;
 	return s;
+}
+
+/* New-scheme slot: Enabled -> Default, at device address 0. */
+static struct xhci_slot *new_slot(void)
+{
+	return new_slot_common(0, 0, 1);
 }
 
 static void free_slot(struct xhci_slot *s)
@@ -705,7 +781,7 @@ static int set_address(unsigned int new_addr, unsigned int mps)
 	zero_page(input_ctx, 4096);
 	*(unsigned int *)input_ctx = 0;
 	*(unsigned int *)(input_ctx + 4) = SLOT_FLAG | EP0_FLAG;
-	fill_slot_ctx(new_addr, s->port, s->speed, 1);
+	fill_slot_ctx(0, s->port, s->speed, 1);
 	fill_ep0_ctx(mps, s->ep0, s->ep0_enq, s->ep0_cycle);
 	spin_unlock_irqrestore(&xhci_lock, flags);
 
@@ -717,6 +793,7 @@ static int set_address(unsigned int new_addr, unsigned int mps)
 	}
 
 	spin_lock_irqsave(&xhci_lock, &flags);
+	s->dev_addr = ((unsigned int *)s->dc)[3] & 0xFF;
 	addr_slot[0] = 0;
 	s->addr = new_addr;
 	addr_slot[new_addr] = s->slot_id;
@@ -733,6 +810,7 @@ static int control_transfer(unsigned int ctrl, unsigned int addr,
 	struct xhci_slot *s;
 	unsigned int flags, t0, rc, st;
 	unsigned int setup_c, data_c, status_c;
+	unsigned int last_bell;
 
 	(void)ctrl;
 	(void)low_speed;
@@ -741,12 +819,28 @@ static int control_transfer(unsigned int ctrl, unsigned int addr,
 		return -1;
 
 	/* xHCI owns SET_ADDRESS: it is an Address Device command, not a
-	 * control request on the wire. */
-	if (setup[0] == 0x00 && setup[1] == 0x05 && addr == 0)
-		return set_address((unsigned int)setup[2] |
-				   ((unsigned int)setup[3] << 8), mps);
+	 * control request on the wire.  If a Default-state slot exists (new
+	 * scheme), move it to Addressed.  Otherwise this is the traditional
+	 * scheme: create the slot Enabled and address it in one command,
+	 * without ever using the Default state. */
+	if (setup[0] == 0x00 && setup[1] == 0x05 && addr == 0) {
+		unsigned int new_addr = (unsigned int)setup[2] |
+					((unsigned int)setup[3] << 8);
+
+		s = slot_by_addr(0);
+		if (s)
+			return set_address(new_addr, mps);
+		s = new_slot_common(new_addr, mps, 0);
+		return s ? 0 : -1;
+	}
 
 	s = slot_by_addr(addr);
+	if (s && addr == 0 && (int)s->port != last_port) {
+		/* A failed enumeration on another port left a slot at
+		 * address 0; it must not be reused for this device. */
+		free_slot(s);
+		s = 0;
+	}
 	if (!s) {
 		if (addr != 0)
 			return -1;
@@ -769,7 +863,13 @@ static int control_transfer(unsigned int ctrl, unsigned int addr,
 	ctl_slot = s->slot_id;
 	ctl_req_len = len;
 
-	setup_c = TRB_TYPE(TRB_SETUP) | TRB_IDT | TRB_CHAIN;
+	/* Encode the three stages the way EDK2's XhciDxe does: every stage
+	 * is its own TD (no CHAIN) and carries IOC.  This Braswell xHC never
+	 * completes a chained multi-TRB control TD: with Linux's chaining
+	 * (CHAIN on setup+data, IOC on status) the data stage hangs and no
+	 * transfer event is ever posted, while the per-stage encoding
+	 * completes. */
+	setup_c = TRB_TYPE(TRB_SETUP) | TRB_IDT | TRB_IOC;
 	if (len)
 		setup_c |= (dir_in ? 3u : 2u) << 16;
 	ctl_setup_trb = s->ep0 + s->ep0_enq * 16;
@@ -785,7 +885,7 @@ static int control_transfer(unsigned int ctrl, unsigned int addr,
 	ctl_data_trb = 0;
 	if (len) {
 		ctl_data_trb = s->ep0 + s->ep0_enq * 16;
-		data_c = TRB_TYPE(TRB_DATA) | TRB_CHAIN;
+		data_c = TRB_TYPE(TRB_DATA) | TRB_IOC;
 		if (dir_in)
 			data_c |= TRB_DIR_IN | TRB_ISP;
 		ring_queue(s->ep0, XHCI_EP0_TRBS, &s->ep0_enq,
@@ -804,10 +904,17 @@ static int control_transfer(unsigned int ctrl, unsigned int addr,
 	spin_unlock_irqrestore(&xhci_lock, flags);
 
 	t0 = get_ticks_ms();
+	last_bell = t0;
 	while (get_ticks_ms() - t0 < 1000) {
 		spin_lock_irqsave(&xhci_lock, &flags);
 		xhci_poll_locked();
 		rc = ctl_done;
+		if (!rc && get_ticks_ms() - last_bell >= 100) {
+			/* Re-ring while the endpoint is still busy; a posted
+			 * doorbell can be lost on some real xHCs. */
+			mmio_wr(db_off + 4 * s->slot_id, 1);
+			last_bell = get_ticks_ms();
+		}
 		spin_unlock_irqrestore(&xhci_lock, flags);
 		if (rc)
 			break;
@@ -1146,11 +1253,33 @@ static int port_reset(unsigned int ctrl, unsigned int port)
 	if (!(ps & PORTSC_CCS))
 		return -1;
 
+	/* Force the port into the Disabled state first: some xHCs ignore
+	 * PR while the port is already enabled, leaving the device at its
+	 * firmware-assigned address instead of address 0. */
+	if (ps & PORTSC_PED) {
+		mmio_wr(op(XHCI_OP_PORTSC) + port * 0x10,
+			portsc_neutral(ps) | PORTSC_PED);
+		t0 = get_ticks_ms();
+		while (get_ticks_ms() - t0 < 100) {
+			ps = mmio_rd(op(XHCI_OP_PORTSC) + port * 0x10);
+			if (!(ps & PORTSC_PED))
+				break;
+		}
+	}
+
+	/* Acknowledge stale change latches first; a leftover PRC would
+	 * otherwise let the wait below succeed before this reset has even
+	 * started (the firmware may have left one behind). */
 	mmio_wr(op(XHCI_OP_PORTSC) + port * 0x10,
-		(ps & ~PORTSC_RWC) | PORTSC_PR);
+		portsc_neutral(ps) | PORTSC_CSC | PORTSC_PEC |
+		PORTSC_PRC | PORTSC_PLC);
+	ps = mmio_rd(op(XHCI_OP_PORTSC) + port * 0x10);
+
+	mmio_wr(op(XHCI_OP_PORTSC) + port * 0x10,
+		portsc_neutral(ps) | PORTSC_PR);
 
 	t0 = get_ticks_ms();
-	while (get_ticks_ms() - t0 < 200) {
+	while (get_ticks_ms() - t0 < 500) {
 		ps = mmio_rd(op(XHCI_OP_PORTSC) + port * 0x10);
 		if (ps & PORTSC_PRC)
 			break;
@@ -1160,10 +1289,10 @@ static int port_reset(unsigned int ctrl, unsigned int port)
 		return -1;
 	}
 	mmio_wr(op(XHCI_OP_PORTSC) + port * 0x10,
-		(ps & ~PORTSC_RWC) | PORTSC_PRC);
+		portsc_neutral(ps) | PORTSC_PRC);
 
 	t0 = get_ticks_ms();
-	while (get_ticks_ms() - t0 < 100) {
+	while (get_ticks_ms() - t0 < 500) {
 		ps = mmio_rd(op(XHCI_OP_PORTSC) + port * 0x10);
 		if (ps & PORTSC_PED)
 			break;
@@ -1172,6 +1301,11 @@ static int port_reset(unsigned int ctrl, unsigned int port)
 		dbg_hex("xhci: port not enabled ", port);
 		return -1;
 	}
+
+	/* USB2 reset recovery: the device needs TRSTRCY (10 ms) before it
+	 * answers the first control request.  QEMU replies immediately,
+	 * real devices do not. */
+	delay_ms(10);
 
 	last_port = (int)port;
 	return 0;
@@ -1211,27 +1345,57 @@ static int port_take_change(unsigned int ctrl, unsigned int port)
 	if (!(ps & PORTSC_CSC))
 		return 0;
 	mmio_wr(op(XHCI_OP_PORTSC) + port * 0x10,
-		(ps & ~PORTSC_RWC) | PORTSC_CSC);
+		portsc_neutral(ps) | PORTSC_CSC);
 	return 1;
 }
 
 /* ---- controller discovery ---------------------------------------------- */
-/* xHCI USB Legacy Support: stop the firmware's SMI from firing on port
- * changes once we own the controller (the same idea as the PCI 0xC0 write
- * in uhci.c/ohci.c, but xHCI keeps it in an extended capability). */
-static void legacy_smi_disable(unsigned int off)
+/* xHCI USB Legacy Support: take ownership from the firmware before the
+ * reset and stop its SMI from firing on port changes once we own the
+ * controller (the same idea as the PCI 0xC0 write in uhci.c/ohci.c, but
+ * xHCI keeps it in an extended capability).
+ *
+ * The BIOS-owned semaphore must actually clear before HCRST: while the
+ * firmware still owns the controller its SMI handler can interfere with
+ * the reset and the command ring.  Linux waits for it too. */
+static void legacy_handoff(unsigned int off)
 {
 	unsigned int sup = mmio_rd(off);
-	unsigned int ctl;
+	unsigned int ctl, t0;
 
 	if ((sup & 0xFF) != 1)
 		return;
-	if (sup & (1u << 16))		/* BIOS still owns it */
+	if (sup & (1u << 16)) {		/* BIOS still owns it */
 		mmio_wr(off, sup | (1u << 24));
+		t0 = get_ticks_ms();
+		while (get_ticks_ms() - t0 < 1000) {
+			if (!(mmio_rd(off) & (1u << 16)))
+				break;
+		}
+	}
 	ctl = mmio_rd(off + 4);
 	ctl &= ~((0x7u << 1) | (0xFFu << 5) | (0x7u << 17));
 	ctl |= 0x7u << 29;
 	mmio_wr(off + 4, ctl);
+}
+
+/* Walk the extended capabilities for the legacy handoff.  Runs before the
+ * controller reset; scan_protocols() parses the port list afterwards. */
+static void ext_caps_handoff(void)
+{
+	unsigned int off, guard = 0;
+
+	off = ((hcc_params >> 16) & 0xFFFF) << 2;
+	while (off && guard++ < 32) {
+		unsigned int cap = mmio_rd(off);
+		unsigned int next = (cap >> 8) & 0xFF;
+
+		if ((cap & 0xFF) == 1)
+			legacy_handoff(off);
+		if (!next)
+			break;
+		off += next << 2;
+	}
 }
 
 static void scan_protocols(void)
@@ -1246,9 +1410,7 @@ static void scan_protocols(void)
 		unsigned int id = cap & 0xFF;
 		unsigned int next = (cap >> 8) & 0xFF;
 
-		if (id == 1) {
-			legacy_smi_disable(off);
-		} else if (id == 2) {	/* Supported Protocol */
+		if (id == 2) {	/* Supported Protocol */
 			unsigned int major = (cap >> 24) & 0xFF;
 			unsigned int pi = mmio_rd(off + 8);
 			unsigned int po = pi & 0xFF;
@@ -1355,9 +1517,35 @@ found_xhci:
 	zero_page(evt_ring, 4096);
 	zero_page(erst, 4096);
 
-	/* Reset.  HCRST self-clears; wait for CNR to drop. */
+	/* Firmware handoff before the reset: while the BIOS still owns the
+	 * controller its SMI handler can interfere with HCRST and the
+	 * command ring. */
+	ext_caps_handoff();
+
+	/* Wait for the controller to become ready before touching USBCMD. */
+	t0 = get_ticks_ms();
+	while (get_ticks_ms() - t0 < 1000) {
+		if (!(mmio_rd(op(XHCI_OP_USBSTS)) & XHCI_STS_CNR))
+			break;
+	}
+
+	/* Reset.  The xHC may ignore HCRST while it is running, so halt it
+	 * and wait for HCH first (xHCI 4.2; Linux does the same).  QEMU
+	 * halts instantly, real silicon does not. */
 	mmio_wr(op(XHCI_OP_USBCMD), 0);
+	t0 = get_ticks_ms();
+	while (get_ticks_ms() - t0 < 100) {
+		if (mmio_rd(op(XHCI_OP_USBSTS)) & XHCI_STS_HCH)
+			break;
+	}
+	if (!(mmio_rd(op(XHCI_OP_USBSTS)) & XHCI_STS_HCH))
+		dbg("xhci: halt timeout\n");
+
 	mmio_wr(op(XHCI_OP_USBCMD), XHCI_CMD_HCRST);
+	/* Intel xHCI (CherryView/Braswell included) needs 1 ms after the
+	 * HCRST write before any other HC register is accessed; polling
+	 * USBCMD too early can leave the controller partially reset. */
+	delay_ms(2);
 	t0 = get_ticks_ms();
 	while (get_ticks_ms() - t0 < 1000) {
 		if (!(mmio_rd(op(XHCI_OP_USBCMD)) & XHCI_CMD_HCRST))
@@ -1373,6 +1561,29 @@ found_xhci:
 			mmio_rd(op(XHCI_OP_USBSTS)));
 		return 0;
 	}
+
+	/* After HCRST the controller must be halted before the ring
+	 * registers are written; otherwise the writes can be dropped and
+	 * every command times out. */
+	if (!(mmio_rd(op(XHCI_OP_USBSTS)) & XHCI_STS_HCH)) {
+		mmio_wr(op(XHCI_OP_USBCMD), 0);
+		t0 = get_ticks_ms();
+		while (get_ticks_ms() - t0 < 100) {
+			if (mmio_rd(op(XHCI_OP_USBSTS)) & XHCI_STS_HCH)
+				break;
+		}
+	}
+
+	/* A working HCRST clears DCBAAP/CRCR/CONFIG.  If firmware values
+	 * survive, the reset did not take effect: the ports keep their old
+	 * device addresses and every control transfer to address 0 fails. */
+	if (mmio_rd(op(XHCI_OP_DCBAAP)) != 0 ||
+	    (mmio_rd(op(XHCI_OP_CRCR)) & ~0xFu) != 0 ||
+	    (mmio_rd(op(XHCI_OP_CONFIG)) & 0xFFu) != 0)
+		dbg("xhci: hcreset not applied\n");
+
+	/* Clear stale status latches from the firmware's session. */
+	mmio_wr(op(XHCI_OP_USBSTS), (1u << 2) | (1u << 3) | (1u << 4));
 
 	mmio_wr(op(XHCI_OP_PAGESIZE), 1);
 	mmio_wr(op(XHCI_OP_CONFIG), max_slots);
@@ -1432,21 +1643,25 @@ found_xhci:
 		return 0;
 	}
 
+	/* The first command completion (or timeout) tells whether the ring is
+	 * actually serviced.  Don't gate on CRR: QEMU leaves it clear even
+	 * while commands complete normally. */
+
 	scan_protocols();
 	dbg_hex("xhci: usb2 ports ", usb2_mask);
 
-	/* Port power, where the controller has per-port switching. */
-	if (hcc_params & 0x0008u) {
-		for (i = 0; i < max_ports; i++) {
-			unsigned int ps;
-			if (!(usb2_mask & (1u << i)))
-				continue;
-			ps = mmio_rd(op(XHCI_OP_PORTSC) + i * 0x10);
-			if (!(ps & PORTSC_PP))
-				mmio_wr(op(XHCI_OP_PORTSC) + i * 0x10,
-					(ps & ~PORTSC_RWC) | PORTSC_PP);
-		}
+	/* Power every root port.  VBus is supposed to come up after HCRST,
+	 * but some firmware/PPC combinations leave PP clear; the USB3
+	 * entries may share a switch with a USB2 connector, so write all of
+	 * them, not just the USB2 range. */
+	for (i = 0; i < max_ports; i++) {
+		unsigned int ps = mmio_rd(op(XHCI_OP_PORTSC) + i * 0x10);
+
+		if (!(ps & PORTSC_PP))
+			mmio_wr(op(XHCI_OP_PORTSC) + i * 0x10,
+				portsc_neutral(ps) | PORTSC_PP);
 	}
+	delay_ms(20);
 
 	found = 1;
 	return 1;

@@ -293,7 +293,7 @@
 	<section id="pack">
 		<h2>Rootfs pack lifetime</h2>
 		<ol>
-			<li>The boot path places the gzip pack in RAM: the legacy stage copies it directly to <code>0x900000</code> with <code>INT 15h AH=87h</code>, UEFI at the top of RAM below 512 MB, kexec in its staging buffer.</li>
+			<li>The boot path places the gzip pack in RAM: the legacy stage copies it directly to <code>0x900000</code> with <code>INT 15h AH=87h</code>, UEFI into a loader-data buffer below 512 MB, kexec in its staging buffer.</li>
 			<li><code>mm_init</code> reserves <code>[pack_addr, pack_addr + pack_size)</code> so the frame allocator cannot reuse it.</li>
 			<li><code>ramfs_init</code> takes a private page-allocated copy, validates the <code>NBROOT1</code> header and inflates the pack into it.</li>
 			<li><code>mm_free_range</code> releases the boot region when it is above the VGA shadow reserve. The private copy lives until <code>ramfs_replace</code> or reboot.</li>

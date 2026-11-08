@@ -12,6 +12,7 @@
 
 #include "asix.h"
 #include "io.h"
+#include "netdev.h"
 #include "timer.h"
 #include "usb.h"
 
@@ -457,6 +458,7 @@ static int device_probe(unsigned int ctrl, unsigned int addr,
 		return 0;
 	}
 
+	netdev_hotplug();
 	return 1;
 }
 

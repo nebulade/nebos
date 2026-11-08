@@ -110,7 +110,7 @@ static int print_devices;
 static int scan_busy;
 
 static unsigned char dev_desc[18];
-static unsigned char desc8[8];
+static unsigned char desc8[64];
 static unsigned char hub_desc[16];
 static unsigned char port_st[4];
 static unsigned char conf_hdr[9];
@@ -564,24 +564,12 @@ static void enumerate_new_device(unsigned int ctrl, unsigned int port, int low,
 		return;
 	}
 
-	/* First 8 bytes at address 0 (learn max packet size). */
-	if (usb_control_in(ctrl, 0, 8, low, RT_DEV2HOST_STD,
-			   REQ_GET_DESCRIPTOR,
-			   (unsigned short)(DESC_DEVICE << 8), 0,
-			   desc8, 8) < 0) {
-		dbg("usb:   no response at address 0\n");
-		if (print_devices) {
-			indent(depth);
-			io_putstr("(no response at address 0)\n");
-		}
-		return;
-	}
-
-	mps = desc8[7];
-	if (mps == 0)
-		mps = 8;
-
-	/* Assign an address. */
+	/* Traditional ("old") enumeration scheme: assign the address before
+	 * reading the descriptor.  The xHCI Default-state EP0 transfer is
+	 * unreliable on this hardware, while a slot in the Addressed state
+	 * works.  The device's real max packet size is not known yet, so the
+	 * high/full-speed guess is 64 (low speed is always 8). */
+	mps = low ? 8 : 64;
 	if (usb_control_out(ctrl, 0, mps, low, RT_HOST2DEV_STD,
 			    REQ_SET_ADDRESS, (unsigned short)addr, 0) < 0) {
 		dbg("usb:   SET_ADDRESS failed\n");
@@ -591,10 +579,27 @@ static void enumerate_new_device(unsigned int ctrl, unsigned int port, int low,
 		}
 		return;
 	}
-	dbg_dec("usb:   enumerated device, addr ", addr);
+	next_addr[ctrl] = addr + 1;
 	msleep(5);
 
-	next_addr[ctrl] = addr + 1;
+	/* First 8 bytes at the assigned address (learn max packet size). */
+	if (usb_control_in(ctrl, addr, mps, low, RT_DEV2HOST_STD,
+			   REQ_GET_DESCRIPTOR,
+			   (unsigned short)(DESC_DEVICE << 8), 0,
+			   desc8, 8) < 0) {
+		dbg("usb:   no response at the assigned address\n");
+		if (print_devices) {
+			indent(depth);
+			io_putstr("(device descriptor read failed)\n");
+		}
+		return;
+	}
+
+	mps = desc8[7];
+	if (mps == 0)
+		mps = 8;
+
+	dbg_dec("usb:   enumerated device, addr ", addr);
 	enumerate_device(ctrl, addr, mps, low, port, depth);
 }
 

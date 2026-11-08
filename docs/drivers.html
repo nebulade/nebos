@@ -258,7 +258,7 @@
 					<tr><td>UHCI</td><td>PCI I/O ports</td><td>1</td><td>Frame list at <code>0x3000</code>; control QH plus one QH per interrupt slot.</td></tr>
 					<tr><td>OHCI</td><td>PCI MMIO</td><td>up to 4</td><td>HCCA from the page allocator, static ED/TD sets, TDs start at <code>CC = NotAccessed</code>.</td></tr>
 					<tr><td>EHCI</td><td>PCI MMIO</td><td>up to 4</td><td>Async QH/qTD schedule, page-allocated descriptors, polling only, no periodic list.</td></tr>
-					<tr><td>xHCI</td><td>PCI MMIO</td><td>—</td><td>USB2 root ports only; USB3 SuperSpeed devices are not handled.</td></tr>
+					<tr><td>xHCI</td><td>PCI MMIO</td><td>—</td><td>USB2 root ports only; USB3 SuperSpeed devices are not handled. Halts and waits for <code>HCH</code> around <code>HCRST</code>; EP0 max packet comes from the port speed; EP0 stages are encoded as one TD per stage (EDK2 style) because chained control TDs stall on Braswell.</td></tr>
 				</tbody>
 			</table>
 		</div>

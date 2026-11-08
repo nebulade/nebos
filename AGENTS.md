@@ -144,9 +144,11 @@ make clean
    (partition 1 at LBA 63).
 5. **UEFI (`efi/`)** — an x86-64 PE32+ `BOOTX64.EFI` loads from the ESP. It
    picks a GOP mode, converts `GetMemoryMap` into the E820 map at `0x1000`,
-   stages `kernel.bin` below 4 GB, fills `0x500` (boot info) and `0x600`
-   (framebuffer), calls `ExitBootServices`, copies the embedded gz rootfs to
-   the top of RAM below 512 MB, copies a 192-byte trampoline to `0x800`,
+   stages `kernel.bin` below 4 GB, allocates a loader-data buffer below the
+   512 MB identity window (above the low 1 MB) for the embedded gz rootfs
+   and copies it there, fills
+   `0x500` (boot info) and `0x600` (framebuffer), calls `ExitBootServices`,
+   copies a 192-byte trampoline to `0x800`,
    leaves IA-32e mode (`CR0.PG`, `EFER.LME`, `CR4.PAE/PGE/PCIDE/SMEP/SMAP/
    LA57`), copies the kernel to `0x7E00` and jumps to `kernel_entry`.  The
    BIOS boot sector / VESA stage are not executed on this path; the legacy
@@ -251,8 +253,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   fallback pool (a static BSS array; no fixed address).
 - **UEFI boot**: `bootinfo.h` (the `0x500` block and its checksum/accessors),
   `efi/efi.h` (minimal UEFI types and table/protocol layouts), `efi/main.c`
-  (GOP mode choice, `GetMemoryMap` → E820, staging below 4 GB, rootfs copy,
-  boot-info/framebuffer blocks, `ExitBootServices`), `efi/tramp.S` +
+  (GOP mode choice, `GetMemoryMap` → E820, kernel staging below 4 GB and
+  rootfs pack in loader-data pages below 512 MB, boot-info/framebuffer
+  blocks, `ExitBootServices`), `efi/tramp.S` +
   `efi/tramp.ld` (the `0x800` long-mode exit, kernel copy and jump) and
   `efi/payload.S` (embeds `kernel.bin`, `cmds_pack_gz.bin` and the trampoline
   in `BOOTX64.EFI`).  The legacy `vesa_stage.S` writes the same v2 boot info
@@ -543,8 +546,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   frame list at `0x3000`, one instance), `ohci.c` (MMIO OHCI, up to 4
   instances, HCCA + ED/TD lists, polling), `ehci.c` (MMIO EHCI, QH/qTD
   asynchronous schedule, up to 4 instances) and `xhci.c` (MMIO xHCI, USB2
-  root ports) implement it.  `lsusb.c` — the `lsusb` command (lists every
-  controller and its tree).  The devices work on every controller type and
+  root ports; halt/HCH reset sequence and BIOS/OS handoff) implement it.
+  `lsusb.c` — the `lsusb` command (lists every controller and its tree).
+  The devices work on every controller type and
   can be plugged in at any time (root-port connect-change watcher); `lsusb`
   re-enumerates the bus, after which `usbhid` re-inits itself via a scan
   generation counter.
@@ -910,8 +914,8 @@ one-sector `NBROOT1` header (magic, version, exact `pack_bytes`, checksum,
 gzip flag).  The build rejects a pack above the `PACK_MAX` cap (1 MB);
 `libdeflate` buys several KB over `gzip -9` and is still preferred.  The boot
 path loads the gz pack into RAM — the legacy stage copies it directly to
-`0x900000` with INT 15h AH=87h, the UEFI loader via an embedded copy at the
-top of RAM below 512 MB, kexec via its staging buffer — and `ramfs_init()`
+`0x900000` with INT 15h AH=87h, the UEFI loader into a loader-data buffer
+below 512 MB, kexec via its staging buffer — and `ramfs_init()`
 inflates it into page-allocated memory and mounts it read-only at `/ramfs`.
 The kernel image no longer contains it, so the pack no longer moves `_end`;
 the high-memory legacy path supports up to 1 MB (known issue 8).  The UI
@@ -1055,6 +1059,43 @@ so addresses do not collide.
   running. The PCI scan checks **all functions** (real PIIX3/PIIX4/VIA
   layouts put the USB function at 0:07.2 / 0:01.2) and ignores controllers
   whose BARs the firmware left unassigned. One instance only.
+- **xHCI**: MMIO BAR0 (PCI class `0c03:30`), one controller, polled.  The
+  Supported Protocol extended capabilities decide which root ports are USB2;
+  USB3 SuperSpeed ports are left alone.  `xhci_init()` waits for `CNR=0`,
+  clears `RS` and waits for `USBSTS.HCH` **before** `HCRST` (the xHC may
+  ignore the reset while running), waits 1-2 ms after the HCRST write before
+  touching any other register (Intel CherryView/Braswell requires this, or
+  the reset can be left partially applied), does the BIOS/OS handoff with a
+  bounded wait for the BIOS-owned semaphore to clear, and only programs
+  `CONFIG`/`DCBAAP`/scratchpads/`CRCR`/`ERST` once the post-reset controller
+  is halted.  Port reset clears stale change latches, waits for `PRC` then
+  `PED`, and adds the 10 ms USB2 reset-recovery delay.  The BSR Address
+  Device uses the port-speed EP0 max packet size (64 for high/full speed,
+  8 for low speed); using 8 for a high-speed slot leaves EP0 unusable on
+  real xHCs.  Enumeration uses the traditional scheme: **SET_ADDRESS before
+  the first descriptor read**.  The xHCI SET_ADDRESS intercept creates the
+  slot in the Enabled state and issues Address Device with **BSR=0**
+  directly (Enabled -> Addressed), never leaving the slot in the Default
+  state; the Default-state EP0 transfer was unreliable on the Braswell.
+  The input slot context's Device Address stays **0** — the xHC assigns
+  the USB device address and reports it in the output context, which the
+  driver stores for later Configure Endpoint commands (writing a target
+  address there makes Address Device fail with Parameter Error).  Control
+  transfers wait 1 s, re-ringing the EP0 doorbell every 100 ms.  EP0 stages
+  are encoded the way EDK2's XhciDxe does it:
+  **each stage is its own TD** (IOC on the Setup, Data and Status TRB, no
+  CHAIN).  This Braswell xHC never completes a chained multi-TRB control TD
+  (CHAIN on setup+data, IOC on status only): the data stage hangs and no
+  transfer event is ever posted, while the per-stage encoding completes and
+  returns the descriptor.  IN data stages also
+  set `TRB_ISP`.  PORTSC writes preserve only the read-only
+  and RWS bits (`portsc_neutral()`, Linux's `xhci_port_state_to_neutral`):
+  writing the raw read value back with just the RW1C bits masked re-asserts
+  PR/WPR and resets the device *after* SET_ADDRESS, so the xHC then talks to
+  an address the device no longer uses.
+  Devices plugged in after boot bind through `asix.c`, which calls
+  `netdev_hotplug()` so the dongle becomes the active NIC when the boot
+  probe found none.
 - **Devices** (`usbhid.c`): every HID (class 3) interface with an
   interrupt-IN endpoint gets its own interrupt slot (USB_HCD_INT_SLOTS = 6).
   Boot interfaces (subclass 1, protocol 2/1) are used as-is in boot

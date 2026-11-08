@@ -437,50 +437,11 @@ static void build_e820(EFI_MEMORY_DESCRIPTOR *map, UINTN map_size,
 
 /* ---- boot structures --------------------------------------------------- */
 
-/* Copy the embedded rootfs pack to the top of RAM (below the 512 MB
- * identity window and above the 1..9 MB VGA shadow reserve), matching the
- * legacy stage's placement.  Returns the address, or 0 when it does not fit.
- * Runs after ExitBootServices, so only plain memory accesses. */
-static UINT32 copy_pack(UINT32 size)
-{
-	volatile UINT32 *map = (volatile UINT32 *)E820_ADDR;
-	volatile struct e820_entry_disk *entries =
-		(volatile struct e820_entry_disk *)(E820_ADDR + 8);
-	UINT32 need, count, i, best = 0;
-	UINT32 p;
-
-	if (size == 0 || size > 0x400000u)
-		return 0;
-	need = (size + PAGE_SIZE_ - 1) & ~(PAGE_SIZE_ - 1);
-	if (map[0] != 0xE820E820u)
-		return 0;
-	count = map[1];
-	if (count > 32)
-		count = 32;
-
-	for (i = 0; i < count; i++) {
-		UINT64 base = entries[i].base;
-		UINT64 end = base + entries[i].length;
-		UINT32 a;
-
-		if (entries[i].type != 1 || base >= MAX_PHYS)
-			continue;
-		if (end > MAX_PHYS)
-			end = MAX_PHYS;
-		if (end < base + need)
-			continue;
-		a = (UINT32)(end - need) & ~(PAGE_SIZE_ - 1);
-		if (a < 0x900000u || a <= best)
-			continue;
-		best = a;
-	}
-	if (!best)
-		return 0;
-
-	for (p = 0; p < size; p++)
-		((UINT8 *)(UINTN)best)[p] = pack_image_start[p];
-	return best;
-}
+/* The rootfs pack used to be copied to the top of usable RAM after
+ * ExitBootServices.  That walks into firmware code pages that OVMF maps
+ * read-only (BootServicesCode is still listed as free memory), so the copy
+ * faulted once the pack grew.  Allocate a loader-data buffer instead:
+ * firmware-owned pages are always writable to the loader. */
 
 static void write_bootinfo(UINT32 rsdp, int have_fb, int rgbx,
 			   UINT32 pack_addr, UINT32 pack_size)
@@ -574,6 +535,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	EFI_GRAPHICS_OUTPUT_MODE_INFORMATION info;
 	struct fb_saved fb;
 	EFI_PHYSICAL_ADDRESS staging = 0xFFFFFFFFull;
+	EFI_PHYSICAL_ADDRESS pack_buf = 0xFFFFFFFFull;
 	UINTN map_size, map_key = 0, desc_size = 0;
 	UINT32 desc_ver = 0;
 	UINT32 rsdp;
@@ -651,6 +613,27 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 	com1_hex(staging, 8);
 	com1_puts("\n");
 
+	/* Rootfs pack: allocate a writable loader-data buffer below the
+	 * kernel's 512 MB identity window (and above the low 1 MB it
+	 * reserves) and copy the embedded image into it while boot services
+	 * are still available.  It must be below MAX_PHYS: the kernel only
+	 * identity-maps that much and ramfs_init() reads it after paging is
+	 * enabled. */
+	if (pack_size == 0 || pack_size > 0x400000u)
+		fail_before(st, "rootfs image size invalid");
+	pages = (pack_size + PAGE_SIZE_ - 1) / PAGE_SIZE_;
+	pack_buf = MAX_PHYS;
+	status = bs->AllocatePages(EFI_ALLOCATE_MAX_ADDRESS, EFI_LOADER_DATA,
+				   pages, &pack_buf);
+	if (status || pack_buf < 0x100000ull ||
+	    pack_buf + pack_size > MAX_PHYS)
+		fail_before(st, "cannot allocate rootfs buffer");
+	for (i = 0; i < pack_size; i++)
+		((UINT8 *)(UINTN)pack_buf)[i] = pack_image_start[i];
+	com1_puts("nebos-efi: rootfs staged at 0x");
+	com1_hex(pack_buf, 8);
+	com1_puts("\n");
+
 	/* GetMemoryMap + ExitBootServices.  A map-key change makes the call
 	 * fail; fetch a fresh map and retry. */
 	for (tries = 0; tries < 4; tries++) {
@@ -681,7 +664,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *st)
 		fail_after("memory map is empty");
 	build_e820((EFI_MEMORY_DESCRIPTOR *)memmap_buf, map_size, desc_size,
 		   &fb);
-	pack_addr = copy_pack(pack_size);
+	pack_addr = (UINT32)pack_buf;
 	com1_puts("nebos-efi: rootfs at 0x");
 	com1_hex(pack_addr, 8);
 	com1_puts("\n");

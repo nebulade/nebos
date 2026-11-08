@@ -35,6 +35,11 @@ struct netdev {
  * NULL when no NIC is present. */
 const struct netdev *netdev_active(void);
 
+/* A USB network device appeared after boot (hotplug probe succeeded).  Makes
+ * it the active NIC when the boot probe found none; never overrides an
+ * already-selected driver. */
+void netdev_hotplug(void);
+
 /* Management NIC for netlog/netkexec.  Prefers the ASIX dongle so the
  * direct debug link survives `netdev e1000e`; falls back to the active
  * driver. */

@@ -100,6 +100,19 @@ const struct netdev *netdev_mgmt(void)
 	return netdev_active();
 }
 
+/* Called from the ASIX device probe after a successful hotplug
+ * enumeration.  The boot-time probe caches a NULL result, so without this a
+ * dongle plugged in later would only be usable through `netdev asix`. */
+void netdev_hotplug(void)
+{
+	if (active || !probed)
+		return;
+	if (asix_netdev.init() == 0) {
+		active = &asix_netdev;
+		netdev_apply_defaults(active);
+	}
+}
+
 /* Stop the NICs before kexec overwrites the kernel.  A still-running
  * receive ring can DMA into pages the new kernel has already reused. */
 void netdev_shutdown(void)
