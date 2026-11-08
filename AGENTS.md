@@ -713,11 +713,13 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   (`cloudron.io`) is treated as a hostname and skips the local-file stat;
   origin-level redirects are remembered per process and in `/share/borigins`,
   so later visits to a bare domain go straight to its canonical scheme/host.
+  Remote stylesheets are cached under `/share/bcss-*` for the current boot, so
+  a reload or a fresh browser launch does not fetch the same CSS sheets again.
   Images are fetched one per main-loop iteration (so text and scrolling stay
-  responsive) and only when their measured
-  position is within the viewport plus 160 px; deferred images are loaded as
-  the page scrolls.  Network work runs in a headless `curl __fetch` helper
-  process (`ucmd_curl.c`): it writes the raw body and a small metadata file
+  responsive) and only when their measured position is within the viewport
+  plus 160 px; deferred images are loaded as the page scrolls.  Network work
+  runs in a headless `curl __fetch` helper process (`ucmd_curl.c`): it writes
+  the raw body and a small metadata file
   under `/share`, while the browser keeps drawing and scrolling its own
   window.  The helper asks for identity encoding because inflating multi-MB
   pages in the browser process stalled the UI; if a server still sends gzip,

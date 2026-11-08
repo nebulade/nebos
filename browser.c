@@ -33,6 +33,10 @@
 #define BR_IMG_LAYOUT_W 1000
 #define BR_CSS_MAX      (832u * 1024u)
 #define BR_CSS_COMP_MAX (192u * 1024u)
+/* Session cache for remote stylesheets (per launch; cleared at startup). */
+#define CSS_CACHE_MAX      16
+#define CSS_CACHE_FILE_MAX (256u * 1024u)
+#define CSS_CACHE_PREFIX   "bcss-"
 #define BR_MAX_SHEETS   6
 #define BR_HISTORY      16
 #define BR_URL_MAX      512
@@ -1261,6 +1265,104 @@ static int fetch_image(const char *url, unsigned int cap,
 }
 
 
+/* Remote stylesheets are immutable enough for the current boot: keep
+ * successful responses under /share so a reload, a second visit or a fresh
+ * browser launch does not fetch the same five sheets over the network again.
+ * /share is cleared by reboot/kexec; when the cache fills up it is reset. */
+static int css_cache_count;
+
+static unsigned int css_cache_hash(const char *s)
+{
+	unsigned int h = 2166136261u;
+
+	while (*s) {
+		h ^= (unsigned char)*s++;
+		h *= 16777619u;
+	}
+	return h;
+}
+
+static void css_cache_path(const char *url, char *out, unsigned int cap)
+{
+	unsigned int n = 0;
+
+	s_append(out, &n, "/share/" CSS_CACHE_PREFIX, cap);
+	s_append_dec(out, &n, css_cache_hash(url), cap);
+}
+
+static void css_cache_clear(void)
+{
+	struct sys_dirent d;
+	char path[96];
+
+	for (;;) {
+		int i, found = 0;
+
+		for (i = 0; u_syscall3(SYS_LIST_DIR, (int)"/share", i,
+				       (int)&d) == 1; i++) {
+			unsigned int n = 0;
+
+			if (!starts_with(d.name, CSS_CACHE_PREFIX))
+				continue;
+			s_append(path, &n, "/share/", sizeof(path));
+			s_append(path, &n, d.name, sizeof(path));
+			if (u_syscall1(SYS_UNLINK, (int)path) < 0)
+				return;
+			found = 1;
+			break;
+		}
+		if (!found)
+			break;
+	}
+	css_cache_count = 0;
+}
+
+static void css_cache_init(void)
+{
+	struct sys_dirent d;
+	int i, count = 0;
+
+	for (i = 0; u_syscall3(SYS_LIST_DIR, (int)"/share", i,
+			       (int)&d) == 1; i++)
+		if (starts_with(d.name, CSS_CACHE_PREFIX))
+			count++;
+	if (count >= CSS_CACHE_MAX) {
+		css_cache_clear();
+		return;
+	}
+	css_cache_count = count;
+}
+
+static int css_cache_get(const char *url, unsigned char **out,
+			 unsigned int *outlen)
+{
+	char path[96];
+	int rn;
+
+	css_cache_path(url, path, sizeof(path));
+	rn = u_syscall3(SYS_READ_FILE, (int)path, (int)image_io_buf,
+			(int)CSS_CACHE_FILE_MAX);
+	if (rn <= 0 || (unsigned int)rn >= CSS_CACHE_FILE_MAX)
+		return 0;
+	*out = image_io_buf;
+	*outlen = (unsigned int)rn;
+	return 1;
+}
+
+static void css_cache_put(const char *url, const unsigned char *data,
+			  unsigned int len)
+{
+	char path[96];
+
+	if (css_cache_count >= CSS_CACHE_MAX || len == 0 ||
+	    len >= CSS_CACHE_FILE_MAX)
+		return;
+	css_cache_path(url, path, sizeof(path));
+	if (u_syscall3(SYS_WRITE_FILE, (int)path, (int)data,
+		       (int)len) >= 0)
+		css_cache_count++;
+}
+
 /* Read one stylesheet into the shared static buffer.  CSS is parsed
  * immediately, so it does not need the page heap; this leaves the heap for
  * the 2 MB page body, the rules and the scaled image bitmaps. */
@@ -1284,6 +1386,8 @@ static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
 		*outlen = (unsigned int)rv;
 		return 0;
 	}
+	if (css_cache_get(url, out, outlen))
+		return 0;
 	rv = fetch_remote(url, BR_CSS_MAX, image_io_buf, BR_CSS_MAX,
 			  image_io_buf + BR_CSS_MAX, BR_CSS_COMP_MAX,
 			  &fetch_meta, &tr, err, errcap);
@@ -1298,6 +1402,7 @@ static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
 	}
 	*out = image_io_buf;
 	*outlen = len;
+	css_cache_put(url, image_io_buf, len);
 	return 0;
 }
 
@@ -4387,6 +4492,7 @@ void _start(const char *arg)
 		s_copy(cwd, "/", sizeof(cwd));
 	heap_clear();
 	origin_cache_load();
+	css_cache_init();
 	page_scroll.offset = 0;
 	page_scroll.content_h = 0;
 
