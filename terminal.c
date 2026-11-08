@@ -20,6 +20,7 @@ extern void program_display_main(void);
 extern void program_gfxbench_main(void);
 extern void program_serial_loop_main(const char *arg);
 extern void program_lsusb_main(void);
+extern void program_touchpad_main(void);
 extern void program_netdev_main(const char *arg);
 extern void program_format_main(const char *arg);
 extern void program_lspci_main(const char *filter);
@@ -82,6 +83,7 @@ static const struct kcmd cmds[] = {
 	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
 	{ "gfxbench",   "gfxbench",                      CK_SPAWN, 0, program_gfxbench_main, 0, 0, 0 },
 	{ "lsusb",      "lsusb",                         CK_SPAWN, 0, program_lsusb_main, 0, 0, 0 },
+	{ "touchpad",   "touchpad",                      CK_SPAWN, 0, program_touchpad_main, 0, 0, 0 },
 	{ "netdev",     "netdev [name]",                 CK_SPAWN_ARG, 0, 0, program_netdev_main, 0, 0 },
 	{ "format",     "format <device> [size]",        CK_CUSTOM, 0, 0, 0, 0, cmd_format },
 	{ "lspci",      "lspci [id]",                    CK_SPAWN_ARG, 0, 0, program_lspci_main, 0, 0 },

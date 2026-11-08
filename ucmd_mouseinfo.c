@@ -55,6 +55,16 @@ void _start(const char *arg)
 		u_puts(m.usb_low ? " (low speed)\n" : " (full speed)\n");
 	}
 
+	if (m.touchpad) {
+		u_puts("mouse touchpad elan ");
+		u_put_hex2(m.tp_vendor >> 8);
+		u_put_hex2(m.tp_vendor);
+		u_putc(':');
+		u_put_hex2(m.tp_product >> 8);
+		u_put_hex2(m.tp_product);
+		u_putc('\n');
+	}
+
 	u_puts("mouse usb keyboard ");
 	u_puts(m.usb_keyboard ? "yes\n" : "no\n");
 	u_puts("mouse cursor ");

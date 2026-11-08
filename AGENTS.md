@@ -536,6 +536,20 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `usbhid.c/h` — USB HID boot devices: find + configure a mouse and/or
   keyboard, arm their interrupt endpoints, decode mouse reports and inject
   keyboard scancodes, watch for plug/unplug.
+- **I2C touchpad**: `i2c.c/h` — polled Synopsys DesignWare APB I2C master
+  for the Braswell LPSS blocks (fast mode, component-type probe, explicit
+  LPSS reset-release so the FIFO drains); `touchpad.c/h` — Elan
+  HID-over-I2C touchpad on LPSS I2C6 at `0xD1327000`, slave `0x15`.
+  `touchpad_init()` runs from `mouse_init()` at boot (it maps the I2C
+  window before processes clone the page directory), resets the device,
+  consumes the 2-byte acknowledgement, reads the HID descriptor, selects
+  absolute mode (`0x0300 = 1`) and wakes it (`0x0800`).  The report line
+  is a GPIO with no driver, so `touchpad_poll()` reads the input register
+  every 25 ms (back-to-back reads stall the device), parses the Elan
+  `0x5D` vendor report (finger bitmask plus five bytes per finger) and
+  feeds absolute-to-relative deltas and the clickpad bit into the mouse
+  layer.  `mouseinfo` lists the Elan VID/PID and `touchpad` prints the
+  probe result.
 - **USB**: `usb.c/h` — controller-agnostic core: device enumeration,
   descriptor parsing, hub recursion, bus scans, per-controller addresses, the
   hotplug watcher and the interrupt-IN consumers (mouse + keyboard).  It keeps
@@ -851,7 +865,7 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
 
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`,
-`display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
+`display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `touchpad`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
 `ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [auto|hlt|c1e|c3|c6]`, `power`, `powerinfo`, `cpufreq [auto|min|max|off|<ratio>]`, `spin [ms]`, `help`, `clear`, `serial test`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
@@ -1147,7 +1161,8 @@ so addresses do not collide.
   these devices.
 - **Debug**: `ohci:` / `uhci:` / `ehci:` / `usbhid:` lines go to COM1 (and
   through the netlog mirror on serial-less boards); `mouseinfo` shows the
-  active mouse backend and whether a USB keyboard is attached; `usb.c`'s
+  active mouse backend, the Elan VID/PID when the I2C touchpad is present,
+  and whether a USB keyboard is attached; `usb.c`'s
   `USB_DEBUG` and `usbhid.c`'s `USBHID_DEBUG` (both default 0) add
   scan/report tracing.  Headless tests: `make test-usb` runs
   `tools/qmp_cursor_test.py` (injects mouse motion with QMP
@@ -1404,9 +1419,6 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     errors even though the static page renders.  CSS also lacks
     border-radius clipping of descendant content, gradients/box-shadow/
     transitions (a gradient background falls back to its last solid colour),
-    or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with  Also no pseudo-classes/elements,
-    border-radius clipping of descendant content, gradients/box-shadow/
-    transitions (a gradient background falls back to its last solid colour),
     or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with
     wrap/grow/gap, two-track and `repeat(auto-fit, minmax(...))` grids,
     inline-block runs, basic proportional table columns and inline SVG
@@ -1511,3 +1523,11 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     and some exact edge cases are not supported.  Float printf supports
     `%f/%e/%g` with a 900-digit precision cap.  These are sufficient for
     MuJS but are not a complete POSIX libc.
+
+28. The Elan touchpad is polled at 40 Hz because its report GPIO (GPNC bank
+    index 18, level-low on setzer) has no driver.  Only finger 1 and the
+    clickpad bit are used: there is no multitouch, two-finger scrolling,
+    tap-to-click, drag-lock or pressure/size handling, and the 1/2 delta
+    scale is fixed (no pointer-acceleration curve).  The device stalls if
+    the input register is read back-to-back, so a GPIO interrupt (or a
+    larger minimum gap) is the prerequisite for a higher report rate.

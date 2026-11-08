@@ -11,6 +11,7 @@
 #include "sched.h"
 #include "sys_fs.h"
 #include "thermal.h"
+#include "touchpad.h"
 #include "tpec.h"
 #include "usb.h"
 #include "usbhid.h"
@@ -85,6 +86,11 @@ int sys_mouseinfo(struct sys_mouseinfo *out)
 			 sizeof(out->hcd));
 	}
 	out->usb_keyboard = usbhid_keyboard_attached() ? 1 : 0;
+	out->touchpad = touchpad_present() ? 1 : 0;
+	if (out->touchpad) {
+		out->tp_vendor = touchpad_vendor();
+		out->tp_product = touchpad_product();
+	}
 	return 1;
 }
 

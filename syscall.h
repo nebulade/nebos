@@ -357,6 +357,9 @@ struct sys_mouseinfo {
 	unsigned int cursor_visible;
 	char hcd[8];
 	char backend[16];
+	unsigned int touchpad;
+	unsigned int tp_vendor;
+	unsigned int tp_product;
 };
 
 struct sys_storage_info {

@@ -5,6 +5,7 @@
 #include "intel.h"
 #include "radeon.h"
 #include "timer.h"
+#include "touchpad.h"
 #include "usbhid.h"
 #include "vga.h"
 
@@ -343,6 +344,11 @@ void mouse_init(void)
 	mouse_aux_irq_ok = 0;
 	pkt_idx = 0;
 
+	/* Built-in HID-over-I2C touchpad.  The probe maps the LPSS I2C
+	 * window, so it must run at boot, before the kworker and command
+	 * processes clone the page directory. */
+	touchpad_init();
+
 	enable_aux_port();
 	mouse_aux_irq_ok = (ps2_aux_irq_config() == 0);
 
@@ -474,10 +480,12 @@ void mouse_poll_update(void)
 	unsigned int guard = 0;
 	unsigned int usb_buttons = 0;
 	int usb_dx = 0, usb_dy = 0;
+	int tp_buttons = 0, tp_dx = 0, tp_dy = 0;
 
 	/* The cursor is set up for whichever backend shows up first (PS/2
 	   is probed at boot, USB may attach later). */
-	if ((mouse_present_flag || usbhid_mouse_attached()) && !mouse_cursor_flag)
+	if ((mouse_present_flag || usbhid_mouse_attached() ||
+	     touchpad_present()) && !mouse_cursor_flag)
 		mouse_cursor_setup();
 
 	/* USB HID mouse: reports arrive through the armed interrupt
@@ -485,6 +493,12 @@ void mouse_poll_update(void)
 	if (usbhid_poll(&usb_buttons, &usb_dx, &usb_dy)) {
 		mouse_buttons = usb_buttons;
 		mouse_move(usb_dx, usb_dy);
+	}
+
+	/* Built-in touchpad: absolute positions converted to deltas. */
+	if (touchpad_poll(&tp_buttons, &tp_dx, &tp_dy)) {
+		mouse_buttons = tp_buttons;
+		mouse_move(tp_dx, tp_dy);
 	}
 
 	if (mouse_irq_mode)
@@ -515,7 +529,8 @@ void mouse_poll_update(void)
 
 int mouse_is_present(void)
 {
-	return mouse_present_flag || usbhid_mouse_attached();
+	return mouse_present_flag || usbhid_mouse_attached() ||
+	       touchpad_present();
 }
 
 int mouse_ps2_present(void)

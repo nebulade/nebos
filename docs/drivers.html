@@ -44,7 +44,7 @@
 			<span class="pill">PCI enumeration</span>
 			<span class="pill">FDC · PATA · SATA</span>
 			<span class="pill">UHCI · OHCI · EHCI · xHCI</span>
-			<span class="pill">PS/2 + USB HID</span>
+			<span class="pill">PS/2 · USB · I2C touchpad</span>
 		</div>
 	</div>
 
@@ -84,6 +84,7 @@
 					<tr><td>USB</td><td><span class="file">usb.c</span> + <span class="file">uhci.c</span> <span class="file">ohci.c</span> <span class="file">ehci.c</span> <span class="file">xhci.c</span></td><td>PCI I/O ports or MMIO</td><td>Polled; hotplug watcher in the WM loop</td></tr>
 					<tr><td>Network</td><td><span class="file">e1000e.c</span> <span class="file">r8168.c</span> <span class="file">ne2000.c</span> <span class="file">asix.c</span></td><td>PCI or USB</td><td>Polled, one active receiver</td></tr>
 					<tr><td>PS/2</td><td><span class="file">mouse.c</span>, <span class="file">io.c</span></td><td>i8042</td><td>IRQ 1 keyboard, IRQ 12 mouse; polling fallback</td></tr>
+					<tr><td>Touchpad</td><td><span class="file">i2c.c</span>, <span class="file">touchpad.c</span></td><td>LPSS DesignWare I2C, slave <code>0x15</code></td><td>Polled input register every 25 ms; no GPIO interrupt driver</td></tr>
 					<tr><td>Serial</td><td><span class="file">serial.c</span></td><td>16550 UART, COM1</td><td>IRQ 4 ring buffer + polled transmitter</td></tr>
 					<tr><td>Thermal</td><td><span class="file">thermal.c</span></td><td>Intel DTS MSR</td><td>Sampled once a second from the scheduler tick</td></tr>
 					<tr><td>Board sensors</td><td><span class="file">it87.c</span>, <span class="file">tpec.c</span></td><td>Super I/O, ThinkPad EC (temps, fan, battery, AC)</td><td>Polled; only the EC page selector is written, then restored</td></tr>
@@ -295,6 +296,34 @@
 			keyboard is attached. Headless regression tests inject mouse motion
 			and keys through QMP and verify the result with screen dumps.
 		</p>
+
+		<h3>I2C touchpad</h3>
+		<p>
+			The HP Chromebook 11 G5 EE has no PS/2 port: its Elan touchpad is a
+			HID-over-I2C device on LPSS I2C6. The LPSS I2C functions are hidden
+			from PCI in ACPI mode, so <span class="file">touchpad.c</span> scans
+			the two firmware BAR windows for a DesignWare component and
+			<span class="file">i2c.c</span> drives that controller in fast mode,
+			polled and without interrupts.
+		</p>
+		<ul>
+			<li><strong>Probe.</strong> Slave address <code>0x15</code>: reset
+			(<code>0x0100</code>), consume the 2-byte acknowledgement, read the
+			HID descriptor, select absolute mode (<code>0x0300 = 1</code>) and
+			wake the device (<code>0x0800</code>). Resetting last leaves it
+			silent until the next power cycle.</li>
+			<li><strong>Reports.</strong> The Elan vendor report <code>0x5D</code>
+			carries a finger bitmask and five bytes per finger (X/Y high bits, X
+			low, Y low, size, pressure). Successive absolute positions become
+			PS/2 deltas; the clickpad bit becomes the left button.</li>
+			<li><strong>Polling.</strong> The report GPIO has no driver yet, so
+			the input register is read every 25 ms. Back-to-back reads stall the
+			device, which is why the poll is throttled rather than run flat
+			out.</li>
+			<li><strong>Discovery.</strong> <code>touchpad</code> prints the
+			probe result; <code>mouseinfo</code> lists the Elan vendor/product
+			ID next to the PS/2 and USB backends.</li>
+		</ul>
 	</section>
 
 	<section id="serial">
@@ -400,6 +429,8 @@
 			<li><code>usb.c</code>, <code>usb_hcd.h</code> — USB core</li>
 			<li><code>uhci.c</code>, <code>ohci.c</code>, <code>ehci.c</code>, <code>xhci.c</code></li>
 			<li><code>usbhid.c</code>, <code>mouse.c</code>, <code>io.c</code> — input</li>
+			<li><code>i2c.c</code>, <code>i2c.h</code> — DesignWare/LPSS I2C master</li>
+			<li><code>touchpad.c</code>, <code>touchpad.h</code> — Elan HID-over-I2C touchpad</li>
 			<li><code>serial.c</code>, <code>serial_ring_buf.c</code></li>
 			<li><code>thermal.c</code>, <code>it87.c</code>, <code>tpec.c</code>, <code>mtrr.c</code></li>
 			<li><code>rtc.c</code> — CMOS wall clock read/write</li>
