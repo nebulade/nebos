@@ -288,7 +288,16 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   by subtracting the windows in front, so an occluded window is never
   repainted and the stack is not drawn back-to-front.  A focused-window drag
   copies its shadow block (`usurf_copy`) and repaints only the old strips the
-  new rectangle does not cover.  The kernel hit-test uses the same order.
+  new rectangle does not cover; when either rectangle is partly off-screen the
+  shadow has no valid pixels for the hidden part, so that step repaints the
+  window rect instead of copying desktop background into it.  Windows may be
+  dragged past the left, right and bottom edges while at least `WM_DRAG_VISIBLE`
+  (48 px) of the title bar stays on-screen; the top bar is never overlapped.
+  Double-clicking the title bar toggles maximize/restore against the work area
+  below the bar (`0, WM_BAR_H, fbw, fbh - WM_BAR_H`); dragging a maximized
+  window restores it first, and the resize grip grows a window to the full
+  work area (snapping when dragged into the screen corner).  The kernel hit-test
+  uses the same order.
   The right-aligned date/time text is itself a click target: `draw_bar()`
   records its rectangle, the pointer highlights it, and a click spawns
   `/ramfs/bin/settime` (the `Clock` launcher still opens the analog clock).
@@ -297,7 +306,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   but the kernel terminal entry/shell and the cell-window ABI are gone.
 - **Window canvas API**: `gfx.c/h` allocates the RGB565 front/back canvases;
   `sys_wm.c` is the ABI bridge.  `SYS_WIN_CREATE` gives a command its window
-  canvas mapped RW at `USER_WIN_BASE` (`0x50000000`).  `SYS_WIN_PRESENT`
+  canvas mapped RW at `USER_WIN_BASE` (`0x50000000`); the WM maps each front
+  canvas in its own 4 MB `WM_CONTENT_SLOT`, which covers a full-screen
+  1280x1024 canvas minus the chrome.  `SYS_WIN_PRESENT`
   optionally takes a content-relative `struct wm_win_present`; the kernel
   copies only that rectangle into the front canvas (with interrupts off, so
   a half-drawn frame can never reach the screen), unions it into

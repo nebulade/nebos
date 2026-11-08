@@ -197,7 +197,10 @@
 			pointer hit-test uses the same order. A focused-window drag copies
 			its shadow block to the new position and repaints only the old
 			strips the new rectangle does not cover, instead of compositing the
-			window at both positions.
+			window at both positions. If either rectangle is partly off-screen
+			the shadow has no valid pixels for the hidden part, so that step
+			repaints the window rect instead of copying desktop background into
+			it.
 		</p>
 		<p>
 			<code>SYS_WIN_PRESENT</code> carries a content-relative damage
@@ -234,12 +237,25 @@
 			in a window still receives its release after the pointer leaves.
 			The WM process itself is special: it maps the screen shadow at
 			<code>0x58000000</code> and each front canvas at
-			<code>0x59000000 + index × 2 MB</code>, which is how it composites
-			without reading another process's memory.
+			<code>0x59000000 + index × 4 MB</code>, which is how it composites
+			without reading another process's memory. The 4 MB slot covers a
+			full-screen 1280×1024 canvas minus the chrome; the old 2 MB slot
+			capped a full-height window at roughly 1050 px wide.
 			<code>SYS_WM_RESIZE</code> (WM side) and
 			<code>SYS_WIN_ACK_RESIZE</code> (client side) swap in a resized
 			canvas; the content size is bounded by the framebuffer, so a
 			window can grow to the edge of the screen.
+		</p>
+		<p>
+			Double-clicking a title bar maximizes the window to the work area
+			below the system bar (<code>0, WM_BAR_H, fbw, fbh - WM_BAR_H</code>);
+			the next double-click restores the saved geometry. Dragging a
+			maximized window restores it first, and a manual resize clears the
+			maximized state. Windows can be dragged past the left, right and
+			bottom edges; <code>WM_DRAG_VISIBLE</code> (48 px) of the title bar
+			always stays on-screen for recovery, and the top bar is never
+			overlapped. The resize grip is clamped to the full work area and
+			snaps to it when dragged into the screen corner.
 		</p>
 		<div class="note">
 			<p><strong>Buttons fire on the release edge.</strong> The toolkit keeps
@@ -350,7 +366,7 @@
 			<li><code>vga_copy.S</code> — copy primitives</li>
 			<li><code>blit.c</code>, <code>blit.h</code> — pixel vtable</li>
 			<li><code>cpu.c</code> — SSE2 probing</li>
-			<li><code>wm.c</code>, <code>wm.h</code> — kernel window server</li>
+			<li><code>wm.c</code>, <code>wm.h</code>, <code>wm_abi.h</code> — kernel window server and shared ABI</li>
 			<li><code>ucmd_wm.c</code>, <code>uwm_lib.c</code> — ring-3 WM</li>
 			<li><code>ucmd_settime.c</code>, <code>rtc.c</code> — Date &amp; Time editor and RTC access</li>
 			<li><code>gfx.c</code>, <code>gfx.h</code> — RGB565 window canvases</li>

@@ -20,15 +20,29 @@ struct uwin {
 	struct wm_map_info map;
 	int mapped;
 	unsigned int ack_seq;
+	/* Double-click title bar: the geometry to return to when maximized. */
+	int maximized;
+	int restore_x, restore_y;
+	unsigned int restore_w, restore_h;
 };
+
+/* Double-click detection on the title bar. */
+#define WM_DBLCLICK_MS   500
+#define WM_DBLCLICK_SLOP 8
+/* A maximized window restores only after the pointer actually starts a drag,
+ * so a plain click on its title bar leaves it maximized. */
+#define WM_DRAG_START    3
 
 static struct usurf screen;
 static struct uwin wins[WM_MAX_WINDOWS];
 static unsigned int fbw, fbh;
 static int drag_id = -1;
 static int drag_dx, drag_dy;
+static int drag_mx, drag_my;       /* press position, for restore-on-drag */
 static int resize_id = -1;
 static unsigned int resize_mx, resize_my, resize_ow, resize_oh;
+static unsigned int last_title_ms;
+static int last_title_id = -1, last_title_x, last_title_y;
 static unsigned int prev_buttons;
 static int full_redraw = 1;
 static int boot_term_spawned;
@@ -333,9 +347,9 @@ static void draw_window_clip(unsigned int idx, int cx, int cy,
 	struct wm_window_info *w = &u->info;
 	int x = w->x, y = w->y;
 	unsigned int pw = w->w, ph = w->h;
-	unsigned int bx = (unsigned int)(x + (int)pw - 1 - WM_CLOSE_W);
-	unsigned int cony = (unsigned int)(y + 1 + WM_TITLE_H);
-	unsigned int content_x = (unsigned int)(x + 1);
+	int bx = x + (int)pw - 1 - WM_CLOSE_W;
+	int cony = y + 1 + WM_TITLE_H;
+	int content_x = x + 1;
 	unsigned int content_w = w->content_w;
 	unsigned int content_h = w->content_h;
 
@@ -345,9 +359,9 @@ static void draw_window_clip(unsigned int idx, int cx, int cy,
 		  w->focused ? COL_TITLE_ON : COL_TITLE_OFF, cx, cy, cw, ch);
 	usurf_text(&screen, x + 4, y + 3, w->title, COL_WHITE,
 		   cx, cy, cw, ch);
-	fill_clip((int)bx, y + 1, WM_CLOSE_W, WM_TITLE_H, COL_CLOSE,
+	fill_clip(bx, y + 1, WM_CLOSE_W, WM_TITLE_H, COL_CLOSE,
 		  cx, cy, cw, ch);
-	usurf_text(&screen, (int)bx + 4, y + 3, "x", COL_WHITE,
+	usurf_text(&screen, bx + 4, y + 3, "x", COL_WHITE,
 		   cx, cy, cw, ch);
 
 	/* Content: every window presents an RGB565 canvas (the terminal
@@ -361,12 +375,12 @@ static void draw_window_clip(unsigned int idx, int cx, int cy,
 		c.w = u->map.w;
 		c.h = u->map.h;
 		if (c.w != content_w || c.h != content_h)
-			fill_clip((int)content_x, (int)cony, content_w, content_h,
+			fill_clip(content_x, cony, content_w, content_h,
 				  0x000000u, cx, cy, cw, ch);
-		usurf_canvas(&screen, &c, (int)content_x, (int)cony,
+		usurf_canvas(&screen, &c, content_x, cony,
 			     cx, cy, cw, ch);
 	} else {
-		fill_clip((int)content_x, (int)cony, content_w, content_h,
+		fill_clip(content_x, cony, content_w, content_h,
 			  0x000000u, cx, cy, cw, ch);
 	}
 
@@ -551,7 +565,7 @@ static void draw_rect(int x, int y, unsigned int w, unsigned int h)
 		draw_rect_naive(dmg.x, dmg.y, dmg.w, dmg.h);
 }
 
-static int window_at(unsigned int mx, unsigned int my)
+static int window_at(int mx, int my)
 {
 	int order[WM_MAX_WINDOWS];
 	unsigned int n = build_order(order), i;
@@ -559,9 +573,9 @@ static int window_at(unsigned int mx, unsigned int my)
 	for (i = 0; i < n; i++) {
 		struct wm_window_info *w = &wins[order[i]].info;
 
-		if (mx >= (unsigned int)w->x && my >= (unsigned int)w->y &&
-		    mx < (unsigned int)(w->x + (int)w->w) &&
-		    my < (unsigned int)(w->y + (int)w->h))
+		if (mx >= w->x && my >= w->y &&
+		    mx < w->x + (int)w->w &&
+		    my < w->y + (int)w->h)
 			return order[i];
 	}
 	return -1;
@@ -569,15 +583,26 @@ static int window_at(unsigned int mx, unsigned int my)
 
 static void clamp_geom(struct uwin *u, int *x, int *y)
 {
-	int maxx = (int)fbw - (int)u->info.w;
-	int maxy = (int)fbh - (int)u->info.h;
+	/* Match wm_clamp_window(): allow the window to hang off the left,
+	 * right and bottom edges but keep the title bar reachable and below
+	 * the system bar. */
+	int minx = WM_DRAG_VISIBLE - (int)u->info.w;
+	int maxx = (int)fbw - WM_DRAG_VISIBLE;
+	int miny = WM_BAR_H;
+	int maxy = (int)fbh - WM_TITLE_H;
 
-	if (*x < 0) *x = 0;
-	if (*y < WM_BAR_H) *y = WM_BAR_H;
-	if (maxx < 0) maxx = 0;
-	if (maxy < WM_BAR_H) maxy = WM_BAR_H;
-	if (*x > maxx) *x = maxx;
-	if (*y > maxy) *y = maxy;
+	if (minx > maxx)
+		minx = maxx = 0;
+	if (miny > maxy)
+		miny = maxy = WM_BAR_H;
+	if (*x < minx)
+		*x = minx;
+	else if (*x > maxx)
+		*x = maxx;
+	if (*y < miny)
+		*y = miny;
+	else if (*y > maxy)
+		*y = maxy;
 }
 
 static void add_rect(struct wm_present_info *p, int x, int y,
@@ -611,16 +636,26 @@ static void add_rect(struct wm_present_info *p, int x, int y,
 
 /* A focused window is topmost, so the shadow contains exactly its pixels in
  * the old rectangle.  Move that block and repaint only the old part the new
- * rectangle does not cover. */
+ * rectangle does not cover.  When either rectangle is partly off-screen the
+ * shadow has no valid pixels for the hidden part, so repaint the new rect
+ * instead of copying desktop background into the window. */
 static void move_window_pixels(struct uwin *u, int ox, int oy, int nx, int ny)
 {
 	struct wm_present_info present;
 	struct orect oldr, newr, pieces[4];
 	unsigned int np, k;
+	int w = (int)u->info.w, h = (int)u->info.h;
+	int old_on = ox >= 0 && oy >= 0 &&
+		     ox + w <= (int)fbw && oy + h <= (int)fbh;
+	int new_on = nx >= 0 && ny >= 0 &&
+		     nx + w <= (int)fbw && ny + h <= (int)fbh;
 
 	if (u_wm_begin() != 0)
 		return;
-	usurf_copy(&screen, nx, ny, ox, oy, u->info.w, u->info.h);
+	if (old_on && new_on)
+		usurf_copy(&screen, nx, ny, ox, oy, u->info.w, u->info.h);
+	else
+		draw_rect(nx, ny, u->info.w, u->info.h);
 	oldr.x = ox;
 	oldr.y = oy;
 	oldr.w = u->info.w;
@@ -639,6 +674,81 @@ static void move_window_pixels(struct uwin *u, int ox, int oy, int nx, int ny)
 		add_rect(&present, pieces[k].x, pieces[k].y,
 			 pieces[k].w, pieces[k].h);
 	u_wm_present(&present);
+}
+
+static int iabs(int v)
+{
+	return v < 0 ? -v : v;
+}
+
+/* Repaint the old and new rectangles of a geometry change. */
+static void redraw_geom(struct uwin *u, int ox, int oy,
+			unsigned int ow, unsigned int oh)
+{
+	struct wm_present_info present;
+	unsigned int i;
+
+	present.count = 0;
+	present.immediate = 1;
+	add_rect(&present, ox, oy, ow, oh);
+	add_rect(&present, u->info.x, u->info.y, u->info.w, u->info.h);
+	if (u_wm_begin() == 0) {
+		for (i = 0; i < present.count; i++)
+			draw_rect(present.rect[i].x, present.rect[i].y,
+				  present.rect[i].w, present.rect[i].h);
+		u_wm_present(&present);
+	}
+}
+
+/* Resize (when needed), move and remap a window in one step. */
+static int set_window_geometry(struct uwin *u, unsigned int idx,
+			       int nx, int ny, unsigned int nw, unsigned int nh)
+{
+	struct wm_window_info ni;
+	int ox = u->info.x, oy = u->info.y;
+	unsigned int ow = u->info.w, oh = u->info.h;
+
+	if ((int)nw != (int)ow || (int)nh != (int)oh) {
+		if (u_wm_resize(idx, nw - 2, nh - WM_TITLE_H - 2) != 0)
+			return -1;
+	}
+	if (nx != ox || ny != oy)
+		u_wm_set_geom(idx, nx, ny);
+	u->mapped = 0;
+	if (u_wm_info(idx, &ni) == 1)
+		u->info = ni;
+	if (u_wm_map(idx, &u->map) == 0)
+		u->mapped = 1;
+	redraw_geom(u, ox, oy, ow, oh);
+	return 0;
+}
+
+static int restore_window(struct uwin *u, unsigned int idx)
+{
+	if (!u->maximized)
+		return 0;
+	if (set_window_geometry(u, idx, u->restore_x, u->restore_y,
+				u->restore_w, u->restore_h) != 0)
+		return -1;
+	u->maximized = 0;
+	return 0;
+}
+
+/* Double-click title bar: fill the work area below the system bar, or go back
+ * to the geometry the window had before it was maximized. */
+static int toggle_maximize(struct uwin *u, unsigned int idx)
+{
+	if (u->maximized)
+		return restore_window(u, idx);
+	u->restore_x = u->info.x;
+	u->restore_y = u->info.y;
+	u->restore_w = u->info.w;
+	u->restore_h = u->info.h;
+	if (set_window_geometry(u, idx, 0, WM_BAR_H,
+				fbw, fbh - WM_BAR_H) != 0)
+		return -1;
+	u->maximized = 1;
+	return 0;
 }
 
 /* The top-bar date/time text is also a button: it opens the Date & Time
@@ -900,6 +1010,10 @@ static void handle_mouse(struct wm_status *st)
 	int was = (prev_buttons & 1) != 0;
 
 	if (down && !was) {
+		int prev_title_id = last_title_id;
+		unsigned int now = u_ticks_ms();
+
+		last_title_id = -1;
 		if (bar_clock_hit(mx, my)) {
 			spawn_app_checked("/ramfs/bin/settime");
 		} else if (mx >= WM_BTN_X && my >= WM_BTN_Y &&
@@ -942,30 +1056,48 @@ static void handle_mouse(struct wm_status *st)
 			   my < WM_BTN_GALLERY_Y + WM_BTN_GALLERY_H) {
 			spawn_app_checked("/ramfs/bin/gallery");
 		} else {
-			int idx = window_at(mx, my);
+			int idx = window_at((int)mx, (int)my);
 
 			if (idx >= 0) {
 				struct uwin *u = &wins[idx];
+				int pmx = (int)mx, pmy = (int)my;
+				int rx = u->info.x + (int)u->info.w - 1 -
+					 WM_CLOSE_W;
+				int ry = u->info.y + 1;
 
 				u_wm_focus((unsigned int)idx);
-				if (mx >= (unsigned int)(u->info.x + (int)u->info.w -
-							 1 - WM_CLOSE_W) &&
-				    mx < (unsigned int)(u->info.x + (int)u->info.w) &&
-				    my >= (unsigned int)(u->info.y + 1) &&
-				    my < (unsigned int)(u->info.y + 1 + WM_TITLE_H)) {
+				if (pmx >= rx &&
+				    pmx < u->info.x + (int)u->info.w &&
+				    pmy >= ry && pmy < ry + WM_TITLE_H) {
 					u_wm_close((unsigned int)idx);
 					full_redraw = 1;
-				} else if (mx >= (unsigned int)(u->info.x + (int)u->info.w - 16) &&
-					   my >= (unsigned int)(u->info.y + (int)u->info.h - 16)) {
+				} else if (pmx >= u->info.x + (int)u->info.w - 16 &&
+					   pmy >= u->info.y + (int)u->info.h - 16) {
 					resize_id = idx;
 					resize_mx = mx;
 					resize_my = my;
 					resize_ow = u->info.w;
 					resize_oh = u->info.h;
-				} else if (my < (unsigned int)(u->info.y + WM_TITLE_H)) {
-					drag_id = idx;
-					drag_dx = (int)mx - u->info.x;
-					drag_dy = (int)my - u->info.y;
+				} else if (pmy < u->info.y + WM_TITLE_H) {
+					if (prev_title_id == idx &&
+					    now - last_title_ms <= WM_DBLCLICK_MS &&
+					    iabs(pmx - last_title_x) <= WM_DBLCLICK_SLOP &&
+					    iabs(pmy - last_title_y) <= WM_DBLCLICK_SLOP) {
+						last_title_ms = 0;
+						if (toggle_maximize(u,
+						    (unsigned int)idx) != 0)
+							bar_notice("resize failed");
+					} else {
+						last_title_id = idx;
+						last_title_ms = now;
+						last_title_x = pmx;
+						last_title_y = pmy;
+						drag_id = idx;
+						drag_mx = pmx;
+						drag_my = pmy;
+						drag_dx = pmx - u->info.x;
+						drag_dy = pmy - u->info.y;
+					}
 				}
 			}
 		}
@@ -973,46 +1105,28 @@ static void handle_mouse(struct wm_status *st)
 		struct uwin *u = &wins[resize_id];
 
 		if (u->info.used) {
-			unsigned int oldw = u->info.w, oldh = u->info.h;
 			int nw = (int)resize_ow + (int)mx - (int)resize_mx;
 			int nh = (int)resize_oh + (int)my - (int)resize_my;
-			int maxw = (int)fbw - u->info.x;
-			int maxh = (int)fbh - u->info.y;
+			int maxw = (int)fbw;
+			int maxh = (int)fbh - WM_BAR_H;
 
 			if (nw < 200) nw = 200;
 			if (nh < 140) nh = 140;
 			if (nw > maxw) nw = maxw;
 			if (nh > maxh) nh = maxh;
+			/* Dragging the grip into the screen corner means "as
+			 * large as the work area", even though the grip starts
+			 * 16 px inside the window edge. */
+			if ((int)mx >= (int)fbw - 1)
+				nw = maxw;
+			if ((int)my >= (int)fbh - 1)
+				nh = maxh;
 			if (nw != (int)u->info.w || nh != (int)u->info.h) {
-				struct wm_window_info ni;
-				struct wm_map_info nm;
-				struct wm_present_info present;
-				unsigned int i;
-
-				if (u_wm_resize((unsigned int)resize_id,
-						(unsigned int)(nw - 2),
-						(unsigned int)(nh - WM_TITLE_H - 2)) == 0) {
-					if (u_wm_info((unsigned int)resize_id, &ni) == 1)
-						u->info = ni;
-					u->mapped = 0;
-					if (u_wm_map((unsigned int)resize_id, &nm) == 0) {
-						u->map = nm;
-						u->mapped = 1;
-					}
-					present.count = 0;
-					present.immediate = 1;
-					add_rect(&present, u->info.x, u->info.y, oldw, oldh);
-					add_rect(&present, u->info.x, u->info.y,
-						 u->info.w, u->info.h);
-					if (u_wm_begin() == 0) {
-						for (i = 0; i < present.count; i++)
-							draw_rect(present.rect[i].x,
-								  present.rect[i].y,
-								  present.rect[i].w,
-								  present.rect[i].h);
-						u_wm_present(&present);
-					}
-				}
+				if (set_window_geometry(u,
+					(unsigned int)resize_id, u->info.x,
+					u->info.y, (unsigned int)nw,
+					(unsigned int)nh) == 0)
+					u->maximized = 0;
 			}
 		} else {
 			resize_id = -1;
@@ -1021,32 +1135,55 @@ static void handle_mouse(struct wm_status *st)
 		struct uwin *u = &wins[drag_id];
 
 		if (u->info.used) {
-			int ox = u->info.x, oy = u->info.y;
-			int nx = (int)mx - drag_dx;
-			int ny = (int)my - drag_dy;
+			int ox, oy, nx, ny;
+			int started = !u->maximized ||
+				iabs((int)mx - drag_mx) >= WM_DRAG_START ||
+				iabs((int)my - drag_my) >= WM_DRAG_START;
 
-			clamp_geom(u, &nx, &ny);
-			if (nx != ox || ny != oy) {
-				struct wm_present_info present;
-				unsigned int i;
+			/* A maximized window is restored as soon as the drag
+			 * starts; keep the pointer's grab point relative to the
+			 * restored geometry.  A click that does not move must
+			 * leave it maximized. */
+			if (u->maximized && started &&
+			    restore_window(u, (unsigned int)drag_id) == 0) {
+				drag_dx = drag_mx - u->info.x;
+				drag_dy = drag_my - u->info.y;
+			}
+			if (!u->maximized) {
+				ox = u->info.x;
+				oy = u->info.y;
+				nx = (int)mx - drag_dx;
+				ny = (int)my - drag_dy;
 
-				u_wm_set_geom((unsigned int)drag_id, nx, ny);
-				u->info.x = nx;
-				u->info.y = ny;
-				if (u->info.focused) {
-					move_window_pixels(u, ox, oy, nx, ny);
-				} else {
-					present.count = 0;
-					present.immediate = 1;
-					add_rect(&present, ox, oy, u->info.w, u->info.h);
-					add_rect(&present, nx, ny, u->info.w, u->info.h);
-					if (u_wm_begin() == 0) {
-						for (i = 0; i < present.count; i++)
-							draw_rect(present.rect[i].x,
+				clamp_geom(u, &nx, &ny);
+				if (nx != ox || ny != oy) {
+					struct wm_present_info present;
+					unsigned int i;
+
+					u_wm_set_geom((unsigned int)drag_id,
+						      nx, ny);
+					u->info.x = nx;
+					u->info.y = ny;
+					if (u->info.focused) {
+						move_window_pixels(u, ox, oy,
+								   nx, ny);
+					} else {
+						present.count = 0;
+						present.immediate = 1;
+						add_rect(&present, ox, oy,
+							 u->info.w, u->info.h);
+						add_rect(&present, nx, ny,
+							 u->info.w, u->info.h);
+						if (u_wm_begin() == 0) {
+							for (i = 0;
+							     i < present.count; i++)
+								draw_rect(
+								  present.rect[i].x,
 								  present.rect[i].y,
 								  present.rect[i].w,
 								  present.rect[i].h);
-						u_wm_present(&present);
+							u_wm_present(&present);
+						}
 					}
 				}
 			}

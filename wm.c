@@ -61,7 +61,7 @@ static void wm_focus_top(void);
 static void wm_close_window(unsigned int idx);
 static void wm_clamp_window(struct window *w, int nx, int ny);
 static void wm_server_unmap_index(unsigned int idx);
-static int wm_window_at(unsigned int px, unsigned int py);
+static int wm_window_at(int px, int py);
 
 void wm_request_redraw(void)
 {
@@ -192,6 +192,8 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	ch = in->h;
 	if (cw == 0 || ch == 0 || cw > WM_WIN_MAX_W || ch > WM_WIN_MAX_H)
 		return -1;
+	if (cw * ch * 2 > WM_CONTENT_SLOT || cw * ch * 2 > USER_WIN_RANGE)
+		return -1;
 	if (cw + 2 > vga_fb_width() || ch + WM_TITLE_H + 2 > vga_fb_height())
 		return -1;
 	for (i = 0; i < MAX_WINDOWS; i++)
@@ -247,12 +249,14 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 	w->canvas_dmg_w = w->canvas_dmg_h = 0;
 	w->pw = cw + 2;
 	w->ph = ch + WM_TITLE_H + 2;
-	w->x = 24 + i * 32;
-	w->y = WM_BAR_H + 12 + i * 28;
-	if (w->x + w->pw > vga_fb_width())
-		w->x = (vga_fb_width() > w->pw) ? vga_fb_width() - w->pw : 0;
-	if (w->y + w->ph > vga_fb_height())
+	w->x = 24 + (int)i * 32;
+	w->y = WM_BAR_H + 12 + (int)i * 28;
+	if (w->x + (int)w->pw > (int)vga_fb_width())
+		w->x = ((int)vga_fb_width() > (int)w->pw) ?
+		       (int)vga_fb_width() - (int)w->pw : 0;
+	if (w->y + (int)w->ph > (int)vga_fb_height())
 		w->y = WM_BAR_H + 4;
+	wm_clamp_window(w, w->x, w->y);
 	w->focused = 0;
 	w->content_gen = 1;
 	w->mapped_kind = WM_KIND_NONE;
@@ -445,7 +449,8 @@ int wm_server_win_pointer(struct win_pointer *out)
 	out->buttons = mouse_buttons_state();
 	out->inside = (cx >= 0 && cy >= 0 &&
 		       cx < (int)w->canvas.w && cy < (int)w->canvas.h &&
-		       (w->focused || wm_window_at(mx, my) == idx)) ? 1 : 0;
+		       (w->focused || wm_window_at((int)mx, (int)my) == idx)) ?
+		      1 : 0;
 	out->focused = w->focused ? 1 : 0;
 	return 0;
 }
@@ -478,6 +483,8 @@ int wm_server_resize(unsigned int index, unsigned int cw, unsigned int ch)
 	if (!w->canvas_window || !process_is_alive(w->pid))
 		return -1;
 	if (cw < 160 || ch < 80 || cw > WM_WIN_MAX_W || ch > WM_WIN_MAX_H)
+		return -1;
+	if (cw * ch * 2 > WM_CONTENT_SLOT || cw * ch * 2 > USER_WIN_RANGE)
 		return -1;
 	if (cw + 2 > vga_fb_width() || ch + WM_TITLE_H + 2 > vga_fb_height())
 		return -1;
@@ -827,17 +834,17 @@ static void wm_route_pointer(unsigned int mx, unsigned int my,
 	unsigned int release = wm_ptr_buttons & ~buttons;
 
 	if (press & 1) {
-		int idx = wm_window_at(mx, my);
+		int idx = wm_window_at((int)mx, (int)my);
 
 		if (idx >= 0) {
 			struct window *w = &windows[idx];
-			int cx = (int)mx - (int)w->x - 1;
-			int cy = (int)my - (int)w->y - 1 - WM_TITLE_H;
+			int cx = (int)mx - w->x - 1;
+			int cy = (int)my - w->y - 1 - WM_TITLE_H;
 
 			if (w->canvas_window && cx >= 0 && cy >= 0 &&
 			    cx < (int)w->canvas.w && cy < (int)w->canvas.h &&
-			    !(mx >= w->x + w->pw - 16 &&
-			      my >= w->y + w->ph - 16)) {
+			    !((int)mx >= w->x + (int)w->pw - 16 &&
+			      (int)my >= w->y + (int)w->ph - 16)) {
 				wm_queue_ptr_event(w, WIN_EV_POINTER_DOWN,
 						   cx, cy, buttons);
 				wm_ptr_capture = idx;
@@ -1071,10 +1078,11 @@ void wm_server_init(void)
 	 * says the storage scan is done. */
 }
 
-static int wm_point_in_rect(unsigned int px, unsigned int py,
-	unsigned int rx, unsigned int ry, unsigned int rw, unsigned int rh)
+static int wm_point_in_rect(int px, int py,
+	int rx, int ry, unsigned int rw, unsigned int rh)
 {
-	return px >= rx && px < rx + rw && py >= ry && py < ry + rh;
+	return px >= rx && px < rx + (int)rw &&
+	       py >= ry && py < ry + (int)rh;
 }
 
 
@@ -1135,7 +1143,7 @@ static void wm_close_window(unsigned int idx)
 }
 
 /* Topmost window containing (px,py), or -1. */
-static int wm_window_at(unsigned int px, unsigned int py)
+static int wm_window_at(int px, int py)
 {
 	unsigned int i;
 	for (i = 0; i < MAX_WINDOWS; i++)
@@ -1155,24 +1163,30 @@ static int wm_window_at(unsigned int px, unsigned int py)
 
 static void wm_clamp_window(struct window *w, int nx, int ny)
 {
-	unsigned int fbw = vga_fb_width();
-	unsigned int fbh = vga_fb_height();
-	int maxx = (int)fbw - (int)w->pw;
-	int maxy = (int)fbh - (int)w->ph;
-	if (maxx < 0)
-		maxx = 0;
-	if (maxy < (int)WM_BAR_H)
-		maxy = (int)WM_BAR_H;
-	if (nx < 0)
-		nx = 0;
+	int fbw = (int)vga_fb_width();
+	int fbh = (int)vga_fb_height();
+	/* Allow a window to hang off the left, right and bottom edges, but
+	 * keep a strip of the title bar reachable and never let it overlap the
+	 * system bar at the top. */
+	int minx = WM_DRAG_VISIBLE - (int)w->pw;
+	int maxx = fbw - WM_DRAG_VISIBLE;
+	int miny = WM_BAR_H;
+	int maxy = fbh - WM_TITLE_H;
+
+	if (minx > maxx)
+		minx = maxx = 0;
+	if (miny > maxy)
+		miny = maxy = WM_BAR_H;
+	if (nx < minx)
+		nx = minx;
 	else if (nx > maxx)
 		nx = maxx;
-	if (ny < (int)WM_BAR_H)
-		ny = (int)WM_BAR_H;
+	if (ny < miny)
+		ny = miny;
 	else if (ny > maxy)
 		ny = maxy;
-	w->x = (unsigned int)nx;
-	w->y = (unsigned int)ny;
+	w->x = nx;
+	w->y = ny;
 }
 
 /* Fill the intersection of rect (rx,ry,rw,rh) with clip rect (cx,cy,cw,ch). */

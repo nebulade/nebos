@@ -16,7 +16,7 @@
 
 struct window {
 	int used;
-	unsigned int x, y;       /* pixel origin (title bar top-left) */
+	int x, y;                /* title bar top-left; may be negative */
 	unsigned int pw, ph;     /* pixel size */
 	char title[16];
 	int focused;

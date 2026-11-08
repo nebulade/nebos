@@ -45,12 +45,16 @@
 #define WM_TITLE_H 22
 #define WM_CLOSE_W 16
 
+/* Keep at least this much of the title bar on-screen when a window is dragged
+ * past an edge, so it can always be grabbed and brought back. */
+#define WM_DRAG_VISIBLE 48
+
 /* Fixed user virtual addresses for the WM's mappings.  The shadow is one
- * mapping; each window gets a private content slot (large enough for the
- * current canvas and future bigger ones). */
+ * mapping; each window gets a private content slot large enough for a
+ * full-screen RGB565 canvas (1280x1024 minus the chrome is ~2.5 MB). */
 #define WM_SHADOW_VA        0x58000000u
 #define WM_CONTENT_VA_BASE  0x59000000u
-#define WM_CONTENT_SLOT     0x00200000u   /* 2 MB per window */
+#define WM_CONTENT_SLOT     0x00400000u   /* 4 MB per window */
 
 /* Window content kind. */
 #define WM_KIND_NONE 0

@@ -15,7 +15,7 @@
 #include "io.h"
 #include "vfs.h"
 
-#define MAX_COLS 128
+#define MAX_COLS 160
 #define MAX_ROWS 64
 #define BUF_MAX 256
 #define LINE_MAX 128
