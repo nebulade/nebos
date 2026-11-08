@@ -455,8 +455,21 @@ static int lexstring(js_State *J)
 }
 
 /* the ugliest language wart ever... */
-static int isregexpcontext(int last)
+static int iscontrolparen(int token)
 {
+	return token == TK_IF || token == TK_WHILE || token == TK_FOR ||
+	       token == TK_WITH || token == TK_SWITCH || token == TK_CATCH;
+}
+
+static int isregexpcontext(js_State *J)
+{
+	int last = J->lasttoken;
+
+	/* A ')' that closed a control head starts a statement, so a regex
+	 * literal may follow it (`for (...) /re/.test(x)`). */
+	if (last == ')')
+		return J->last_paren_control;
+
 	switch (last) {
 	case ']':
 	case ')':
@@ -573,7 +586,7 @@ static int jsY_lexx(js_State *J)
 				if (lexcomment(J))
 					jsY_error(J, "multi-line comment not terminated");
 				continue;
-			} else if (isregexpcontext(J->lasttoken)) {
+			} else if (isregexpcontext(J)) {
 				return lexregexp(J);
 			} else if (jsY_accept(J, '=')) {
 				return TK_DIV_ASS;
@@ -587,8 +600,17 @@ static int jsY_lexx(js_State *J)
 		}
 
 		switch (J->lexchar) {
-		case '(': jsY_next(J); return '(';
-		case ')': jsY_next(J); return ')';
+		case '(':
+			if (J->paren_top < nelem(J->paren_control))
+				J->paren_control[J->paren_top++] =
+					iscontrolparen(J->lasttoken);
+			jsY_next(J);
+			return '(';
+		case ')':
+			J->last_paren_control = J->paren_top > 0 ?
+				J->paren_control[--J->paren_top] : 0;
+			jsY_next(J);
+			return ')';
 		case ',': jsY_next(J); return ',';
 		case ':': jsY_next(J); return ':';
 		case ';': jsY_next(J); return ';';
@@ -736,6 +758,8 @@ void jsY_initlex(js_State *J, const char *filename, const char *source)
 	J->source = source;
 	J->line = 1;
 	J->lasttoken = 0;
+	J->paren_top = 0;
+	J->last_paren_control = 0;
 	jsY_next(J); /* load first lookahead character */
 }
 

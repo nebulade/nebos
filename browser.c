@@ -43,6 +43,9 @@
 #define CSS_CACHE_MAX      16
 #define CSS_CACHE_FILE_MAX (256u * 1024u)
 #define CSS_CACHE_PREFIX   "bcss-"
+#define SCRIPT_CACHE_MAX      16
+#define SCRIPT_CACHE_FILE_MAX (512u * 1024u)
+#define SCRIPT_CACHE_PREFIX   "bjs-"
 #define BR_MAX_SHEETS   6
 #define BR_HISTORY      16
 #define BR_URL_MAX      512
@@ -1368,6 +1371,112 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 	return 0;
 }
 
+/* Remote scripts are cached under /share for the current boot, like the
+ * stylesheet cache, so reloads and later visits skip the network. */
+static int script_cache_count;
+
+static unsigned int script_cache_hash(const char *s)
+{
+	unsigned int h = 2166136261u;
+
+	while (*s) {
+		h ^= (unsigned char)*s++;
+		h *= 16777619u;
+	}
+	return h;
+}
+
+static void script_cache_path(const char *url, char *out, unsigned int cap)
+{
+	unsigned int n = 0;
+
+	s_append(out, &n, "/share/" SCRIPT_CACHE_PREFIX, cap);
+	s_append_dec(out, &n, script_cache_hash(url), cap);
+}
+
+static void script_cache_clear(void)
+{
+	struct sys_dirent d;
+	char path[96];
+
+	for (;;) {
+		int i, found = 0;
+
+		for (i = 0; u_syscall3(SYS_LIST_DIR, (int)"/share", i,
+				       (int)&d) == 1; i++) {
+			unsigned int n = 0;
+
+			if (!starts_with(d.name, SCRIPT_CACHE_PREFIX))
+				continue;
+			s_append(path, &n, "/share/", sizeof(path));
+			s_append(path, &n, d.name, sizeof(path));
+			if (u_syscall1(SYS_UNLINK, (int)path) < 0)
+				return;
+			found = 1;
+			break;
+		}
+		if (!found)
+			break;
+	}
+	script_cache_count = 0;
+}
+
+static void script_cache_init(void)
+{
+	struct sys_dirent d;
+	int i, count = 0;
+
+	for (i = 0; u_syscall3(SYS_LIST_DIR, (int)"/share", i,
+			       (int)&d) == 1; i++)
+		if (starts_with(d.name, SCRIPT_CACHE_PREFIX))
+			count++;
+	if (count >= SCRIPT_CACHE_MAX) {
+		script_cache_clear();
+		return;
+	}
+	script_cache_count = count;
+}
+
+static int script_cache_get(const char *url, unsigned char **out,
+			    unsigned int *outlen)
+{
+	char path[96];
+	struct sys_stat st;
+	unsigned char *buf;
+	int rn;
+
+	script_cache_path(url, path, sizeof(path));
+	if (u_stat(path, &st) != 0 || st.is_dir || st.size == 0 ||
+	    st.size >= SCRIPT_CACHE_FILE_MAX)
+		return 0;
+	buf = (unsigned char *)malloc(st.size + 1);
+	if (!buf)
+		return 0;
+	rn = u_syscall3(SYS_READ_FILE, (int)path, (int)buf, (int)st.size);
+	if (rn != (int)st.size) {
+		free(buf);
+		return 0;
+	}
+	buf[st.size] = '\0';
+	*out = buf;
+	*outlen = st.size;
+	return 1;
+}
+
+static void script_cache_put(const char *url, const unsigned char *data,
+			     unsigned int len)
+{
+	char path[96];
+
+	if (script_cache_count >= SCRIPT_CACHE_MAX || len == 0 ||
+	    len >= SCRIPT_CACHE_FILE_MAX)
+		return;
+	script_cache_path(url, path, sizeof(path));
+	if (u_syscall3(SYS_WRITE_FILE, (int)path, (int)data,
+		       (int)len) >= 0)
+		script_cache_count++;
+}
+
 /* Fetch one external script into a heap buffer and NUL-terminate it. */
 static int fetch_script_text(const char *url, unsigned char **out,
 			     unsigned int *outlen, char *err,
@@ -1381,6 +1490,8 @@ static int fetch_script_text(const char *url, unsigned char **out,
 
 	*out = 0;
 	*outlen = 0;
+	if (url[0] != '/' && script_cache_get(url, out, outlen))
+		return 0;
 	rv = read_url(url, BR_SCRIPT_MAX, &buf, &len, &local, ctype,
 		      sizeof(ctype), final, sizeof(final), err, errcap,
 		      &truncated);
@@ -1392,6 +1503,8 @@ static int fetch_script_text(const char *url, unsigned char **out,
 		return -1;
 	}
 	buf[len] = '\0';
+	if (!local)
+		script_cache_put(url, buf, len);
 	*out = buf;
 	*outlen = len;
 	return 0;
@@ -1947,10 +2060,24 @@ static void load_page(const char *url, int local, int push)
 			return;
 		if (pending_action)
 			return;
-		run_page_scripts();
-		if (pending_action)
-			return;
 	}
+	preload_begin();
+	page_loading = 0;
+	s_copy(url_in.text, page_url, NGUI_INPUT_MAX);
+	url_in.len = s_len(url_in.text);
+	url_in.cursor = url_in.len;
+	url_in.scroll = 0;
+	ngui_set_focus(&ui, 0);
+
+	/* Paint the parsed page before fetching/running scripts.  A slow
+	 * remote <script src> then does not hide the page behind the loading
+	 * screen; the fetch helper pumps this UI while it waits. */
+	set_status("Loading scripts...", 0, 0);
+	redraw_now();
+	run_page_scripts();
+	if (pending_action)
+		return;
+
 	post_status_text[0] = '\0';
 	post_status_error = 0;
 	post_status_ttl = 0;
@@ -1972,13 +2099,7 @@ static void load_page(const char *url, int local, int push)
 		       sizeof(post_status_text));
 		post_status_ttl = 6000;
 	}
-	preload_begin();
-	page_loading = 0;
-	s_copy(url_in.text, page_url, NGUI_INPUT_MAX);
-	url_in.len = s_len(url_in.text);
-	url_in.cursor = url_in.len;
-	url_in.scroll = 0;
-	ngui_set_focus(&ui, 0);
+	set_status(post_status_text, post_status_error, post_status_ttl);
 	ngui_invalidate(&ui);
 }
 
@@ -4683,6 +4804,7 @@ void _start(const char *arg)
 	heap_clear();
 	origin_cache_load();
 	css_cache_init();
+	script_cache_init();
 	page_scroll.offset = 0;
 	page_scroll.content_h = 0;
 

@@ -758,9 +758,14 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   before `heap_reset()`.  `js_setlimit()` caps every script at 8M
   instructions, so a runaway loop reports `script ran too long` instead of
   freezing the browser.  Math, Date and JSON come from the engine plus the
-  libc math/time layers.  There are no timers, event listeners, `innerHTML`
-  or forms yet; flex/grid, basic tables, inline SVG and CSS variables are
-  supported (see known issue 22 for the remaining CSS gaps).  `SYS_SPAWN`
+  libc math/time layers.  The parsed page is painted before scripts are
+  fetched and run, and remote `<script src>` bodies are cached under
+  `/share/bjs-*` for the current boot.  Classic scripts run sloppy by
+  default; the vendored engine also carries small Annex B parser fixes for
+  regex literals after control parentheses and identity escapes/braces.
+  There are no timers, event listeners, `innerHTML` or forms yet; flex/grid,
+  basic tables, inline SVG and CSS variables are supported (see known issue
+  22 for the remaining CSS gaps).  `SYS_SPAWN`
   loads FAT ELFs through `kmalloc` now (the old 16 KB `fat_load_buf` is gone)
   and wraps the load in `sys_fs_enter/exit`,
   since the floppy needs IRQ 6.
@@ -1307,8 +1312,8 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    compressed pack directly to `0x900000` with INT 15h AH=87h, so the cap is
    `PACK_MAX` 1 MB (not the old ~255 KB low-gap limit).  The browser and
    its ring-3 dependencies are compiled with function sections and linked
-   with `--gc-sections`; the current pack with the UI fonts is ~430 KiB
-   (440736 bytes), leaving ~594 KiB under the cap.  `libdeflate-gzip -12` is
+   with `--gc-sections`; the current pack with the UI fonts is ~431 KiB
+   (441580 bytes), leaving ~593 KiB under the cap.  `libdeflate-gzip -12` is
    still preferred for the extra headroom, though the 1 MB cap leaves room
    for `gzip -9` as a fallback.
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
@@ -1369,7 +1374,10 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     external classic scripts, `document.getElementById(...).textContent`,
     `console.log`, `alert`, `location.href`; no timers, event listeners,
     `innerHTML` or form submission; `type="module"`, `defer` and `async` are
-    ignored).  Also no pseudo-classes/elements,
+    ignored).  The DOM bindings remain small: pages that expect
+    `document.createElement`, `querySelector(All)`, `classList`,
+    `addEventListener` or timers (jQuery/Bootstrap/Angular) log errors even
+    though their static HTML renders.  Also no pseudo-classes/elements,
     border-radius clipping of descendant content, gradients/box-shadow/
     transitions (a gradient background falls back to its last solid colour),
     or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with

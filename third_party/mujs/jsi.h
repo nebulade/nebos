@@ -221,6 +221,11 @@ struct js_State
 	int lexchar;
 	int lasttoken;
 	int newline;
+	/* '(' context stack: whether each open paren followed if/for/while/
+	 * with/switch/catch, so a regex literal can start the body statement. */
+	int paren_control[64];
+	int paren_top;
+	int last_paren_control;
 
 	/* parser state */
 	int astdepth;

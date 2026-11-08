@@ -215,7 +215,9 @@ int js_browser_start(struct br_doc *doc, const struct js_browser_host *h)
 	current_url = h->page_url;
 	panic_armed = 0;
 
-	J = js_newstate(0, 0, JS_STRICT);
+	/* Classic scripts are sloppy by default in browsers; strict mode is
+	 * opt-in via a "use strict" directive. */
+	J = js_newstate(0, 0, 0);
 	if (!J)
 		return -1;
 	js_setreport(J, report_cb);

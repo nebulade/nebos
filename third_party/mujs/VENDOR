@@ -12,3 +12,10 @@ docs, the Unicode data files and the tools are not part of this copy.
 Build: one.c is compiled as a single object with the same freestanding flags
 as the browser (see MUJS_CFLAGS in the top-level Makefile), with
 JS_ENVLIMIT=256 and JS_ASTLIMIT=200 to bound recursion on the ring-3 stack.
+
+Local patches:
+- jslex.c/jsi.h track whether the last ')' closed an if/for/while/with/
+  switch/catch head, so a regex literal can start the body statement
+  (`for (...) /re/.test(x)`) as browsers allow.
+- regexp.c accepts Annex B identity escapes such as `\_` and `\a` instead
+  of rejecting identifier-character escapes.

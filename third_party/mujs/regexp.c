@@ -116,11 +116,6 @@ static int dec(struct cstate *g, int c)
 
 #define ESCAPES "BbDdSsWw^$\\.*+?()[]{}|-0123456789"
 
-static int isunicodeletter(int c)
-{
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || isalpharune(c);
-}
-
 static int nextrune(struct cstate *g)
 {
 	if (!*g->source) {
@@ -171,11 +166,35 @@ static int nextrune(struct cstate *g)
 		}
 		if (strchr(ESCAPES, g->yychar))
 			return 1;
-		if (isunicodeletter(g->yychar) || g->yychar == '_') /* check identity escape */
-			die(g, "invalid escape character");
+		/* Annex B identity escape: \a, \_, ... match the character
+		 * itself, as browsers do for non-unicode regular expressions. */
 		return 0;
 	}
 	return 0;
+}
+
+/* Annex B: a '{' that does not start a well-formed quantifier is a literal
+ * brace, so /{}/ and /{,x}/ are valid patterns. */
+static int iscount(struct cstate *g)
+{
+	const char *s = g->source;
+
+	if (*s < '0' || *s > '9')
+		return 0;
+	while (*s >= '0' && *s <= '9')
+		s++;
+	if (*s == '}')
+		return 1;
+	if (*s != ',')
+		return 0;
+	s++;
+	if (*s == '}')
+		return 1;
+	if (*s < '0' || *s > '9')
+		return 0;
+	while (*s >= '0' && *s <= '9')
+		s++;
+	return *s == '}';
 }
 
 static int lexcount(struct cstate *g)
@@ -420,8 +439,11 @@ static int lex(struct cstate *g)
 		return g->yychar;
 	}
 
-	if (g->yychar == '{')
-		return lexcount(g);
+	if (g->yychar == '{') {
+		if (iscount(g))
+			return lexcount(g);
+		return L_CHAR;
+	}
 	if (g->yychar == '[')
 		return lexclass(g);
 	if (g->yychar == '(') {
