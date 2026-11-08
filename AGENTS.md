@@ -1,7 +1,8 @@
 # AGENTS.md — NebOS (`nebos`)
 
 A from-scratch, freestanding **32-bit x86 hobby operating system** written in C and
-x86 assembly. Single-author project (~7,000 SLOC, no external runtime, no libc).
+x86 assembly. Single-author project (~7,000 SLOC, no external runtime; the
+kernel has no libc, while ring-3 commands may link the in-tree `libc.a`).
 Targets i586 (first-gen Pentium); runs under QEMU or on real hardware.
 
 ## Documentation site (`docs/`)
@@ -73,6 +74,7 @@ make kernel-net-dev
 make flash      # write the dual-boot image (legacy BIOS + UEFI) to a USB stick
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make test-images  # host image-decoder + blit tests (ASan variant: test-images-asan)
+make test-libc  # host stress test for the ring-3 malloc
 make clean
 ```
 
@@ -565,11 +567,25 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `USER_HEAP_BASE` (`0x60000000`), capped at 32 MB; the initial allocation is
   zeroed but pages appended by `SYS_MEM_GROW` are not (decoders initialize
   what they use), which keeps large image arenas fast to map.  The reaper
-  frees it with the rest of the process and `top` counts its pages.  The
-  canvas mapping at `USER_GFX_BASE` (`0x50000000`) and the WM mappings are
-  separate.
+  frees it with the rest of the process and `top` counts its pages.  Commands
+  that link `libc.a` own this arena through `libc/malloc.c`; the raw syscalls
+  and libc malloc must never be mixed in one process.  The canvas mapping at
+  `USER_GFX_BASE` (`0x50000000`) and the WM mappings are separate.
+- **Ring-3 libc**: `libc/include/` (stddef/stdint/stdarg/stdlib/string/ctype/
+  assert/ucmd_heap), `libc/malloc.c`, `libc/string.c`, `libc/strdup.c`,
+  `libc/stdlib.c`, `libc/ucmd_mem.c`, linked as `libc.a` only into commands
+  that reference it.  `malloc` is a boundary-tag first-fit allocator with
+  immediate coalescing: 16-byte aligned, `calloc` zeroes, `realloc` grows in
+  place when the next block is free, and the heap maps 64 KB lazily then
+  grows in page-rounded steps with 64 KB slack up to the 32 MB arena cap.
+  `heap_reset()` (`ucmd_heap.h`) discards every allocation and unmaps the
+  arena for page-scoped apps such as the browser.  There are no threads, so
+  there is no lock; each process uses either this heap or the raw
+  `SYS_MEM_*` calls, never both.  The archive plus
+  `-ffunction-sections`/`--gc-sections` keeps unused code out of the legacy
+  pack.  Host test: `make test-libc` (`libc/test_malloc.c`).
 - **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld`, `mkpack.c`,
-  `rootfs.h`, `mkrootfs.c`, `ramfs.c/h` — freestanding ELFs linked at
+  `rootfs.h`, `mkrootfs.c`, `ramfs.c/h` — static ELFs linked at
   `USER_BASE` (`0x40000000`), packed by `mkpack` into `cmds.pack` (as
   `bin/<name>`), gzipped to `cmds_pack_gz.bin` and wrapped by `mkrootfs`
   with a `NBROOT1` header.  The pack is the system rootfs: the boot path
@@ -647,17 +663,19 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   under `/share`, while the browser keeps drawing and scrolling its own
   window.  The helper asks for identity encoding because inflating multi-MB
   pages in the browser process stalled the UI; if a server still sends gzip,
-  the browser's inflate has a progress hook that pumps the UI.  Page, image
-  and CSS scratch buffers come from `SYS_MEM_ALLOC`; the DOM uses fixed static
-  arenas (6144 nodes, 512 KB attributes, 2304 rules), and page bodies are
-  capped at 2 MB with CSS sheets up to 832 KB (six sheets).  Images are
-  decoded once into a shared 24 MB arena and copied to a display bitmap at
-  most 1000 px wide (up to 16 images, 512 KB files / 8 MP decodes), so 4K
-  screenshots fit the 32 MB heap.  There is no JavaScript, forms, flex/grid,
-  CSS variables, absolute/fixed positioning or standalone image viewer mode.
-  `SYS_SPAWN` loads FAT ELFs through `kmalloc` now (the old 16 KB
-  `fat_load_buf` is gone) and wraps the load in `sys_fs_enter/exit`, since the
-  floppy needs IRQ 6.
+  the browser's inflate has a progress hook that pumps the UI.  Page, CSS and
+  image buffers come from the ring-3 libc heap; the DOM uses fixed static
+  arenas (6144 nodes, 512 KB attributes, 4608 rules), and page bodies are
+  capped at 2 MB with CSS sheets up to 832 KB (six sheets).  Each image gets
+  an `img_estimate()`-sized decode arena, freed as soon as the scaled bitmap
+  exists; up to 16 bitmaps (512 KB files / 8 MP decodes) are kept until the
+  page heap is reset.  Navigation calls `heap_reset()` and unmaps the whole
+  arena, so a large image no longer reserves a fixed 24 MB.  There is no
+  JavaScript, forms or standalone image viewer mode; flex/grid, basic tables,
+  inline SVG and CSS variables are supported (see known issue 22 for the
+  remaining CSS gaps).  `SYS_SPAWN` loads FAT ELFs through `kmalloc` now (the
+  old 16 KB `fat_load_buf` is gone) and wraps the load in `sys_fs_enter/exit`,
+  since the floppy needs IRQ 6.
 - **Image library + viewer**: `img.h`, `img.c`, `img_mem.c`, `img_blit.c`,
   `img_png.c`, `img_bmp.c`, `img_gif.c`, `img_jpeg.c`, `img_tga.c`,
   `img_pnm.c`, `img_file.c/h` — freestanding RGB565 decoders with an optional
@@ -1105,8 +1123,10 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
 
 ## Conventions & gotchas
 
-- **Freestanding C** — no libc, no `malloc`, no `printf`. Use `io_putstr` /
-  `io_putchar` / `io_puthex` (`io.h`). Printing is VGA-framebuffer based.
+- **Freestanding C** — the kernel has no libc, no `malloc`, no `printf`; use
+  `io_putstr` / `io_putchar` / `io_puthex` (`io.h`).  Ring-3 commands may
+  link the in-tree `libc.a` (`malloc`, strings, stdlib); a command either uses
+  libc malloc or the raw `SYS_MEM_*` arena, never both.
 - **Paging is on but flat** — identity-mapped 4 MB pages (`paging.c`), so
   physical == virtual everywhere. Still no per-process address spaces or process
   isolation: everything runs ring-0 and shares the address space.
@@ -1164,7 +1184,7 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    legacy path; a larger pack needs the UEFI/kexec path or a chunked
    high-memory loader.  The browser and its ring-3 dependencies are compiled
    with function sections and linked with `--gc-sections`; the current pack
-   is ~241 KiB (246711 bytes), leaving ~14 KB under the cap.  Command growth
+   is ~242 KiB (247493 bytes), leaving ~13 KB under the cap.  Command growth
    still needs care because `libdeflate-gzip -12` is already required (plain
    `gzip -9` is over the cap).
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
@@ -1243,11 +1263,12 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     `em`/`rem` both use a 16 px root, and `line-height` is approximate.
     Pages that need flex alignment/justification, multi-row grid templates
     or CSS variables inside `calc()`/`color-mix()` can still lay out
-    imperfectly.  Images are decoded into a 24 MB shared arena and
-    downscaled to a 1000 px display bitmap (16 images, 512 KB files / 8 MP
-    decodes); a large image-heavy page can still exhaust the 32 MB heap, and
-    the first `<img>` after a big screenshot can transiently need a new heap
-    growth.  `img_draw` rescales the cached bitmap on every repaint.  Lazy
+    imperfectly.  Images are decoded into a per-image `img_estimate()`-sized
+    arena that is freed after the 1000 px display bitmap is made (16 images,
+    512 KB files / 8 MP decodes); a large image-heavy page can still exhaust
+    the 32 MB heap because the scaled bitmaps live until navigation, and the
+    decode arena itself can transiently be large.  `img_draw` rescales the
+    cached bitmap on every repaint.  Lazy
     image loading uses the last measured positions; adding an image can
     reflow the content above it, and images below the viewport stay as
     `[image]` until scrolled into range.  Each network fetch starts a
@@ -1289,3 +1310,16 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     (`8086:3B32`, the `intel_ips` MMIO block) is not read because it needs
     the ME/BIOS to have enabled thermal reporting; the EC and DTS readings
     cover the package temperature.
+
+25. Ring-3 libc heap limits: one process owns the single 32 MB `SYS_MEM_*`
+    arena, there is no `free()`-to-page unmap (only `heap_reset()`), no
+    threads/locking and no double-free recovery beyond the block magic; a
+    pointer into the middle of a block or a stale pointer is silently
+    ignored by `free()`.  The allocator is first-fit with immediate
+    coalescing, so a pathological small/large lifetime mix can still
+    fragment; the browser and viewer use it for a handful of large,
+    page-scoped buffers.  A program must not mix `malloc` with raw
+    `u_mem_alloc`/`u_mem_grow`/`u_mem_free`, and near-32 MB requests fail
+    because the block headers are charged to the same cap.  The `libc.a`
+    members are only pulled into commands that reference them; the legacy
+    pack still needs every added byte checked against `CMDS_GZ_MAX`.

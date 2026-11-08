@@ -1,8 +1,10 @@
 /* view: image viewer built on the img library and the ngui toolkit.
  *
  * Usage: view <file>.  The command owns a canvas window, reads the whole file
- * through the kernel file service, decodes it into a per-process heap
- * (SYS_MEM_ALLOC), and draws it with fit/1:1/zoom/pan support. */
+ * through the kernel file service, decodes it into an exact-size malloc arena,
+ * and draws it with fit/1:1/zoom/pan support. */
+
+#include <stdlib.h>
 
 #include "ucmd_lib.h"
 #include "ngui.h"
@@ -10,7 +12,6 @@
 #include "img_file.h"
 
 #define VIEW_FILE_CAP   (IMG_FILE_MAX + 1u)
-#define VIEW_INIT_HEAP  (VIEW_FILE_CAP + 64u * 1024u)
 #define VIEW_HEAP_MAX   (32u * 1024u * 1024u)
 #define VIEW_TOOLBAR_H  28
 #define VIEW_STATUS_H   18
@@ -30,8 +31,8 @@ struct viewer {
 	struct ngui ui;
 	struct img_image img;
 	struct img_mem mem;
-	unsigned char *heap;
-	unsigned int heap_size;
+	unsigned char *file;
+	unsigned char *arena;
 
 	unsigned int file_size;
 	unsigned int iw, ih;
@@ -466,7 +467,8 @@ void _start(const char *arg)
 	struct img_info info;
 	struct win_info wi;
 	struct img_options opt;
-	unsigned int n, arena_off, heap_size;
+	struct sys_stat st;
+	unsigned int n, fcap, est;
 	int r;
 
 	if (!arg || !arg[0]) {
@@ -481,12 +483,15 @@ void _start(const char *arg)
 		s_append(v.title, &tn, v.name, sizeof(v.title));
 	}
 
-	v.heap = (unsigned char *)u_mem_alloc(VIEW_INIT_HEAP);
-	if (!v.heap)
+	fcap = VIEW_FILE_CAP;
+	if (u_stat(arg, &st) == 0 && !st.is_dir && st.size > 0 &&
+	    st.size < VIEW_FILE_CAP)
+		fcap = st.size + 1u;
+	v.file = (unsigned char *)malloc(fcap);
+	if (!v.file)
 		error_exit("Not enough memory for the image");
-	heap_size = VIEW_INIT_HEAP;
 
-	n = (unsigned int)img_read_file(arg, v.heap, VIEW_FILE_CAP);
+	n = (unsigned int)img_read_file(arg, v.file, fcap);
 	if ((int)n < 0) {
 		if ((int)n == IMG_ERR_TOOBIG)
 			error_exit("Image file is larger than 4 MB");
@@ -494,26 +499,18 @@ void _start(const char *arg)
 	}
 	v.file_size = n;
 
-	r = img_sniff(v.heap, n, &info);
+	r = img_sniff(v.file, n, &info);
 	if (r != 0)
 		error_exit(img_error_string(r));
 
-	arena_off = (n + 15u) & ~15u;
-	{
-		unsigned int est = img_estimate(&info);
-		unsigned long long need = (unsigned long long)arena_off + est;
-
-		if (need > VIEW_HEAP_MAX)
-			error_exit("Image needs more than 32 MB");
-		if (need > heap_size) {
-			if (u_mem_grow((unsigned int)need) != 0)
-				error_exit("Not enough memory for the image");
-			heap_size = (unsigned int)need;
-		}
-	}
-	if (heap_size <= arena_off)
+	est = img_estimate(&info);
+	if (est == 0xFFFFFFFFu || est > VIEW_HEAP_MAX ||
+	    (unsigned long long)n + est > VIEW_HEAP_MAX)
+		error_exit("Image needs more than 32 MB");
+	v.arena = (unsigned char *)malloc(est);
+	if (!v.arena)
 		error_exit("Not enough memory for the image");
-	img_mem_init(&v.mem, v.heap + arena_off, heap_size - arena_off);
+	img_mem_init(&v.mem, v.arena, est);
 	v.iw = info.width;
 	v.ih = info.height;
 	v.format = info.format;
@@ -539,7 +536,7 @@ void _start(const char *arg)
 	}
 
 	opt.max_pixels = 0;
-	r = img_decode(v.heap, n, &opt, &v.mem, &v.img);
+	r = img_decode(v.file, n, &opt, &v.mem, &v.img);
 	v.loading = 0;
 	if (r != 0) {
 		s_copy(v.err, img_error_string(r), sizeof(v.err));
@@ -557,7 +554,7 @@ void _start(const char *arg)
 		unsigned int frames = 0, delay = 100;
 		int ha = 0;
 
-		if (img_gif_frames(v.heap, v.file_size, &frames, &delay, &ha) == 0 &&
+		if (img_gif_frames(v.file, v.file_size, &frames, &delay, &ha) == 0 &&
 		    frames > 1) {
 			v.gif_frames = frames;
 			v.gif_index = 0;
@@ -579,7 +576,7 @@ void _start(const char *arg)
 			unsigned int d = v.gif_delay;
 
 			v.gif_index = (v.gif_index + 1) % v.gif_frames;
-			if (img_decode_gif_frame(v.heap, v.file_size,
+			if (img_decode_gif_frame(v.file, v.file_size,
 						 v.gif_index, &v.mem, &v.img,
 						 &d) == 0) {
 				if (d < 20) d = 20;

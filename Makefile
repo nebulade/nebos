@@ -12,6 +12,18 @@ CFLAGS   = -ffreestanding -fno-pie -m32 -march=i586 -nostdlib -fno-stack-protect
 # Ring-3 objects are compiled with function sections so the browser link can
 # drop code it never reaches; the legacy rootfs pack is close to its cap.
 SECTION_CFLAGS = -ffunction-sections -fdata-sections
+
+# Ring-3 libc: a static archive linked only into commands that use it.  The
+# archive means apps that never reference malloc/string keep paying nothing,
+# and --gc-sections drops unused functions from the members that are pulled.
+LIBC_CFLAGS = $(CFLAGS) -Os $(SECTION_CFLAGS) -fno-builtin \
+              -I. -Ilibc/include
+LIBC_HEADERS = libc/include/stddef.h libc/include/stdint.h \
+               libc/include/stdarg.h libc/include/stdlib.h \
+               libc/include/string.h libc/include/ctype.h \
+               libc/include/assert.h libc/include/ucmd_heap.h
+LIBC_OBJS = libc/malloc.o libc/string.o libc/strdup.o \
+            libc/stdlib.o libc/ucmd_mem.o
 ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
@@ -534,8 +546,16 @@ UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
 # intermediates between the pattern rules).
 .PRECIOUS: $(addsuffix .elf,$(UCMDS))
 
-ucmd_%.o: ucmd_%.c ucmd_lib.h syscall.h
-	$(CC) $(CFLAGS) -o $@ $<
+# Ring-3 libc objects and archive.
+libc/%.o: libc/%.c $(LIBC_HEADERS) ucmd_lib.h syscall.h
+	$(CC) $(LIBC_CFLAGS) -o $@ $<
+
+libc.a: $(LIBC_OBJS)
+	rm -f $@
+	ar rcs $@ $^
+
+ucmd_%.o: ucmd_%.c ucmd_lib.h syscall.h $(LIBC_HEADERS)
+	$(CC) $(CFLAGS) -Ilibc/include -o $@ $<
 
 ucmd_%.elf: ucmd_%.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $<
@@ -617,11 +637,11 @@ $(IMGLIB_OBJS): %.o: %.c img.h img_internal.h inflate.h ucmd_lib.h syscall.h
 # The integer IDCT deliberately relies on 32-bit wrap-around.
 img_jpeg.o: CFLAGS += -fwrapv
 
-ucmd_view.o: ucmd_view.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h img_file.h
-	$(CC) $(CFLAGS) -o $@ $<
+ucmd_view.o: ucmd_view.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h img_file.h $(LIBC_HEADERS)
+	$(CC) $(CFLAGS) -Ilibc/include -o $@ $<
 
-ucmd_view.elf: ucmd_view.o $(IMGLIB_OBJS) inflate.o ngui.o font_8x16.o ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+ucmd_view.elf: ucmd_view.o $(IMGLIB_OBJS) inflate.o ngui.o font_8x16.o ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # TLS 1.3 client library (ring-3, linked into ucmd_curl; see tls.h).  The
@@ -633,8 +653,8 @@ TLSLIB_OBJS = tls_sha256.o tls_chacha20.o tls_x25519.o tls_rng.o tls.o
 uhttp.o: uhttp.c uhttp.h ucmd_lib.h tls.h
 	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
-ucmd_curl.elf: ucmd_curl.o uhttp.o $(TLSLIB_OBJS) ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
+ucmd_curl.elf: ucmd_curl.o uhttp.o $(TLSLIB_OBJS) ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # browser: the real app is a disk image (BROWSER) because it links ngui, the
@@ -645,10 +665,10 @@ ucmd_curl.elf: ucmd_curl.o uhttp.o $(TLSLIB_OBJS) ucmd.ld
 browser_html.o: browser_html.c browser_html.h
 	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -o $@ $<
 
-browser.o: browser.c ucmd_lib.h syscall.h wm_abi.h ngui.h browser_html.h uhttp.h img.h inflate.h
-	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -o $@ $<
+browser.o: browser.c ucmd_lib.h syscall.h wm_abi.h ngui.h browser_html.h uhttp.h img.h inflate.h $(LIBC_HEADERS)
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -Ilibc/include -o $@ $<
 
-browser.elf: browser.o browser_html.o uhttp.o ngui.o font_8x16.o $(IMGLIB_OBJS) inflate.o $(TLSLIB_OBJS) ucmd.ld
+browser.elf: browser.o browser_html.o uhttp.o ngui.o font_8x16.o $(IMGLIB_OBJS) inflate.o $(TLSLIB_OBJS) ucmd.ld libc.a
 	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
@@ -692,6 +712,26 @@ test-images-asan: $(IMGTEST_SRCS) $(IMGTEST_DEPS)
 	# -fwrapv: the integer IDCT deliberately relies on 32-bit wrap-around.
 	gcc -O1 -g -fwrapv -fsanitize=address,undefined -I. -o img_test_asan $(IMGTEST_SRCS)
 	./img_test_asan
+
+# Host test for the ring-3 allocator.  The malloc/free names are renamed so
+# the host libc (printf, rand, write) keeps working normally.
+HOST_MALLOC_DEFS = -Dmalloc=libc_malloc -Dfree=libc_free \
+                   -Dcalloc=libc_calloc -Drealloc=libc_realloc \
+                   -Dheap_reset=libc_heap_reset
+
+libc/malloc_host.o: libc/malloc.c $(LIBC_HEADERS)
+	gcc -O2 -Wall -Wextra -Ilibc/include -fno-builtin \
+	    $(HOST_MALLOC_DEFS) -c -o $@ $<
+
+libc/test_host_mem.o: libc/test_host_mem.c
+	gcc -O2 -Wall -Wextra -c -o $@ $<
+
+malloc_test: libc/test_malloc.c libc/malloc_host.o libc/test_host_mem.o
+	gcc -O2 -Wall -Wextra -o $@ libc/test_malloc.c \
+	    libc/malloc_host.o libc/test_host_mem.o
+
+test-libc: malloc_test
+	./malloc_test
 
 mkpack: mkpack.c
 	gcc -O2 -o $@ $<
@@ -979,4 +1019,4 @@ kernel-net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o disk.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img hello.elf cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o disk.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img hello.elf cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h libc.a libc/*.o malloc_test

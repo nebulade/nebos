@@ -43,7 +43,7 @@
 		</p>
 		<div class="meta">
 			<span class="pill accent">i586 · 32-bit</span>
-			<span class="pill">freestanding · no libc</span>
+			<span class="pill">freestanding kernel · ring-3 libc</span>
 			<span class="pill">BIOS + UEFI</span>
 			<span class="pill">serial + net hot reload</span>
 		</div>
@@ -154,7 +154,7 @@
 			keeping the kernel image small.
 		</p>
 		<ul>
-			<li><strong>Freestanding C.</strong> No libc, no <code>malloc</code>, no <code>printf</code>, no external runtime. Formatting and allocation are in-tree.</li>
+			<li><strong>Freestanding C.</strong> The kernel has no libc, <code>malloc</code> or <code>printf</code>; ring-3 commands can link the in-tree <code>libc.a</code> (<code>malloc</code>, strings, stdlib). Formatting and allocation are in-tree either way.</li>
 			<li><strong>i586 baseline.</strong> Builds use <code>-march=i586 -mno-sse -mno-sse2 -mno-mmx</code>; SSE2 drawing paths are probed at runtime.</li>
 			<li><strong>Identity-mapped paging.</strong> Physical and virtual addresses are equal. There is no per-process address space or isolation.</li>
 			<li><strong>128 MB physical ceiling.</strong> The frame bitmap covers 128 MB; anything above that is unmapped.</li>
@@ -192,7 +192,7 @@
 			</a>
 			<a class="card" href="memory.html">
 				<h3>Memory &amp; paging</h3>
-				<p>E820 map, 4 KB frame bitmap, kmalloc, process stacks, user arena and the hardcoded address ladder.</p>
+				<p>E820 map, 4 KB frame bitmap, kmalloc, process stacks, the ring-3 arena and libc malloc, and the hardcoded address ladder.</p>
 				<span class="card-tag">memory.html</span>
 			</a>
 			<a class="card" href="cpu.html">
@@ -222,8 +222,13 @@
 			</a>
 			<a class="card" href="userland.html">
 				<h3>Userland</h3>
-				<p>Ring-3 address space, ELF loading, syscall groups, PATH dispatch, the command pack and GUI apps.</p>
+				<p>Ring-3 address space, ELF loading, syscall groups, the optional libc and malloc, PATH dispatch, the command pack and GUI apps.</p>
 				<span class="card-tag">userland.html</span>
+			</a>
+			<a class="card" href="userland.html#libc">
+				<h3>Ring-3 libc</h3>
+				<p>Optional static <code>libc.a</code>: boundary-tag malloc/free/realloc, strings, stdlib and heap_reset over the 32 MB SYS_MEM arena.</p>
+				<span class="card-tag">userland.html#libc</span>
 			</a>
 			<a class="card" href="development.html">
 				<h3>Development</h3>
@@ -264,7 +269,7 @@
 					</tr>
 					<tr>
 						<td>Userland</td>
-						<td><span class="file">ucmd_*.c</span> <span class="file">ucmd_lib.h</span> <span class="file">ngui.c</span> <span class="file">browser.c</span> <span class="file">gallery.c</span></td>
+						<td><span class="file">ucmd_*.c</span> <span class="file">ucmd_lib.h</span> <span class="file">libc/</span> <span class="file">ngui.c</span> <span class="file">browser.c</span> <span class="file">gallery.c</span></td>
 					</tr>
 					<tr>
 						<td>Build &amp; pack</td>

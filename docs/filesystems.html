@@ -176,7 +176,7 @@
 		<h2>ramfs &amp; the command pack</h2>
 		<p>
 			The system root is a compressed command pack, not a disk image. Every
-			ring-3 command is a freestanding ELF linked at <code>0x40000000</code>,
+			ring-3 command is a static ELF linked at <code>0x40000000</code>,
 			packed as <code>bin/&lt;name&gt;</code>, gzipped and wrapped in a
 			one-sector <code>NBROOT1</code> header. At boot the path loads the
 			pack into RAM and <span class="file">ramfs.c</span> inflates it into a

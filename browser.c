@@ -2,10 +2,14 @@
  * shared uhttp client.
  *
  * No JavaScript and no forms; external CSS is loaded over uhttp, and images
- * are decoded with img.c and drawn inline.  Large buffers (page body and the
- * image decode arena) live in the per-process SYS_MEM_ALLOC heap; the DOM and
- * the image/CSS I/O scratch use fixed static arenas.
+ * are decoded with img.c and drawn inline.  Page-scoped buffers (page body,
+ * rules and image bitmaps) come from the ring-3 libc heap; each image gets an
+ * exact-size decode arena that is freed as soon as the scaled bitmap exists.
+ * The DOM and the image/CSS I/O scratch use fixed static arenas.
  */
+
+#include <stdlib.h>
+#include <ucmd_heap.h>
 
 #include "ucmd_lib.h"
 #include "ngui.h"
@@ -21,13 +25,11 @@
 #define BR_TOOLBAR_H    30
 #define BR_STATUS_H     18
 
-#define BR_HEAP_INIT    (6u * 1024u * 1024u)
-#define BR_HEAP_MAX     (32u * 1024u * 1024u)
 #define BR_PAGE_MAX     (2u * 1024u * 1024u)
 #define BR_IMG_FILE_MAX (512u * 1024u)
 #define BR_IMG_PIX_MAX  (8u * 1024u * 1024u)
 #define BR_MAX_IMAGES   16
-#define BR_IMG_ARENA    (24u * 1024u * 1024u)
+#define BR_IMG_ARENA_MAX (24u * 1024u * 1024u)
 #define BR_IMG_LAYOUT_W 1000
 #define BR_CSS_MAX      (832u * 1024u)
 #define BR_CSS_COMP_MAX (192u * 1024u)
@@ -91,24 +93,14 @@ static unsigned int post_status_ttl;
 static unsigned short img_top[BR_MAX_NODES];
 static unsigned short img_h[BR_MAX_NODES];
 
-static unsigned char *heap;
-static unsigned int heap_size = 0;
-static unsigned int heap_used = 0;
-
-/* One reusable I/O buffer and one shared decode arena: decoded pixels are
- * scaled down to a display bitmap, then the arena is reused for the next
- * image.  This keeps 4K screenshots inside the 32 MB heap.  The two halves
- * double as the gzip input scratch for page/CSS fetches, where the heap has
- * no room for another multi-megabyte body. */
+/* One reusable I/O buffer: the two halves double as the gzip input scratch
+ * for page/CSS fetches, where the heap has no room for another multi-megabyte
+ * body.  Decode arenas are allocated per image instead of living here. */
 static unsigned char *image_io_buf;
 #define image_file_buf (image_io_buf)
 #define image_comp_buf (image_io_buf + BR_IMG_FILE_MAX)
 #define BR_PAGE_COMP_MAX (2u * BR_IMG_FILE_MAX)
 static struct inflate image_inflate_ws;
-static unsigned char *image_arena;
-static unsigned int image_arena_size;
-
-static void *heap_alloc(unsigned int bytes, unsigned int align);
 
 #if BR_CSS_MAX + BR_CSS_COMP_MAX > 2u * BR_IMG_FILE_MAX
 #error "CSS scratch must fit in image_io_buf"
@@ -289,20 +281,11 @@ static char *trim(char *s)
 
 static int heap_start(void)
 {
-	heap = (unsigned char *)u_mem_alloc(BR_HEAP_INIT);
-	if (!heap) {
-		heap_size = heap_used = 0;
+	image_io_buf = (unsigned char *)malloc(2u * BR_IMG_FILE_MAX);
+	if (!image_io_buf)
 		return -1;
-	}
-	heap_size = BR_HEAP_INIT;
-	heap_used = 0;
-	image_io_buf = (unsigned char *)heap_alloc(2u * BR_IMG_FILE_MAX, 16);
-	if (!image_io_buf) {
-		heap_size = heap_used = 0;
-		return -1;
-	}
-	page_backbuf = (unsigned short *)heap_alloc(
-		(unsigned int)ui.w * (unsigned int)ui.h * 2u, 16);
+	page_backbuf = (unsigned short *)malloc(
+		(unsigned int)ui.w * (unsigned int)ui.h * 2u);
 	pagebuf_w = page_backbuf ? ui.w : 0;
 	pagebuf_h = page_backbuf ? ui.h : 0;
 	page_cache_valid = 0;
@@ -311,55 +294,19 @@ static int heap_start(void)
 
 static void heap_clear(void)
 {
-	u_mem_free();
-	heap = 0;
-	heap_size = heap_used = 0;
+	heap_reset();
 	image_io_buf = 0;
 	page_backbuf = 0;
 	pagebuf_w = pagebuf_h = 0;
 	page_cache_valid = 0;
-	image_arena = 0;
-	image_arena_size = 0;
-}
-
-static void *heap_alloc(unsigned int bytes, unsigned int align)
-{
-	unsigned int start, want;
-
-	if (!heap || bytes == 0)
-		return 0;
-	if (align < 1)
-		align = 1;
-	if (align & (align - 1))
-		return 0;
-	start = (heap_used + align - 1) & ~(align - 1);
-	if (start > BR_HEAP_MAX || bytes > BR_HEAP_MAX - start)
-		return 0;
-	if (start + bytes > heap_size) {
-		want = heap_size ? heap_size : BR_HEAP_INIT;
-		while (want < start + bytes) {
-			if (want > BR_HEAP_MAX / 2) {
-				want = BR_HEAP_MAX;
-				break;
-			}
-			want *= 2;
-		}
-		if (want < start + bytes || want > BR_HEAP_MAX)
-			return 0;
-		if (u_mem_grow(want) != 0)
-			return 0;
-		heap_size = want;
-	}
-	heap_used = start + bytes;
-	return heap + start;
 }
 
 static void browser_rules_alloc(void)
 {
 	struct br_rule *rules;
 
-	rules = (struct br_rule *)heap_alloc(
-		(unsigned int)(BR_MAX_RULES * sizeof(struct br_rule)), 16);
+	rules = (struct br_rule *)malloc(
+		(unsigned int)(BR_MAX_RULES * sizeof(struct br_rule)));
 	br_set_rule_store(&doc, rules, rules ? BR_MAX_RULES : 0);
 }
 
@@ -403,6 +350,7 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 	struct img_options opt;
 	struct img_mem mem;
 	struct img_image decoded;
+	unsigned char *arena;
 	unsigned int est, bytes, i;
 	unsigned short *px;
 	unsigned char *alpha = 0;
@@ -413,28 +361,25 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 		return -1;
 	}
 	est = img_estimate(&info);
-	if (est == 0xFFFFFFFFu || est > BR_IMG_ARENA) {
+	if (est == 0xFFFFFFFFu || est > BR_IMG_ARENA_MAX) {
 		s_copy(bi->err, "image too large", sizeof(bi->err));
 		return -1;
 	}
-	if (!image_arena) {
-		image_arena = (unsigned char *)heap_alloc(BR_IMG_ARENA, 16);
-		if (!image_arena) {
-			s_copy(bi->err, "out of memory", sizeof(bi->err));
-			return -1;
-		}
-		image_arena_size = BR_IMG_ARENA;
+	arena = (unsigned char *)malloc(est);
+	if (!arena) {
+		s_copy(bi->err, "out of memory", sizeof(bi->err));
+		return -1;
 	}
-	img_mem_init(&mem, image_arena, image_arena_size);
+	img_mem_init(&mem, arena, est);
 	opt.max_pixels = BR_IMG_PIX_MAX;
 	r = img_decode(data, len, &opt, &mem, &decoded);
 	if (r != 0) {
 		s_copy(bi->err, img_error_string(r), sizeof(bi->err));
-		return -1;
+		goto fail;
 	}
 	if (decoded.w == 0 || decoded.h == 0) {
 		s_copy(bi->err, "empty image", sizeof(bi->err));
-		return -1;
+		goto fail;
 	}
 	bi->native_w = (int)decoded.w;
 	bi->native_h = (int)decoded.h;
@@ -451,18 +396,18 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 	if (dw < 1)
 		dw = 1;
 	bytes = (unsigned int)dw * (unsigned int)dh * 2u;
-	px = (unsigned short *)heap_alloc(bytes, 16);
+	px = (unsigned short *)malloc(bytes);
 	if (!px) {
 		s_copy(bi->err, "out of memory", sizeof(bi->err));
-		return -1;
+		goto fail;
 	}
 	/* Keep the alpha plane for the scaled image so transparent logos and
 	 * icons composite over the page instead of the browser's dark theme
 	 * background.  Very large alpha images stay flattened to bound the
 	 * heap use. */
 	if (decoded.alpha && (unsigned int)dw * (unsigned int)dh <= (1u << 20)) {
-		alpha = (unsigned char *)heap_alloc((unsigned int)dw *
-						    (unsigned int)dh, 16);
+		alpha = (unsigned char *)malloc((unsigned int)dw *
+						(unsigned int)dh);
 		if (alpha) {
 			for (i = 0; i < (unsigned int)dw * (unsigned int)dh; i++)
 				alpha[i] = 255;
@@ -498,7 +443,12 @@ static int decode_image_data(const unsigned char *data, unsigned int len,
 	bi->img.alpha = alpha;
 	bi->img.flags = 0;
 	bi->state = 1;
+	free(arena);
 	return 0;
+
+fail:
+	free(arena);
+	return -1;
 }
 
 /* ---- URL / local path handling ---- */
@@ -1046,13 +996,14 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 		ctype[0] = '\0';
 
 	if (url[0] == '/') {
-		buf = (unsigned char *)heap_alloc(cap, 16);
+		buf = (unsigned char *)malloc(cap);
 		if (!buf) {
 			s_copy(err, "out of memory", errcap);
 			return -1;
 		}
 		rv = u_syscall3(SYS_READ_FILE, (int)url, (int)buf, (int)cap);
 		if (rv < 0) {
+			free(buf);
 			s_copy(err, "file not found", errcap);
 			return -1;
 		}
@@ -1068,19 +1019,24 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 		return 0;
 	}
 
-	buf = (unsigned char *)heap_alloc(cap, 16);
+	buf = (unsigned char *)malloc(cap);
 	if (!buf) {
 		s_copy(err, "out of memory", errcap);
 		return -1;
 	}
 	rv = fetch_remote(url, cap, buf, cap, image_io_buf, BR_PAGE_COMP_MAX,
 			  &fetch_meta, &tr, err, errcap);
-	if (rv == FETCH_ABORT)
+	if (rv == FETCH_ABORT) {
+		free(buf);
 		return FETCH_ABORT;
-	if (rv < 0)
+	}
+	if (rv < 0) {
+		free(buf);
 		return -1;
+	}
 	len = (unsigned int)rv;
 	if (len == 0) {
+		free(buf);
 		s_copy(err, "empty response", errcap);
 		return -1;
 	}
@@ -1095,9 +1051,8 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 	return 0;
 }
 
-/* Fetch an image into the fixed scratch buffers.  The page heap is already
- * carrying the 24 MB decode arena and every scaled bitmap, so images must not
- * allocate their file body from it as well. */
+/* Fetch an image into the fixed scratch buffers.  The scaled bitmaps live on
+ * the heap, so images must not allocate their file body from it as well. */
 static int fetch_image(const char *url, unsigned int cap,
 		       unsigned char **out, unsigned int *outlen,
 		       char *err, unsigned int errcap)
@@ -1140,7 +1095,7 @@ static int fetch_image(const char *url, unsigned int cap,
 
 /* Read one stylesheet into the shared static buffer.  CSS is parsed
  * immediately, so it does not need the page heap; this leaves the heap for
- * the 2 MB page body, the decode arena and the scaled image bitmaps. */
+ * the 2 MB page body, the rules and the scaled image bitmaps. */
 static int fetch_css(const char *url, unsigned char **out, unsigned int *outlen,
 		     char *err, unsigned int errcap)
 {

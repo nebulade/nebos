@@ -8,6 +8,8 @@
  * The TLS and HTTP code lives in uhttp.c (shared with the browser); this file
  * only keeps the CLI, the helper mode and the verbose output hooks. */
 
+#include <stdlib.h>
+
 #include "ucmd_lib.h"
 #include "uhttp.h"
 
@@ -209,7 +211,7 @@ static void fetch_once(void)
 	if (cap == 0 || cap > FETCH_MAX)
 		cap = FETCH_MAX;
 
-	buf = (unsigned char *)u_mem_alloc(FETCH_MAX);
+	buf = (unsigned char *)malloc(FETCH_MAX);
 	if (!buf) {
 		fetch_fail(0, -1, "", "", "");
 		u_exit(1);
@@ -223,7 +225,7 @@ static void fetch_once(void)
 			   (int)body_len);
 	write_meta(0, 0, &h, err, body_len, body_trunc);
 	uhttp_close(&h);
-	u_mem_free();
+	free(buf);
 	u_exit(err ? 1 : 0);
 }
 
@@ -238,7 +240,7 @@ static void fetch_serve(void)
 	unsigned char *buf;
 	unsigned int last_seq = 0, idle = 0;
 
-	buf = (unsigned char *)u_mem_alloc(FETCH_MAX);
+	buf = (unsigned char *)malloc(FETCH_MAX);
 	if (!buf)
 		u_exit(1);
 	uhttp_init(&h);
@@ -304,7 +306,7 @@ static void fetch_serve(void)
 	}
 	h.keepalive = 0;
 	uhttp_close(&h);
-	u_mem_free();
+	free(buf);
 	u_exit(0);
 }
 

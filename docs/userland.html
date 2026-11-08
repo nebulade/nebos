@@ -35,7 +35,7 @@
 		<p class="kicker">Userland</p>
 		<h1>Commands are ELFs. The shell is a dispatcher.</h1>
 		<p class="lede">
-			Ring-3 programs are freestanding ELFs linked at <code>0x40000000</code>.
+			Ring-3 programs are static ELFs linked at <code>0x40000000</code>.
 			The shell resolves a command name against builtins, the per-terminal
 			PATH and the kernel command registry, then spawns it with one
 			argument string. The command pack supplies 42 PATH commands by default.
@@ -52,6 +52,7 @@
 		<h2>On this page</h2>
 		<ul>
 			<li><a href="#model">Ring-3 model</a></li>
+			<li><a href="#libc">Ring-3 libc</a></li>
 			<li><a href="#spawn">Spawn path</a></li>
 			<li><a href="#syscalls">Syscall ABI</a></li>
 			<li><a href="#shell">Shell &amp; PATH</a></li>
@@ -74,7 +75,7 @@
 			separate address space.
 		</p>
 		<ul>
-			<li><strong>No libc.</strong> Commands include <span class="file">ucmd_lib.h</span> for syscall wrappers and string helpers.</li>
+			<li><strong>Optional libc.</strong> Commands include <span class="file">ucmd_lib.h</span> for syscall wrappers; commands that need allocation or standard string/stdlib functions link the in-tree <span class="file">libc.a</span>.</li>
 			<li><strong>One argument.</strong> The shell passes the raw remainder of the line as a C string at the top of the user stack; <code>_start(const char *arg)</code> needs no crt0.</li>
 			<li><strong>Inherited context.</strong> Each process inherits the spawning terminal's cwd and TTY id; the file syscalls resolve relative paths against the PCB cwd.</li>
 			<li><strong>Page-fault policy.</strong> A ring-3 fault kills the process and prints a short message; it does not halt the kernel.</li>
@@ -85,6 +86,44 @@
 			any mapped kernel page. The privilege boundary protects against
 			accidental corruption from ordinary code, not against malicious code.</p>
 		</div>
+	</section>
+
+	<section id="libc">
+		<h2>Ring-3 libc</h2>
+		<p>
+			<span class="file">libc.a</span> is optional: the Makefile links it
+			only into commands that reference it, and the archive plus
+			<code>--gc-sections</code> keeps unused members and functions out of
+			the legacy command pack. The headers live in
+			<span class="file">libc/include/</span> and cover
+			<code>stddef</code>, <code>stdint</code>, <code>stdarg</code>,
+			<code>stdlib</code>, <code>string</code>, <code>ctype</code>,
+			<code>assert</code> and the OS-specific <code>ucmd_heap.h</code>.
+		</p>
+		<ul>
+			<li><strong>malloc.</strong> Boundary-tag blocks, first-fit free
+			list, immediate coalescing, 16-byte alignment. The heap maps 64 KB
+			on first use and grows in page-rounded steps with 64 KB slack up to
+			the 32 MB <code>SYS_MEM_*</code> arena cap; <code>calloc</code>
+			zeroes and <code>realloc</code> grows in place when the next block
+			is free.</li>
+			<li><strong>heap_reset.</strong> Discards every allocation and
+			unmaps the whole arena. Page-scoped programs such as the browser
+			use it on navigation instead of tracking individual frees.</li>
+			<li><strong>Ownership.</strong> A command either uses libc
+			<code>malloc</code> or the raw
+			<code>SYS_MEM_ALLOC/GROW/FREE</code> arena, never both. The raw
+			calls remain for small commands that allocate one buffer and exit.</li>
+			<li><strong>Limits.</strong> No threads or locking, no
+			<code>free()</code>-to-page unmap, and requests near 32 MB fail
+			because headers are charged against the same arena. Console
+			<code>printf</code>/<code>FILE</code> I/O is not part of this layer;
+			file access still uses the whole-file syscalls.</li>
+			<li><strong>Test.</strong> <code>make test-libc</code> runs a host
+			stress test over a simulated 32 MB arena, checking alignment,
+			coalescing, <code>realloc</code>/<code>calloc</code>, growth and
+			<code>heap_reset</code>.</li>
+		</ul>
 	</section>
 
 	<section id="spawn">
@@ -278,8 +317,8 @@
 		</p>
 		<ul>
 			<li><strong>HTML/CSS subset.</strong> External and inline stylesheets, tag/class/id and descendant/child selectors, colours, backgrounds, font size, weights, margins, padding, borders, alignment, percentage widths, basic floats and <code>@media</code> blocks evaluated at a fixed 1000 px viewport.</li>
-			<li><strong>Not supported.</strong> JavaScript, forms, flex/grid, CSS variables, absolute/fixed positioning, standalone image documents, tables with column widths, video/audio.</li>
-			<li><strong>Caps.</strong> 2 MB page body, 832 KB CSS, 6144 DOM nodes, 2304 rules, 16 images; images are downscaled to at most 1000 px wide and decoded into a 24 MB shared arena.</li>
+			<li><strong>Not supported.</strong> JavaScript, forms, pseudo-classes, border-radius clipping of descendants, gradients/box-shadow/transitions and CSS <code>color-mix</code>. Flex rows, card grids, basic tables, inline SVG and CSS variables are supported.</li>
+			<li><strong>Caps.</strong> 2 MB page body, 832 KB CSS, 6144 DOM nodes, 4608 rules, 16 images. Each image gets an <code>img_estimate()</code>-sized decode arena that is freed after the scaled bitmap is made; navigation calls <code>heap_reset()</code> and unmaps the page heap.</li>
 			<li><strong>Fetching.</strong> Each network fetch starts a one-shot helper process and a fresh TCP/TLS connection; images load one per loop within the viewport plus 160 px.</li>
 			</ul>
 		<p>
@@ -301,6 +340,8 @@
 			<li><code>ucmd_term.c</code> — windowed shell, scrollback, PATH</li>
 			<li><code>terminal.c</code> — privileged kernel command registry</li>
 			<li><code>ucmd_lib.h</code> — user shim</li>
+			<li><code>libc/</code> — headers, malloc, string/stdlib support and the <code>SYS_MEM_*</code> backend</li>
+			<li><code>libc.a</code> — optional static ring-3 libc</li>
 			<li><code>ucmd.ld</code> — ring-3 link address</li>
 			<li><code>Makefile</code> — <code>UCMDS</code> and pack rules</li>
 			<li><code>ucmd_*.c</code> — commands</li>

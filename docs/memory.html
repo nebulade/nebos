@@ -214,9 +214,13 @@
 			<span class="file">sys_fs.c</span> file loads use it.
 		</p>
 		<p>
-			The kernel heap is not a general-purpose userspace allocator. Ring-3
-			processes get one anonymous arena through <code>SYS_MEM_ALLOC</code>,
-			<code>SYS_MEM_GROW</code> and <code>SYS_MEM_FREE</code>.
+			The kernel heap is separate from userspace. Ring-3 processes get one
+			anonymous arena through <code>SYS_MEM_ALLOC</code>,
+			<code>SYS_MEM_GROW</code> and <code>SYS_MEM_FREE</code>; commands
+			that link <span class="file">libc.a</span> manage it with
+			<code>malloc</code>/<code>free</code> from
+			<span class="file">libc/malloc.c</span>, while small commands may
+			still use the raw syscalls. A process must not mix the two.
 		</p>
 	</section>
 
@@ -268,6 +272,17 @@
 			</table>
 		</div>
 		<p>
+			Commands that link <span class="file">libc.a</span> treat that arena
+			as a real heap: <span class="file">libc/malloc.c</span> maps 64 KB on
+			first use, grows in page-rounded steps with 64 KB slack, and uses
+			boundary-tag blocks with a first-fit free list and immediate
+			coalescing. <code>heap_reset()</code> discards everything and unmaps
+			the arena; the browser calls it on navigation, so page-scoped
+			allocations (body, rules, image bitmaps and decode arenas) go back
+			to the frame allocator. A single allocation near 32 MB fails because
+			block headers count against the same cap.
+		</p>
+		<p>
 			Kernel stacks are 4 KB pages from the frame allocator, with an 8-stack
 			static fallback pool in BSS. The idle/bootstrap context uses the
 			in-image 8 KB <code>.stack</code> section. The user stack is separate:
@@ -305,6 +320,8 @@
 		<ul class="filelist">
 			<li><code>mm.c</code>, <code>mm.h</code> — E820 + bitmap allocator</li>
 			<li><code>kmalloc.c</code>, <code>kmalloc.h</code> — kernel heap</li>
+			<li><code>libc/malloc.c</code>, <code>libc/ucmd_mem.c</code> — ring-3 heap and <code>SYS_MEM_*</code> backend</li>
+			<li><code>libc/string.c</code>, <code>libc/stdlib.c</code> — ring-3 libc support</li>
 			<li><code>paging.c</code>, <code>paging.h</code> — identity map</li>
 			<li><code>mtrr.c</code> — write-combining MTRRs</li>
 			<li><code>process.c</code>, <code>process.h</code> — stacks and user layout</li>

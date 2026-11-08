@@ -395,7 +395,9 @@ static inline int u_power_info(struct sys_powerinfo *out, unsigned int flags)
 	return u_syscall2(SYS_POWER_INFO, (int)out, (int)flags);
 }
 
-/* Per-process anonymous heap: one growable arena, freed at exit. */
+/* Raw per-process anonymous heap.  Commands that link libc.a should use
+ * malloc/free instead; never mix these raw calls with the libc heap in one
+ * process, because both own the same SYS_MEM_* arena. */
 static inline void *u_mem_alloc(unsigned int bytes)
 {
 	int r = u_syscall1(SYS_MEM_ALLOC, (int)bytes);
