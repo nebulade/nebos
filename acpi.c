@@ -44,6 +44,10 @@ static unsigned int ncpu;
 static unsigned int bsp_apic;
 static unsigned int lapic_base;
 static int acpi_ok;
+/* FADT "century" register (offset 108), 0 when absent.  The RTC uses it to
+ * keep the two-digit CMOS year in the right century; rtc.c only writes it
+ * when the firmware points at a real CMOS register. */
+static unsigned int rtc_century_reg;
 
 static void *phys_ptr(unsigned int addr)
 {
@@ -149,6 +153,7 @@ static const struct acpi_sdt *find_madt(const struct acpi_rsdp *rsdp)
 {
 	unsigned int addr, len, i, step;
 	const struct acpi_sdt *sdt;
+	const struct acpi_sdt *madt = 0;
 
 	/* Prefer the 64-bit XSDT when it is reachable from the 32-bit
 	 * identity map; otherwise fall back to the ACPI 1.0 RSDT. */
@@ -193,12 +198,27 @@ static const struct acpi_sdt *find_madt(const struct acpi_rsdp *rsdp)
 		if (tlen < sizeof(struct acpi_sdt) || tlen > 0x100000u)
 			continue;
 		map_table(taddr, tlen);
+		if (!sum_ok((const unsigned char *)t, tlen))
+			continue;
+		if (t->signature[0] == 'F' && t->signature[1] == 'A' &&
+		    t->signature[2] == 'C' && t->signature[3] == 'P') {
+			/* FADT "century" is at offset 108 (ACPI 2.0+); 0 means
+			 * the firmware does not provide a century register. */
+			if (tlen >= 109) {
+				unsigned char c =
+					((const unsigned char *)t)[108];
+
+				if (c >= 0x0E && c <= 0x7F)
+					rtc_century_reg = c;
+			}
+			continue;
+		}
 		if (t->signature[0] == 'A' && t->signature[1] == 'P' &&
 		    t->signature[2] == 'I' && t->signature[3] == 'C' &&
-		    sum_ok((const unsigned char *)t, tlen))
-			return t;
+		    !madt)
+			madt = t;
 	}
-	return 0;
+	return madt;
 }
 
 static unsigned int cpuid_apic_id(void)
@@ -257,6 +277,7 @@ int acpi_init(void)
 
 	acpi_ok = 0;
 	ncpu = 0;
+	rtc_century_reg = 0;
 	bsp_apic = cpuid_apic_id();
 	if (bsp_apic == 0xFFFFFFFFu)
 		return 0;
@@ -310,6 +331,11 @@ unsigned int acpi_bsp_apic_id(void)
 unsigned int acpi_lapic_base(void)
 {
 	return lapic_base;
+}
+
+unsigned int acpi_rtc_century_reg(void)
+{
+	return rtc_century_reg;
 }
 
 void acpi_dump(void)

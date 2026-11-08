@@ -101,7 +101,7 @@ disk.o: disk.c disk.h io.h timer.h
 fat.o: fat.c fat.h blkdev.h io.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-rtc.o: rtc.c rtc.h
+rtc.o: rtc.c rtc.h acpi.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 serial.o: serial.c serial.h serial_ring_buf.h pci.h idle.h sched.h timer.h
@@ -552,7 +552,7 @@ UCMDS = ucmd_cpuinfo ucmd_ls ucmd_cat ucmd_save ucmd_rm ucmd_mkdir ucmd_rmdir \
         ucmd_netsend ucmd_netrecv ucmd_ping ucmd_pong ucmd_netlog \
         ucmd_netconsole ucmd_netregs ucmd_netloop ucmd_netreset ucmd_net100 ucmd_netmac ucmd_curl \
         ucmd_files ucmd_view ucmd_sensors ucmd_powerinfo ucmd_mines ucmd_solitaire \
-        ucmd_gallery ucmd_websrv ucmd_browser
+        ucmd_settime ucmd_date ucmd_gallery ucmd_websrv ucmd_browser
 
 # Keep the linked ELFs around (make would treat them as disposable
 # intermediates between the pattern rules).
@@ -648,6 +648,14 @@ ucmd_mines.o: ucmd_mines.c ucmd_lib.h syscall.h wm_abi.h ngui.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 ucmd_mines.elf: ucmd_mines.o ngui.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
+	$(OBJCOPY) --strip-all $@ $@
+
+# settime: Date & Time editor (RTC read/write) on the same canvas toolkit.
+ucmd_settime.o: ucmd_settime.c ucmd_lib.h syscall.h wm_abi.h ngui.h
+	$(CC) $(CFLAGS) -Os -o $@ $<
+
+ucmd_settime.elf: ucmd_settime.o ngui.o font_8x16.o $(UFONT_OBJS) ucmd.ld libc.a
 	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 

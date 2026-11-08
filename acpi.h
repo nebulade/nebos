@@ -17,6 +17,10 @@ unsigned int acpi_cpu_apic_id(unsigned int index);
 unsigned int acpi_bsp_apic_id(void);
 unsigned int acpi_lapic_base(void);
 
+/* CMOS register holding the RTC century byte from the FADT, or 0 when the
+ * firmware does not provide one (old non-ACPI hardware). */
+unsigned int acpi_rtc_century_reg(void);
+
 void acpi_dump(void);
 
 #endif

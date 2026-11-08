@@ -40,6 +40,11 @@ static int bar_batt_ac;
 static char bar_msg[24];
 static unsigned int bar_msg_until;
 static int bar_msg_dirty;
+/* Rectangle of the right-aligned date/time text, so a click there can open
+ * the Date & Time app.  w == 0 means "not drawn" (e.g. kexec banner). */
+static int bar_clock_x = -1;
+static unsigned int bar_clock_w;
+static int bar_clock_hot;
 static unsigned int stat_frames, stat_ms, stat_px, stat_max, stat_last;
 
 static void bar_notice(const char *msg)
@@ -212,6 +217,9 @@ static void draw_bar(void)
 		unsigned int dots = bar_kexec_total ?
 			(bar_kexec_progress * 12 / bar_kexec_total) : 0;
 
+		bar_clock_x = -1;
+		bar_clock_w = 0;
+		bar_clock_hot = 0;
 		n = 0;
 		while (msg[n])
 			dt[n] = msg[n], n++;
@@ -227,14 +235,24 @@ static void draw_bar(void)
 		int right = (int)fbw - 4;
 		int min_x = WM_BTN_GALLERY_X + (int)WM_BTN_GALLERY_W + 4;
 
+		bar_clock_x = -1;
+		bar_clock_w = 0;
 		if (u_rtc_datetime(dt, sizeof(dt)) == 0) {
+			int tw = (int)usurf_text_width(&screen, dt);
+			int tx = right - tw;
+
 			n = 0;
 			while (dt[n] && n < sizeof(dt) - 1)
 				n++;
-			usurf_text(&screen,
-				   right - (int)usurf_text_width(&screen, dt),
-				   5, dt, COL_BANNER, 0, 0, fbw, WM_BAR_H);
-			clock_chars = (unsigned int)usurf_text_width(&screen, dt);
+			bar_clock_x = tx;
+			bar_clock_w = (unsigned int)tw;
+			if (bar_clock_hot)
+				usurf_fill(&screen, tx - 5, 2,
+					   (unsigned int)tw + 10,
+					   WM_BAR_H - 4, 0x3A3A55u);
+			usurf_text(&screen, tx, 5, dt, COL_BANNER, 0, 0,
+				   fbw, WM_BAR_H);
+			clock_chars = (unsigned int)tw;
 		}
 		if (clock_chars)
 			right -= (int)clock_chars + 8;
@@ -584,6 +602,15 @@ static void move_window_pixels(struct uwin *u, int ox, int oy, int nx, int ny)
 	u_wm_present(&present);
 }
 
+/* The top-bar date/time text is also a button: it opens the Date & Time
+ * editor.  The rectangle is recorded by draw_bar(). */
+static int bar_clock_hit(unsigned int mx, unsigned int my)
+{
+	return bar_clock_w && bar_clock_x >= 0 && my < WM_BAR_H &&
+	       (int)mx >= bar_clock_x - 5 &&
+	       (int)mx < bar_clock_x + (int)bar_clock_w + 5;
+}
+
 static void do_update(struct wm_status *st)
 {
 	struct wm_present_info present;
@@ -624,6 +651,15 @@ static void do_update(struct wm_status *st)
 	bar_kexec_total = st->kexec_total;
 	if (kexec_changed)
 		bar_dirty = 1;
+
+	{
+		int hot = bar_clock_hit(st->mouse.x, st->mouse.y);
+
+		if (hot != bar_clock_hot) {
+			bar_clock_hot = hot;
+			bar_dirty = 1;
+		}
+	}
 
 	/* Refresh cached window state and mappings before opening a frame:
 	 * MAP may unmap/remap content. */
@@ -822,7 +858,9 @@ static void handle_mouse(struct wm_status *st)
 	int was = (prev_buttons & 1) != 0;
 
 	if (down && !was) {
-		if (mx >= WM_BTN_X && my >= WM_BTN_Y &&
+		if (bar_clock_hit(mx, my)) {
+			spawn_app_checked("/ramfs/bin/settime");
+		} else if (mx >= WM_BTN_X && my >= WM_BTN_Y &&
 		    mx < WM_BTN_X + WM_BTN_W && my < WM_BTN_Y + WM_BTN_H) {
 			if (!free_window_slot()) {
 				bar_notice("window limit");

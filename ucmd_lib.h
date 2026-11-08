@@ -182,6 +182,18 @@ static inline int u_rtc_datetime(char *buf, unsigned int max)
 	return u_syscall2(SYS_RTC_DATETIME, (int)buf, (int)max);
 }
 
+/* Full RTC date/time (year 1970-2069) and its setter.  The setter validates
+ * the fields and returns 0 on success. */
+static inline int u_rtc_get(struct sys_datetime *t)
+{
+	return u_syscall1(SYS_RTC_GET, (int)t);
+}
+
+static inline int u_rtc_set(const struct sys_datetime *t)
+{
+	return u_syscall1(SYS_RTC_SET, (int)t);
+}
+
 /* Window-manager service (only the kernel-spawned /ramfs/bin/wm may use it). */
 static inline int u_wm_attach(struct wm_screen_info *out)
 {

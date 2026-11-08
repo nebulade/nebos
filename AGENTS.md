@@ -289,6 +289,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   repainted and the stack is not drawn back-to-front.  A focused-window drag
   copies its shadow block (`usurf_copy`) and repaints only the old strips the
   new rectangle does not cover.  The kernel hit-test uses the same order.
+  The right-aligned date/time text is itself a click target: `draw_bar()`
+  records its rectangle, the pointer highlights it, and a click spawns
+  `/ramfs/bin/settime` (the `Clock` launcher still opens the analog clock).
   `terminal.c` keeps the privileged kernel command
   registry for the ring-3 terminal (`SYS_SPAWN_KCMD` / `term_kcmd_spawn`),
   but the kernel terminal entry/shell and the cell-window ABI are gone.
@@ -308,7 +311,7 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `SYS_WIN_KEY_WAIT` and the generic `SYS_KEY_POLL` handle input.  The WM
   composites the front canvas; presented frames carry monotonic seq
   counters, so the WM can never lose one.  Closing a window kills its owner;
-  the reaper frees the canvas.  `clock`, `colors`,
+  the reaper frees the canvas.  `clock`, `colors`, `settime`,
   `term`, `files` and the other apps are canvas clients.  The old
   `SYS_GFX_BEGIN/PRESENT/END` terminal-takeover service and the kernel
   text-canvas renderer are removed.  Pointer input: `SYS_WIN_POINTER` reports
@@ -379,6 +382,18 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   manager has no text-cell content path.  `screen_damage_*` remains for the
   boot console's own bookkeeping.  The kernel console stays 8×8; userland
   proportional text uses `ufont` (below).
+- **Wall clock**: `rtc.c/h` reads and writes the CMOS RTC.  Reads honour the
+  register-B BCD/binary and 12/24-hour modes, retry around the update cycle,
+  and expand the two-digit year with a 1970-2069 window (70-99 -> 1900s,
+  00-69 -> 2000s), so a dead-battery default such as 1980 or 1990 reads
+  correctly.  Writes use the RTC's SET bit, preserve its mode bits and
+  validate leap years and 1970-2069; on ACPI machines the FADT century byte
+  (exposed by `acpi_rtc_century_reg()`) is written too, so other software
+  sees the right century.  `SYS_RTC_GET`/`SYS_RTC_SET` (104/105)
+  expose the full `struct sys_datetime`; `SYS_RTC_HMS`/`SYS_RTC_DATETIME`
+  (56/69) stay the small read-only views.  The WM top-bar date/time is a
+  click target that spawns `/ramfs/bin/settime`; the `date` command prints
+  the classic `date` line and a small `+FORMAT` subset.
 - **Fonts**: `ufont.c/h`, `ufont_ttf.c`, `ufont_draw.c`, `ufont_file.c` — a
   fixed-point (26.6, no FPU) TrueType parser and antialiased rasterizer for
   ring-3 text.  Latin-1 only for now; the faces are the Arimo regular/bold/
@@ -798,7 +813,7 @@ nested). `/` is the read-only VFS root listing the mounted filesystems (the
 filesystem commands operate inside a mount, e.g. `cat /floppy1/HELLO.TXT`).
 
 `cpuinfo`, `ls`, `cat`, `save`, `rm`, `mkdir`, `rmdir`, `meminfo`, `top`, `spin`,
-`clock`, `colors`, `files`, `gallery`, `view`, `sensors`, `powerinfo`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
+`clock`, `colors`, `settime`, `date`, `files`, `gallery`, `view`, `sensors`, `powerinfo`, `mouseinfo`, `storage`, `netinfo`, `netip`, `netdns`, `host`, `dhcp`, `ping`,
 `pong`, `netsend`, `netrecv`, `netlog`, `netconsole`, `netregs`, `netloop`,
 `netreset`, `websrv`, `curl`, `solitaire` and `hello` are files in `/ramfs/bin`
 (packed by the Makefile), found through the shell's PATH; the rest are kernel

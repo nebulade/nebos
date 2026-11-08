@@ -74,6 +74,8 @@
 				-> 1 when found, 0 at the end of the table */
 #define SYS_KEY_POLL     55  /* () -> 0 none, ASCII, or IO_KEY_* for the caller's window */
 #define SYS_RTC_HMS      56  /* (struct sys_time *out) -> 0/-1 */
+#define SYS_RTC_GET     104  /* (struct sys_datetime *out) -> 0/-1 */
+#define SYS_RTC_SET     105  /* (const struct sys_datetime *in) -> 0/-1 */
 
 /* Window-manager service (see wm_abi.h).  Only the kernel-spawned WM process
  * may call the WM_* entries; ordinary commands get -1. */
@@ -317,6 +319,20 @@ struct sys_time {
 	unsigned int hour;     /* 0-23 */
 	unsigned int minute;   /* 0-59 */
 	unsigned int second;   /* 0-59 */
+};
+
+/* Full RTC wall clock for `date` and the Date & Time app.  The CMOS RTC
+ * stores a two-digit year; the kernel expands it with a 1970-2069 window
+ * (70-99 -> 1900s, 00-69 -> 2000s), so a dead-battery default such as 1980
+ * or 1990 reads correctly.  SYS_RTC_SET accepts the same range. */
+struct sys_datetime {
+	unsigned int year;     /* 1970-2069 */
+	unsigned int month;    /* 1-12 */
+	unsigned int day;      /* 1-31 */
+	unsigned int hour;     /* 0-23 */
+	unsigned int minute;   /* 0-59 */
+	unsigned int second;   /* 0-59 */
+	unsigned int wday;     /* 0 = Sunday */
 };
 
 struct sys_e820 {

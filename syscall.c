@@ -207,6 +207,30 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 			out[i] = buf[i];
 		return 0;
 	}
+	case SYS_RTC_GET: {
+		struct sys_datetime dt;
+		struct sys_datetime *out = (struct sys_datetime *)a1;
+
+		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)out,
+					  sizeof(dt), 1))
+			return -1;
+		rtc_read_datetime_full(&dt);
+		*out = dt;
+		return 0;
+	}
+	case SYS_RTC_SET: {
+		struct sys_datetime dt;
+		const unsigned char *in = (const unsigned char *)a1;
+		unsigned char *d = (unsigned char *)&dt;
+		unsigned int i;
+
+		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)in,
+					  sizeof(dt), 0))
+			return -1;
+		for (i = 0; i < sizeof(dt); i++)
+			d[i] = in[i];
+		return rtc_set_datetime(&dt);
+	}
 	case SYS_WM_ATTACH:
 		return sys_wm_attach((struct wm_screen_info *)a1);
 	case SYS_WM_INFO:

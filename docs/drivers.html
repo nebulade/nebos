@@ -58,6 +58,7 @@
 			<li><a href="#hid">Input</a></li>
 			<li><a href="#serial">Serial</a></li>
 			<li><a href="#sensors">Sensors &amp; power</a></li>
+			<li><a href="#rtc">Wall clock (RTC)</a></li>
 			<li><a href="#panic">Panic screen</a></li>
 			<li><a href="#limits">Limits</a></li>
 			<li><a href="#sources">Source map</a></li>
@@ -86,6 +87,7 @@
 					<tr><td>Serial</td><td><span class="file">serial.c</span></td><td>16550 UART, COM1</td><td>IRQ 4 ring buffer + polled transmitter</td></tr>
 					<tr><td>Thermal</td><td><span class="file">thermal.c</span></td><td>Intel DTS MSR</td><td>Sampled once a second from the scheduler tick</td></tr>
 					<tr><td>Board sensors</td><td><span class="file">it87.c</span>, <span class="file">tpec.c</span></td><td>Super I/O, ThinkPad EC (temps, fan, battery, AC)</td><td>Polled; only the EC page selector is written, then restored</td></tr>
+					<tr><td>Wall clock</td><td><span class="file">rtc.c</span></td><td>CMOS RTC ports <code>0x70/0x71</code></td><td>Read/write under the BKL; update-cycle retries and a 1970–2069 two-digit year window</td></tr>
 				</tbody>
 			</table>
 		</div>
@@ -329,6 +331,34 @@
 		</p>
 	</section>
 
+	<section id="rtc">
+		<h2>Wall clock (RTC)</h2>
+		<p>
+			<span class="file">rtc.c</span> talks to the MC146818-compatible
+			CMOS clock through ports <code>0x70/0x71</code>. Reads honour the
+			register-B BCD/binary and 12/24-hour modes, retry when the
+			update-in-progress bit is set, and decode the hour's PM flag. The
+			RTC only stores a two-digit year, so the kernel expands it over a
+			1970–2069 window (70–99 → 1900s, 00–69 → 2000s); a board whose
+			dead battery left 1980 or 1990 therefore reads correctly instead of
+			being pushed a century forward. Writes validate the calendar (leap
+			years included), raise the register-B SET bit, preserve the mode
+			bits and write the computed weekday. On ACPI machines the FADT
+			century register (offset 108, normally CMOS <code>0x32</code>) is
+			written as well, so the firmware and other operating systems see
+			the intended century; boards without ACPI get no arbitrary NVRAM
+			write.
+		</p>
+		<p>
+			<code>SYS_RTC_GET</code>/<code>SYS_RTC_SET</code> (104/105) expose
+			the full <code>struct sys_datetime</code>; the older
+			<code>SYS_RTC_HMS</code>/<code>SYS_RTC_DATETIME</code> calls remain
+			the small read-only views. The WM’s top-bar date/time is a click
+			target that opens <code>bin/settime</code>, and the <code>date</code>
+			command prints the same clock in the classic Linux format.
+		</p>
+	</section>
+
 	<section id="panic">
 		<h2>Panic screen</h2>
 		<p>
@@ -371,6 +401,7 @@
 			<li><code>usbhid.c</code>, <code>mouse.c</code>, <code>io.c</code> — input</li>
 			<li><code>serial.c</code>, <code>serial_ring_buf.c</code></li>
 			<li><code>thermal.c</code>, <code>it87.c</code>, <code>tpec.c</code>, <code>mtrr.c</code></li>
+			<li><code>rtc.c</code> — CMOS wall clock read/write</li>
 			<li><code>panic.c</code>, <code>timer.S</code> — fatal exceptions</li>
 		</ul>
 	</section>

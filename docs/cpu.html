@@ -147,6 +147,13 @@
 			usable MADT, the CPUID APIC bit or a LAPIC stays uniprocessor and
 			follows exactly the old 8259/PIT path.
 		</p>
+		<p>
+			The same table walk reads the FADT's <code>century</code> byte (offset
+			108) and exposes the CMOS register to <span class="file">rtc.c</span>,
+			which writes it when setting the clock so the two-digit year stays in
+			the intended century. Boards without ACPI get no century write and
+			keep the 1970–2069 read window.
+		</p>
 		<ol>
 			<li>Copy the AP trampoline to <code>0x6000</code> (SIPI vector <code>0x06</code>).</li>
 			<li>Allocate an AP idle PCB and kernel stack via <code>process_init_ap()</code>.</li>
