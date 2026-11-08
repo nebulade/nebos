@@ -761,6 +761,9 @@ static void doc_reset(struct br_doc *d)
 	d->nvars = 0;
 	d->truncated = 0;
 	d->plain = 0;
+	d->script_src = 0;
+	d->nscripts = 0;
+	d->scripts_truncated = 0;
 	for (i = 0; i < BR_MAX_NODES; i++) {
 		d->nodes[i].type = BR_NODE_ELEM;
 		d->nodes[i].tag = BR_TAG_UNKNOWN;
@@ -834,6 +837,102 @@ static unsigned int append_text(struct br_doc *d, unsigned int parent,
 	d->nodes[idx].flags = pre ? BR_NODE_PREFORMAT : 0;
 	d->text_used += n + 1;
 	return idx;
+}
+
+/* ---- runtime DOM helpers (JavaScript bindings) ---- */
+
+static int same_string(const char *a, const char *b)
+{
+	while (*a && *a == *b) {
+		a++;
+		b++;
+	}
+	return *a == *b;
+}
+
+unsigned int br_find_id(struct br_doc *d, const char *id)
+{
+	unsigned int i;
+
+	if (!d || !id)
+		return 0;
+	for (i = 0; i < d->nnode; i++) {
+		struct br_node *n = &d->nodes[i];
+
+		if (n->type == BR_NODE_ELEM && n->id_off &&
+		    same_string(d->attrs + n->id_off, id))
+			return i + 1;
+	}
+	return 0;
+}
+
+static void text_walk(struct br_doc *d, unsigned int node, char *out,
+		      unsigned int cap, unsigned int *used)
+{
+	unsigned int c;
+
+	if (node >= d->nnode)
+		return;
+	if (d->nodes[node].type == BR_NODE_TEXT) {
+		unsigned int len = d->nodes[node].text_len;
+		unsigned int off = d->nodes[node].text_off;
+
+		if (*used + len >= cap)
+			len = *used + 1 < cap ? cap - *used - 1 : 0;
+		for (c = 0; c < len; c++)
+			out[*used + c] = d->text[off + c];
+		*used += len;
+		return;
+	}
+	for (c = d->nodes[node].first; c; c = d->nodes[c].next)
+		text_walk(d, c, out, cap, used);
+}
+
+unsigned int br_text_content(struct br_doc *d, unsigned int node,
+			     char *out, unsigned int cap)
+{
+	unsigned int used = 0;
+
+	if (!d || !out || cap == 0 || node >= d->nnode)
+		return 0;
+	text_walk(d, node, out, cap, &used);
+	out[used] = '\0';
+	return used;
+}
+
+int br_set_text_content(struct br_doc *d, unsigned int node,
+			const char *text, unsigned int len)
+{
+	struct br_node *n;
+	unsigned int idx;
+	unsigned int i;
+
+	if (!d || node >= d->nnode)
+		return -1;
+
+	/* Detach the old subtree; its arena storage is reclaimed on the next
+	 * navigation. */
+	d->nodes[node].first = d->nodes[node].last = 0;
+	d->nodes[node].style_valid = 0;
+	if (len == 0)
+		return 0;
+	if (d->text_used + len + 1 > BR_TEXT_SIZE) {
+		d->truncated = 1;
+		return -1;
+	}
+
+	idx = node_append(d, node, BR_NODE_TEXT, 0);
+	if (!idx)
+		return -1;
+	for (i = 0; i < len; i++)
+		d->text[d->text_used + i] = text[i];
+	d->text[d->text_used + len] = '\0';
+	n = &d->nodes[idx];
+	n->text_off = (unsigned short)d->text_used;
+	n->text_len = (unsigned short)len;
+	n->flags = 0;
+	d->text_used += len + 1;
+	return 0;
 }
 
 /* ---- attribute parsing ---- */
@@ -3930,6 +4029,70 @@ static unsigned int skip_element(const char *html, unsigned int len,
 	return p;
 }
 
+/* Inline JavaScript only: skip structured-data/template script blocks
+ * (JSON-LD, application/json, text/template, ...) and external sources,
+ * which this browser does not fetch yet. */
+static int script_is_javascript(const char *s, unsigned int len)
+{
+	unsigned int i = 0;
+
+	while (i < len) {
+		unsigned int ns, ne, vs = 0, ve = 0;
+		char quote = 0;
+		int has_val = 0;
+
+		while (i < len && is_space(s[i]))
+			i++;
+		if (i >= len)
+			break;
+		ns = i;
+		while (i < len && !is_space(s[i]) && s[i] != '=' && s[i] != '/')
+			i++;
+		ne = i;
+		while (i < len && is_space(s[i]))
+			i++;
+		if (i < len && s[i] == '=') {
+			i++;
+			while (i < len && is_space(s[i]))
+				i++;
+			if (i < len && (s[i] == '"' || s[i] == '\'')) {
+				quote = s[i++];
+				vs = i;
+				while (i < len && s[i] != quote)
+					i++;
+				ve = i;
+				if (i < len)
+					i++;
+			} else {
+				vs = i;
+				while (i < len && !is_space(s[i]) && s[i] != '/')
+					i++;
+				ve = i;
+			}
+			has_val = 1;
+		} else if (i == ne) {
+			i++;
+		}
+		if (ne > ns && ci_eq_n(s + ns, "src", ne - ns))
+			return 0;
+		if (ne > ns && ci_eq_n(s + ns, "type", ne - ns)) {
+			unsigned int vn = has_val ? ve - vs : 0;
+
+			if (vn == 0)
+				return 1;
+			if ((vn == 15 && ci_eq_n(s + vs, "text/javascript", 15)) ||
+			    (vn == 22 &&
+			     ci_eq_n(s + vs, "application/javascript", 22)) ||
+			    (vn == 15 && ci_eq_n(s + vs, "text/ecmascript", 15)) ||
+			    (vn == 22 &&
+			     ci_eq_n(s + vs, "application/ecmascript", 22)))
+				return 1;
+			return 0;
+		}
+	}
+	return 1;
+}
+
 int br_parse(struct br_doc *d, const char *html, unsigned int len)
 {
 	unsigned short stack[64];
@@ -3943,6 +4106,7 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 	if (!d->nodes)
 		br_doc_init(d);
 	doc_reset(d);
+	d->script_src = html;
 	stack[0] = 0;
 	d->nodes[0].type = BR_NODE_ELEM;
 	d->nodes[0].tag = BR_TAG_UNKNOWN;
@@ -4066,6 +4230,20 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 			}
 			if (tag == BR_TAG_SCRIPT) {
 				int p = find_ci(html, len, "</script", 8, i);
+				unsigned int end = p >= 0 ? (unsigned int)p : len;
+
+				if (script_is_javascript(html + attr_start,
+							 attr_end - attr_start)) {
+					if (d->nscripts < BR_MAX_SCRIPTS) {
+						struct br_script *script =
+							&d->scripts[d->nscripts++];
+
+						script->off = i;
+						script->len = end > i ? end - i : 0;
+					} else {
+						d->scripts_truncated = 1;
+					}
+				}
 				i = p >= 0 ? (unsigned int)p + 8 : len;
 				while (i < len && html[i] != '>')
 					i++;

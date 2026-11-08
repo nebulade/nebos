@@ -21,4 +21,6 @@ format_test
 math_test
 div64_test
 setjmp_test
+mujs_test
+third_party/mujs/*.o
 mkrootfs

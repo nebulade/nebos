@@ -1,19 +1,23 @@
 /* browser: a small HTML/CSS browser built on ngui, the image library and the
  * shared uhttp client.
  *
- * No JavaScript and no forms; external CSS is loaded over uhttp, and images
- * are decoded with img.c and drawn inline.  Page-scoped buffers (page body,
+ * Inline JavaScript runs through the vendored MuJS engine (console.log,
+ * alert, document.getElementById(...).textContent and location.href); forms
+ * are not supported.  External CSS is loaded over uhttp, and images are
+ * decoded with img.c and drawn inline.  Page-scoped buffers (page body,
  * rules and image bitmaps) come from the ring-3 libc heap; each image gets an
  * exact-size decode arena that is freed as soon as the scaled bitmap exists.
  * The DOM and the image/CSS I/O scratch use fixed static arenas.
  */
 
 #include <stdlib.h>
+#include <string.h>
 #include <ucmd_heap.h>
 
 #include "ucmd_lib.h"
 #include "ngui.h"
 #include "browser_html.h"
+#include "js_browser.h"
 #include "uhttp.h"
 #include "img.h"
 #include "inflate.h"
@@ -325,6 +329,95 @@ static void set_status(const char *s, int err, unsigned int ttl_ms)
 	status_error = err;
 	status_until = ttl_ms ? u_ticks_ms() + ttl_ms : 0;
 	ngui_invalidate(&ui);
+}
+
+/* ---- JavaScript ---- */
+
+static int resolve_link(const char *base, const char *href, char *out,
+			unsigned int cap);
+
+static char js_last_status[BR_STATUS_MAX];
+static int js_last_error;
+
+static void js_host_status(const char *msg, int error)
+{
+	s_copy(js_last_status, msg, sizeof(js_last_status));
+	js_last_error = error;
+	set_status(msg, error, 6000);
+}
+
+static void js_host_report(const char *msg)
+{
+	u_puts("[js] ");
+	u_puts(msg);
+	u_putc('\n');
+	s_copy(js_last_status, msg, sizeof(js_last_status));
+	js_last_error = 1;
+	set_status(msg, 1, 8000);
+}
+
+static void js_host_navigate(const char *url)
+{
+	char resolved[BR_URL_MAX];
+
+	if (!url || !url[0])
+		return;
+	if (resolve_link(page_url, url, resolved, sizeof(resolved)) != 0)
+		return;
+	s_copy(pending_url, resolved, sizeof(pending_url));
+	pending_action |= ACT_NAV;
+	cancel_fetch = 1;
+}
+
+static void js_host_changed(void)
+{
+	/* textContent only replaces text nodes; computed styles are unchanged.
+	 * A future class/style binding must call br_reset_styles() itself. */
+	layout_valid = 0;
+	ngui_invalidate(&ui);
+}
+
+/* Run the page's inline <script> blocks in document order.  The state is
+ * page-scoped: scripts share globals, then it is freed.  The source is
+ * copied because MuJS needs NUL-terminated text and the parser's offsets
+ * point into the page body. */
+static void run_page_scripts(void)
+{
+	struct js_browser_host host;
+	unsigned int i;
+
+	if (!doc.nscripts)
+		return;
+	host.status = js_host_status;
+	host.report = js_host_report;
+	host.navigate = js_host_navigate;
+	host.changed = js_host_changed;
+	if (js_browser_start(&doc, &host) != 0) {
+		js_host_status("JavaScript: out of memory", 1);
+		return;
+	}
+	for (i = 0; i < doc.nscripts; i++) {
+		unsigned int off = doc.scripts[i].off;
+		unsigned int len = doc.scripts[i].len;
+		unsigned int k;
+		char *src = (char *)malloc(len + 1);
+
+		if (!src) {
+			js_host_status("JavaScript: out of memory", 1);
+			break;
+		}
+		for (k = 0; k < len; k++)
+			src[k] = doc.script_src[off + k];
+		src[len] = '\0';
+		js_browser_run(src, page_url);
+		free(src);
+		if (pending_action)
+			break;
+	}
+	js_browser_stop();
+	if (doc.scripts_truncated && !js_last_error)
+		js_host_status("Page has more than 32 scripts; extra scripts skipped",
+			       1);
 }
 
 /* ---- images ---- */
@@ -1696,6 +1789,9 @@ static void load_page(const char *url, int local, int push)
 	preload_active = 0;
 	preload_pending = 0;
 
+	js_browser_stop();
+	js_last_status[0] = '\0';
+	js_last_error = 0;
 	heap_clear();
 	image_reset();
 	layout_valid = 0;
@@ -1770,11 +1866,19 @@ static void load_page(const char *url, int local, int push)
 			return;
 		if (pending_action)
 			return;
+		run_page_scripts();
+		if (pending_action)
+			return;
 	}
 	post_status_text[0] = '\0';
 	post_status_error = 0;
 	post_status_ttl = 0;
-	if (truncated) {
+	if (js_last_status[0]) {
+		s_copy(post_status_text, js_last_status,
+		       sizeof(post_status_text));
+		post_status_error = js_last_error;
+		post_status_ttl = 8000;
+	} else if (truncated) {
 		s_copy(post_status_text, "Page truncated at the buffer limit",
 		       sizeof(post_status_text));
 		post_status_ttl = 6000;
@@ -1802,6 +1906,9 @@ static void load_home(int push)
 	cancel_fetch = 0;
 	preload_active = 0;
 	preload_pending = 0;
+	js_browser_stop();
+	js_last_status[0] = '\0';
+	js_last_error = 0;
 	heap_clear();
 	image_reset();
 	layout_valid = 0;
@@ -1843,6 +1950,8 @@ static void load_home(int push)
 			"<div class=\"box\"><b>Try:</b>"
 			"<ul><li><a href=\"/floppy1/DEMO.HTM\">/"
 			"floppy1/DEMO.HTM</a> on the root floppy</li>"
+			"<li><a href=\"/floppy1/JS.HTM\">/"
+			"floppy1/JS.HTM</a> inline JavaScript demo</li>"
 			"<li><a href=\"http://10.0.2.2:8000/\">"
 			"http://10.0.2.2:8000/</a> on the QEMU host</li>"
 			"<li><a href=\"https://example.com/\">"
@@ -1850,7 +1959,7 @@ static void load_home(int push)
 			"</ul></div>"
 			"<p>Type a URL in the bar above.  Esc closes the "
 			"window, Ctrl+L focuses the address bar.</p>"
-			"<pre>javascript: not supported\nforms: not supported"
+			"<pre>javascript: inline scripts (limited DOM)\nforms: not supported"
 			"\nimages: PNG JPEG GIF BMP TGA PNM ICO</pre>"
 			"</body></html>";
 		br_set_viewport(ui.w);

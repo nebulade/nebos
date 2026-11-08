@@ -186,7 +186,7 @@
 		</p>
 		<ul>
 			<li><strong>Kernel threads</strong> are created with <code>process_create</code> and take the BKL automatically.</li>
-			<li><strong>Ring-3 processes</strong> are created from an ELF image with their own page directory, 8-page user stack and cwd.</li>
+			<li><strong>Ring-3 processes</strong> are created from an ELF image with their own page directory, 32-page (128 KB) user stack and cwd.</li>
 			<li><strong>The kworker</strong> is an ordinary kernel process that performs housekeeping and zombie reaping, so it cannot be starved by a busy system.</li>
 			<li><strong>Stable naming:</strong> process names are 12 bytes; the PCB holds the TTY id, cwd, affinity mask, CPU accounting and the scheduling entity.</li>
 		</ul>

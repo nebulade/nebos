@@ -178,6 +178,7 @@
 					<tr><td><code>make test-images</code> / <code>test-images-asan</code></td><td>Host image-decoder and blit tests, with an AddressSanitizer variant.</td></tr>
 					<tr><td><code>make test-crypto</code></td><td>Host vectors for SHA-256, ChaCha20-Poly1305, X25519 and TLS helpers.</td></tr>
 					<tr><td><code>make test-libc</code></td><td>Host tests for the ring-3 malloc, stdio/float formatting, math, 64-bit division helpers and setjmp/longjmp.</td></tr>
+					<tr><td><code>make test-mujs</code></td><td>Host smoke test for the vendored MuJS engine: arithmetic, strings, Math, Date, JSON, exceptions and the run limit.</td></tr>
 					<tr><td><code>make test-font</code> / <code>test-font-asan</code></td><td>Host specimen test for the fixed-point TrueType parser/rasterizer and glyph cache, with an AddressSanitizer/UBSan variant.</td></tr>
 					<tr><td><code>make fonts</code></td><td>Regenerate the checked-in Arimo/Liberation Mono subsets with <code>pyftsubset</code>.</td></tr>
 				</tbody>
@@ -332,6 +333,7 @@ make net-cmds                   # replace /ramfs only</code></pre>
 		<ul class="filelist">
 			<li><code>Makefile</code> — targets and image rules</li>
 			<li><code>libc/</code>, <code>libc.a</code> — optional ring-3 libc and its host test</li>
+			<li><code>third_party/mujs/</code>, <code>js_browser.c/h</code> — vendored JavaScript engine and the browser bindings; <code>mujs_test.c</code> host smoke test</li>
 			<li><code>ufont.c</code>, <code>ufont_ttf.c</code>, <code>fonts/</code> — UI font engine and subsets; <code>ufont_test.c</code> host test</li>
 			<li><code>kexec.c</code>, <code>kexec_send.c</code> — serial reload</li>
 			<li><code>netkexec.c</code>, <code>netkexec_send.c</code> — network reload</li>

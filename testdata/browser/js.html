@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>MuJS demo</title>
+<style>
+body { background-color: #101018; color: #e0e0e8; margin: 24px; }
+h1 { color: #7fb0ff; }
+#out { color: #80d090; }
+li { margin: 6px 0; }
+</style>
+</head>
+<body>
+<h1>MuJS demo</h1>
+<p id="out">The script has not run yet.</p>
+<ul>
+<li>2 + 3 = <b id="sum">?</b></li>
+<li>Math.sqrt(16) = <b id="sqrt">?</b></li>
+<li>Date: <span id="date">?</span></li>
+</ul>
+<script>
+document.getElementById('sum').textContent = String(2 + 3);
+document.getElementById('sqrt').textContent = String(Math.sqrt(16));
+document.getElementById('date').textContent =
+	new Date().toISOString();
+document.getElementById('out').textContent =
+	'Inline JavaScript is running.';
+console.log('MuJS demo: ' + location.href);
+alert('MuJS demo ran');
+</script>
+</body>
+</html>

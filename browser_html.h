@@ -17,6 +17,7 @@
 #define BR_RULE_HASH     256
 #define BR_DECLS         16
 #define BR_TITLE_MAX     96
+#define BR_MAX_SCRIPTS   32
 
 /* Node types. */
 #define BR_NODE_TEXT     0
@@ -165,6 +166,14 @@ struct br_rule {
 	struct br_decl d[BR_DECLS];
 };
 
+/* An inline <script> body.  off/len index script_src, the buffer passed to
+ * br_parse(); the caller must keep it alive for as long as the document (the
+ * browser keeps the page body until the next navigation). */
+struct br_script {
+	unsigned int off;
+	unsigned int len;
+};
+
 struct br_doc {
 	struct br_node *nodes;
 	unsigned int nnode;
@@ -191,6 +200,10 @@ struct br_doc {
 	unsigned short rule_any;
 	int truncated;
 	int plain;                  /* text/plain: one preformatted text node */
+	const char *script_src;     /* buffer the script offsets point into */
+	struct br_script scripts[BR_MAX_SCRIPTS];
+	unsigned short nscripts;
+	unsigned short scripts_truncated;
 };
 
 void br_doc_init(struct br_doc *d);
@@ -219,6 +232,15 @@ int  br_tag_is_block(unsigned int tag);
 int  br_tag_is_void(unsigned int tag);
 const char *br_tag_name(unsigned int tag);
 unsigned int br_tag_from_name(const char *name);
+
+/* Runtime DOM helpers used by the JavaScript bindings.  br_find_id returns
+ * node + 1 (0 means no match); br_text_content concatenates the subtree's
+ * text nodes into out and returns the (possibly truncated) length. */
+unsigned int br_find_id(struct br_doc *d, const char *id);
+unsigned int br_text_content(struct br_doc *d, unsigned int node,
+			     char *out, unsigned int cap);
+int br_set_text_content(struct br_doc *d, unsigned int node,
+			const char *text, unsigned int len);
 
 const char *br_href(struct br_doc *d, unsigned int node);
 const char *br_src(struct br_doc *d, unsigned int node);

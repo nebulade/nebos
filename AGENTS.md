@@ -75,6 +75,7 @@ make flash      # write the dual-boot image (legacy BIOS + UEFI) to a USB stick
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make test-images  # host image-decoder + blit tests (ASan variant: test-images-asan)
 make test-libc  # host tests for ring-3 malloc, stdio, math, div64 and setjmp
+make test-mujs  # host smoke test for the vendored MuJS engine
 make test-font  # host TrueType parser/rasterizer specimen test
 make test-font-asan  # ASan/UBSan variant
 make fonts      # regenerate fonts/*.ttf with pyftsubset + system fonts
@@ -92,8 +93,8 @@ make clean
   path loads it into RAM and `ramfs_init` takes a private copy (`bin/<name>`
   mounted at `/ramfs`).
 - `root.img` is a second FAT12 floppy holding the disk fallback copies of the
-  browser/gallery (`BROWSER`, `GALLERY`) and its `DEMO.HTM`/`PIC.BMP` test
-  page, plus a few test files; it requires `mtools` to build.
+  browser/gallery (`BROWSER`, `GALLERY`) and its `DEMO.HTM`/`JS.HTM` test
+  pages plus `PIC.BMP`, and a few test files; it requires `mtools` to build.
 - UEFI needs `x86_64-w64-mingw32-gcc` (the 64-bit loader) and, for the QEMU
   targets, an OVMF firmware (`OVMF=/path/to/OVMF.4m.fd` overrides the default).
   `make all` does not build the UEFI image, so a machine without mingw still
@@ -611,9 +612,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `powerinfo` command prints AC/battery details and the WM top bar shows the
   AC adapter state plus the first present battery with a valid percentage.
   Machines without the EC show neither.
-- **Ring-3 address space**: the ELF image and 8 KB stack live in the 2 MB
-  `USER_BASE` (`0x40000000`)..`USER_STACK_TOP` (`0x40200000`) window, which is
-  too small for a full-frame image.  `SYS_MEM_ALLOC`/`SYS_MEM_GROW`/`SYS_MEM_FREE`
+- **Ring-3 address space**: the ELF image and 128 KB (32-page) stack live in
+  the 4 MB `USER_BASE` (`0x40000000`)..`USER_STACK_TOP` (`0x40400000`)
+  window, which is too small for a full-frame image.  `SYS_MEM_ALLOC`/`SYS_MEM_GROW`/`SYS_MEM_FREE`
   (`sys_mem.c/h`) map/grow/delete a single anonymous arena at
   `USER_HEAP_BASE` (`0x60000000`), capped at 32 MB; the initial allocation is
   zeroed but pages appended by `SYS_MEM_GROW` are not (decoders initialize
@@ -695,8 +696,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   the back is the castle.  The bar's "Cards" button launches
   `/ramfs/bin/solitaire`.
 - **Browser**: the real browser ships in the pack as `bin/browser.app`
-  (it links ngui, the full image library, inflate, TLS and uhttp, but the
-  rootfs is no longer constrained by the kernel's low-memory window).
+  (it links ngui, the full image library, inflate, TLS, uhttp and the
+  vendored MuJS engine in `third_party/mujs/`, but the rootfs is no longer
+  constrained by the kernel's low-memory window).
   `ucmd_browser.c` is the tiny `bin/browser` launcher; it prefers
   `/share/BROWSER` (`make browser-dev` uploads it via the board's `websrv`;
   stop `websrv` before browsing HTTP, because it owns the NIC), then the pack
@@ -741,10 +743,19 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   an `img_estimate()`-sized decode arena, freed as soon as the scaled bitmap
   exists; up to 16 bitmaps (512 KB files / 8 MP decodes) are kept until the
   page heap is reset.  Navigation calls `heap_reset()` and unmaps the whole
-  arena, so a large image no longer reserves a fixed 24 MB.  There is no
-  JavaScript, forms or standalone image viewer mode; flex/grid, basic tables,
-  inline SVG and CSS variables are supported (see known issue 22 for the
-  remaining CSS gaps).  `SYS_SPAWN` loads FAT ELFs through `kmalloc` now (the
+  arena, so a large image no longer reserves a fixed 24 MB.  Inline
+  `<script>` blocks are collected by `browser_html.c` and run in document
+  order through the vendored MuJS engine in `third_party/mujs/` (linked only
+  into `browser.elf`); `js_browser.c/h` exposes `console.log`, `alert`,
+  `document.getElementById(...).textContent` and `location.href`.  A state
+  is created after `heap_start()`, shared by the page's scripts and freed
+  before `heap_reset()`.  `js_setlimit()` caps every script at 8M
+  instructions, so a runaway loop reports `script ran too long` instead of
+  freezing the browser.  Math, Date and JSON come from the engine plus the
+  libc math/time layers.  There are no timers, event listeners, `innerHTML`,
+  external `<script src>` or forms yet; flex/grid, basic tables, inline SVG
+  and CSS variables are supported (see known issue 22 for the remaining CSS
+  gaps).  `SYS_SPAWN` loads FAT ELFs through `kmalloc` now (the
   old 16 KB `fat_load_buf` is gone) and wraps the load in `sys_fs_enter/exit`,
   since the floppy needs IRQ 6.
 - **Image library + viewer**: `img.h`, `img.c`, `img_mem.c`, `img_blit.c`,
@@ -1253,8 +1264,8 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    compressed pack directly to `0x900000` with INT 15h AH=87h, so the cap is
    `PACK_MAX` 1 MB (not the old ~255 KB low-gap limit).  The browser and
    its ring-3 dependencies are compiled with function sections and linked
-   with `--gc-sections`; the current pack with the UI fonts is ~351 KiB
-   (359532 bytes), leaving ~673 KiB under the cap.  `libdeflate-gzip -12` is
+   with `--gc-sections`; the current pack with the UI fonts is ~429 KiB
+   (439476 bytes), leaving ~595 KiB under the cap.  `libdeflate-gzip -12` is
    still preferred for the extra headroom, though the 1 MB cap leaves room
    for `gzip -9` as a fallback.
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
@@ -1311,7 +1322,10 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     pack is out of the kernel now, so `_end` keeps ~170 KB of headroom below
     the `0x90000` wall; the remaining limit is kernel code/buffers only.
 
-22. Browser limits: no JavaScript, forms, pseudo-classes/elements,
+22. Browser limits: JavaScript is only the first MuJS slice (inline scripts,
+    `document.getElementById(...).textContent`, `console.log`, `alert`,
+    `location.href`; no timers, event listeners, `innerHTML`, external
+    `<script src>` or forms).  Also no forms, pseudo-classes/elements,
     border-radius clipping of descendant content, gradients/box-shadow/
     transitions (a gradient background falls back to its last solid colour),
     or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with
@@ -1360,8 +1374,7 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     own background and colour rules are unaffected.  TLS is phase A (no
     certificate verification); `https` is shown as unverified.  The disk app
     is loaded from FAT at spawn time, so a cold floppy start takes a few
-    seconds; the 8 KB user stack means the layout state is deliberately
-    static.
+    seconds; the layout state is deliberately static.
 
 23. UEFI boot is x86-64 firmware only (no `BOOTIA32.EFI` yet) and the loader
     is unsigned, so Secure Boot must be off.  The loader needs a GOP mode with

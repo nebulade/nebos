@@ -134,7 +134,7 @@
 					<tr><td><code>_end</code></td><td>Kernel end</td><td><code>kernel.ld</code> asserts <code>_end ≤ 0x90000</code></td></tr>
 					<tr><td><code>0x900000</code></td><td>Boot pack (written directly by the legacy stage); dynamic stacks and kexec staging</td><td>Freed after <code>ramfs_init</code> takes its copy</td></tr>
 					<tr><td><code>0x100000</code></td><td>VGA shadow buffer base</td><td><code>VGA_SHADOW_BASE</code>; 8 MB reserved</td></tr>
-					<tr><td><code>0x40000000</code></td><td>Ring-3 ELF link/load address</td><td><code>USER_BASE</code>, 2 MB window up to <code>0x40200000</code></td></tr>
+					<tr><td><code>0x40000000</code></td><td>Ring-3 ELF link/load address</td><td><code>USER_BASE</code>, 4 MB window up to <code>0x40400000</code></td></tr>
 					<tr><td><code>0x50000000</code></td><td>Ring-3 window canvas</td><td><code>USER_WIN_BASE</code>, 4 MB slot</td></tr>
 					<tr><td><code>0x58000000</code></td><td>WM shadow mapping</td><td><code>WM_SHADOW_VA</code>; ring-3 WM only</td></tr>
 					<tr><td><code>0x59000000</code></td><td>WM content slots</td><td><code>WM_CONTENT_VA_BASE</code> + index × 4 MB (<code>WM_CONTENT_SLOT</code>)</td></tr>
@@ -228,18 +228,18 @@
 		<h2>Ring-3 memory</h2>
 		<p>
 			A ring-3 ELF is linked at <code>0x40000000</code>. The image and its
-			8-page user stack live in a 2 MB window ending at
-			<code>0x40200000</code>. The kernel window server maps a window's
+			32-page (128 KB) user stack live in a 4 MB window ending at
+			<code>0x40400000</code>. The kernel window server maps a window's
 			RGB565 back buffer at <code>0x50000000</code>, and the anonymous heap
 			starts at <code>0x60000000</code>.
 		</p>
 
 		<figure class="figure">
-			<div class="bars" role="img" aria-label="Ring-3 arena sizes relative to the 32 MB heap cap: image and stack 2 MB, canvas slot 4 MB, heap up to 32 MB.">
+			<div class="bars" role="img" aria-label="Ring-3 arena sizes relative to the 32 MB heap cap: image and stack 4 MB, canvas slot 4 MB, heap up to 32 MB.">
 				<div class="bar-row">
 					<span class="bar-label">image + stack</span>
-					<div class="bar-track"><span class="bar-fill blue" style="--w:6.25%"></span></div>
-					<span class="bar-value">2 MB</span>
+					<div class="bar-track"><span class="bar-fill blue" style="--w:12.5%"></span></div>
+					<span class="bar-value">4 MB</span>
 				</div>
 				<div class="bar-row">
 					<span class="bar-label">canvas slot</span>
@@ -265,7 +265,7 @@
 					<tr><th>Range</th><th>Size</th><th>Contents</th></tr>
 				</thead>
 				<tbody>
-					<tr><td><code>0x40000000</code>–<code>0x40200000</code></td><td>2 MB</td><td>ELF segments, user stack top at <code>0x40200000</code> (8 pages, grows down)</td></tr>
+					<tr><td><code>0x40000000</code>–<code>0x40400000</code></td><td>4 MB</td><td>ELF segments, user stack top at <code>0x40400000</code> (32 pages / 128 KB, grows down)</td></tr>
 					<tr><td><code>0x50000000</code>–<code>0x50400000</code></td><td>4 MB</td><td>One window canvas mapping (RW, per window)</td></tr>
 					<tr><td><code>0x60000000</code>–<code>0x62000000</code></td><td>up to 32 MB</td><td>Anonymous heap; initial allocation zeroed, growth pages are not</td></tr>
 				</tbody>
@@ -286,7 +286,7 @@
 			Kernel stacks are 4 KB pages from the frame allocator, with an 8-stack
 			static fallback pool in BSS. The idle/bootstrap context uses the
 			in-image 8 KB <code>.stack</code> section. The user stack is separate:
-			8 pages just below <code>0x40200000</code>.
+			32 pages just below <code>0x40400000</code>.
 		</p>
 	</section>
 
