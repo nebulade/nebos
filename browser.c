@@ -2826,6 +2826,7 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 	while (n) {
 		struct br_node *nd = &doc.nodes[n];
 		struct br_style cs;
+		unsigned short lk = link;
 		int colw;
 
 		if (nd->type == BR_NODE_TEXT) {
@@ -2842,6 +2843,8 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 		}
 		if (!cs.float_left || cs.display != BR_DISPLAY_BLOCK)
 			break;
+		if (nd->tag == BR_TAG_A && nd->href_off)
+			lk = (unsigned short)n;
 		if (cs.width_kind == 2)
 			colw = (row_right - row_left) * (int)cs.width / 100;
 		else if (cs.width_kind == 1)
@@ -2873,7 +2876,7 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 		l->nruns = 0;
 		l->space_pending = 0;
 		l->align = cs.align;
-		layout_block(l, n, &cs, depth + 1, link);
+		layout_block(l, n, &cs, depth + 1, lk);
 		if (l->y > row_bottom)
 			row_bottom = l->y;
 		x += colw;
@@ -3552,7 +3555,7 @@ static void layout_children(struct lay *l, unsigned int parent,
 			continue;
 		}
 		if (cs.float_left && cs.display == BR_DISPLAY_BLOCK) {
-			n = layout_float_group(l, n, pst, depth, link);
+			n = layout_float_group(l, n, pst, depth, lk);
 			continue;
 		}
 		if (cs.display == BR_DISPLAY_INLINE_BLOCK) {
