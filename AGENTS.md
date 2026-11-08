@@ -295,8 +295,7 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   and presents only those; `uwm_lib.c` uses row-based RGB565 conversion,
   `rep stos`/`rep movs` fills and copies, and counts composited pixels in
   `usurf_pixels`.  The WM writes the last two-second interval to
-  `/share/wmstats` (`frames`, `ms`, `max`, `px`) and mirrors the line to the
-  non-blocking netconsole ring (UDP 19290) for on-target measurement.
+  `/share/wmstats` (`frames`, `ms`, `max`, `px`) for on-target measurement.
   `SYS_WIN_INFO`, `SYS_WIN_ACK_RESIZE`, `SYS_WIN_POINTER`, `SYS_WIN_EVENT`,
   `SYS_WIN_KEY_WAIT` and the generic `SYS_KEY_POLL` handle input.  The WM
   composites the front canvas; presented frames carry monotonic seq

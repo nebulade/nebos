@@ -1017,11 +1017,6 @@ static void write_stats(void)
 	p = put_str(p, "\n");
 	u_syscall3(SYS_WRITE_FILE, (int)"/share/wmstats", (int)b,
 		   (int)(p - b));
-	/* Also mirror the line to the non-blocking netconsole ring (UDP 19290)
-	 * so a serial-less board can be measured from the host.  Do not use
-	 * SYS_NETLOG here: a direct NIC send can block while the WM holds the
-	 * BKL and would make the whole board unresponsive. */
-	u_puts(b);
 }
 
 void _start(const char *arg)
