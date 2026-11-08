@@ -131,9 +131,7 @@
 					<tr><td><code>0x6C00</code></td><td>AP trampoline real-mode stack top</td><td>Grows down</td></tr>
 					<tr><td><code>0x6F00</code></td><td>AP startup info block</td><td>CR3, stack top, C entry, CPU index</td></tr>
 					<tr><td><code>0x60000</code></td><td>Legacy rootfs staging</td><td><code>0x60000..0x9FBFF</code>, compressed pack only</td></tr>
-					<tr><td><code>_end</code></td><td>Kernel end</td><td><code>kernel.ld</code> asserts <code>_end ≤ 0x7F000</code></td></tr>
-					<tr><td><code>0x7FF00</code></td><td>Program API struct</td><td><code>PROGRAM_API_ADDR</code>, <code>run_api.h</code></td></tr>
-					<tr><td><code>0x80000</code></td><td>Legacy ring-0 program load area</td><td><code>run.c</code>, <code>serial_recv.c</code>, <code>user.ld</code>; max <code>0x6000</code></td></tr>
+					<tr><td><code>_end</code></td><td>Kernel end</td><td><code>kernel.ld</code> asserts <code>_end ≤ 0x90000</code></td></tr>
 					<tr><td><code>0x900000</code></td><td>Boot pack after relocation; dynamic stacks and kexec staging</td><td>Freed after <code>ramfs_init</code> takes its copy</td></tr>
 					<tr><td><code>0x100000</code></td><td>VGA shadow buffer base</td><td><code>VGA_SHADOW_BASE</code>; 8 MB reserved</td></tr>
 					<tr><td><code>0x40000000</code></td><td>Ring-3 ELF link/load address</td><td><code>USER_BASE</code>, 2 MB window up to <code>0x40200000</code></td></tr>

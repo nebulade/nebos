@@ -202,12 +202,6 @@
 			The serial receive drops the BKL while it waits for bytes, so the WM
 			and the other CPU's syscalls stay responsive during a reload.
 		</p>
-		<div class="note">
-			<p><strong>One-time install on a 9600-baud machine.</strong> Use the
-			<code>bootstrap</code> program loaded through <code>serial recv</code>
-			+ <code>run serial</code>. It switches the link to 115200 and waits
-			for a normal <code>KXE2</code> transfer.</p>
-		</div>
 	</section>
 
 	<section id="network">
@@ -284,7 +278,7 @@ make net-cmds                   # replace /ramfs only</code></pre>
 			<li><strong>Ring-3 data segments.</strong> An IRET to ring 3 nulls DS/ES/FS/GS whose DPL is below CPL 3. Kernel stubs must restore selector <code>0x23</code> with <code>IRQ_RETURN_DS</code>. QEMU does not model this; only real hardware fails.</li>
 			<li><strong>Paging is flat.</strong> Physical equals virtual everywhere; there is no process isolation.</li>
 			<li><strong>The BKL is not preemptible.</strong> A BKL holder can be in the middle of kernel structures; block points drop it, and <code>bkl_pause()</code> is for long waits.</li>
-			<li><strong>Kernel size wall.</strong> <code>_end</code> must stay below <code>0x7F000</code>; the legacy staging gap also constrains BSS and the compressed pack.</li>
+			<li><strong>Kernel size wall.</strong> <code>_end</code> must stay below <code>0x90000</code>; the legacy staging gap also constrains the loaded image and the compressed pack.</li>
 		</ul>
 	</section>
 

@@ -59,7 +59,6 @@
 			<li><a href="#pack">Command pack</a></li>
 			<li><a href="#apps">GUI applications</a></li>
 			<li><a href="#browser">Browser</a></li>
-			<li><a href="#legacy">Legacy ring-0 programs</a></li>
 			<li><a href="#sources">Source map</a></li>
 		</ul>
 	</nav>
@@ -210,16 +209,10 @@
 					<tr><td>Process / scheduler</td><td><code>ps</code> <code>sched</code> <code>renice</code> <code>kill</code> <code>idle</code> <code>cpufreq</code> <code>power</code></td></tr>
 					<tr><td>Hardware / debug</td><td><code>display</code> <code>gfxbench</code> <code>lsusb</code> <code>lspci</code> <code>peek</code> <code>poke</code> <code>format</code> <code>dbg</code> <code>serial</code></td></tr>
 					<tr><td>Network control</td><td><code>netdev</code></td></tr>
-					<tr><td>Boot / power</td><td><code>reboot</code> <code>poweroff</code> <code>kexec</code> <code>run</code> <code>space</code> <code>prog</code></td></tr>
+					<tr><td>Boot / power</td><td><code>reboot</code> <code>poweroff</code> <code>kexec</code></td></tr>
 				</tbody>
 			</table>
 		</div>
-		<p>
-			<code>run</code> and the embedded <code>prog</code>/<code>space</code>
-			programs are the remaining ring-0 user-code path: binaries load at
-			<code>0x80000</code> and call the program API at <code>0x7FF00</code>.
-			Everything else user-facing is a ring-3 ELF.
-		</p>
 	</section>
 
 	<section id="pack">
@@ -298,24 +291,6 @@
 		</p>
 	</section>
 
-	<section id="legacy">
-		<h2>Legacy ring-0 programs</h2>
-		<p>
-			<code>run &lt;name&gt;</code>, <code>prog</code> and <code>space</code>
-			are the last programs that execute in ring 0. They load as raw
-			binaries at <code>0x80000</code> and use the function-pointer API at
-			<code>0x7FF00</code>. <code>prog</code>/<code>space</code> are also
-			embedded in the kernel image, so a board with no readable filesystem
-			can still run them.
-		</p>
-		<p>
-			These programs draw directly over the WM, which keeps repainting its
-			desktop, so they are demos rather than windowed applications. Moving
-			them to ring 3 would let the fixed low-memory block
-			(<code>0x7FF00</code>/<code>0x80000</code>) go away.
-		</p>
-	</section>
-
 	<section id="sources">
 		<h2>Source map</h2>
 		<ul class="filelist">
@@ -329,7 +304,6 @@
 			<li><code>Makefile</code> — <code>UCMDS</code> and pack rules</li>
 			<li><code>ucmd_*.c</code> — commands</li>
 			<li><code>browser.c</code>, <code>browser_html.c</code>, <code>gallery.c</code></li>
-			<li><code>run.c</code>, <code>run_api.h</code>, <code>prog.c</code>, <code>space.c</code></li>
 		</ul>
 	</section>
 </main>

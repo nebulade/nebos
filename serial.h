@@ -17,6 +17,4 @@ int  serial_ring_getc(void);
 int  serial_ring_wait(unsigned int timeout_ms, unsigned char *out);
 int  serial_ring_peek(unsigned int offset, unsigned char *byte);
 
-extern unsigned int serial_recv_size;
-
 #endif

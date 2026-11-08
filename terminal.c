@@ -16,13 +16,9 @@
 
 extern void program_reboot_main(void);
 extern void program_poweroff_main(void);
-extern void program_run_main(const char *filename);
 extern void program_display_main(void);
 extern void program_gfxbench_main(void);
 extern void program_serial_loop_main(const char *arg);
-extern void program_serial_recv_main(const char *arg);
-extern void program_run_serial_main(const char *arg);
-extern void program_run_embedded_main(const char *name);
 extern void program_lsusb_main(void);
 extern void program_netdev_main(const char *arg);
 extern void program_format_main(const char *arg);
@@ -74,7 +70,6 @@ static int cmd_ps(struct term *t, const char *args);
 static int cmd_renice(struct term *t, const char *args);
 static int cmd_sched(struct term *t, const char *args);
 static int cmd_reboot(struct term *t, const char *args);
-static int cmd_run(struct term *t, const char *args);
 static int cmd_serial(struct term *t, const char *args);
 
 /* Table order defines the `help` layout (printed as two columns).  Ring-3
@@ -82,9 +77,6 @@ static int cmd_serial(struct term *t, const char *args);
 static const struct kcmd cmds[] = {
 	{ "help",       "help",                          CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_help },
 	{ "bootlog",    "bootlog",                       CK_CUSTOM, CMD_BUILTIN, 0, 0, 0, cmd_bootlog },
-	{ "run",        "run <name>|<file>",             CK_CUSTOM, 0, 0, 0, 0, cmd_run },
-	{ "space",      "space",                         CK_SPAWN, 0, 0, program_run_embedded_main, "space", 0 },
-	{ "prog",       "prog",                          CK_SPAWN, 0, 0, program_run_embedded_main, "prog", 0 },
 	{ "reboot",     "reboot",                        CK_CUSTOM, 0, 0, 0, 0, cmd_reboot },
 	{ "poweroff",   "poweroff",                      CK_CUSTOM, 0, 0, 0, 0, cmd_poweroff },
 	{ "display",    "display",                       CK_SPAWN, 0, program_display_main, 0, 0, 0 },
@@ -104,7 +96,7 @@ static const struct kcmd cmds[] = {
 	{ "kill",       "kill <pid>",                    CK_CUSTOM, 0, 0, 0, 0, cmd_kill },
 	{ "kexec",      "kexec",                         CK_CUSTOM, 0, 0, 0, 0, cmd_kexec },
 	{ "dbg",        "dbg",                           CK_CUSTOM, 0, 0, 0, 0, cmd_dbg },
-	{ "serial",     "serial test|recv",              CK_CUSTOM, 0, 0, 0, 0, cmd_serial },
+	{ "serial",     "serial test",                   CK_CUSTOM, 0, 0, 0, 0, cmd_serial },
 };
 
 #define NCMDS (sizeof(cmds) / sizeof(cmds[0]))
@@ -447,20 +439,6 @@ static int cmd_reboot(struct term *t, const char *args)
 	return 0;
 }
 
-static int cmd_run(struct term *t, const char *args)
-{
-	(void)t;
-	if (args[0] == 's' && args[1] == 'e' && args[2] == 'r' &&
-	    args[3] == 'i' && args[4] == 'a' && args[5] == 'l' &&
-	    args[6] == '\0') {
-		if (process_create_arg("run_serial", program_run_serial_main, "serial") < 0)
-			io_putstr("error: too many processes\n");
-	} else {
-		io_putstr("run: not available in windowed mode yet\n");
-	}
-	return 0;
-}
-
 static int cmd_serial(struct term *t, const char *args)
 {
 	(void)t;
@@ -468,11 +446,8 @@ static int cmd_serial(struct term *t, const char *args)
 	    args[4] == '\0') {
 		if (process_create_arg("serial_loop", program_serial_loop_main, "test") < 0)
 			io_putstr("error: too many processes\n");
-	} else if (args[0] == 'r' && args[1] == 'e' && args[2] == 'c' &&
-		   args[3] == 'v' && args[4] == '\0') {
-		program_serial_recv_main("recv");
 	} else {
-		io_putstr("serial: usage serial test|recv\n");
+		io_putstr("serial: usage serial test\n");
 	}
 	return 0;
 }

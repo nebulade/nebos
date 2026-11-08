@@ -84,11 +84,9 @@ make clean
   partition image).  The kernel itself no longer carries the pack; the boot
   path loads it into RAM and `ramfs_init` takes a private copy (`bin/<name>`
   mounted at `/ramfs`).
-- `root.img` is a second FAT12 floppy holding user binaries (`PROG.BIN`, `SPACE.BIN`),
-  the disk fallback copies of the browser/gallery (`BROWSER`, `GALLERY`) and
-  its `DEMO.HTM`/`PIC.BMP` test page, plus a few test files; it requires
-  `mtools` to build.
-- `make send PROGRAM=prog` transfers a binary to a real machine over serial.
+- `root.img` is a second FAT12 floppy holding the disk fallback copies of the
+  browser/gallery (`BROWSER`, `GALLERY`) and its `DEMO.HTM`/`PIC.BMP` test
+  page, plus a few test files; it requires `mtools` to build.
 - UEFI needs `x86_64-w64-mingw32-gcc` (the 64-bit loader) and, for the QEMU
   targets, an OVMF firmware (`OVMF=/path/to/OVMF.4m.fd` overrides the default).
   `make all` does not build the UEFI image, so a machine without mingw still
@@ -168,10 +166,8 @@ a Pentium 1 (and a Pentium II board without ACPI) on the UP path.
 | `0x6C00`  | AP trampoline real-mode stack top (grows down) |
 | `0x6F00`  | AP startup info block (CR3, stack top, C entry, CPU index) |
 | `0x60000` | Legacy rootfs pack staging (`vesa_stage.S`; compressed gzip data, up to `PACK_LOW_MAX` 0x3FBFF, ending below the EBDA at `0x9FC00`).  Temporary: copied to `0x900000` in protected mode before the kernel starts, so the kernel BSS/boot stack may extend past this address |
-| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs `__bss_start <= 0x60000` so the loaded image stays below the legacy staging gap, and `_end <= 0x7F000` so it does not reach the run area).  BSS and the boot stack may extend past `0x60000` |
+| `_end`    | Kernel end (linker symbol; `kernel.ld` ASSERTs `__bss_start <= 0x60000` so the loaded image stays below the legacy staging gap, and `_end <= 0x90000` so the top of the staging gap and the EBDA stay untouched).  BSS and the boot stack may extend past `0x60000` |
 | (in-image) | Bootstrap/protected-mode stack: 8 KB `.stack` NOLOAD section, `__boot_stack_top`/`__boot_stack_bottom` (travels with the kernel) |
-| `0x7FF00` | Program API struct (`PROGRAM_API_ADDR`, `run_api.h`) |
-| `0x80000` | Legacy ring-0 program load area (`run.c`, `serial_recv.c`, `user.ld`; max 0x6000, inside the reserved low 1 MB) |
 | `0x900000`| Legacy boot-time rootfs pack after `vesa_stage.S` relocates it (reserved by `mm_init` until `ramfs_init` takes its copy, then freed; process stacks and kexec staging also start here) |
 | `0x100000`| VGA shadow buffer (`VGA_SHADOW_BASE`, `vga.h`) |
 
@@ -194,8 +190,8 @@ Everything else is dynamic: process stacks and the kexec staging buffer come
 from the frame allocator (≥ `0x900000`), and the fallback stack pool is a
 static BSS array.  The UEFI loader's kernel staging buffer comes from
 `AllocatePages` below 4 GB and only lives until the `0x800` trampoline copies
-it to `0x7E00`.  The kernel region itself only has one wall (`_end` below the
-run area), so adding code no longer moves any address.
+it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
+`0x90000`), so adding code no longer moves any address.
 
 ## Key files
 
@@ -423,8 +419,8 @@ run area), so adding code no longer moves any address.
   as `sata0`..`sataN` (named by AHCI port index) and mount like IDE disks
   (`sata0p1` for an MBR partition). >2 TB disks are clamped to 32-bit LBA;
   a disk added after boot needs a rescan (no COMRESET hotplug).
-- **Serial**: `serial.c`, `serial_ring_buf.c/h`, `bin_recv.c/h`, `serial_recv.c`,
-  `serial_loop.c`, `send_serial.c` — 16550 UART, IRQ-driven ring buffer, XMODEM.
+- **Serial**: `serial.c`, `serial_ring_buf.c/h`, `serial_loop.c` — 16550 UART
+  with an IRQ-driven ring buffer and the `serial test` loopback check.
 - **Network**: `netdev.c/h` — NIC driver registry (`struct netdev`, first probe
   wins; drivers: `e1000e.c` Intel e1000/PCH LAN (82540EM emulated,
   82577LM/82578/82579; polled, PCI INTx disabled before MMIO, PCH D0 and
@@ -463,7 +459,7 @@ run area), so adding code no longer moves any address.
   lives in the command pack, so `make net-cmds` updates it without a
   kernel reload.  Static IP default `192.168.178.240`, mask/gateway learned
   from DHCP (off-subnet traffic goes via the router).
-- **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `entry.S`, `bootstrap.c`, and the
+- **Hot-reload (kexec)**: `kexec.c/h`, `kexec_tramp.S`, `entry.S`, and the
   host-side `kexec_send.c` — reload the kernel over serial without rebooting
   (C-light: reuses the current framebuffer, re-runs `kernel_main`).
   The transfer entry is `kernel_entry` (`entry.S`), which re-points ESP before
@@ -555,16 +551,6 @@ run area), so adding code no longer moves any address.
   drained before every command, and every wait is bounded; nothing is
   written to the EC.  `sensors` labels the EC registers and decodes the fan
   mode (auto / full speed / level).
-- **User programs**: `run.c`, `run_api.h`, `prog.c`, `space.c` — raw binaries at
-  `0x80000`, API function-pointer struct at `0x7FF00`.  `prog`/`space` are
-  **embedded in the kernel image** (`prog_embed.o`/`space_embed.o`), so
-  `make dev`/`make net-dev` update them too and a board with no readable
-  filesystem can still run them: `run <name>` and the `prog`/
-  `space` commands use the embedded copy, `run /<device>/<file>` still loads
-  from FAT.  Rebuilds are wired (`space.c` -> `space.bin` -> `space_embed.o` ->
-  `kernel.elf`).  Note: `run`/`prog`/`space` still draw over the WM (which keeps
-  repainting its desktop); the windowed path for such programs is the ring-3
-  canvas service (see the window graphics bullet, used by `clock`/`colors`).
 - **Ring-3 address space**: the ELF image and 8 KB stack live in the 2 MB
   `USER_BASE` (`0x40000000`)..`USER_STACK_TOP` (`0x40200000`) window, which is
   too small for a full-frame image.  `SYS_MEM_ALLOC`/`SYS_MEM_GROW`/`SYS_MEM_FREE`
@@ -726,10 +712,9 @@ run area), so adding code no longer moves any address.
 ## Shell commands
 
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
-`mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`, `run <name>|<file>`, `space`,
-`prog`,
+`mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`,
 `display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
-`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [auto|hlt|c1e|c3|c6]`, `power`, `cpufreq [auto|min|max|off|<ratio>]`, `spin [ms]`, `help`, `clear`, `serial test|recv`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [auto|hlt|c1e|c3|c6]`, `power`, `cpufreq [auto|min|max|off|<ratio>]`, `spin [ms]`, `help`, `clear`, `serial test`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `netdev [name]` (kernel command: show the active NIC driver or
@@ -769,18 +754,10 @@ commands spawned as processes, or builtins (`cd`, `path`, `help`, `clear`).
 ## Serial hot-reload (kexec) workflow
 
 Develop without reflashing the floppy. The serial link (COM1 ↔ `/dev/ttyUSB0`)
-runs at **115200 baud**. Two paths exist:
-
-- **Auto-detect** (the normal loop) — the WM loop watches the serial
-  ring buffer for the `"KXE2"` magic and auto-spawns the reload, so `make dev`
-  alone boots a fresh kernel + rootfs. The manual `kexec` command is kept as a
-  fallback that waits for the same image.
-- **`bootstrap`** (one-time, zero-reflash) — a ring-0 program loaded through the
-  existing `serial recv` + `run serial` path that switches the UART to 115200,
-  receives a new kernel, and jumps into it. Used only to install the first new
-  kernel onto a machine still running an old (9600 baud) build; `bootstrap.bin`
-  is linked by `bootstrap.ld` at the *old* program address (`0x4A000`) because
-  that is where the old build's `serial recv` writes it.
+runs at **115200 baud**. The WM loop watches the serial ring buffer for the
+`"KXE2"` magic and auto-spawns the reload, so `make dev` alone boots a fresh
+kernel + rootfs. The manual `kexec` command is kept as a fallback that waits
+for the same image.
 
 Wire protocol (host → target, sent immediately; no handshake):
 `[magic "KXE2"][entry u32 LE][kernel_size u32 LE][pack_size u32 LE]`
@@ -809,20 +786,6 @@ make monitor       # tail the serial line (picocom; Ctrl-A Ctrl-X to exit)
 ```
 Run it in a second terminal, then `make dev` in the first — each reload prints
 the `... booted` line.
-
-**One-time install onto a 9600-baud machine (no floppy):**
-```sh
-make bootstrap                                   # builds bootstrap.bin
-# 1) start the host sender first (it waits for 'R'):
-./send_serial /dev/ttyUSB0 9600 bootstrap.bin
-# 2) on the PC: `serial recv` (sends 'R'), then `run serial`
-# 3) the bootstrap switches the link to 115200 and waits; send the kernel:
-make dev                                         # 115200
-```
-After the first kexec the machine is at 115200, and `make dev` is all you need
-from then on.  `make bootstrap` is built from the new tree and speaks `KXE2`;
-it stages only the kernel and discards the rootfs bytes, so run `make dev`
-again (or `make cmds-dev`) to install a pack afterwards.
 
 Notes: the kexec path rebuilds a flat GDT at `0x900` before jumping (the old GDT
 lives inside the overwritten kernel region), so it's safe to edit any file,
@@ -890,7 +853,7 @@ couple of seconds on a wired LAN.  While a net command owns the receiver
 
 The old `KXNU`/`KXEC` magics are deliberately not understood by this kernel
 (and it uses `KXN2`/`KXE2`), so a board still running a pre-rootfs build must
-be flashed (or bootstrapped) once; the new `make net-dev` is then atomic.
+be flashed once; the new `make net-dev` is then atomic.
 
 The board's address comes from DHCP when a server is present (the DHCP client
 runs at boot; `netinfo` shows ip/mask/gateway and the lease), so use
@@ -1178,17 +1141,14 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
 3. No per-process address spaces or process isolation (paging is identity-mapped).
 4. FAT32: FSInfo free-count not updated, no directory-chain growth.
 5. `disk.c` `fdc_reset()` and `fdc_init_once()` overlap/duplicate logic.
-6. The ring-0 `run` area (`0x80000`) and the program API at `0x7FF00` are the
-   last fixed low-memory addresses; moving `prog`/`space` to ring-3 would let
-   the whole block go (see the roadmap).
-7. Killing/reaping a ring-3 process frees its kernel stack and page directory
+6. Killing/reaping a ring-3 process frees its kernel stack and page directory
    but not the user pages mapped into it (a few pages leak per command run;
    needs a page-table walk/unmap on reap).
-8. `display` (needs a GPU snapshot) and `lsusb` (a 45-byte wrapper around
+7. `display` (needs a GPU snapshot) and `lsusb` (a 45-byte wrapper around
    the USB tree printer) are the last non-privileged commands still living in
    the kernel, plus the privileged ones (`peek`, `poke`, `dbg`, `serial`,
-   `kexec`, `reboot`, `poweroff`, `format`, `run`/`prog`/`space`, `ps`/`kill`).
-9. The rootfs pack is inflated into one contiguous page-allocated run at
+   `kexec`, `reboot`, `poweroff`, `format`, `ps`/`kill`).
+8. The rootfs pack is inflated into one contiguous page-allocated run at
    boot, capped by `RAMFS_MAX_DECOMPRESSED` (8 MB); a larger pack fails to
    load (the USB rootfs partition is 8 MB, so this only bites if the cap is
    raised without a bigger partition).  The legacy stage still stages the
@@ -1200,61 +1160,61 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    is ~245 KB, leaving ~16 KB under the cap.  Command growth still needs
    care because `libdeflate-gzip -12` is already required (plain `gzip -9`
    is over the cap).
-10. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
+9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
     board that exposes only MP tables stays UP (deliberate; there is no test
     hardware).
-11. There is no IOAPIC driver.  The BSP keeps the 8259 PIC in LAPIC ExtINT mode;
+10. There is no IOAPIC driver.  The BSP keeps the 8259 PIC in LAPIC ExtINT mode;
     APs mask LINT0/LINT1 and only use their LAPIC timer/IPIs.  Device IRQs never
     reach an AP, and `pit_irq_stub` should be treated as BSP-only.
-12. The BKL serializes all kernel execution: a long FAT/disk operation, a
+11. The BKL serializes all kernel execution: a long FAT/disk operation, a
     non-network driver wait or a big shadow-buffer operation can stall syscalls
     on the other CPUs for its duration.  `bkl_pause()`/`bkl_resume()` is used
     for serial/network waits, not yet for disk I/O.
-13. Kernel threads (kworker, kexec/payload, kernel commands) are pinned to
+12. Kernel threads (kworker, kexec/payload, kernel commands) are pinned to
     the BSP.  Only ring-3 processes use the APs, so a single CPU-bound kernel
     driver still limits throughput.
-14. Page-table updates for another CPU's running process (e.g. an MMIO mapping)
+13. Page-table updates for another CPU's running process (e.g. an MMIO mapping)
     rely on not-present TLB entries not being cached; there is no cross-CPU
     TLB shootdown.  No process shares an address space with another, so normal
     process teardown is unaffected.
-15. Image library limits: arithmetic JPEG and CMYK are rejected; EXIF
+14. Image library limits: arithmetic JPEG and CMYK are rejected; EXIF
     orientation is applied but ICC/gamma is ignored; animated GIF frames are
     composited (the viewer plays them), but APNG/WebP remain unsupported.  The
     whole file is read into memory (4 MB cap in the viewer) and very large
     photos still need DCT-scaled/streamed decode before they fit the 32 MB
     arena.
-16. `img_draw()`'s box-filter downscale runs on the CPU.  It is fine for the
+15. `img_draw()`'s box-filter downscale runs on the CPU.  It is fine for the
     viewer's static frames, but a browser showing many large inline images
     should cache a scaled bitmap (or use decode-at-display-scale) instead of
     rescaling on every repaint.
-17. `files` recognises images by file extension only (`.png .jpg .jpeg .gif
+16. `files` recognises images by file extension only (`.png .jpg .jpeg .gif
     .bmp .tga .ppm .pgm .pbm .ico .cur .pam`); a magic-based fallback would
     also open extensionless files in the viewer.  Automatic decode-at-scale
     for oversized images is still missing.
 
-18. WebDAV limits: one request at a time (one active connection plus 3
+17. WebDAV limits: one request at a time (one active connection plus 3
     backlog/closing slots; the queue holds each connection's first 1 KB with a zero window),
     files are buffered whole (4 MB cap; a larger PUT gets 413), directory
     `MOVE` is 501, `PROPPATCH` is answered 200 without persisting, and there
     is no authentication.  Sends use a four-segment window, and keep-alive is
     off, so parallel gvfs clients serialize but do not wedge.
-19. FAT mounts are writable over WebDAV only for names that
+18. FAT mounts are writable over WebDAV only for names that
     `fat_name_to_8_3()` can represent exactly; anything longer is refused
     with 409 instead of silently truncating (two long names could otherwise
     collide and overwrite each other).  Use `/share` for long names.
-20. The WebDAV server and the packet-level net commands are mutually
+19. The WebDAV server and the packet-level net commands are mutually
     exclusive: both need the single NIC receiver (`netdev_acquire`).  Starting
     `websrv` while `ping`/`curl`/`netrecv` owns the NIC fails; kill the other
     command first.
-21. `/share` is RAM only: a reboot/kexec starts empty, and the 16 MB cap is
+20. `/share` is RAM only: a reboot/kexec starts empty, and the 16 MB cap is
     charged against the 128 MB identity-mapped window.
 
-22. The TCP backlog's early-request buffers cost 8 KB of kernel BSS
+21. The TCP backlog's early-request buffers cost 8 KB of kernel BSS
     (8 slots x 1 KB), and the FAT listing cache another 5 KB.  The command
-    pack is out of the kernel now, so `_end` keeps ~130 KB of headroom below
-    the `0x7F000` wall; the remaining limit is kernel code/buffers only.
+    pack is out of the kernel now, so `_end` keeps ~190 KB of headroom below
+    the `0x90000` wall; the remaining limit is kernel code/buffers only.
 
-23. Browser limits: no JavaScript, forms, pseudo-classes/elements,
+22. Browser limits: no JavaScript, forms, pseudo-classes/elements,
     border-radius clipping of descendant content, gradients/box-shadow/
     transitions (a gradient background falls back to its last solid colour),
     or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with
@@ -1299,7 +1259,7 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     seconds; the 8 KB user stack means the layout state is deliberately
     static.
 
-24. UEFI boot is x86-64 firmware only (no `BOOTIA32.EFI` yet) and the loader
+23. UEFI boot is x86-64 firmware only (no `BOOTIA32.EFI` yet) and the loader
     is unsigned, so Secure Boot must be off.  The loader needs a GOP mode with
     BGRX or RGBX 32bpp, width ≤ 1280, `pitch * height` ≤ 8 MB and the
     framebuffer below 4 GB; otherwise the kernel starts headless (serial only).
@@ -1313,7 +1273,7 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     `reboot`/`poweroff` still use the legacy ports.  The image is 17 MB: the
     9 MB kernel + rootfs disk and the 8 MB ESP.
 
-25. ThinkPad EC sensor access (`tpec.c`) runs in legacy/SMM mode because
+24. ThinkPad EC sensor access (`tpec.c`) runs in legacy/SMM mode because
     there is no ACPI interpreter: an SMI that touches the EC between our port
     accesses can produce an occasional bad sample, and EC hotkey events are
     drained/discarded instead of handled.  The PCH thermal sensor

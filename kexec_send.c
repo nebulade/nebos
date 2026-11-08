@@ -1,4 +1,4 @@
-/* Host-side sender for nebos `kexec` / `bootstrap` / `cmds-dev`.
+/* Host-side sender for nebos `kexec` / `cmds-dev`.
  *
  * Kernel + rootfs protocol (serial, no handshake; the kernel auto-detects it):
  *   4 bytes: magic "KXE2" (LE)

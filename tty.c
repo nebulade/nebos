@@ -19,8 +19,8 @@ struct tty {
 _Static_assert(sizeof(struct tty) <= TTY_STRIDE,
 	       "tty state no longer fits its two-page slot");
 
-/* The rings are 16 KB of state; keep them out of BSS so the kernel image
- * stays below the run area. */
+/* The rings are 16 KB of state; allocate them from the frame heap instead of
+ * BSS to keep the kernel's low-memory footprint small. */
 static struct tty *ttys;
 static int tty_ready;
 

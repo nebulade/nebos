@@ -34,7 +34,7 @@ EFI_LDFLAGS = -nostdlib -Wl,--subsystem,10 -Wl,-e,efi_main \
               -Wl,--image-base,0x0 -Wl,--dynamicbase \
               -Wl,--enable-reloc-section -Wl,--no-insert-timestamp
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-ehci run-ehci-asix run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash space prog bootstrap dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan kernel-dev kernel-net-dev rootfs
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-ehci run-ehci-asix run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan kernel-dev kernel-net-dev rootfs
 
 all: floppy.img usb.img final.bin root.img
 
@@ -86,9 +86,6 @@ disk.o: disk.c disk.h io.h timer.h
 fat.o: fat.c fat.h blkdev.h io.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-run.o: run.c fat.h io.h fbtext.h run_api.h timer.h vga.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
-
 rtc.o: rtc.c rtc.h
 	$(CC) $(CFLAGS) -o $@ $<
 
@@ -99,12 +96,6 @@ serial_ring_buf.o: serial_ring_buf.c serial_ring_buf.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 serial_loop.o: serial_loop.c serial.h io.h timer.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-bin_recv.o: bin_recv.c bin_recv.h serial.h io.h timer.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-serial_recv.o: serial_recv.c serial.h bin_recv.h io.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 vga.o: vga.c vga.h bootinfo.h blit.h pci.h gpu.h ati.h process.h
@@ -344,7 +335,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h pr
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.ld vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o run.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o prog_embed.o space_embed.o inflate.o ramfs.o share.o payload.o
+kernel.elf: kernel.ld vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o inflate.o ramfs.o share.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $(filter-out kernel.ld,$^)
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -526,19 +517,6 @@ test-uefi: usb-efi.img
 	@grep -q "booted" /tmp/opencode/nebos-uefi-serial.log && \
 		echo "UEFI boot: OK (/tmp/opencode/nebos-uefi-serial.log)" || \
 		{ echo "UEFI boot: FAILED"; tail -c 4000 /tmp/opencode/nebos-uefi-serial.log; exit 1; }
-
-prog.o: prog.c run_api.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-prog.elf: prog.o
-	$(LD) -T user.ld -nostdlib -m elf_i386 -o $@ $<
-
-prog.bin: prog.elf
-	$(OBJCOPY) -O binary $< $@
-
-space: space.bin
-
-prog: prog.bin
 
 # Ring-3 commands: freestanding ELFs at USER_BASE, packed into cmds.pack and
 # mounted at /ramfs/bin (the shell's PATH default).  New command: add
@@ -770,46 +748,15 @@ payload.o: payload.c payload.h io.h mm.h ramfs.h serial.h vfs.h
 ramfs.o: ramfs.c ramfs.h serial.h inflate.h mm.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-space.o: space.c run_api.h
-	$(CC) $(CFLAGS) -o $@ $<
-
-space.elf: space.o
-	$(LD) -T user.ld -nostdlib -m elf_i386 -o $@ $<
-
-space.bin: space.elf
-	$(OBJCOPY) -O binary $< $@
-
 hello.elf: hello.o
 	$(LD) -T hello.ld -nostdlib -m elf_i386 -o $@ $<
 	$(OBJCOPY) --strip-all $@ $@
 
-hello_embed.o: hello.elf
-	$(LD) -m elf_i386 -r -b binary -o hello_embed.o hello.elf
-
-# User programs ship inside the kernel image so `make dev`/`make net-dev`
-# update them too (boards without a readable filesystem can still run them).
-prog_embed.o: prog.bin
-	$(LD) -m elf_i386 -r -b binary -o prog_embed.o prog.bin
-
-space_embed.o: space.bin
-	$(LD) -m elf_i386 -r -b binary -o space_embed.o space.bin
-
-bootstrap.o: bootstrap.c
-	$(CC) $(CFLAGS) -o $@ $<
-
-bootstrap.elf: bootstrap.o bootstrap.ld
-	$(LD) -T bootstrap.ld -nostdlib -m elf_i386 -o $@ $<
-
-bootstrap.bin: bootstrap.elf
-	$(OBJCOPY) -O binary $< $@
-
-root.img: prog.bin space.bin browser.elf gallery.elf testdata/browser/demo.html testdata/images/rgb.bmp
+root.img: browser.elf gallery.elf testdata/browser/demo.html testdata/images/rgb.bmp
 	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
 	mkfs.fat -F 12 -n "ROOTDISK" $@
 	echo "Hello from the second floppy!" | mcopy -i $@ - ::HELLO.TXT
 	echo "This is a test file on drive 1." | mcopy -i $@ - ::TEST.TXT
-	mcopy -i $@ prog.bin ::PROG.BIN
-	mcopy -i $@ space.bin ::SPACE.BIN
 	mcopy -i $@ browser.elf ::BROWSER
 	mcopy -i $@ gallery.elf ::GALLERY
 	mcopy -i $@ testdata/browser/demo.html ::DEMO.HTM
@@ -948,11 +895,10 @@ scp-root: root.img
 
 SERIAL_DEV ?= /dev/ttyUSB0
 SERIAL_BAUD ?= 115200
-SZ ?= /usr/bin/lrzsz-sz
 
 run-serial:
 	@echo "Starting serial monitor on $(SERIAL_DEV) at $(SERIAL_BAUD) baud..."
-	@echo "Type 'serial test' or 'serial recv' in the nebos terminal."
+	@echo "Type 'serial test' in the nebos terminal."
 	@echo "Press Ctrl-A Ctrl-X to exit picocom."
 	picocom $(SERIAL_DEV) --baud $(SERIAL_BAUD)
 
@@ -960,13 +906,6 @@ monitor:
 	@echo "Watching $(SERIAL_DEV) @ $(SERIAL_BAUD) baud (Ctrl-A Ctrl-X to exit)."
 	@echo "Each 'make dev' reload prints: NebOS v<version> booted"
 	picocom $(SERIAL_DEV) --baud $(SERIAL_BAUD)
-
-send: $(PROGRAM).bin send_serial
-	@echo "Sending $(PROGRAM).bin via serial..."
-	./send_serial $(SERIAL_DEV) $(SERIAL_BAUD) $(PROGRAM).bin
-
-send_serial: send_serial.c
-	gcc -O2 -o $@ $<
 
 kexec_send: kexec_send.c
 	gcc -O2 -o $@ $<
@@ -976,8 +915,6 @@ netkexec_send: netkexec_send.c
 
 netmonitor: netmonitor.c
 	gcc -O2 -o $@ $<
-
-bootstrap: bootstrap.bin
 
 dev: kernel.bin cmds_pack_gz.bin kexec_send
 	@entry=$$(nm kernel.elf | awk '/ T kernel_entry$$/{print $$1}'); \
@@ -1042,4 +979,4 @@ kernel-net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o run.o disk.o serial.o serial_ring_buf.o serial_loop.o serial_recv.o bin_recv.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img prog.o prog.elf prog.bin space.o space.elf space.bin hello.elf hello_embed.o prog_embed.o space_embed.o cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test bootstrap.o bootstrap.elf bootstrap.bin send_serial kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o disk.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o display.o mouse.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img hello.elf cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h

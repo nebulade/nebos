@@ -367,9 +367,10 @@ int io_poll_key(void)
 }
 
 /* Like io_poll_key but also reads from port 0x60 when buffer is empty.
-   For use by full-screen programs (e.g. space.bin) where IRQ may be missed on
-   real HW.  Only reads when a keyboard byte is actually pending (OBF set, AUX
-   clear); the status+data pair is read atomically wrt IRQ1. */
+   For use by callers that poll the keyboard without an IRQ path (the WM's
+   boot-console fallback and format's confirmation prompt) where an IRQ may be
+   missed on real HW.  Only reads when a keyboard byte is actually pending
+   (OBF set, AUX clear); the status+data pair is read atomically wrt IRQ1. */
 int io_poll_key_with_hw(void)
 {
 	unsigned char sc = 0;

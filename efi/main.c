@@ -21,8 +21,9 @@
 #define MAX_PAGES   (MAX_PHYS / PAGE_SIZE_)
 #define E820_ADDR   0x1000u
 
-/* The kernel image is linked to live at 0x7E00 and must stay below the run
- * area at 0x80000 (kernel.ld asserts _end <= 0x7F000). */
+/* The kernel image is linked to live at 0x7E00.  Its file image must stay
+ * below the legacy pack staging gap at 0x60000 (kernel.ld asserts
+ * __bss_start <= 0x60000); KERNEL_MAX is a generous sanity bound. */
 #define KERNEL_DEST 0x7E00u
 #define KERNEL_MAX  0x70000u
 

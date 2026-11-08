@@ -118,9 +118,7 @@
 			<figcaption>
 				<strong>The layering is real, not just conceptual.</strong>
 				Ring-3 commands enter the kernel only through <code>int 0x80</code>;
-				the kernel owns the devices and exposes narrow services. The one
-				deliberate exception is the legacy ring-0 <code>run</code> area used
-				by <code>prog</code> and <code>space</code>.
+				the kernel owns the devices and exposes narrow services.
 			</figcaption>
 		</figure>
 	</section>
@@ -152,7 +150,7 @@
 		<p>
 			The unusual parts of the architecture follow from a few hard rules.
 			They explain why the code uses fixed low-memory blocks, why the kernel
-			is linked below <code>0x7F000</code>, and why so much care goes into
+			is linked below <code>0x90000</code>, and why so much care goes into
 			keeping the kernel image small.
 		</p>
 		<ul>
