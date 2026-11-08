@@ -1178,9 +1178,11 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    compressed pack through the `0x60000..0x9FBFF` gap before copying it to
    `0x900000`, so `PACK_LOW_MAX` (0x3FBFF, ~255 KB compressed) still caps the
    legacy path; a larger pack needs the UEFI/kexec path or a chunked
-   high-memory loader.  The current pack is within a few KB of that cap
-   with `libdeflate-gzip -12` (plain `gzip -9` is already over), so command
-   growth needs care.
+   high-memory loader.  The browser and its ring-3 dependencies are compiled
+   with function sections and linked with `--gc-sections`; the current pack
+   is ~245 KB, leaving ~16 KB under the cap.  Command growth still needs
+   care because `libdeflate-gzip -12` is already required (plain `gzip -9`
+   is over the cap).
 10. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
     board that exposes only MP tables stays UP (deliberate; there is no test
     hardware).
@@ -1235,41 +1237,50 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     pack is out of the kernel now, so `_end` keeps ~130 KB of headroom below
     the `0x7F000` wall; the remaining limit is kernel code/buffers only.
 
-23. Browser limits: no JavaScript, forms, flex/grid, CSS custom properties
-    (`var(--...)`), tables with column widths, absolute/fixed positioning,
-    inline-block sizing or standalone image documents.  Float support is the
-    basic Bootstrap-grid case: consecutive floated blocks are laid side by
-    side with percentage/px widths, `float:right` is treated like left, there
-    is no `clear`, percentage margins are approximated as pixels, and a float
-    without a width uses a text-width estimate.  `@media` blocks are evaluated
-    against a fixed 1000 px desktop viewport (so narrow/adaptive pages get the
-    desktop rules, not their mobile layout), and pseudo-classes are never
-    matched.  `font-size` maps to 1x/2x only, `em`/`rem` both use a 16 px
-    root, and block `width`/`max-width` are not used for centring.  Images
-    are decoded into a 24 MB shared arena and downscaled to a 1000 px display
-    bitmap (16 images, 512 KB files / 8 MP decodes); a large image-heavy page
-    can still exhaust the 32 MB heap, and the first `<img>` after a big
-    screenshot can transiently need a new heap growth.  `img_draw` rescales
-    the cached bitmap on every repaint.  Lazy image loading uses the last
-    measured positions; adding an image can reflow the content above it, and
-    images below the viewport stay as `[image]` until scrolled into range.
-    Each network fetch starts a one-shot helper process and opens a fresh
-    TCP/TLS connection (the `uhttp` keep-alive path exists but the browser
-    does not use it across helper jobs), so many tiny resources have extra
-    process/connection overhead.  The helper deliberately requests identity
-    encoding, so a page that is only small when compressed can exceed the
-    2 MB page/832 KB CSS caps.  Video/audio elements are placeholders, and
-    pages that depend on `display:grid`/flex or CSS variables
-    (tagesschau's player and ad slots, for example) can show empty bordered
-    boxes or miss colours.  Bare `&` characters are now consumed by the
-    entity decoder instead of looping forever.  Because the default canvas is
-    dark, a
-    page that sets dark text but relies on the browser's default white
-    background can be hard to read; pages with their own full background and
-    colour rules are unaffected.  TLS is phase A (no certificate
-    verification); `https` is shown as unverified.  The disk app is loaded
-    from FAT at spawn time, so a cold floppy start takes a few seconds; the
-    8 KB user stack means the layout state is deliberately static.
+23. Browser limits: no JavaScript, forms, pseudo-classes/elements,
+    border-radius clipping of descendant content, gradients/box-shadow/
+    transitions (a gradient background falls back to its last solid colour),
+    or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with
+    wrap/grow/gap, two-track and `repeat(auto-fit, minmax(...))` grids,
+    inline-block runs, basic proportional table columns and inline SVG
+    (`rect`, `line`, `path` with M/L/H/V, and `text`) are supported.
+    `position:fixed` boxes are deferred and painted above the flow;
+    `position:sticky` is treated as static.  `prefers-color-scheme` media
+    queries are ignored so the page's base palette is used.  `width`/
+    `max-width` are not applied to block flow (they collapsed nested
+    percentage columns); flex/grid items still use them.  Float support is
+    the basic Bootstrap-grid case: consecutive floated blocks are laid side
+    by side with percentage/px widths, `float:right` is treated like left,
+    there is no `clear`, percentage margins are approximated as pixels, and
+    a float without a width uses a text-width estimate.  `@media` width
+    blocks are evaluated against a fixed 1000 px desktop viewport (so
+    narrow/adaptive pages get the desktop rules, not their mobile layout),
+    and pseudo-classes are never matched.  `font-size` maps to 1x/2x only,
+    `em`/`rem` both use a 16 px root, and `line-height` is approximate.
+    Pages that need flex alignment/justification, multi-row grid templates
+    or CSS variables inside `calc()`/`color-mix()` can still lay out
+    imperfectly.  Images are decoded into a 24 MB shared arena and
+    downscaled to a 1000 px display bitmap (16 images, 512 KB files / 8 MP
+    decodes); a large image-heavy page can still exhaust the 32 MB heap, and
+    the first `<img>` after a big screenshot can transiently need a new heap
+    growth.  `img_draw` rescales the cached bitmap on every repaint.  Lazy
+    image loading uses the last measured positions; adding an image can
+    reflow the content above it, and images below the viewport stay as
+    `[image]` until scrolled into range.  Each network fetch starts a
+    one-shot helper process and opens a fresh TCP/TLS connection (the
+    `uhttp` keep-alive path exists but the browser does not use it across
+    helper jobs), so many tiny resources have extra process/connection
+    overhead.  The helper deliberately requests identity encoding, so a page
+    that is only small when compressed can exceed the 2 MB page/832 KB CSS
+    caps.  Video/audio elements are placeholders.  Bare `&` characters are
+    consumed by the entity decoder instead of looping forever.  Because the
+    default canvas is dark, a page that sets dark text but relies on the
+    browser's default white background can be hard to read; pages with their
+    own background and colour rules are unaffected.  TLS is phase A (no
+    certificate verification); `https` is shown as unverified.  The disk app
+    is loaded from FAT at spawn time, so a cold floppy start takes a few
+    seconds; the 8 KB user stack means the layout state is deliberately
+    static.
 
 24. UEFI boot is x86-64 firmware only (no `BOOTIA32.EFI` yet) and the loader
     is unsigned, so Secure Boot must be off.  The loader needs a GOP mode with

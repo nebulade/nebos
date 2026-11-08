@@ -389,6 +389,12 @@ static unsigned int decode_text(const char *s, unsigned int len, char *out,
 			i += 2;
 			if (cp == 0xA0)
 				cp = ' ';
+			else if (cp == 0xB7)
+				cp = '-';
+			else if (cp == 0xD7)
+				cp = 'x';
+			else if (cp == 0xB0)
+				cp = 'o';
 			if (cp <= 0xFF)
 				emit(out, cap, &n, (char)cp);
 			else
@@ -407,6 +413,10 @@ static unsigned int decode_text(const char *s, unsigned int len, char *out,
 			} else if (cp == 0x2026) {
 				emit(out, cap, &n, '.'); emit(out, cap, &n, '.');
 				emit(out, cap, &n, '.');
+			} else if (cp == 0x2192) {
+				emit(out, cap, &n, '-'); emit(out, cap, &n, '>');
+			} else if (cp == 0x2264) {
+				emit(out, cap, &n, '<'); emit(out, cap, &n, '=');
 			} else {
 				emit(out, cap, &n, '?');
 			}
@@ -766,6 +776,8 @@ static void doc_reset(struct br_doc *d)
 		d->nodes[i].width_attr = d->nodes[i].height_attr = 0;
 		d->nodes[i].name_off = 0;
 		d->nodes[i].width_pct = d->nodes[i].height_pct = 0;
+		d->nodes[i].svg_x = d->nodes[i].svg_y = 0;
+		d->nodes[i].svg_rx = 0;
 		d->nodes[i].img_index = -1;
 		d->nodes[i].style_valid = 0;
 	}
@@ -846,6 +858,39 @@ static unsigned int parse_uint(const char *s, unsigned int len)
 		i++;
 	}
 	return v;
+}
+
+static int contains_ci_len(const char *s, unsigned int len,
+			   const char *needle);
+
+static int parse_svg_viewbox(const char *s, unsigned int len,
+			     unsigned short *w, unsigned short *h)
+{
+	unsigned int i = 0, v[4], n = 0;
+
+	while (i < len && n < 4) {
+		unsigned int x = 0;
+		int any = 0;
+
+		while (i < len && (is_space(s[i]) || s[i] == ','))
+			i++;
+		while (i < len && s[i] >= '0' && s[i] <= '9') {
+			x = x * 10 + (unsigned int)(s[i] - '0');
+			i++;
+			any = 1;
+		}
+		if (!any) {
+			if (i < len)
+				i++;
+			continue;
+		}
+		v[n++] = x;
+	}
+	if (n < 4)
+		return 0;
+	*w = (unsigned short)(v[2] > 4096 ? 4096 : v[2]);
+	*h = (unsigned short)(v[3] > 4096 ? 4096 : v[3]);
+	return *w && *h;
 }
 
 static void note_attr_flag(struct br_node *n, const char *name)
@@ -952,6 +997,31 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 			n->height_attr = (unsigned short)parse_uint(s + vstart, vlen);
 			if (vlen && s[vstart + vlen - 1] == '%')
 				n->height_pct = 1;
+		} else if (str_eq(name, "x") || str_eq(name, "x1")) {
+			n->svg_x = (signed short)parse_uint(s + vstart, vlen);
+		} else if (str_eq(name, "y") || str_eq(name, "y1")) {
+			n->svg_y = (signed short)parse_uint(s + vstart, vlen);
+		} else if (str_eq(name, "x2")) {
+			n->width_attr = (unsigned short)parse_uint(s + vstart, vlen);
+		} else if (str_eq(name, "y2")) {
+			n->height_attr = (unsigned short)parse_uint(s + vstart, vlen);
+		} else if (str_eq(name, "rx")) {
+			n->svg_rx = (unsigned char)parse_uint(s + vstart, vlen);
+		} else if (str_eq(name, "d")) {
+			n->src_off = store_attr(d, s + vstart, vlen, 300);
+		} else if (str_eq(name, "viewbox")) {
+			unsigned short vw = 0, vh = 0;
+
+			if (parse_svg_viewbox(s + vstart, vlen, &vw, &vh)) {
+				n->width_attr = vw;
+				n->height_attr = vh;
+				n->flags |= BR_NODE_VIEWBOX;
+			}
+		} else if (str_eq(name, "text-anchor")) {
+			if (contains_ci_len(s + vstart, vlen, "middle"))
+				n->attr_flags |= BR_ATTR_ANCHOR_MIDDLE;
+			else if (contains_ci_len(s + vstart, vlen, "end"))
+				n->attr_flags |= BR_ATTR_ANCHOR_END;
 		}
 	}
 }
@@ -977,7 +1047,7 @@ enum {
 	PROP_WIDTH, PROP_WIDTH_KIND, PROP_MAXW, PROP_MAXW_KIND,
 	PROP_HEIGHT, PROP_HEIGHT_KIND, PROP_LH_PCT, PROP_LH_PX, PROP_UPPER,
 	PROP_FLOAT, PROP_FLEX_GROW, PROP_FLEX_COL, PROP_FLEX_WRAP,
-	PROP_GRID_NCOLS, PROP_GRID_GAP, PROP_GRID_SLOT,
+	PROP_GRID_NCOLS, PROP_GRID_GAP, PROP_GRID_SLOT, PROP_GRID_AUTO,
 	PROP_POS, PROP_LEFT, PROP_TOP, PROP_LEFT_SET, PROP_TOP_SET,
 	PROP_VIS_HIDDEN, PROP_OPACITY_HIDDEN, PROP_OVERFLOW_HIDDEN,
 	PROP_COUNT
@@ -1475,6 +1545,41 @@ static int find_color(const char *s, unsigned int len, unsigned short *c)
 	return 0;
 }
 
+/* Background shorthands can hold several layers before the final solid
+ * colour.  The colour is conventionally the last token (e.g. a stack of
+ * gradients followed by var(--bg)), so take the rightmost colour rather
+ * than the first gradient stop. */
+static int find_color_last(const char *s, unsigned int len, unsigned short *c)
+{
+	int last = -1;
+	unsigned int i;
+
+	for (i = 0; i < len; i++) {
+		if (s[i] == '#')
+			last = (int)i;
+		else if ((s[i] == 'r' || s[i] == 'R') &&
+			 i + 3 <= len && ci_eq_n(s + i, "rgb", 3))
+			last = (int)i;
+	}
+	if (last >= 0)
+		return parse_color(s + last, len - (unsigned int)last, c);
+	while (i > 0) {
+		unsigned int st, e;
+
+		while (i > 0 && (is_space(s[i - 1]) || s[i - 1] == ',' ||
+				 s[i - 1] == ')' || s[i - 1] == '('))
+			i--;
+		e = i;
+		while (i > 0 && !is_space(s[i - 1]) && s[i - 1] != ',' &&
+		       s[i - 1] != ')' && s[i - 1] != '(')
+			i--;
+		st = i;
+		if (e > st && parse_color(s + st, e - st, c))
+			return 1;
+	}
+	return 0;
+}
+
 static int parse_display(const char *s, unsigned int len)
 {
 	unsigned int i;
@@ -1489,12 +1594,12 @@ static int parse_display(const char *s, unsigned int len)
 	if (i == 6 && ci_eq_n(s, "inline", 6))
 		return BR_DISPLAY_INLINE;
 	if (i == 12 && ci_eq_n(s, "inline-block", 12))
-		return BR_DISPLAY_BLOCK;
+		return BR_DISPLAY_INLINE_BLOCK;
 	if (i == 10 && ci_eq_n(s, "list-item", 10))
 		return BR_DISPLAY_BLOCK;
 	if (i == 4 && ci_eq_n(s, "flex", 4))
 		return BR_DISPLAY_FLEX;
-	if (i == 10 && ci_eq_n(s, "inline-flex", 10))
+	if (i == 11 && ci_eq_n(s, "inline-flex", 11))
 		return BR_DISPLAY_FLEX;
 	if (i == 5 && ci_eq_n(s, "table", 5))
 		return BR_DISPLAY_BLOCK;
@@ -2046,13 +2151,50 @@ static void parse_decls(struct br_doc *d, const char *s,
 			unsigned short c;
 			if (parse_color(s + vstart, vend - vstart, &c))
 				decl_add(out, nout, PROP_COLOR, c, important);
+		} else if (str_eq(prop, "fill")) {
+			unsigned short c;
+
+			if (parse_color(s + vstart, vend - vstart, &c)) {
+				decl_add(out, nout, PROP_BG, c, important);
+				decl_add(out, nout, PROP_COLOR, c, important);
+			}
+		} else if (str_eq(prop, "stroke")) {
+			unsigned short c;
+
+			if (parse_color(s + vstart, vend - vstart, &c)) {
+				decl_add(out, nout, PROP_BORDER_COLOR, c,
+					 important);
+				decl_add(out, nout, PROP_BORDER_W, 1, important);
+			}
+		} else if (str_eq(prop, "stroke-width")) {
+			unsigned int j = vstart;
+			int sw = 0;
+
+			while (j < vend && s[j] >= '0' && s[j] <= '9') {
+				sw = sw * 10 + (s[j] - '0');
+				j++;
+			}
+			if (sw < 1)
+				sw = 1;
+			if (sw > 3)
+				sw = 3;
+			decl_add(out, nout, PROP_BORDER_W, sw, important);
+		} else if (str_eq(prop, "text-anchor")) {
+			int a = BR_ALIGN_LEFT;
+
+			if (contains_ci_len(s + vstart, vend - vstart, "middle"))
+				a = BR_ALIGN_CENTER;
+			else if (contains_ci_len(s + vstart, vend - vstart,
+						 "end"))
+				a = BR_ALIGN_RIGHT;
+			decl_add(out, nout, PROP_ALIGN, a, important);
 		} else if (str_eq(prop, "background-color") ||
 			   str_eq(prop, "background")) {
 			unsigned short c;
 			if (parse_color(s + vstart, vend - vstart, &c))
 				decl_add(out, nout, PROP_BG, c, important);
 			else if (str_eq(prop, "background") &&
-				 find_color(s + vstart, vend - vstart, &c))
+				 find_color_last(s + vstart, vend - vstart, &c))
 				decl_add(out, nout, PROP_BG, c, important);
 		} else if (str_eq(prop, "font-size")) {
 			int px = parse_font_px(s + vstart, vend - vstart);
@@ -2172,10 +2314,11 @@ static void parse_decls(struct br_doc *d, const char *s,
 					    "absolute"))
 				p = 1;
 			else if (contains_ci_len(s + vstart, vend - vstart,
-						 "fixed") ||
-				 contains_ci_len(s + vstart, vend - vstart,
-						 "sticky"))
+						 "fixed"))
 				p = 2;
+			/* position:sticky stays in the flow.  Treating it as
+			 * fixed painted the header over the first content
+			 * block; a static header is safer than hidden text. */
 			decl_add(out, nout, PROP_POS, p, important);
 		} else if (str_eq(prop, "left") || str_eq(prop, "top")) {
 			int is_left = prop[0] == 'l';
@@ -2214,15 +2357,44 @@ static void parse_decls(struct br_doc *d, const char *s,
 						break;
 					}
 			}
-			n = parse_grid_cols(v, vl, val, kind);
-			if (n > 0) {
-				decl_add(out, nout, PROP_WIDTH, val[0], important);
-				decl_add(out, nout, PROP_WIDTH_KIND, kind[0], important);
-				decl_add(out, nout, PROP_GRID_NCOLS, n, important);
-			}
-			if (n > 1) {
-				decl_add(out, nout, PROP_MAXW, val[1], important);
-				decl_add(out, nout, PROP_MAXW_KIND, kind[1], important);
+			if (contains_ci_len(v, vl, "auto-fit") ||
+			    contains_ci_len(v, vl, "auto-fill")) {
+				unsigned int mp = 0;
+				int found = 0;
+				unsigned short mw = 200;
+				unsigned char mk = 1;
+
+				for (q = 0; q + 7 <= (int)vl; q++)
+					if (ci_eq_n(v + q, "minmax(", 7)) {
+						mp = (unsigned int)q + 7;
+						found = 1;
+						break;
+					}
+				if (found)
+					parse_grid_track(v, vl, &mp, &mw, &mk);
+				if (mk != 1 || mw < 80)
+					mw = 200;
+				if (mw > 480)
+					mw = 480;
+				decl_add(out, nout, PROP_GRID_AUTO, 1, important);
+				decl_add(out, nout, PROP_WIDTH, mw, important);
+				decl_add(out, nout, PROP_WIDTH_KIND, 1, important);
+			} else {
+				n = parse_grid_cols(v, vl, val, kind);
+				if (n > 0) {
+					decl_add(out, nout, PROP_WIDTH, val[0],
+						 important);
+					decl_add(out, nout, PROP_WIDTH_KIND,
+						 kind[0], important);
+					decl_add(out, nout, PROP_GRID_NCOLS, n,
+						 important);
+				}
+				if (n > 1) {
+					decl_add(out, nout, PROP_MAXW, val[1],
+						 important);
+					decl_add(out, nout, PROP_MAXW_KIND,
+						 kind[1], important);
+				}
 			}
 		} else if (str_eq(prop, "gap") || str_eq(prop, "column-gap")) {
 			unsigned int gp = 0;
@@ -2536,10 +2708,11 @@ static int media_feature_matches(const char *s, unsigned int len)
 	while (len && is_space(*s)) { s++; len--; }
 	while (len && is_space(s[len - 1])) len--;
 	if (contains_ci_len(s, len, "prefers-color-scheme")) {
-		/* The browser canvas is dark, but sites express their light
-		 * palette in the base rules; the dark overrides are usually
-		 * invisible against our default surfaces.  Pick the light set. */
-		return !contains_ci_len(s, len, "dark");
+		/* There is no user-selectable colour scheme.  Ignore both
+		 * variants so a page's base palette is used; sites whose base
+		 * is dark (like the project docs) then stay dark instead of
+		 * flipping to their light media override. */
+		return 0;
 	}
 	if (len >= 9 && ci_eq_n(s, "min-width", 9)) {
 		for (i = 9; i < len && s[i] != ':'; i++)
@@ -3442,6 +3615,9 @@ static void apply_decl(struct br_style *st, const struct br_decl *dcl)
 	case PROP_GRID_SLOT:
 		st->grid_slot = (unsigned char)dcl->val;
 		break;
+	case PROP_GRID_AUTO:
+		st->grid_auto = (unsigned char)(dcl->val != 0);
+		break;
 	case PROP_POS:
 		st->pos = (unsigned char)dcl->val;
 		break;
@@ -3505,6 +3681,7 @@ void br_style_for(struct br_doc *d, unsigned int node,
 	out->pt = out->pr = out->pb = out->pl = 0;
 	out->flex_grow = out->flex_col = out->flex_wrap = 0;
 	out->grid_ncols = out->grid_gap = out->grid_slot = 0;
+	out->grid_auto = 0;
 	out->pos = out->left_set = out->top_set = 0;
 	out->left = out->top = 0;
 	out->vis_hidden = out->opacity_hidden = 0;
@@ -3673,6 +3850,42 @@ static int has_attr_token(const char *s, unsigned int len, const char *name)
 	return 0;
 }
 
+static int stack_has_svg(const struct br_doc *d,
+			 const unsigned short *stack, unsigned int sp)
+{
+	unsigned int k;
+
+	for (k = 0; k <= sp && k < 64; k++)
+		if (d->nodes[stack[k]].tag == BR_TAG_SVG)
+			return 1;
+	return 0;
+}
+
+/* Skip an element subtree by finding its closing tag.  Used for SVG
+ * <title>/<desc>/<metadata> metadata, which must not enter the flow or
+ * overwrite the document title. */
+static unsigned int skip_element(const char *html, unsigned int len,
+				 unsigned int i, const char *name,
+				 unsigned int n)
+{
+	char close[40];
+	unsigned int k = 0, p;
+
+	close[k++] = '<';
+	close[k++] = '/';
+	while (k < sizeof(close) - 1 && n--)
+		close[k++] = *name++;
+	p = (unsigned int)find_ci(html, len, close, k, i);
+	if ((int)p < 0)
+		return len;
+	p += k;
+	while (p < len && html[p] != '>')
+		p++;
+	if (p < len)
+		p++;
+	return p;
+}
+
 int br_parse(struct br_doc *d, const char *html, unsigned int len)
 {
 	unsigned short stack[64];
@@ -3816,12 +4029,12 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 					i++;
 				continue;
 			}
-			if (tag == BR_TAG_SVG && !selfclose) {
-				/* Inline SVG is not rendered; skip its subtree so
-				 * logos and icon sprites do not consume the node
-				 * arena. */
-				int p = find_ci(html, len, "</svg>", 6, i);
-				i = p >= 0 ? (unsigned int)p + 6 : len;
+			if (stack_has_svg(d, stack, sp) &&
+			    (tag == BR_TAG_TITLE ||
+			     (tag == BR_TAG_UNKNOWN &&
+			      (ci_eq_n(name, "desc", 4) ||
+			       ci_eq_n(name, "metadata", 8))))) {
+				i = skip_element(html, len, i, name, n);
 				continue;
 			}
 			if (tag == BR_TAG_DETAILS && !selfclose &&

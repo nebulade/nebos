@@ -9,6 +9,9 @@ OBJCOPY = objcopy
 CFLAGS   = -ffreestanding -fno-pie -m32 -march=i586 -nostdlib -fno-stack-protector \
            -fno-asynchronous-unwind-tables -mno-sse -mno-sse2 -mno-mmx \
            -Wall -Wextra -O2 -c
+# Ring-3 objects are compiled with function sections so the browser link can
+# drop code it never reaches; the legacy rootfs pack is close to its cap.
+SECTION_CFLAGS = -ffunction-sections -fdata-sections
 ASFLAGS  = --32 -I.
 BOOT_LDFLAGS   = -T linker.ld -nostdlib -m elf_i386
 KERNEL_LDFLAGS = -T kernel.ld -nostdlib -m elf_i386
@@ -54,7 +57,7 @@ font_8x8.o: font_8x8.c font_8x8.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 font_8x16.o: font_8x16.c font_8x16.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 fbtext.o: fbtext.c fbtext.h font_8x8.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -330,7 +333,7 @@ sys_mem.o: sys_mem.c sys_mem.h mm.h paging.h process.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 inflate.o: inflate.c inflate.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 sys_info.o: sys_info.c sys_info.h syscall.h ahci.h blkdev.h it87.h mm.h mouse.h thermal.h tpec.h usbhid.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -590,7 +593,7 @@ ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x16.o ucmd.ld
 # -Os: every GUI app links the whole toolkit, and the legacy rootfs pack has
 # a hard 255 KB cap; -Os saves ~10 KB compressed across the pack.
 ngui.o: ngui.c ngui.h ucmd_lib.h syscall.h wm_abi.h font_8x16.h
-	$(CC) $(CFLAGS) -Os -o $@ $<
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -o $@ $<
 
 ucmd_files.o: ucmd_files.c ucmd_lib.h syscall.h wm_abi.h ngui.h img.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -631,7 +634,7 @@ IMGLIB_OBJS = img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o \
               img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o
 
 $(IMGLIB_OBJS): %.o: %.c img.h img_internal.h inflate.h ucmd_lib.h syscall.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 # The integer IDCT deliberately relies on 32-bit wrap-around.
 img_jpeg.o: CFLAGS += -fwrapv
@@ -650,7 +653,7 @@ TLSLIB_OBJS = tls_sha256.o tls_chacha20.o tls_x25519.o tls_rng.o tls.o
 
 # Shared ring-3 HTTP/TLS client (curl and the browser).
 uhttp.o: uhttp.c uhttp.h ucmd_lib.h tls.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 ucmd_curl.elf: ucmd_curl.o uhttp.o $(TLSLIB_OBJS) ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
@@ -658,34 +661,35 @@ ucmd_curl.elf: ucmd_curl.o uhttp.o $(TLSLIB_OBJS) ucmd.ld
 
 # browser: the real app is a disk image (BROWSER) because it links ngui, the
 # image library, TLS and uhttp.  ucmd_browser.c is the tiny PATH launcher.
-# Compile the two large browser-specific objects for size: the legacy rootfs
-# pack has a hard low-memory cap and is already close to it.
+# Compile this graph with function sections and link it with --gc-sections:
+# unreachable image, TLS and UI paths are dropped, leaving room under the
+# legacy rootfs pack's low-memory cap.
 browser_html.o: browser_html.c browser_html.h
-	$(CC) $(CFLAGS) -Os -o $@ $<
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -o $@ $<
 
 browser.o: browser.c ucmd_lib.h syscall.h wm_abi.h ngui.h browser_html.h uhttp.h img.h inflate.h
-	$(CC) $(CFLAGS) -Os -o $@ $<
+	$(CC) $(CFLAGS) -Os $(SECTION_CFLAGS) -o $@ $<
 
 browser.elf: browser.o browser_html.o uhttp.o ngui.o font_8x16.o $(IMGLIB_OBJS) inflate.o $(TLSLIB_OBJS) ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 
 tls_sha256.o: tls_sha256.c tls_sha256.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 tls_chacha20.o: tls_chacha20.c tls_chacha20.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 tls_x25519.o: tls_x25519.c tls_x25519.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 tls_rng.o: tls_rng.c tls_rng.h tls_sha256.h ucmd_lib.h syscall.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 tls.o: tls.c tls.h tls_sha256.h tls_chacha20.h tls_x25519.h tls_rng.h \
        ucmd_lib.h syscall.h
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
 tls_test: tls_test.c tls_sha256.c tls_chacha20.c tls_x25519.c \
 	  tls_sha256.h tls_chacha20.h tls_x25519.h

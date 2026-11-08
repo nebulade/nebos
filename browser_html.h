@@ -26,6 +26,8 @@
 #define BR_NODE_PREFORMAT 1
 /* Element flag: the HTML hidden attribute is present. */
 #define BR_NODE_HIDDEN   2
+/* Element flag: width_attr/height_attr hold an SVG viewBox. */
+#define BR_NODE_VIEWBOX  4
 
 /* Extra attribute presence flags (data-collapse-*, state attributes).
  * Stored separately because struct br_style/selector matching needs them
@@ -36,6 +38,8 @@
 #define BR_ATTR_DISABLED         0x08
 #define BR_ATTR_OPEN             0x10
 #define BR_ATTR_INERT            0x20
+#define BR_ATTR_ANCHOR_MIDDLE    0x40
+#define BR_ATTR_ANCHOR_END       0x80
 
 /* Display values in struct br_style. */
 #define BR_DISPLAY_INLINE 0
@@ -43,6 +47,7 @@
 #define BR_DISPLAY_NONE   2
 #define BR_DISPLAY_FLEX   3
 #define BR_DISPLAY_GRID   4
+#define BR_DISPLAY_INLINE_BLOCK 5
 
 /* Text alignment. */
 #define BR_ALIGN_LEFT   0
@@ -90,6 +95,7 @@ struct br_style {
 	unsigned char grid_ncols;   /* 1 or 2 supported */
 	unsigned char grid_gap;     /* px */
 	unsigned char grid_slot;    /* 0 auto, 1 full, 2 left, 3 right */
+	unsigned char grid_auto;    /* repeat(auto-fit, minmax(width, 1fr)) */
 	unsigned char pos;          /* 0 static, 1 absolute, 2 fixed */
 	unsigned char left_set, top_set;
 	signed short left, top;
@@ -136,6 +142,8 @@ struct br_node {
 	unsigned char width_pct;
 	unsigned char height_pct;
 	short img_index;            /* -1 until the image is loaded */
+	signed short svg_x, svg_y;  /* inline SVG x/y or line x1/y1 */
+	unsigned char svg_rx;       /* inline SVG rect corner radius */
 	struct br_style style;      /* computed-style cache */
 	unsigned char style_valid;
 };

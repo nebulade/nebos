@@ -2264,6 +2264,17 @@ static void layout_flex_children(struct lay *l, unsigned int parent,
 static void layout_grid_children(struct lay *l, unsigned int parent,
 				 const struct br_style *pst, int depth,
 				 unsigned short link);
+static void layout_grid_auto(struct lay *l, unsigned int parent,
+			     const struct br_style *pst, int depth,
+			     unsigned short link);
+static int flex_item_width(struct lay *l, unsigned int n,
+			   const struct br_style *cs, int avail);
+static unsigned int layout_inline_blocks(struct lay *l, unsigned int first,
+					 const struct br_style *pst, int depth,
+					 unsigned short link);
+static void layout_table_row(struct lay *l, unsigned int row,
+			     const struct br_style *pst, int depth,
+			     unsigned short link);
 
 /* A flex container whose items are only inline spans is usually just a
  * heading/icon pair.  Our flex row positions such items without emitting
@@ -2283,7 +2294,8 @@ static int flex_wants_row(unsigned int parent, const struct br_style *pst)
 		if (cs.display == BR_DISPLAY_NONE)
 			continue;
 		if (cs.display != BR_DISPLAY_INLINE || cs.flex_grow ||
-		    cs.width_kind || nd->tag == BR_TAG_IMG)
+		    cs.width_kind || cs.has_bg || cs.border_w ||
+		    nd->tag == BR_TAG_IMG)
 			return 1;
 	}
 	return 0;
@@ -2301,6 +2313,223 @@ static int css_radius(const struct br_style *st, int corner,
 	if (r > h / 2)
 		r = h / 2;
 	return r;
+}
+
+static void svg_viewbox(unsigned node, int *vw, int *vh)
+{
+	struct br_node *nd = &doc.nodes[node];
+
+	if (nd->width_attr && nd->height_attr) {
+		*vw = nd->width_attr;
+		*vh = nd->height_attr;
+	} else {
+		*vw = 300;
+		*vh = 150;
+	}
+	if (*vw < 1)
+		*vw = 1;
+	if (*vh < 1)
+		*vh = 1;
+}
+
+static int svg_num(const char **pp)
+{
+	const char *p = *pp;
+	int neg = 0, v = 0, frac = 0, scale = 1;
+
+	while (*p == ' ' || *p == ',' || *p == '\t' ||
+	       *p == '\n' || *p == '\r')
+		p++;
+	if (*p == '-') {
+		neg = 1;
+		p++;
+	} else if (*p == '+') {
+		p++;
+	}
+	while (*p >= '0' && *p <= '9') {
+		v = v * 10 + (*p - '0');
+		p++;
+	}
+	if (*p == '.') {
+		p++;
+		while (*p >= '0' && *p <= '9' && scale < 1000) {
+			frac = frac * 10 + (*p - '0');
+			scale *= 10;
+			p++;
+		}
+	}
+	v += frac / scale;
+	*pp = p;
+	return neg ? -v : v;
+}
+
+static void svg_path(struct ngui *ui, const char *d,
+		     int ox, int oy, int dw, int dh, int vw, int vh,
+		     unsigned short color)
+{
+	int cx = 0, cy = 0, sx = 0, sy = 0;
+	char cmd = 0;
+	const char *p = d;
+
+	while (p && *p) {
+		int rel, nx, ny;
+		char c;
+
+		while (*p == ' ' || *p == ',' || *p == '\t' ||
+		       *p == '\n' || *p == '\r')
+			p++;
+		if (!*p)
+			break;
+		if ((*p >= 'A' && *p <= 'Z') ||
+		    (*p >= 'a' && *p <= 'z'))
+			cmd = *p++;
+		else if (!cmd) {
+			p++;
+			continue;
+		}
+		rel = cmd >= 'a' && cmd <= 'z';
+		c = rel ? (char)(cmd - 'a' + 'A') : cmd;
+		if (c == 'Z') {
+			ngui_line(ui, ox + cx * dw / vw, oy + cy * dh / vh,
+				  ox + sx * dw / vw, oy + sy * dh / vh,
+				  color);
+			cx = sx;
+			cy = sy;
+			cmd = 0;
+			continue;
+		}
+		if (c == 'H' || c == 'V') {
+			const char *save = p;
+			int a = svg_num(&p);
+
+			if (p == save) {
+				p++;
+				continue;
+			}
+			nx = cx;
+			ny = cy;
+			if (c == 'H')
+				nx = rel ? cx + a : a;
+			else
+				ny = rel ? cy + a : a;
+		} else {
+			const char *save = p;
+			int a = svg_num(&p);
+			int b = svg_num(&p);
+
+			if (p == save) {
+				p++;
+				continue;
+			}
+			if (c == 'M') {
+				nx = rel ? cx + a : a;
+				ny = rel ? cy + b : b;
+				cx = sx = nx;
+				cy = sy = ny;
+				cmd = rel ? 'l' : 'L';
+				continue;
+			}
+			if (c != 'L')
+				break;
+			nx = rel ? cx + a : a;
+			ny = rel ? cy + b : b;
+		}
+		ngui_line(ui, ox + cx * dw / vw, oy + cy * dh / vh,
+			  ox + nx * dw / vw, oy + ny * dh / vh, color);
+		cx = nx;
+		cy = ny;
+	}
+}
+
+static void draw_svg(struct ngui *ui, unsigned node,
+		     int ox, int oy, int dw, int dh, int vw, int vh,
+		     const struct br_style *pst)
+{
+	unsigned int c;
+
+	for (c = doc.nodes[node].first; c; c = doc.nodes[c].next) {
+		struct br_node *nd = &doc.nodes[c];
+		struct br_style st;
+		const char *nm;
+
+		if (nd->type != BR_NODE_ELEM || !nd->name_off)
+			continue;
+		nm = doc.attrs + nd->name_off;
+		br_style_for(&doc, c, pst, &st);
+		if (s_eq(nm, "rect")) {
+			struct ngui_rect r;
+			int rx = (int)nd->svg_rx * dw / vw;
+
+			r.x = ox + (int)nd->svg_x * dw / vw;
+			r.y = oy + (int)nd->svg_y * dh / vh;
+			r.w = (int)nd->width_attr * dw / vw;
+			r.h = (int)nd->height_attr * dh / vh;
+			if (r.w < 1)
+				r.w = 1;
+			if (r.h < 1)
+				r.h = 1;
+			if (rx > r.w / 2)
+				rx = r.w / 2;
+			if (rx > r.h / 2)
+				rx = r.h / 2;
+			if (st.has_bg) {
+				if (rx)
+					ngui_fill_round_rect(ui, r, rx, rx,
+							     rx, rx, st.bg);
+				else
+					ngui_fill_rect(ui, r, st.bg);
+			}
+			if (st.border_w) {
+				if (rx)
+					ngui_frame_round(ui, r, rx, rx, rx, rx,
+							 st.border_w,
+							 st.border_color);
+				else
+					ngui_frame(ui, r, st.border_color);
+			}
+		} else if (s_eq(nm, "line")) {
+			if (st.border_w)
+				ngui_line(ui,
+					  ox + (int)nd->svg_x * dw / vw,
+					  oy + (int)nd->svg_y * dh / vh,
+					  ox + (int)nd->width_attr * dw / vw,
+					  oy + (int)nd->height_attr * dh / vh,
+					  st.border_color);
+		} else if (s_eq(nm, "path")) {
+			if (st.border_w && nd->src_off)
+				svg_path(ui, doc.attrs + nd->src_off,
+					 ox, oy, dw, dh, vw, vh,
+					 st.border_color);
+		} else if (s_eq(nm, "text")) {
+			unsigned int t = nd->first;
+			const char *s;
+			unsigned int n, tw;
+			int scale = st.scale ? st.scale : 1;
+			int tx, ty, anchor;
+
+			if (!t || doc.nodes[t].type != BR_NODE_TEXT)
+				continue;
+			s = doc.text + doc.nodes[t].text_off;
+			n = doc.nodes[t].text_len;
+			tw = ngui_text_width_n(s, n, scale);
+			if (st.bold)
+				tw += n;
+			tx = ox + (int)nd->svg_x * dw / vw;
+			ty = oy + (int)nd->svg_y * dh / vh -
+			     12 * scale;
+			anchor = st.align;
+			if (nd->attr_flags & BR_ATTR_ANCHOR_MIDDLE)
+				anchor = BR_ALIGN_CENTER;
+			else if (nd->attr_flags & BR_ATTR_ANCHOR_END)
+				anchor = BR_ALIGN_RIGHT;
+			if (anchor == BR_ALIGN_CENTER)
+				tx -= (int)tw / 2;
+			else if (anchor == BR_ALIGN_RIGHT)
+				tx -= (int)tw;
+			ngui_text_styled(ui, tx, ty, s, n, st.color,
+					 scale, st.bold);
+		}
+	}
 }
 
 static void layout_block(struct lay *l, unsigned int node,
@@ -2431,6 +2660,27 @@ static void layout_block(struct lay *l, unsigned int node,
 				  0x4208);
 		}
 		l->y += vh + 4;
+	} else if (doc.nodes[node].tag == BR_TAG_SVG) {
+		int vw, vh, dw = l->right - l->left;
+		int dh;
+
+		svg_viewbox(node, &vw, &vh);
+		if (dw < 8)
+			dw = 8;
+		dh = dw * vh / vw;
+		if (dh < 8)
+			dh = 8;
+		if (dh > 1400)
+			dh = 1400;
+		if (l->draw) {
+			struct ngui_rect clip = {l->left, l->y, dw, dh};
+
+			ngui_push_clip(l->ui, clip);
+			draw_svg(l->ui, node, l->left, l->y, dw, dh,
+				 vw, vh, st);
+			ngui_pop_clip(l->ui);
+		}
+		l->y += dh;
 	} else {
 		if (doc.nodes[node].tag == BR_TAG_LI && !st->no_bullet) {
 			char *m = li_marker[node];
@@ -2452,8 +2702,12 @@ static void layout_block(struct lay *l, unsigned int node,
 					  st->color);
 			}
 		}
-		if (st->display == BR_DISPLAY_GRID && st->grid_ncols >= 2 &&
-		    st->grid_gap > 0)
+		if (doc.nodes[node].tag == BR_TAG_TR)
+			layout_table_row(l, node, st, depth + 1, link);
+		else if (st->grid_auto)
+			layout_grid_auto(l, node, st, depth + 1, link);
+		else if (st->display == BR_DISPLAY_GRID && st->grid_ncols >= 2 &&
+			 st->grid_gap > 0)
 			layout_grid_children(l, node, st, depth + 1, link);
 		else if (st->display == BR_DISPLAY_FLEX && !st->flex_col &&
 			 flex_wants_row(node, st))
@@ -2482,8 +2736,7 @@ static void layout_block(struct lay *l, unsigned int node,
 		if (h > 65535)
 			h = 65535;
 		block_h[node] = (unsigned short)h;
-
-	}
+}
 	if (positioned) {
 		l->y = flow_y;
 		l->left = flow_left;
@@ -2676,6 +2929,91 @@ static int flex_item_width(struct lay *l, unsigned int n,
 	return w;
 }
 
+/* A run of display:inline-block siblings (file tags, small buttons) belongs
+ * on one line, not one full-width block each.  Place intrinsic widths from
+ * left to right and wrap when the row is full. */
+static unsigned int layout_inline_blocks(struct lay *l, unsigned int first,
+					 const struct br_style *pst, int depth,
+					 unsigned short link)
+{
+	unsigned int n = first;
+	int row_left = l->left, row_right = l->right;
+	int avail = row_right - row_left;
+	int x = row_left, y = l->y, row_h = 0, any = 0;
+
+	flush_line(l);
+	y = l->y;
+	while (n) {
+		struct br_node *nd = &doc.nodes[n];
+		struct br_style cs;
+		unsigned short lk = link;
+		int colw, h;
+
+		if (nd->type == BR_NODE_TEXT) {
+			if (!text_node_blank(nd))
+				break;
+			if (any)
+				x += 4;
+			n = nd->next;
+			continue;
+		}
+		br_style_for(&doc, n, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE) {
+			n = nd->next;
+			continue;
+		}
+		if (cs.display != BR_DISPLAY_INLINE_BLOCK)
+			break;
+		if (nd->tag == BR_TAG_A && nd->href_off)
+			lk = (unsigned short)n;
+		colw = flex_item_width(l, n, &cs, avail);
+		/* A few pixels of slack keep a single long token (boot.S)
+		 * from wrapping at the exact content width. */
+		colw += 8;
+		if (colw > avail)
+			colw = avail;
+		if (any && x + colw > row_right) {
+			y += row_h + 2;
+			x = row_left;
+			row_h = 0;
+			any = 0;
+		}
+		if (any && x > row_left)
+			x += 4;
+		l->left = x;
+		l->right = x + colw;
+		if (l->right < l->left + 8)
+			l->right = l->left + 8;
+		l->y = y;
+		l->line_x = l->left;
+		l->run_x = l->left;
+		l->line_y = l->y;
+		l->line_h = 0;
+		l->nruns = 0;
+		l->space_pending = 0;
+		l->align = cs.align;
+		layout_block(l, n, &cs, depth + 1, lk);
+		h = l->y - y;
+		if (h > row_h)
+			row_h = h;
+		x += colw;
+		any = 1;
+		n = nd->next;
+	}
+	if (any)
+		y += row_h;
+	l->left = row_left;
+	l->right = row_right;
+	l->y = y;
+	l->line_x = l->left;
+	l->run_x = l->left;
+	l->line_y = l->y;
+	l->line_h = 0;
+	l->nruns = 0;
+	l->space_pending = 0;
+	return n;
+}
+
 static void layout_flex_children(struct lay *l, unsigned int parent,
 				 const struct br_style *pst, int depth,
 				 unsigned short link)
@@ -2683,7 +3021,7 @@ static void layout_flex_children(struct lay *l, unsigned int parent,
 	unsigned int n, c;
 	int row_left = l->left, row_right = l->right;
 	int avail = row_right - row_left;
-	int grow_count = 0, fixed = 0, grow_w;
+	int grow_count = 0, fixed = 0, grow_w, gap = pst->grid_gap;
 	int x = row_left, row_top = l->y, row_bottom = l->y, any = 0;
 
 	if (avail < 160 || depth > 24) {
@@ -2744,11 +3082,18 @@ static void layout_flex_children(struct lay *l, unsigned int parent,
 			colw = flex_item_width(l, n, &cs, avail);
 		if (colw > row_right - row_left)
 			colw = row_right - row_left;
-		if (pst->flex_wrap != 2 && any && x + colw > row_right) {
-			row_top = row_bottom;
-			row_bottom = row_top;
-			x = row_left;
+		if (any && x + colw > row_right) {
+			if (pst->flex_wrap == 2) {
+				if (colw > row_right - x)
+					colw = row_right - x;
+			} else {
+				row_top = row_bottom;
+				row_bottom = row_top;
+				x = row_left;
+			}
 		}
+		if (any && gap && x > row_left)
+			x += gap;
 		l->left = x;
 		l->right = x + colw;
 		if (l->right < l->left + 8)
@@ -2932,6 +3277,185 @@ static void layout_grid_children(struct lay *l, unsigned int parent,
 	l->space_pending = 0;
 }
 
+/* repeat(auto-fit, minmax(<min>, 1fr)): pick as many equal columns as fit,
+ * capped at four.  Used by the project docs' card grids. */
+static void layout_grid_auto(struct lay *l, unsigned int parent,
+			     const struct br_style *pst, int depth,
+			     unsigned short link)
+{
+	unsigned int n, c;
+	int row_left = l->left, row_right = l->right;
+	int avail = row_right - row_left;
+	int gap = pst->grid_gap;
+	int minw = pst->width_kind == 1 ? pst->width : 200;
+	int ncols, colw, x, y = l->y, start_y = l->y, row_h = 0, col = 0;
+
+	if (avail < 32 || depth > 24) {
+		layout_children(l, parent, pst, depth, link);
+		return;
+	}
+	for (c = doc.nodes[parent].first; c; c = doc.nodes[c].next) {
+		struct br_node *nd = &doc.nodes[c];
+
+		if (nd->type == BR_NODE_TEXT && !text_node_blank(nd)) {
+			layout_children(l, parent, pst, depth, link);
+			return;
+		}
+	}
+	if (minw < 80)
+		minw = 80;
+	ncols = (avail + gap) / (minw + gap);
+	if (ncols < 1)
+		ncols = 1;
+	if (ncols > 4)
+		ncols = 4;
+	colw = (avail - gap * (ncols - 1)) / ncols;
+	if (colw < 24)
+		colw = 24;
+	x = row_left;
+	n = doc.nodes[parent].first;
+	while (n) {
+		struct br_node *nd = &doc.nodes[n];
+		struct br_style cs;
+		unsigned short lk = link;
+		int h;
+
+		if (nd->type == BR_NODE_TEXT) {
+			n = nd->next;
+			continue;
+		}
+		br_style_for(&doc, n, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE) {
+			n = nd->next;
+			continue;
+		}
+		if (nd->tag == BR_TAG_A && nd->href_off)
+			lk = (unsigned short)n;
+		l->left = x;
+		l->right = x + colw;
+		if (l->right < l->left + 8)
+			l->right = l->left + 8;
+		l->y = y;
+		l->line_x = l->left;
+		l->run_x = l->left;
+		l->line_y = l->y;
+		l->line_h = 0;
+		l->nruns = 0;
+		l->space_pending = 0;
+		l->align = cs.align;
+		layout_block(l, n, &cs, depth + 1, lk);
+		h = l->y - y;
+		if (h > row_h)
+			row_h = h;
+		col++;
+		n = nd->next;
+		if (col == ncols) {
+			y += row_h + gap;
+			x = row_left;
+			row_h = 0;
+			col = 0;
+		} else {
+			x += colw + gap;
+		}
+	}
+	if (col)
+		y += row_h;
+	else if (y > start_y)
+		y -= gap;
+	l->left = row_left;
+	l->right = row_right;
+	l->y = y;
+	l->line_x = l->left;
+	l->run_x = l->left;
+	l->line_y = l->y;
+	l->line_h = 0;
+	l->nruns = 0;
+	l->space_pending = 0;
+}
+
+/* Table rows: cells share the row line, with widths proportional to their
+ * intrinsic content.  Border-collapse and colspans are not modelled, but a
+ * two-column reference table reads as a table instead of a vertical list. */
+static void layout_table_row(struct lay *l, unsigned int row,
+			     const struct br_style *pst, int depth,
+			     unsigned short link)
+{
+	unsigned int n, cell[12];
+	int raw[12], ncell = 0, total = 0;
+	int row_left = l->left, row_right = l->right;
+	int avail = row_right - row_left;
+	int x = row_left, y = l->y, bottom = l->y;
+
+	for (n = doc.nodes[row].first; n; n = doc.nodes[n].next) {
+		struct br_node *nd = &doc.nodes[n];
+		struct br_style cs;
+
+		if (nd->type == BR_NODE_TEXT) {
+			if (text_node_blank(nd))
+				continue;
+			layout_children(l, row, pst, depth, link);
+			return;
+		}
+		if (nd->tag != BR_TAG_TD && nd->tag != BR_TAG_TH) {
+			layout_children(l, row, pst, depth, link);
+			return;
+		}
+		br_style_for(&doc, n, pst, &cs);
+		if (cs.display == BR_DISPLAY_NONE)
+			continue;
+		if (ncell >= 12) {
+			layout_children(l, row, pst, depth, link);
+			return;
+		}
+		cell[ncell] = n;
+		raw[ncell] = intrinsic_width(n, &cs, 0) + cs.pl + cs.pr +
+			     cs.ml + cs.mr;
+		if (raw[ncell] < 24)
+			raw[ncell] = 24;
+		total += raw[ncell];
+		ncell++;
+	}
+	if (ncell < 2 || total <= 0 || avail < 32) {
+		layout_children(l, row, pst, depth, link);
+		return;
+	}
+	for (n = 0; n < (unsigned int)ncell; n++) {
+		struct br_style cs;
+		int w = (int)((long)raw[n] * avail / total);
+
+		br_style_for(&doc, cell[n], pst, &cs);
+		if (w < 24)
+			w = 24;
+		if (n == (unsigned int)ncell - 1)
+			w = row_right - x;
+		if (w < 8)
+			w = 8;
+		l->left = x;
+		l->right = x + w;
+		l->y = y;
+		l->line_x = l->left;
+		l->run_x = l->left;
+		l->line_y = l->y;
+		l->line_h = 0;
+		l->nruns = 0;
+		l->space_pending = 0;
+		l->align = cs.align;
+		layout_block(l, cell[n], &cs, depth + 1, link);
+		if (l->y > bottom)
+			bottom = l->y;
+		x += w;
+	}
+	l->left = row_left;
+	l->right = row_right;
+	l->y = bottom;
+	l->line_x = l->left;
+	l->run_x = l->left;
+	l->line_y = l->y;
+	l->line_h = 0;
+	l->nruns = 0;
+	l->space_pending = 0;
+}
+
 /* Positioned elements (fixed headers, overlays) are drawn after the normal
  * flow so they sit above it, like CSS painting order.  Their flow origin is
  * saved for absolute boxes; fixed boxes only need the viewport rect. */
@@ -3029,6 +3553,10 @@ static void layout_children(struct lay *l, unsigned int parent,
 		}
 		if (cs.float_left && cs.display == BR_DISPLAY_BLOCK) {
 			n = layout_float_group(l, n, pst, depth, link);
+			continue;
+		}
+		if (cs.display == BR_DISPLAY_INLINE_BLOCK) {
+			n = layout_inline_blocks(l, n, pst, depth, link);
 			continue;
 		}
 		if (cs.display == BR_DISPLAY_BLOCK || br_tag_is_block(nd->tag))
