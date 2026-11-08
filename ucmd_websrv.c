@@ -222,7 +222,7 @@ static int send_headers(int code, const char *reason, const char *ctype,
 	rad((unsigned int)code);
 	ra(" ");
 	ra(reason);
-	ra("\r\nServer: Nebs OS/0.2.0\r\n");
+	ra("\r\nServer: NebOS/0.2.0\r\n");
 	ra((rq.keep_alive && code < 400) ? "Connection: keep-alive\r\n"
 					 : "Connection: close\r\n");
 	ra("Cache-Control: no-store\r\n");
@@ -335,7 +335,7 @@ static int send_multistatus_begin(void)
 {
 	resp_len = 0;
 	ra("HTTP/1.1 207 Multi-Status\r\n");
-	ra("Server: Nebs OS/0.2.0\r\n");
+	ra("Server: NebOS/0.2.0\r\n");
 	ra("Content-Type: text/xml; charset=\"utf-8\"\r\n");
 	ra("Transfer-Encoding: chunked\r\n");
 	ra(rq.keep_alive ? "Connection: keep-alive\r\n"
@@ -1167,7 +1167,7 @@ static int list_child(unsigned int index, const char *dir, char *out,
 static void do_options2(void)
 {
 	resp_len = 0;
-	ra("HTTP/1.1 200 OK\r\nServer: Nebs OS/0.2.0\r\n");
+	ra("HTTP/1.1 200 OK\r\nServer: NebOS/0.2.0\r\n");
 	ra("DAV: 1, 2\r\nMS-Author-Via: DAV\r\n");
 	ra("Allow: OPTIONS, GET, HEAD, PUT, DELETE, MKCOL, PROPFIND, "
 	   "PROPPATCH, MOVE, LOCK, UNLOCK\r\n");

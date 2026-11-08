@@ -216,7 +216,7 @@ static const char *const howto_lines[] = {
 };
 
 static const char *const about_lines[] = {
-	"Nebs OS edition",
+	"NebOS edition",
 	"",
 	"A Windows 95 style Klondike.",
 	"Drag, drop, and bounce."

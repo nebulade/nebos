@@ -2,8 +2,8 @@
 #ifndef WM_H
 #define WM_H
 
-#include "terminal.h"
 #include "gfx.h"
+#include "sched.h"
 #include "wm_abi.h"
 
 #define MAX_WINDOWS WM_MAX_WINDOWS
@@ -14,9 +14,8 @@ struct window {
 	unsigned int pw, ph;     /* pixel size */
 	char title[16];
 	int focused;
-	unsigned int pid;        /* owning terminal process pid (0 = none) */
-	struct term *term;
-	/* Generic canvas window (gfx commands): no terminal, own front/back. */
+	unsigned int pid;        /* owning process pid (0 = none) */
+	/* Every window is a ring-3 canvas client. */
 	int canvas_window;
 	struct gfx_canvas canvas;
 	unsigned short *back;
@@ -37,18 +36,11 @@ struct window {
 	unsigned int mapped_gen;
 	unsigned int mapped_pages;
 	const void *mapped_src;
-	/* Fallback kernel terminal canvas: the window server renders the cell
-	 * grid into this RGB565 canvas and the WM composites it like any other
-	 * window content. */
-	int text_ready;
-	unsigned int text_dmg_x, text_dmg_y, text_dmg_w, text_dmg_h;
 };
 
-void wm_run(void);
 /* Idle-loop services: these stay in the kernel even while the WM process is
- * stopped, so keyboard routing, cursor blink and kexec recovery keep working. */
+ * stopped, so keyboard routing and kexec recovery keep working. */
 void wm_pump_keyboard(void);
-void wm_blink_cursor(void);
 void wm_handle_kexec(void);
 int  wm_spawn_terminal(void);
 
@@ -81,18 +73,9 @@ int  wm_server_key_poll(void);
 int  wm_server_key_wait(unsigned int timeout_ms);
 int  wm_server_win_pointer(struct win_pointer *out);
 int  wm_server_win_event(struct win_event *out);
-void wm_content_changed(struct text_screen *screen);
-void wm_server_unmap_screen(struct text_screen *screen);
-void wm_server_unmap_canvas(struct text_screen *screen, const void *canvas);
+void wm_server_boot_ready(void);
 struct window *wm_focused_window(void);
 int  wm_is_focused(const struct window *w);
 void wm_request_redraw(void);
-
-/* The terminal whose screen is `screen`, or NULL (the sys_gfx service uses the
- * inherited screen pointer to find a command's window). */
-struct term *wm_term_for_screen(struct text_screen *screen);
-
-/* Pixel size of a window's content area (its canvas size).  Returns 0/-1. */
-int wm_content_size(struct term *t, unsigned int *w, unsigned int *h);
 
 #endif

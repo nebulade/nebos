@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Networking | NebOS Architecture</title>
+<meta name="description" content="NebOS networking: the netdev registry and NIC drivers, ARP/ICMP/UDP, DHCP, DNS, the TCP client and listener, TLS 1.3, sys_net ownership, netconsole and netkexec.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html">Memory</a>
+		<a href="cpu.html">CPU</a>
+		<a href="drivers.html">Drivers</a>
+		<a href="filesystems.html">Filesystems</a>
+		<a href="graphics.html">Graphics</a>
+		<a href="network.html" aria-current="page">Network</a>
+		<a href="userland.html">Userland</a>
+		<a href="development.html">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">Networking</p>
+		<h1>A small stack with one receiver owner.</h1>
+		<p class="lede">
+			The NIC and the protocol stack live in the kernel; ring-3 commands
+			drive them through <code>SYS_NET_*</code> and <code>SYS_TCP_*</code>.
+			Only one process may own the receiver at a time, which keeps the
+			polled drivers and the single TCP connection simple.
+		</p>
+		<div class="meta">
+			<span class="pill">ARP · ICMP · UDP · TCP</span>
+			<span class="pill">DHCP · DNS</span>
+			<span class="pill">TLS 1.3 · X25519</span>
+			<span class="pill">netconsole + netkexec</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#stack">Protocol stack</a></li>
+			<li><a href="#netdev">NIC drivers</a></li>
+			<li><a href="#core">Link &amp; IP layer</a></li>
+			<li><a href="#dhcp">DHCP &amp; DNS</a></li>
+			<li><a href="#tcp">TCP</a></li>
+			<li><a href="#tls">TLS</a></li>
+			<li><a href="#abi">sys_net ABI</a></li>
+			<li><a href="#console">Netconsole &amp; netkexec</a></li>
+			<li><a href="#http">HTTP clients</a></li>
+			<li><a href="#security">Security posture</a></li>
+			<li><a href="#sources">Source map</a></li>
+		</ul>
+	</nav>
+
+	<section id="stack">
+		<h2>Protocol stack</h2>
+		<p>
+			NebOS does not expose sockets. A ring-3 program asks the kernel for
+			info and configuration, acquires the receiver, then uses raw frame
+			paths or the single TCP connection. HTTP and TLS are libraries linked
+			into the command, not kernel services.
+		</p>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 380" role="img" aria-labelledby="net-title net-desc">
+				<title id="net-title">NebOS network stack</title>
+				<desc id="net-desc">Ring-3 curl, browser and websrv use uhttp and TLS, then sys_net syscalls, then TCP/DNS/DHCP, IPv4/ARP/ICMP, netdev drivers and the NIC.</desc>
+
+				<rect class="svg-box accent" x="70" y="18" width="780" height="58" rx="9"/>
+				<text class="svg-text" x="92" y="43">curl · browser · websrv · ping · dhcp</text>
+				<text class="svg-sub" x="92" y="63">ring-3 programs</text>
+
+				<path class="svg-line" d="M460 76v20"/>
+				<path class="svg-line" d="M454 90l6 7 6-7"/>
+
+				<rect class="svg-box blue" x="70" y="98" width="380" height="58" rx="9"/>
+				<text class="svg-text" x="92" y="123">uhttp · tls.c</text>
+				<text class="svg-sub" x="92" y="143">HTTP/1.1 · redirects · chunked · TLS 1.3</text>
+
+				<rect class="svg-box" x="470" y="98" width="380" height="58" rx="9"/>
+				<text class="svg-text" x="492" y="123">kernel services</text>
+				<text class="svg-sub" x="492" y="143">sys_fs for WebDAV · netlog · netkexec</text>
+
+				<path class="svg-line blue" d="M260 156v18"/>
+				<path class="svg-line blue" d="M254 168l6 7 6-7"/>
+				<path class="svg-line" d="M660 156v18"/>
+				<path class="svg-line" d="M654 168l6 7 6-7"/>
+
+				<rect class="svg-box green" x="70" y="176" width="780" height="58" rx="9"/>
+				<text class="svg-text" x="92" y="201">SYS_NET_* · SYS_TCP_* · SYS_DNS_RESOLVE · SYS_DHCP_RUN</text>
+				<text class="svg-sub" x="92" y="221">one receiver owner · interrupt-enabled waits</text>
+
+				<path class="svg-line green" d="M460 234v20"/>
+				<path class="svg-line green" d="M454 248l6 7 6-7"/>
+
+				<rect class="svg-box" x="70" y="256" width="780" height="58" rx="9"/>
+				<text class="svg-text" x="92" y="281">tcp.c · dns.c · dhcp.c</text>
+				<text class="svg-sub" x="92" y="301">TCP client + listener · one A query · DISCOVER/OFFER/REQUEST/ACK</text>
+
+				<path class="svg-line" d="M460 314v16"/>
+				<path class="svg-line" d="M454 324l6 7 6-7"/>
+
+				<rect class="svg-box blue" x="70" y="332" width="780" height="44" rx="9"/>
+				<text class="svg-text" x="92" y="359">IPv4 · ARP · ICMP · UDP · netdev registry · NIC driver</text>
+			</svg>
+			<figcaption>
+				<strong>Thin kernel, thick command.</strong> The kernel owns
+				addressing, ARP, routing and the single TCP connection. HTTP, TLS
+				and WebDAV run in ring 3, so a protocol bug kills a command rather
+				than the kernel.
+			</figcaption>
+		</figure>
+	</section>
+
+	<section id="netdev">
+		<h2>NIC drivers</h2>
+		<p>
+			<span class="file">netdev.c</span> keeps a registry of
+			<code>struct netdev</code> drivers; the first one whose probe succeeds
+			becomes active. All drivers are polled and share the same transmit,
+			receive, register-dump and reset interface. <code>netdev</code> with
+			no argument shows the active driver; <code>netdev asix</code> switches
+			to a named one, leaving the current driver untouched if the probe
+			fails.
+		</p>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Driver</th><th>Hardware</th><th>Transport</th><th>Notes</th></tr>
+				</thead>
+				<tbody>
+					<tr><td><span class="file">e1000e.c</span></td><td>Intel 82540EM, 82577LM, 82578, 82579</td><td>PCI MMIO</td><td>PCI INTx disabled before MMIO; PCH D0; skips the global MAC reset while the link is up.</td></tr>
+					<tr><td><span class="file">r8168.c</span></td><td>RTL8111/8168</td><td>PCIe MMIO</td><td>C+ mode, 64-entry RX ring, polled.</td></tr>
+					<tr><td><span class="file">ne2000.c</span></td><td>RTL8029</td><td>ISA / QEMU PCI</td><td>Simple DP8390 path used by <code>make run-net</code>.</td></tr>
+					<tr><td><span class="file">asix.c</span></td><td>AX88772</td><td>USB bulk</td><td>Runs over the USB core; usable on EHCI/xHCI dongles.</td></tr>
+				</tbody>
+			</table>
+		</div>
+		<p>
+			The management NIC used by netlog and netkexec prefers the ASIX dongle
+			so a direct debug link survives <code>netdev e1000e</code>; otherwise
+			it falls back to the active driver. <code>netregs</code> dumps registers
+			and decoded interrupt status; <code>netloop</code> runs a PHY loopback
+			self-test; <code>netreset</code> re-initialises the active NIC.
+		</p>
+	</section>
+
+	<section id="core">
+		<h2>Link &amp; IP layer</h2>
+		<ul>
+			<li><strong>Ethernet decode</strong> recognises IPv4, ARP and IPv6 frame types (IPv6 is not implemented).</li>
+			<li><strong>ARP</strong> resolves a next hop with three tries, one second apart; <code>net_arp_resolve()</code> polls the active NIC and the caller must own it.</li>
+			<li><strong>Routing</strong> sends off-subnet traffic to the gateway when one is known; <code>net_next_hop()</code> is shared by ping, DNS and TCP.</li>
+			<li><strong>ICMP echo</strong> backs <code>ping</code>, with ARP resolution and round-trip timing.</li>
+			<li><strong>UDP</strong> has send and parse helpers; DNS, DHCP and netlog are its users.</li>
+			<li><strong>Checksums</strong> use the Internet one's-complement sum, with a TCP pseudo-header variant.</li>
+		</ul>
+		<p>
+			The static default address is <code>192.168.178.240</code>. At boot,
+			with a NIC present, a DHCP client runs with a 4-second budget
+			(requesting the current address); if no server answers, the static
+			address stays. The idle WM loop answers ARP/ICMP for the board's IP
+			even when no command is running, so the board is reachable and
+			MAC-resolvable.
+		</p>
+	</section>
+
+	<section id="dhcp">
+		<h2>DHCP &amp; DNS</h2>
+		<h3>DHCP</h3>
+		<p>
+			<span class="file">dhcp.c</span> is a minimal client:
+			DISCOVER → OFFER → REQUEST → ACK. It learns the mask, gateway and DNS
+			server (option 6), and <code>dhcp</code> re-runs it on demand. The
+			configuration is retained across kexec through the boot-info
+			<code>BOOTINFO_FLAG_NET</code> fields.
+		</p>
+		<h3>DNS</h3>
+		<p>
+			<span class="file">dns.c</span> sends one recursive A query over UDP
+			and handles name compression in the response. <code>netdns</code>
+			shows or sets the server; <code>host &lt;name&gt;</code> resolves.
+			Numeric hosts skip DNS entirely.
+		</p>
+	</section>
+
+	<section id="tcp">
+		<h2>TCP</h2>
+		<p>
+			<span class="file">tcp.c</span> deliberately implements one client
+			connection, not a general socket layer: connect, send, receive and
+			close. An 8 KB receive queue lets data arriving during a send survive;
+			the window update is sent whenever the application drains the queue,
+			so a full queue cannot deadlock until the peer's zero-window probe.
+		</p>
+		<ul>
+			<li><strong>MSS / window.</strong> Our MSS is 1460 bytes and the advertised window is 4 KB.</li>
+			<li><strong>Retransmit.</strong> A 500 ms retry timer with a small retry count carries the connection through loss; there is no full congestion-control state machine.</li>
+			<li><strong>Listener.</strong> The server side has one active connection plus three backlog/closing slots. SYN-ACK advertises a zero window while queued; a queued connection may hold 1 KB of early request, and the window opens when <code>tcp_srv_accept()</code> runs.</li>
+			<li><strong>Bursts.</strong> Responses go out in up to four-segment bursts with a cumulative ACK, rather than one segment per ACK.</li>
+			<li><strong>No keep-alive.</strong> With one active connection, an idle persistent connection would block the parallel connections Nautilus opens.</li>
+		</ul>
+		<p>
+			New SYNs and data are also handed to <code>tcp_srv_input()</code> from
+			the active connection's receive/send poll loops, not only between
+			requests, so parallel gvfs clients make progress.
+		</p>
+	</section>
+
+	<section id="tls">
+		<h2>TLS 1.3</h2>
+		<p>
+			<span class="file">tls.c</span> is a ring-3 client with a deliberately
+			narrow cipher suite: <code>TLS_CHACHA20_POLY1305_SHA256</code> and
+			X25519 only. It is stream-oriented over the existing TCP connection
+			and prints the leaf SHA-256 fingerprint for manual comparison.
+		</p>
+		<ul>
+			<li><strong>Not verified.</strong> Phase A provides encryption without authentication; a MITM is undetected. <code>curl</code> warns, and the browser marks HTTPS as unverified.</li>
+			<li><strong>Weak DRBG.</strong> <span class="file">tls_rng.c</span> mixes RDTSC jitter, ticks and the MAC; it is not a hardware-backed CSPRNG.</li>
+			<li><strong>Host tests.</strong> The crypto files are pure freestanding C with host vectors (<code>make test-crypto</code>, <code>tls_test.c</code>).</li>
+		</ul>
+		<div class="warn">
+			<p><strong>Do not treat HTTPS as secure authentication.</strong> The
+			cipher suite is real, but without certificate verification the
+			connection authenticates nothing. Use it for confidentiality on a
+			trusted network, not for secrets against an active attacker.</p>
+		</div>
+	</section>
+
+	<section id="abi">
+		<h2>sys_net ABI &amp; ownership</h2>
+		<p>
+			<span class="file">sys_net.c</span> exposes NIC info, MAC/IP/mask/
+			gateway/DNS getters and setters, raw frame TX/RX, decode, reply,
+			loopback, register dump, reset, speed and MAC overrides. It also
+			exposes the DNS and DHCP clients and the TCP/HTTP helpers.
+		</p>
+		<ul>
+			<li><strong>One owner.</strong> <code>SYS_NET_ACQUIRE</code> takes the receiver for the calling process; the background kexec watcher pauses while a command owns it.</li>
+			<li><strong>Reaper safety.</strong> If the owner dies, <code>sys_net_reap</code> force-releases the receiver through <code>netdev_release_all()</code>.</li>
+			<li><strong>Wait semantics.</strong> ARP, DNS, DHCP and TCP waits re-enable interrupts for their duration and spin on <code>get_ticks_ms()</code>; the syscall stub enters with interrupts off.</li>
+			<li><strong>No sockets.</strong> The connection state lives in the kernel, one connection at a time; this is why the browser opens a fresh connection per fetch job.</li>
+		</ul>
+	</section>
+
+	<section id="console">
+		<h2>Netconsole &amp; netkexec</h2>
+		<p>
+			<span class="file">netlog.c</span> mirrors the serial console and
+			terminal output to UDP port 19290. The mirror is on by default and
+			broadcasts; <code>netconsole host &lt;laptop-ip&gt;</code> narrows it,
+			<code>netconsole off</code>/<code>on</code> toggles it, and
+			<code>netlog &lt;text&gt;</code> sends an ad-hoc line. The producer
+			never blocks: a full buffer drops characters and reports it.
+		</p>
+		<p>
+			<span class="file">netkexec.c</span> receives a new kernel/rootfs over
+			UDP port 19288 using <code>KXN2</code>, and a runtime command pack
+			using <code>KXNP</code>. Datagrams are acknowledged with the next
+			expected offset and verified with a 32-bit checksum before the jump
+			or pack swap. On the host, <code>make netmon</code> and
+			<code>make net-dev</code> wrap these protocols.
+		</p>
+	</section>
+
+	<section id="http">
+		<h2>HTTP clients</h2>
+		<ul>
+			<li><strong>curl</strong> — <code>http://</code> or <code>https://</code> GET with DNS, ARP, redirects (up to five hops), chunked decoding, status/headers/body dump and a TLS warning.</li>
+			<li><strong>uhttp</strong> — shared ring-3 HTTP/1.1 client used by curl and the browser: URL parsing, redirects, chunked decoding, timeouts and TLS.</li>
+			<li><strong>browser</strong> — runs network fetches in a headless <code>curl __fetch</code> helper that writes the body and metadata under <code>/share</code>, so the UI keeps drawing and scrolling. Each fetch opens a fresh connection.</li>
+			<li><strong>websrv</strong> — the server side, speaking HTTP/1.1 + WebDAV over the TCP listener; see <a href="filesystems.html#webdav">Filesystems → WebDAV</a>.</li>
+		</ul>
+		<p>
+			The browser's helper requests identity encoding because inflating
+			multi-megabyte pages in the UI process stalled. If a server still
+			sends gzip, the browser's inflate hook pumps the UI while decoding.
+		</p>
+	</section>
+
+	<section id="security">
+		<h2>Security posture</h2>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Surface</th><th>State</th><th>Consequence</th></tr>
+				</thead>
+				<tbody>
+					<tr><td>TLS certificates</td><td>Not verified</td><td>Encryption without authentication; MITM is undetected.</td></tr>
+					<tr><td>TLS DRBG</td><td>Weak (RDTSC/ticks/MAC)</td><td>Not suitable for high-value secrets.</td></tr>
+					<tr><td>WebDAV</td><td>No authentication</td><td>Anyone on the LAN can read mounts and write <code>/share</code>.</td></tr>
+					<tr><td>NIC ownership</td><td>One process at a time</td><td>Packet-level commands are mutually exclusive; a killed owner is force-released.</td></tr>
+					<tr><td>Kernel/user isolation</td><td>None (identity map)</td><td>A ring-3 bug can reach any mapped kernel page.</td></tr>
+				</tbody>
+			</table>
+		</div>
+	</section>
+
+	<section id="sources">
+		<h2>Source map</h2>
+		<ul class="filelist">
+			<li><code>netdev.c</code>, <code>netdev.h</code> — registry</li>
+			<li><code>e1000e.c</code>, <code>r8168.c</code>, <code>ne2000.c</code>, <code>asix.c</code></li>
+			<li><code>net.c</code>, <code>net.h</code> — ARP/ICMP/UDP/IP</li>
+			<li><code>dhcp.c</code>, <code>dns.c</code></li>
+			<li><code>tcp.c</code>, <code>tcp.h</code> — client + listener</li>
+			<li><code>tls.c</code>, <code>tls_*.c</code> — TLS 1.3</li>
+			<li><code>sys_net.c</code> — ring-3 service</li>
+			<li><code>netlog.c</code>, <code>netkexec.c</code></li>
+			<li><code>uhttp.c</code>, <code>ucmd_curl.c</code>, <code>ucmd_websrv.c</code></li>
+		</ul>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

@@ -15,7 +15,6 @@
 #include "serial.h"
 #include "smp.h"
 #include "sys_fs.h"
-#include "sys_gfx.h"
 #include "sys_mem.h"
 #include "sys_net.h"
 #include "syscall.h"
@@ -161,7 +160,6 @@ static void proc_commit(struct process *p, int slot, const char *name,
 	p->stride = 0;
 	p->vruntime = 0;
 	p->slice_start = 0;
-	p->screen = parent ? parent->screen : (void *)0;
 	p->tty = parent ? parent->tty : 0;
 	if (parent)
 		cwd_copy(p, parent->cwd);
@@ -189,7 +187,6 @@ void process_init(void)
 	idle_procs[0].pid        = 0;
 	idle_procs[0].slot       = PROC_MAX;
 	idle_procs[0].esp        = 0;
-	idle_procs[0].screen     = (void *)0;
 	idle_procs[0].stack_base = 0;  /* bootstrap stack, never freed */
 	idle_procs[0].cr3        = paging_current_cr3();
 	idle_procs[0].kstack_top = (unsigned int)__boot_stack_top;
@@ -540,13 +537,6 @@ int process_create_user(const char *name, const void *image, unsigned int size,
 
 /* Set the output screen of the currently-running process (used by a terminal
    at startup to bind itself to its own screen). */
-void process_set_screen(struct text_screen *screen)
-{
-	struct process *p = current_proc();
-
-	if (p)
-		p->screen = screen;
-}
 
 /* Render target override for the running process (0 = the screen).  Lives in
  * the PCB so a preempted layer draw can never leak into another process. */
@@ -635,7 +625,7 @@ unsigned int process_zombie_count(void)
 
 /* Free switched-out dead processes.  Runs in the kworker (or the idle
  * fallback), not in the PIT handler.  Preemption is disabled while the
- * resources are torn down: sys_gfx_reap()/tty_reap()/the page-table walk are
+ * resources are torn down: tty_reap()/the page-table walk are
  * not re-entrant, matching the old IRQ-context reaper. */
 void process_reap_dead(void)
 {
@@ -653,7 +643,6 @@ void process_reap_dead(void)
 		struct process *next = p->zombie_next;
 
 		sys_net_reap(p->pid);   /* release a held NIC */
-		sys_gfx_reap(p->pid);   /* flag a gfx session dead */
 		tty_reap(p->pid);       /* drop its terminal queue */
 		if (p->stack_base)
 			mm_free_page(p->stack_base);
@@ -665,7 +654,7 @@ void process_reap_dead(void)
 			paging_release_user_range(p->cr3,
 				USER_BASE, USER_STACK_TOP - USER_BASE, 1);
 			paging_release_user_range(p->cr3,
-				USER_GFX_BASE, USER_GFX_RANGE, 0);
+				USER_WIN_BASE, USER_WIN_RANGE, 0);
 			sys_mem_release(p);
 			/* WM surface mappings: page tables only; the shadow/
 			 * terminal/canvas pages belong to the window server. */

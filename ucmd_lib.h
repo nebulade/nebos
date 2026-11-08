@@ -160,16 +160,6 @@ static inline unsigned int u_ticks_ms(void)
 
 /* Cursor position of this process's terminal screen (linear cell index);
  * used by `top` to repaint its frame in place. */
-static inline unsigned int u_get_cursor(void)
-{
-	return (unsigned int)u_syscall0(SYS_GET_CURSOR);
-}
-
-static inline void u_set_cursor(unsigned int pos)
-{
-	u_syscall1(SYS_SET_CURSOR, (int)pos);
-}
-
 static inline void u_sleep_ms(unsigned int ms)
 {
 	u_syscall1(SYS_SLEEP_MS, (int)ms);
@@ -360,21 +350,6 @@ static inline int u_kill(unsigned int pid)
 static inline int u_chdir(const char *path)
 {
 	return u_syscall1(SYS_CHDIR, (int)path);
-}
-
-static inline int u_gfx_begin(struct sys_gfx_info *info)
-{
-	return u_syscall1(SYS_GFX_BEGIN, (int)info);
-}
-
-static inline int u_gfx_present(void)
-{
-	return u_syscall0(SYS_GFX_PRESENT);
-}
-
-static inline int u_gfx_end(void)
-{
-	return u_syscall0(SYS_GFX_END);
 }
 
 static inline int u_key_poll(void)

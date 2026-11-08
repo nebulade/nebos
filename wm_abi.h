@@ -74,6 +74,7 @@ struct wm_mouse_info {
 struct wm_status {
 	struct wm_mouse_info mouse;
 	unsigned int full_redraw;
+	unsigned int boot_ready;   /* storage is mounted; spawn the first terminal */
 	unsigned int kexec_busy;
 	unsigned int kexec_progress;
 	unsigned int kexec_total;

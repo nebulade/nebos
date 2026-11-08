@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drivers &amp; Buses | NebOS Architecture</title>
+<meta name="description" content="NebOS drivers: PCI enumeration, floppy/ATA/AHCI storage, the USB core with UHCI, OHCI, EHCI and xHCI, HID input, serial, board sensors and the panic path.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html">Memory</a>
+		<a href="cpu.html">CPU</a>
+		<a href="drivers.html" aria-current="page">Drivers</a>
+		<a href="filesystems.html">Filesystems</a>
+		<a href="graphics.html">Graphics</a>
+		<a href="network.html">Network</a>
+		<a href="userland.html">Userland</a>
+		<a href="development.html">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">Drivers &amp; buses</p>
+		<h1>Polled hardware, one vtable per bus.</h1>
+		<p class="lede">
+			Most NebOS drivers are polled rather than interrupt-driven: storage,
+			USB and every NIC are serviced from process context. That trades
+			latency and CPU time for simple, single-owner state and a kernel that
+			stays easy to reason about on old hardware.
+		</p>
+		<div class="meta">
+			<span class="pill">PCI enumeration</span>
+			<span class="pill">FDC · PATA · SATA</span>
+			<span class="pill">UHCI · OHCI · EHCI · xHCI</span>
+			<span class="pill">PS/2 + USB HID</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#inventory">Driver inventory</a></li>
+			<li><a href="#pci">PCI &amp; discovery</a></li>
+			<li><a href="#storage">Storage</a></li>
+			<li><a href="#usb">USB stack</a></li>
+			<li><a href="#hid">Input</a></li>
+			<li><a href="#serial">Serial</a></li>
+			<li><a href="#sensors">Sensors &amp; power</a></li>
+			<li><a href="#panic">Panic screen</a></li>
+			<li><a href="#limits">Limits</a></li>
+			<li><a href="#sources">Source map</a></li>
+		</ul>
+	</nav>
+
+	<section id="inventory">
+		<h2>Driver inventory</h2>
+		<p>
+			Every driver in the tree is small enough to read in one sitting. The
+			table below is the quickest way to find the one responsible for a
+			device.
+		</p>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Subsystem</th><th>Driver</th><th>Bus / access</th><th>Service model</th></tr>
+				</thead>
+				<tbody>
+					<tr><td>Floppy</td><td><span class="file">disk.c</span></td><td>ISA FDC + DMA channel 2</td><td>IRQ 6; FAT operations set <code>sys_fs_busy</code></td></tr>
+					<tr><td>PATA</td><td><span class="file">ata.c</span></td><td>Legacy ports or PCI native BARs</td><td>Polled PIO, DRQ wait per sector</td></tr>
+					<tr><td>SATA</td><td><span class="file">ahci.c</span></td><td>PCI AHCI MMIO</td><td>Polled, READ/WRITE DMA EXT</td></tr>
+					<tr><td>USB</td><td><span class="file">usb.c</span> + <span class="file">uhci.c</span> <span class="file">ohci.c</span> <span class="file">ehci.c</span> <span class="file">xhci.c</span></td><td>PCI I/O ports or MMIO</td><td>Polled; hotplug watcher in the WM loop</td></tr>
+					<tr><td>Network</td><td><span class="file">e1000e.c</span> <span class="file">r8168.c</span> <span class="file">ne2000.c</span> <span class="file">asix.c</span></td><td>PCI or USB</td><td>Polled, one active receiver</td></tr>
+					<tr><td>PS/2</td><td><span class="file">mouse.c</span>, <span class="file">io.c</span></td><td>i8042</td><td>IRQ 1 keyboard, IRQ 12 mouse; polling fallback</td></tr>
+					<tr><td>Serial</td><td><span class="file">serial.c</span></td><td>16550 UART, COM1</td><td>IRQ 4 ring buffer + polled transmitter</td></tr>
+					<tr><td>Thermal</td><td><span class="file">thermal.c</span></td><td>Intel DTS MSR</td><td>Sampled once a second from the scheduler tick</td></tr>
+					<tr><td>Board sensors</td><td><span class="file">it87.c</span>, <span class="file">tpec.c</span></td><td>Super I/O, ThinkPad EC</td><td>Polled read-only</td></tr>
+				</tbody>
+			</table>
+		</div>
+	</section>
+
+	<section id="pci">
+		<h2>PCI &amp; discovery</h2>
+		<p>
+			<span class="file">pci.c</span> walks bus/device/function and exposes
+			BAR and capability access. The USB scan checks all functions: real
+			PIIX3/PIIX4/VIA layouts put the USB function at 0:07.2 or 0:01.2, not
+			0:07.0. Controllers with unassigned BARs are ignored rather than
+			driven at address zero.
+		</p>
+		<p>
+			MMIO regions are mapped through <code>paging_map_mmio()</code>. PCI
+			interrupts are disabled before touching MMIO, so every driver polls
+			its own status registers. <code>lspci</code> lists every function;
+			with a filter it prints BAR type, size and address details.
+		</p>
+	</section>
+
+	<section id="storage">
+		<h2>Storage</h2>
+		<p>
+			<span class="file">blkdev.c</span> is a small registry of block
+			devices. Each device exposes sector read/write plus geometry; FAT and
+			the format command sit above that interface and never talk to a
+			controller directly. Devices are named <code>floppy0</code>,
+			<code>ide0</code>, <code>sata0</code> and so on; partitions append
+			<code>p1</code>, <code>p2</code>.
+		</p>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 246" role="img" aria-labelledby="storage-title storage-desc">
+				<title id="storage-title">Storage software layers</title>
+				<desc id="storage-desc">The VFS and format tools use a block-device registry, which dispatches to the floppy, ATA PIO or AHCI driver, then to the physical disk.</desc>
+
+				<rect class="svg-box blue" x="40" y="30" width="230" height="62" rx="9"/>
+				<text class="svg-text" x="60" y="57">VFS · FAT · format</text>
+				<text class="svg-sub" x="60" y="77">files, not sectors</text>
+
+				<rect class="svg-box accent" x="345" y="30" width="230" height="62" rx="9"/>
+				<text class="svg-text" x="365" y="57">blkdev registry</text>
+				<text class="svg-sub" x="365" y="77">sector read / write + geometry</text>
+
+				<rect class="svg-box" x="650" y="30" width="230" height="62" rx="9"/>
+				<text class="svg-text" x="670" y="57">driver</text>
+				<text class="svg-sub" x="670" y="77">FDC · ATA · AHCI</text>
+
+				<path class="svg-line blue" d="M270 61h67"/>
+				<path class="svg-line blue" d="M330 55l7 6-7 6"/>
+				<path class="svg-line accent" d="M575 61h67"/>
+				<path class="svg-line accent" d="M635 55l7 6-7 6"/>
+
+				<rect class="svg-box green" x="40" y="142" width="230" height="62" rx="9"/>
+				<text class="svg-text" x="60" y="169">floppy.img</text>
+				<text class="svg-sub" x="60" y="189">CHS + ISA DMA</text>
+
+				<rect class="svg-box green" x="345" y="142" width="230" height="62" rx="9"/>
+				<text class="svg-text" x="365" y="169">ide0 / ide0pN</text>
+				<text class="svg-sub" x="365" y="189">PIO, legacy or native BARs</text>
+
+				<rect class="svg-box green" x="650" y="142" width="230" height="62" rx="9"/>
+				<text class="svg-text" x="670" y="169">sata0 / sata0pN</text>
+				<text class="svg-sub" x="670" y="189">AHCI port index</text>
+
+				<path class="svg-line" d="M175 92v42"/>
+				<path class="svg-line" d="M169 126l6 7 6-7"/>
+				<path class="svg-line" d="M460 92v42"/>
+				<path class="svg-line" d="M454 126l6 7 6-7"/>
+				<path class="svg-line" d="M765 92v42"/>
+				<path class="svg-line" d="M759 126l6 7 6-7"/>
+			</svg>
+			<figcaption>
+				<strong>One narrow waist.</strong> Filesystems and tools only see
+				<code>struct blk_dev</code>. The floppy still needs IRQ 6, but ATA
+				and AHCI are polled; a FAT operation takes <code>sys_fs_busy</code>
+				so the scheduler does not switch away mid-transfer.
+			</figcaption>
+		</figure>
+
+		<h3>Floppy</h3>
+		<p>
+			<span class="file">disk.c</span> drives the 8272-compatible FDC
+			through ISA DMA channel 2, with the single-sector DMA buffer at
+			<code>0x4000</code>. Retries handle the usual real-hardware flakiness.
+			The second floppy slot can hold <code>root.img</code>.
+		</p>
+		<h3>PATA</h3>
+		<p>
+			<span class="file">ata.c</span> uses the legacy command block or the
+			PCI IDE interface's native BARs. Multi-sector PIO waits for DRQ
+			before every sector because drives drop it between sectors; it polls
+			the command-block status rather than the alternate-status BAR, and
+			falls back to single-sector commands when a bridge leaves DRQ pending.
+		</p>
+		<h3>SATA/AHCI</h3>
+		<p>
+			<span class="file">ahci.c</span> drives the first AHCI controller
+			only, with no IRQs and no NCQ. It does COMRESET, IDENTIFY through the
+			shared <code>ata_identify_parse()</code>, and READ/WRITE DMA EXT
+			through a page-allocated bounce buffer. A disk added after boot needs
+			a rescan; there is no COMRESET hotplug.
+		</p>
+	</section>
+
+	<section id="usb">
+		<h2>USB stack</h2>
+		<p>
+			<span class="file">usb.c</span> is controller-agnostic. It handles
+			enumeration, descriptor parsing, hub recursion, bus scans, per-controller
+			addresses, the hotplug watcher and interrupt-IN consumers. Each host
+			controller implements the <code>usb_hcd_ops</code> vtable in
+			<span class="file">usb_hcd.h</span>.
+		</p>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 300" role="img" aria-labelledby="usb-title usb-desc">
+				<title id="usb-title">USB controller topology</title>
+				<desc id="usb-desc">EHCI handles high-speed root ports, UHCI and OHCI handle low and full speed devices, xHCI handles USB2 root ports. All feed the same USB core and HID layer.</desc>
+
+				<rect class="svg-box accent" x="30" y="24" width="200" height="64" rx="9"/>
+				<text class="svg-text" x="50" y="50">EHCI</text>
+				<text class="svg-sub" x="50" y="70">high-speed root ports</text>
+
+				<rect class="svg-box blue" x="252" y="24" width="200" height="64" rx="9"/>
+				<text class="svg-text" x="272" y="50">UHCI</text>
+				<text class="svg-sub" x="272" y="70">full/low speed · 1 instance</text>
+
+				<rect class="svg-box blue" x="474" y="24" width="200" height="64" rx="9"/>
+				<text class="svg-text" x="494" y="50">OHCI</text>
+				<text class="svg-sub" x="494" y="70">full/low speed · up to 4</text>
+
+				<rect class="svg-box green" x="696" y="24" width="194" height="64" rx="9"/>
+				<text class="svg-text" x="716" y="50">xHCI</text>
+				<text class="svg-sub" x="716" y="70">USB2 root ports only</text>
+
+				<path class="svg-line accent" d="M130 88v40h330v28"/>
+				<path class="svg-line blue" d="M352 88v68"/>
+				<path class="svg-line blue" d="M574 88v68"/>
+				<path class="svg-line green" d="M793 88v40H460v28"/>
+
+				<rect class="svg-box" x="300" y="156" width="320" height="58" rx="9"/>
+				<text class="svg-text" x="320" y="181">usb core</text>
+				<text class="svg-sub" x="320" y="201">enumeration · hubs · hotplug · interrupt-IN slots</text>
+
+				<path class="svg-line" d="M460 214v34"/>
+				<path class="svg-line" d="M454 240l6 7 6-7"/>
+
+				<rect class="svg-box" x="300" y="248" width="320" height="44" rx="9"/>
+				<text class="svg-text" x="320" y="275">usbhid · keyboard + mouse</text>
+			</svg>
+			<figcaption>
+				<strong>Companions are not optional.</strong> EHCI is scanned first
+				so its port resets can hand non-high-speed devices back to a
+				companion. There is no transaction translator: a low/full-speed
+				device behind a high-speed hub is invisible to EHCI.
+			</figcaption>
+		</figure>
+
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Controller</th><th>Transport</th><th>Instances</th><th>Implementation notes</th></tr>
+				</thead>
+				<tbody>
+					<tr><td>UHCI</td><td>PCI I/O ports</td><td>1</td><td>Frame list at <code>0x3000</code>; control QH plus one QH per interrupt slot.</td></tr>
+					<tr><td>OHCI</td><td>PCI MMIO</td><td>up to 4</td><td>HCCA from the page allocator, static ED/TD sets, TDs start at <code>CC = NotAccessed</code>.</td></tr>
+					<tr><td>EHCI</td><td>PCI MMIO</td><td>up to 4</td><td>Async QH/qTD schedule, page-allocated descriptors, polling only, no periodic list.</td></tr>
+					<tr><td>xHCI</td><td>PCI MMIO</td><td>—</td><td>USB2 root ports only; USB3 SuperSpeed devices are not handled.</td></tr>
+				</tbody>
+			</table>
+		</div>
+
+		<p>
+			Hubs are class-9 devices: <code>usb.c</code> sets their configuration,
+			powers every downstream port (honouring <code>bPwrOn2PwrGood</code>),
+			resets and waits for <code>PORT_ENABLE</code>, then enumerates
+			recursively. This is what makes the X201's internal PCH hubs work.
+			Hotplug watches root ports; a device behind a hub is only found when a
+			full scan runs (<code>lsusb</code> also bumps the USB generation so
+			<code>usbhid</code> re-attaches).
+		</p>
+	</section>
+
+	<section id="hid">
+		<h2>Input</h2>
+		<p>
+			<span class="file">usbhid.c</span> gives every HID class-3 interface
+			with an interrupt-IN endpoint one of the six USB interrupt slots. Boot
+			interfaces (subclass 1, protocol 1/2) are used as-is; other class-3
+			interfaces are classified by reading their HID report descriptor.
+			Composite receivers and several devices can coexist; mouse reports
+			from all slots are merged.
+		</p>
+		<ul>
+			<li><strong>Mouse.</strong> Three-byte boot reports: buttons in <code>b0 &amp; 7</code>, signed <code>dx/dy</code>. HID's +y is flipped to the PS/2 convention.</li>
+			<li><strong>Keyboard.</strong> Eight-byte boot reports (modifier + six keycodes). Reports are diffed and decoded through a HID-usage → scancode-set-1 table, then injected with <code>io_inject_scancode()</code>.</li>
+			<li><strong>Repeat.</strong> A boot keyboard only reports changes, so <code>io.c</code> adds software typematic repeat (500 ms delay, 33 ms rate).</li>
+			<li><strong>PS/2.</strong> The i8042 path shares the cursor and keyboard code; the BIOS legacy USB emulation is disabled because the kernel owns the devices.</li>
+		</ul>
+		<p>
+			<code>mouseinfo</code> shows the active backend and whether a USB
+			keyboard is attached. Headless regression tests inject mouse motion
+			and keys through QMP and verify the result with screen dumps.
+		</p>
+	</section>
+
+	<section id="serial">
+		<h2>Serial</h2>
+		<p>
+			<span class="file">serial.c</span> drives the 16550 at COM1, 115200
+			8N1, with an IRQ-driven receive ring buffer. It is used for the boot
+			trace, the netlog mirror source, XMODEM transfers, the <code>dbg</code>
+			monitor and the <code>KXE2</code> kexec receiver.
+		</p>
+		<p>
+			The transmitter is polled, so a machine without a serial port still
+			boots normally. <code>serial_puthex</code> and
+			<code>serial_putdec</code> are the structured dump helpers used by
+			drivers.
+		</p>
+	</section>
+
+	<section id="sensors">
+		<h2>Sensors, power &amp; thermals</h2>
+		<ul>
+			<li><strong>DTS.</strong> <span class="file">thermal.c</span> reads <code>IA32_THERM_STATUS</code> on an allowlist of Core/Core 2, Nehalem/Westmere and Bonnell models. TjMax comes from <code>IA32_TEMPERATURE_TARGET</code> on Nehalem and later; Bonnell uses a table.</li>
+			<li><strong>IT87xx.</strong> <span class="file">it87.c</span> reads the Super I/O temperatures and fan tachometers on the ASUS AT3IONT-I. Nothing is written to fan control.</li>
+			<li><strong>ThinkPad EC.</strong> <span class="file">tpec.c</span> is gated on an SMBIOS Lenovo/IBM match and reads temperatures and fan mode through ports <code>0x62/0x66</code>. It drains pending output bytes and uses bounded waits; nothing is written.</li>
+			<li><strong>MTRRs.</strong> <span class="file">mtrr.c</span> manages write-combining ranges for the framebuffer and reports the effective mapping.</li>
+		</ul>
+		<p>
+			<code>sensors</code> prints DTS values on the 90/100/125 °C scales,
+			board sensors and EC registers; <code>power</code> prints ratios,
+			effective MHz and C-state residency.
+		</p>
+	</section>
+
+	<section id="panic">
+		<h2>Panic screen</h2>
+		<p>
+			On a ring-0 fault, <span class="file">panic.c</span> draws straight
+			into the framebuffer — bypassing the shadow buffer and the WM — and
+			mirrors the same data to COM1 before halting. The banner includes the
+			vector and error code, GPRs, control registers, current pid/name,
+			uptime, instruction bytes and stack return-address candidates in the
+			kernel image.
+		</p>
+		<p>
+			Faults from ring 3 do not halt: the process is killed with a short
+			message in its terminal and serial log. There is no interactive
+			debugger on screen; the <code>dbg</code> kernel command drives a
+			serial monitor instead.
+		</p>
+	</section>
+
+	<section id="limits">
+		<h2>Limits</h2>
+		<ul>
+			<li><strong>Polling.</strong> USB, storage and network drivers consume CPU time while waiting; there is no IRQ-driven data path outside PS/2, serial and the PIT.</li>
+			<li><strong>EHCI.</strong> High-speed root ports only; no split transactions for low/full-speed devices behind a high-speed hub.</li>
+			<li><strong>xHCI.</strong> USB2 root ports only; USB3 SuperSpeed devices are not handled.</li>
+			<li><strong>HID.</strong> Report IDs are not handled, absolute pointers/tablets are ignored, and there is no wheel support.</li>
+			<li><strong>AHCI.</strong> First controller only, no hotplug after boot, disks above 2 TB are clamped to 32-bit LBA.</li>
+			<li><strong>Storage serialization.</strong> A FAT/floppy operation sets <code>sys_fs_busy</code> and stalls process switching for its duration; the PIT keeps ticking.</li>
+		</ul>
+	</section>
+
+	<section id="sources">
+		<h2>Source map</h2>
+		<ul class="filelist">
+			<li><code>pci.c</code>, <code>pci.h</code> — enumeration</li>
+			<li><code>blkdev.c</code> — block registry</li>
+			<li><code>disk.c</code> — floppy / DMA</li>
+			<li><code>ata.c</code>, <code>ahci.c</code> — PATA/SATA</li>
+			<li><code>usb.c</code>, <code>usb_hcd.h</code> — USB core</li>
+			<li><code>uhci.c</code>, <code>ohci.c</code>, <code>ehci.c</code>, <code>xhci.c</code></li>
+			<li><code>usbhid.c</code>, <code>mouse.c</code>, <code>io.c</code> — input</li>
+			<li><code>serial.c</code>, <code>serial_ring_buf.c</code></li>
+			<li><code>thermal.c</code>, <code>it87.c</code>, <code>tpec.c</code>, <code>mtrr.c</code></li>
+			<li><code>panic.c</code>, <code>timer.S</code> — fatal exceptions</li>
+		</ul>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

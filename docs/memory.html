@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory | NebOS Architecture</title>
+<meta name="description" content="NebOS memory architecture: fixed low-memory addresses, E820 parsing, bitmap frame allocator, identity paging, MTRR write-combining, user arenas and boot-pack lifetime.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html" aria-current="page">Memory</a>
+		<a href="cpu.html">CPU</a>
+		<a href="drivers.html">Drivers</a>
+		<a href="filesystems.html">Filesystems</a>
+		<a href="graphics.html">Graphics</a>
+		<a href="network.html">Network</a>
+		<a href="userland.html">Userland</a>
+		<a href="development.html">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">Memory &amp; paging</p>
+		<h1>A fixed ladder and a 4 KB frame allocator.</h1>
+		<p class="lede">
+			NebOS identity-maps physical RAM with 4 MB pages and hands out
+			4 KB frames from a bitmap. A small set of low-memory addresses is
+			fixed by the boot path and the ABI; everything else — process stacks,
+			window canvases, the ring-3 heap and the rootfs copy — is dynamic.
+		</p>
+		<div class="meta">
+			<span class="pill">128 MB physical ceiling</span>
+			<span class="pill">4 KB frames</span>
+			<span class="pill">4 MB PSE pages</span>
+			<span class="pill">identity map</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#physical">Physical memory</a></li>
+			<li><a href="#landmarks">Address landmarks</a></li>
+			<li><a href="#paging">Paging &amp; caching</a></li>
+			<li><a href="#frame">Frame allocator</a></li>
+			<li><a href="#heap">kmalloc</a></li>
+			<li><a href="#user">Ring-3 memory</a></li>
+			<li><a href="#pack">Rootfs pack lifetime</a></li>
+			<li><a href="#limits">Limits &amp; leaks</a></li>
+			<li><a href="#sources">Source map</a></li>
+		</ul>
+	</nav>
+
+	<section id="physical">
+		<h2>Physical memory</h2>
+		<p>
+			The real-mode stage probes <code>INT 15h</code> E820 and writes the
+			map to <code>0x1000</code>; the UEFI loader synthesises the same
+			structure from <code>GetMemoryMap</code>. <span class="file">mm.c</span>
+			starts with every page marked used, frees the E820 “usable RAM”
+			ranges, then reserves the regions the kernel already owns.
+		</p>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 180" role="img" aria-labelledby="phys-title phys-desc">
+				<title id="phys-title">Physical memory composition</title>
+				<desc id="phys-desc">Of the 128 MB addressable window, the low 1 MB and an 8 MB VGA shadow reserve are unavailable, leaving about 119 MB for the frame allocator.</desc>
+				<text class="svg-text" x="20" y="28">0x00000000</text>
+				<text class="svg-text" x="900" y="28" text-anchor="end">0x08000000 · 128 MB</text>
+
+				<rect class="svg-box blue" x="40" y="44" width="6.5" height="34" rx="1"/>
+				<rect class="svg-box accent" x="46.5" y="44" width="52.5" height="34" rx="1"/>
+				<rect class="svg-box green" x="99" y="44" width="781" height="34" rx="2"/>
+
+				<text class="svg-tiny" x="40" y="100">low 1 MB</text>
+				<text class="svg-tiny" x="105" y="100">VGA shadow · 8 MB</text>
+				<text class="svg-tiny" x="420" y="100" text-anchor="middle">frame allocator · ~119 MB</text>
+
+				<line class="svg-line" x1="43" y1="78" x2="43" y2="88"/>
+				<line class="svg-line" x1="73" y1="78" x2="73" y2="88"/>
+				<line class="svg-line" x1="490" y1="78" x2="490" y2="88"/>
+
+				<text class="svg-tiny" x="40" y="130">boot structures · kernel image · BIOS/UMA · DMA buffers</text>
+				<text class="svg-tiny" x="40" y="150">The 8 MB reserve protects the shadow buffer; the allocator starts at 0x900000.</text>
+			</svg>
+			<figcaption>
+				<strong>128 MB is a hard ceiling.</strong> The frame bitmap covers
+				<code>[0, 0x08000000)</code>; addresses above it are not mapped by
+				the kernel page tables. The VGA shadow reserve is conservative: the
+				actual buffer is smaller, but the gap keeps a future resolution bump
+				from colliding with allocated pages.
+			</figcaption>
+		</figure>
+	</section>
+
+	<section id="landmarks">
+		<h2>Address landmarks</h2>
+		<p>
+			These addresses are part of the boot contract or the kernel ABI.
+			Changing one requires updating the assembly, linker scripts, headers
+			and this table together.
+		</p>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Address</th><th>Purpose</th><th>Written by / notes</th></tr>
+				</thead>
+				<tbody>
+					<tr><td><code>0x500</code></td><td>Boot info, 12 dwords</td><td>VESA stage, UEFI loader or kexec; <code>bootinfo.h</code></td></tr>
+					<tr><td><code>0x600</code></td><td>Boot framebuffer info</td><td>VESA stage or UEFI loader; <code>vga.h</code></td></tr>
+					<tr><td><code>0x7C00</code></td><td>Boot-sector load address / UEFI handoff stack top</td><td>BIOS and UEFI trampoline</td></tr>
+					<tr><td><code>0x7E00</code></td><td>Kernel load address and VESA-stage entry</td><td><code>kernel.ld</code></td></tr>
+					<tr><td><code>0x800</code></td><td>kexec and UEFI trampoline</td><td>Relocated at runtime; below the kernel</td></tr>
+					<tr><td><code>0x900</code></td><td>kexec/UEFI flat GDT and GDTR</td><td>Built at runtime; below the kernel</td></tr>
+					<tr><td><code>0x1000</code></td><td>E820 memory map</td><td>VESA stage, UEFI loader or kexec; parsed by <code>mm.c</code></td></tr>
+					<tr><td><code>0x3000</code></td><td>UHCI frame list</td><td>1024 × 4 bytes, 4 KB aligned</td></tr>
+					<tr><td><code>0x4000</code></td><td>ISA DMA buffer</td><td>One sector, used by the floppy driver</td></tr>
+					<tr><td><code>0x6000</code></td><td>AP real/protected-mode trampoline</td><td>SIPI vector <code>0x06</code>; image ends below <code>0x6C00</code></td></tr>
+					<tr><td><code>0x6C00</code></td><td>AP trampoline real-mode stack top</td><td>Grows down</td></tr>
+					<tr><td><code>0x6F00</code></td><td>AP startup info block</td><td>CR3, stack top, C entry, CPU index</td></tr>
+					<tr><td><code>0x60000</code></td><td>Legacy rootfs staging</td><td><code>0x60000..0x9FBFF</code>, compressed pack only</td></tr>
+					<tr><td><code>_end</code></td><td>Kernel end</td><td><code>kernel.ld</code> asserts <code>_end ≤ 0x7F000</code></td></tr>
+					<tr><td><code>0x7FF00</code></td><td>Program API struct</td><td><code>PROGRAM_API_ADDR</code>, <code>run_api.h</code></td></tr>
+					<tr><td><code>0x80000</code></td><td>Legacy ring-0 program load area</td><td><code>run.c</code>, <code>serial_recv.c</code>, <code>user.ld</code>; max <code>0x6000</code></td></tr>
+					<tr><td><code>0x900000</code></td><td>Boot pack after relocation; dynamic stacks and kexec staging</td><td>Freed after <code>ramfs_init</code> takes its copy</td></tr>
+					<tr><td><code>0x100000</code></td><td>VGA shadow buffer base</td><td><code>VGA_SHADOW_BASE</code>; 8 MB reserved</td></tr>
+					<tr><td><code>0x40000000</code></td><td>Ring-3 ELF link/load address</td><td><code>USER_BASE</code>, 2 MB window up to <code>0x40200000</code></td></tr>
+					<tr><td><code>0x50000000</code></td><td>Ring-3 window canvas</td><td><code>USER_WIN_BASE</code>, 4 MB slot</td></tr>
+					<tr><td><code>0x58000000</code></td><td>WM shadow mapping</td><td><code>WM_SHADOW_VA</code>; ring-3 WM only</td></tr>
+					<tr><td><code>0x59000000</code></td><td>WM content slots</td><td><code>WM_CONTENT_VA_BASE</code> + index × 2 MB (<code>WM_CONTENT_SLOT</code>)</td></tr>
+					<tr><td><code>0x60000000</code></td><td>Ring-3 anonymous heap</td><td><code>USER_HEAP_BASE</code>, up to 32 MB</td></tr>
+				</tbody>
+			</table>
+		</div>
+	</section>
+
+	<section id="paging">
+		<h2>Paging &amp; caching</h2>
+		<p>
+			<span class="file">paging.c</span> builds an identity map of RAM with
+			4 MB pages through <code>CR4.PSE</code>, adds the framebuffer's LFB
+			range, and enables <code>CR0.PG</code> and <code>CR0.WP</code>. Before
+			switching, it clears translation controls a BIOS protected-mode call
+			can leave behind: <code>CR4.PAE/PGE/LA57/PCIDE/SMEP/SMAP</code> and
+			<code>EFER.LME</code>.
+		</p>
+		<ul>
+			<li><strong>Identity map.</strong> Physical and virtual addresses are equal. Page-directory entries are shared with every process.</li>
+			<li><strong>Kernel stacks mapped everywhere.</strong> Each process gets a page directory cloned from the kernel identity map, so CR3 can switch while still running on the old kernel stack.</li>
+			<li><strong>LFB is uncacheable by default.</strong> If <code>mtrr_set_wc()</code> successfully covers the framebuffer, the LFB pages are mapped cacheable so the shadow-buffer flush can write-combine.</li>
+			<li><strong>No process isolation.</strong> There is one address space with per-process page directories only for mappings; a wild ring-0 or ring-3 pointer can reach any mapped physical page.</li>
+		</ul>
+		<p>
+			There is no cross-CPU TLB shootdown. MMIO mappings for another CPU's
+			running process rely on not-present TLB entries not being cached;
+			normal process teardown is unaffected because no two processes share
+			an address space.
+		</p>
+		<div class="note">
+			<p><strong>NVIDIA ION special case.</strong> On the ION the framebuffer is
+			stolen DRAM and the VBE LFB is a BAR3 window into it. The BIOS leaves a
+			512 MB uncacheable MTRR over the PCIe apertures, so <span class="file">nvidia.c</span>
+			locates the framebuffer in the stolen VRAM and writes through that
+			alias once a WC MTRR covers the stolen range. Everything else keeps
+			the uncacheable LFB.</p>
+		</div>
+	</section>
+
+	<section id="frame">
+		<h2>Frame allocator</h2>
+		<p>
+			<span class="file">mm.c</span> keeps one bit per 4 KB page for the
+			whole 128 MB window. The bitmap is not IRQ-safe; callers save and
+			disable interrupts around allocations. The allocator returns:
+		</p>
+		<ul>
+			<li><code>mm_alloc_page()</code> — one zero-address-ambiguous page (physical address 0 means failure).</li>
+			<li><code>mm_alloc_pages(n)</code> — <code>n</code> contiguous pages.</li>
+			<li><code>mm_free_page()</code> / <code>mm_free_range()</code> — release a page or a page-aligned boot reservation.</li>
+		</ul>
+		<p>
+			At boot, <code>mm_init</code> reserves the low 1 MB, the 8 MB VGA
+			shadow region, any LFB that happens to live below 128 MB, and the
+			boot-time rootfs pack. The pack reservation is released by
+			<code>ramfs_init</code> after it copies/inflates the pack into fresh
+			pages.
+		</p>
+		<p>
+			Fresh pages are <em>not</em> zeroed. Structures whose fields are read
+			before being written must be cleared explicitly; <code>clear_proc()</code>
+			in <span class="file">process.c</span> exists because a stale
+			<code>cr3</code> faulted on real hardware while QEMU's cleared RAM hid
+			the bug.
+		</p>
+	</section>
+
+	<section id="heap">
+		<h2>kmalloc</h2>
+		<p>
+			<span class="file">kmalloc.c</span> is a power-of-two heap allocator
+			on top of the frame allocator. It is intentionally simple: allocation
+			rounds to a size class, free lists are per class, and large objects
+			become contiguous page runs. PCBs, command context and
+			<span class="file">sys_fs.c</span> file loads use it.
+		</p>
+		<p>
+			The kernel heap is not a general-purpose userspace allocator. Ring-3
+			processes get one anonymous arena through <code>SYS_MEM_ALLOC</code>,
+			<code>SYS_MEM_GROW</code> and <code>SYS_MEM_FREE</code>.
+		</p>
+	</section>
+
+	<section id="user">
+		<h2>Ring-3 memory</h2>
+		<p>
+			A ring-3 ELF is linked at <code>0x40000000</code>. The image and its
+			8-page user stack live in a 2 MB window ending at
+			<code>0x40200000</code>. The kernel window server maps a window's
+			RGB565 back buffer at <code>0x50000000</code>, and the anonymous heap
+			starts at <code>0x60000000</code>.
+		</p>
+
+		<figure class="figure">
+			<div class="bars" role="img" aria-label="Ring-3 arena sizes relative to the 32 MB heap cap: image and stack 2 MB, canvas slot 4 MB, heap up to 32 MB.">
+				<div class="bar-row">
+					<span class="bar-label">image + stack</span>
+					<div class="bar-track"><span class="bar-fill blue" style="--w:6.25%"></span></div>
+					<span class="bar-value">2 MB</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">canvas slot</span>
+					<div class="bar-track"><span class="bar-fill" style="--w:12.5%"></span></div>
+					<span class="bar-value">4 MB</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">anonymous heap</span>
+					<div class="bar-track"><span class="bar-fill green" style="--w:100%"></span></div>
+					<span class="bar-value">32 MB</span>
+				</div>
+			</div>
+			<figcaption>
+				<strong>Three separate rings.</strong> The image/stack window is
+				fixed at link time; the canvas slot is one 4 MB mapping; the heap is
+				a growable arena. Bar widths are relative to the 32 MB heap cap.
+			</figcaption>
+		</figure>
+
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Range</th><th>Size</th><th>Contents</th></tr>
+				</thead>
+				<tbody>
+					<tr><td><code>0x40000000</code>–<code>0x40200000</code></td><td>2 MB</td><td>ELF segments, user stack top at <code>0x40200000</code> (8 pages, grows down)</td></tr>
+					<tr><td><code>0x50000000</code>–<code>0x50400000</code></td><td>4 MB</td><td>One window canvas mapping (RW, per window)</td></tr>
+					<tr><td><code>0x60000000</code>–<code>0x62000000</code></td><td>up to 32 MB</td><td>Anonymous heap; initial allocation zeroed, growth pages are not</td></tr>
+				</tbody>
+			</table>
+		</div>
+		<p>
+			Kernel stacks are 4 KB pages from the frame allocator, with an 8-stack
+			static fallback pool in BSS. The idle/bootstrap context uses the
+			in-image 8 KB <code>.stack</code> section. The user stack is separate:
+			8 pages just below <code>0x40200000</code>.
+		</p>
+	</section>
+
+	<section id="pack">
+		<h2>Rootfs pack lifetime</h2>
+		<ol>
+			<li>The boot path places the gzip pack in RAM: the legacy stage in the low gap and then <code>0x900000</code>, UEFI at the top of RAM below 128 MB, kexec in its staging buffer.</li>
+			<li><code>mm_init</code> reserves <code>[pack_addr, pack_addr + pack_size)</code> so the frame allocator cannot reuse it.</li>
+			<li><code>ramfs_init</code> takes a private page-allocated copy, validates the <code>NBROOT1</code> header and inflates the pack into it.</li>
+			<li><code>mm_free_range</code> releases the boot region when it is above the VGA shadow reserve. The private copy lives until <code>ramfs_replace</code> or reboot.</li>
+		</ol>
+		<p>
+			The ramfs holds at most 128 files and 8 MB of decompressed pack. A
+			larger pack fails to load rather than partially mounting.
+		</p>
+	</section>
+
+	<section id="limits">
+		<h2>Limits &amp; leaks</h2>
+		<ul>
+			<li><strong>No per-process address spaces.</strong> Paging is identity-mapped; there is no memory protection between processes.</li>
+			<li><strong>128 MB ceiling.</strong> Physical memory above <code>0x08000000</code> is unmapped. A wild pointer there is an instant <code>#PF</code>.</li>
+			<li><strong>User page leak on reap.</strong> Killing a ring-3 process frees its kernel stack and page directory but not all user pages mapped into it; a few pages leak per command run.</li>
+			<li><strong>Heap fragmentation.</strong> Power-of-two size classes make long-running mixed-size allocation wasteful compared with a real allocator.</li>
+			<li><strong>No TLB shootdown.</strong> Cross-CPU mapping changes rely on not-present entries not being cached.</li>
+		</ul>
+	</section>
+
+	<section id="sources">
+		<h2>Source map</h2>
+		<ul class="filelist">
+			<li><code>mm.c</code>, <code>mm.h</code> — E820 + bitmap allocator</li>
+			<li><code>kmalloc.c</code>, <code>kmalloc.h</code> — kernel heap</li>
+			<li><code>paging.c</code>, <code>paging.h</code> — identity map</li>
+			<li><code>mtrr.c</code> — write-combining MTRRs</li>
+			<li><code>process.c</code>, <code>process.h</code> — stacks and user layout</li>
+			<li><code>ramfs.c</code> — pack copy / inflate</li>
+			<li><code>efi/main.c</code> — firmware map conversion</li>
+			<li><code>kernel.ld</code> — low-memory image limits</li>
+		</ul>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

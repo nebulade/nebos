@@ -72,9 +72,7 @@ static struct text_screen io_fallback;
 
 static struct text_screen *io_current_screen(void)
 {
-	struct process *p = current_proc();
-	struct text_screen *s = p ? p->screen : 0;
-	return s ? s : &io_fallback;
+	return &io_fallback;
 }
 
 /* IRQ1: read the controller status first and only read data when the output
@@ -189,23 +187,7 @@ static int io_tty(void)
 	return tty_valid(id) ? id : 0;
 }
 
-void io_clear_screen(void)
-{
-	int id = io_tty();
 
-	if (id) {
-		tty_write_str(id, "\x1b[2J\x1b[H");
-		return;
-	}
-	screen_clear(io_current_screen());
-}
-
-int io_did_scroll(void)
-{
-	if (io_tty())
-		return 0;
-	return screen_did_scroll(io_current_screen());
-}
 
 void io_putchar(char c)
 {
@@ -247,60 +229,10 @@ void io_puthex(unsigned int n)
 	screen_puthex(io_current_screen(), n);
 }
 
-unsigned int io_get_cursor(void)
-{
-	if (io_tty())
-		return 0;
-	return screen_get_cursor(io_current_screen());
-}
 
-void io_set_cursor(unsigned int pos)
-{
-	if (io_tty()) {
-		char buf[16];
-		unsigned int row = pos / 64 + 1, col = pos % 64 + 1, i = 0;
 
-		buf[i++] = 0x1B; buf[i++] = '[';
-		buf[i++] = (char)('0' + row / 10);
-		buf[i++] = (char)('0' + row % 10);
-		buf[i++] = ';';
-		buf[i++] = (char)('0' + col / 10);
-		buf[i++] = (char)('0' + col % 10);
-		buf[i++] = 'H'; buf[i] = '\0';
-		io_putstr(buf);
-		return;
-	}
-	screen_set_cursor(io_current_screen(), pos);
-}
 
-void io_cursor_show_block(void)
-{
-	struct text_screen *s;
 
-	if (io_tty())
-		return;
-	s = io_current_screen();
-	s->cursor_visible = 1;
-	screen_damage_cursor(s);
-}
-
-void io_cursor_hide_block(void)
-{
-	struct text_screen *s;
-
-	if (io_tty())
-		return;
-	s = io_current_screen();
-	s->cursor_visible = 0;
-	screen_damage_cursor(s);
-}
-
-void io_vga_write(unsigned int pos, unsigned short value)
-{
-	if (io_tty())
-		return;
-	screen_put_at(io_current_screen(), pos, value);
-}
 
 void io_drain_keyboard(void)
 {

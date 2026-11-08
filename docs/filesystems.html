@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage &amp; Filesystems | NebOS Architecture</title>
+<meta name="description" content="NebOS filesystems: the VFS fs_ops layer, FAT12/16/32, the command-pack ramfs pipeline, the writable /share filesystem and the WebDAV view of the VFS.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html">Memory</a>
+		<a href="cpu.html">CPU</a>
+		<a href="drivers.html">Drivers</a>
+		<a href="filesystems.html" aria-current="page">Filesystems</a>
+		<a href="graphics.html">Graphics</a>
+		<a href="network.html">Network</a>
+		<a href="userland.html">Userland</a>
+		<a href="development.html">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">Storage &amp; filesystems</p>
+		<h1>One VFS, three very different backends.</h1>
+		<p class="lede">
+			The kernel keeps filesystem policy thin: a mount table and an
+			<code>fs_ops</code> vtable. FAT provides persistent read/write storage,
+			the command-pack ramfs is a read-only system image, and
+			<code>/share</code> is a writable RAM filesystem for network uploads.
+		</p>
+		<div class="meta">
+			<span class="pill">FAT12/16/32</span>
+			<span class="pill">read-only ramfs</span>
+			<span class="pill">/share · 16 MB</span>
+			<span class="pill">WebDAV</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#vfs">VFS layer</a></li>
+			<li><a href="#fat">FAT</a></li>
+			<li><a href="#ramfs">ramfs &amp; the command pack</a></li>
+			<li><a href="#share">/share</a></li>
+			<li><a href="#sysfs">File service ABI</a></li>
+			<li><a href="#webdav">WebDAV</a></li>
+			<li><a href="#capacity">Capacity chart</a></li>
+			<li><a href="#limits">Limits</a></li>
+			<li><a href="#sources">Source map</a></li>
+		</ul>
+	</nav>
+
+	<section id="vfs">
+		<h2>VFS layer</h2>
+		<p>
+			<span class="file">vfs.c</span> mounts every detected FAT device under
+			<code>/</code>, keeps the two memory filesystems available throughout
+			the boot scan, and dispatches file operations through
+			<code>struct fs_ops</code>. The shell, the file service and the
+			WebDAV server never call <code>fat_*</code> directly.
+		</p>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 330" role="img" aria-labelledby="vfs-title vfs-desc">
+				<title id="vfs-title">VFS and filesystem backends</title>
+				<desc id="vfs-desc">The shell, sys_fs and WebDAV use the VFS mount table, which dispatches to FAT, ramfs or share through fs_ops. FAT sits on the block-device registry.</desc>
+
+				<rect class="svg-box blue" x="30" y="30" width="200" height="60" rx="9"/>
+				<text class="svg-text" x="50" y="56">shell / commands</text>
+				<text class="svg-sub" x="50" y="76">ls, cat, save, files</text>
+
+				<rect class="svg-box blue" x="255" y="30" width="200" height="60" rx="9"/>
+				<text class="svg-text" x="275" y="56">sys_fs · WebDAV</text>
+				<text class="svg-sub" x="275" y="76">ring-3 file service</text>
+
+				<rect class="svg-box accent" x="485" y="30" width="200" height="60" rx="9"/>
+				<text class="svg-text" x="505" y="56">vfs.c</text>
+				<text class="svg-sub" x="505" y="76">mount table · fs_ops</text>
+
+				<path class="svg-line blue" d="M230 60h18"/>
+				<path class="svg-line blue" d="M240 54l7 6-7 6"/>
+				<path class="svg-line blue" d="M455 60h23"/>
+				<path class="svg-line blue" d="M470 54l7 6-7 6"/>
+
+				<rect class="svg-box green" x="712" y="30" width="180" height="60" rx="9"/>
+				<text class="svg-text" x="732" y="56">directory cache</text>
+				<text class="svg-sub" x="732" y="76">last 64 FAT entries</text>
+
+				<path class="svg-line accent" d="M685 60h20"/>
+				<path class="svg-line accent" d="M697 54l7 6-7 6"/>
+
+				<rect class="svg-box" x="30" y="150" width="200" height="64" rx="9"/>
+				<text class="svg-text" x="50" y="176">FAT12/16/32</text>
+				<text class="svg-sub" x="50" y="196">read + write · 8.3 names</text>
+
+				<rect class="svg-box" x="255" y="150" width="200" height="64" rx="9"/>
+				<text class="svg-text" x="275" y="176">ramfs</text>
+				<text class="svg-sub" x="275" y="196">read-only · command pack</text>
+
+				<rect class="svg-box" x="485" y="150" width="200" height="64" rx="9"/>
+				<text class="svg-text" x="505" y="176">/share</text>
+				<text class="svg-sub" x="505" y="196">writable · RAM only</text>
+
+				<rect class="svg-box" x="30" y="252" width="200" height="58" rx="9"/>
+				<text class="svg-text" x="50" y="277">block devices</text>
+				<text class="svg-sub" x="50" y="297">floppy · ide · sata</text>
+
+				<path class="svg-line" d="M585 90v28"/>
+				<path class="svg-line" d="M130 118h455"/>
+				<path class="svg-line" d="M130 118v24"/>
+				<path class="svg-line" d="M355 118v24"/>
+				<path class="svg-line" d="M585 118v24"/>
+				<path class="svg-line" d="M124 143l6 7 6-7"/>
+				<path class="svg-line" d="M349 143l6 7 6-7"/>
+				<path class="svg-line" d="M579 143l6 7 6-7"/>
+				<path class="svg-line" d="M130 214v26"/>
+				<path class="svg-line" d="M124 240l6 7 6-7"/>
+			</svg>
+			<figcaption>
+				<strong>Same operations, different storage.</strong> Each backend
+				implements read, load/release, stat, write, unlink, mkdir, rmdir and
+				index-based directory listing. Paths passed to the backend are
+				relative to the mount; the VFS has already normalised them.
+			</figcaption>
+		</figure>
+
+		<p>
+			<code>vfs_resolve()</code> drops <code>.</code> components, collapses
+			and trims slashes, and resolves <code>..</code> against the mount.
+			The shell's working directory is per-process and inherited across
+			commands, so relative paths keep working after <code>cd</code>.
+		</p>
+	</section>
+
+	<section id="fat">
+		<h2>FAT</h2>
+		<p>
+			<span class="file">fat.c</span> supports FAT12, FAT16 and FAT32 on
+			any registered block device. It reads the BPB, validates the media
+			byte and mounts partitions as separate entries such as
+			<code>ide0p1</code> or <code>sata0p2</code>.
+		</p>
+		<ul>
+			<li><strong>Read/write.</strong> Read, write, delete, mkdir and rmdir are implemented; FAT32 allocation uses an FSInfo-seeded free-cluster hint.</li>
+			<li><strong>8.3 names.</strong> The on-disk name is the canonical one. The shell and <code>files</code> display the space-padded form; a long name cannot be created.</li>
+			<li><strong>Directory cache.</strong> The last FAT directory's first 64 entries are cached in <code>vfs.c</code>, so WebDAV's index sequence is one walk instead of N. Any write invalidates the cache.</li>
+			<li><strong>Serialization.</strong> A FAT operation sets <code>sys_fs_busy</code>; the scheduler does not switch processes during it because the driver has static state and the floppy needs IRQ 6.</li>
+		</ul>
+		<p>
+			<span class="file">fatdetect.c</span> and <span class="file">fatformat.c</span>
+			back the <code>format</code> command. A disk can be formatted in
+			binary units (<code>format ide0 100mb</code>, <code>1gb</code>) or
+			whole-disk.
+		</p>
+		<div class="warn">
+			<p><strong>FAT32 limits.</strong> The FSInfo free-count is not updated,
+			and a completely full FAT32 directory is not grown: new cluster
+			allocation for directories is not implemented.</p>
+		</div>
+	</section>
+
+	<section id="ramfs">
+		<h2>ramfs &amp; the command pack</h2>
+		<p>
+			The system root is a compressed command pack, not a disk image. Every
+			ring-3 command is a freestanding ELF linked at <code>0x40000000</code>,
+			packed as <code>bin/&lt;name&gt;</code>, gzipped and wrapped in a
+			one-sector <code>NBROOT1</code> header. At boot the path loads the
+			pack into RAM and <span class="file">ramfs.c</span> inflates it into a
+			private page-allocated copy mounted read-only at <code>/ramfs</code>.
+		</p>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 312" role="img" aria-labelledby="pack-title pack-desc">
+				<title id="pack-title">Command pack build and boot pipeline</title>
+				<desc id="pack-desc">ucmd ELFs are packed by mkpack, gzipped, wrapped by mkrootfs, loaded by the boot path into RAM, then inflated by ramfs_init and mounted at /ramfs.</desc>
+
+				<rect class="svg-box" x="20" y="26" width="150" height="64" rx="9"/>
+				<text class="svg-text" x="40" y="52">ucmd_*.c</text>
+				<text class="svg-sub" x="40" y="72">42 UCMDS + 3 app ELFs</text>
+
+				<rect class="svg-box" x="196" y="26" width="150" height="64" rx="9"/>
+				<text class="svg-text" x="216" y="52">mkpack</text>
+				<text class="svg-sub" x="216" y="72">NBPAK1 · bin/name</text>
+
+				<rect class="svg-box" x="372" y="26" width="150" height="64" rx="9"/>
+				<text class="svg-text" x="392" y="52">gzip -12</text>
+				<text class="svg-sub" x="392" y="72">cmds_pack_gz.bin</text>
+
+				<rect class="svg-box" x="548" y="26" width="150" height="64" rx="9"/>
+				<text class="svg-text" x="568" y="52">mkrootfs</text>
+				<text class="svg-sub" x="568" y="72">NBROOT1 header</text>
+
+				<rect class="svg-box green" x="724" y="26" width="174" height="64" rx="9"/>
+				<text class="svg-text" x="744" y="52">boot path</text>
+				<text class="svg-sub" x="744" y="72">pack_addr / pack_size</text>
+
+				<path class="svg-line" d="M170 58h16"/>
+				<path class="svg-line" d="M180 52l7 6-7 6"/>
+				<path class="svg-line" d="M346 58h16"/>
+				<path class="svg-line" d="M356 52l7 6-7 6"/>
+				<path class="svg-line" d="M522 58h16"/>
+				<path class="svg-line" d="M532 52l7 6-7 6"/>
+				<path class="svg-line green" d="M698 58h16"/>
+				<path class="svg-line green" d="M708 52l7 6-7 6"/>
+
+				<rect class="svg-box" x="390" y="150" width="170" height="64" rx="9"/>
+				<text class="svg-text" x="410" y="176">ramfs_init</text>
+				<text class="svg-sub" x="410" y="196">inflate + validate</text>
+
+				<rect class="svg-box accent" x="620" y="150" width="200" height="64" rx="9"/>
+				<text class="svg-text" x="640" y="176">/ramfs</text>
+				<text class="svg-sub" x="640" y="196">read-only · bin/command</text>
+
+				<path class="svg-line green" d="M810 90v40h-335v20"/>
+				<path class="svg-line green" d="M469 142l6 7 6-7"/>
+				<path class="svg-line" d="M560 182h52"/>
+				<path class="svg-line" d="M606 176l7 6-7 6"/>
+
+				<text class="svg-tiny" x="20" y="272">Runtime replacement: KXNP packs replace /ramfs in place.</text>
+				<text class="svg-tiny" x="20" y="290">Existing processes keep their loaded ELFs.</text>
+			</svg>
+			<figcaption>
+				<strong>The pack is the root filesystem.</strong> The kernel no
+				longer embeds it, so command growth does not move <code>_end</code>.
+				The legacy boot path still caps the compressed pack at about 255 KB;
+				UEFI and kexec can carry more.
+			</figcaption>
+		</figure>
+
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Container</th><th>Format</th><th>Purpose</th></tr>
+				</thead>
+				<tbody>
+					<tr><td><code>cmds.pack</code></td><td><code>NBPAK1</code></td><td>Raw command archive: <code>bin/&lt;name&gt;</code> entries.</td></tr>
+					<tr><td><code>cmds_pack_gz.bin</code></td><td>gzip</td><td>Compressed pack; <code>libdeflate-gzip -12</code> when available.</td></tr>
+					<tr><td><code>rootfs.bin</code></td><td><code>NBROOT1</code> + gzip</td><td>Floppy append (header + pack).</td></tr>
+					<tr><td><code>cmds.img</code></td><td><code>NBROOT1</code> padded to 8 MB</td><td>USB rootfs partition image.</td></tr>
+					<tr><td><code>/share</code></td><td>RAM entries</td><td>Writable upload target; not part of the pack.</td></tr>
+				</tbody>
+			</table>
+		</div>
+
+		<p>
+			The pack build is part of the normal Makefile. Add a
+			<code>ucmd_&lt;name&gt;.c</code> to <code>UCMDS</code> and the pack,
+			the mount and the PATH listing pick it up automatically. Runtime
+			replacement uses <code>make cmds-dev</code> or
+			<code>make net-cmds</code> and validates the pack before swapping it.
+		</p>
+	</section>
+
+	<section id="share">
+		<h2>/share</h2>
+		<p>
+			<span class="file">share.c</span> is a writable, page-backed in-memory
+			filesystem for network uploads. It matters on boards with no writable
+			disk, or when the only writable medium is a floppy. Entries are full
+			relative paths plus explicit directory entries, so empty directories
+			work; names are plain strings up to 63 bytes.
+		</p>
+		<ul>
+			<li><strong>Limits.</strong> 64 entries and 16 MB total, allocated as pages and freed on replace/delete.</li>
+			<li><strong>Volatile.</strong> A reboot or kexec starts empty.</li>
+			<li><strong>Mount point.</strong> <code>/share</code>, listed by <code>ls /</code> and visible in <code>files</code>.</li>
+			<li><strong>Writable by anyone on the LAN.</strong> The WebDAV server has no authentication.</li>
+		</ul>
+	</section>
+
+	<section id="sysfs">
+		<h2>File service ABI</h2>
+		<p>
+			Ring-3 commands use <code>SYS_READ_FILE</code>,
+			<code>SYS_WRITE_FILE</code>, <code>SYS_LIST_DIR</code>,
+			<code>SYS_LIST_MOUNTS</code>, <code>SYS_UNLINK</code>,
+			<code>SYS_MKDIR</code>, <code>SYS_RMDIR</code>,
+			<code>SYS_FS_STAT</code> and <code>SYS_GETCWD</code>.
+			<span class="file">sys_fs.c</span> validates the path, resolves it
+			against the caller's cwd, calls the VFS and maps backend errors to
+			the stable <code>SYS_E*</code> values.
+		</p>
+		<p>
+			The file service reads whole files, not streams. The shell loads an
+			ELF through <code>vfs_load_file</code> and spawns it; FAT ELFs are
+			loaded through <code>kmalloc</code> under <code>sys_fs_enter/exit</code>,
+			since the floppy needs IRQ 6.
+		</p>
+		<p>
+			Directory entries carry a 64-byte display name plus <code>raw_83</code>,
+			so FAT's space-padded names and the string-named memory filesystems
+			share one ABI.
+		</p>
+	</section>
+
+	<section id="webdav">
+		<h2>WebDAV</h2>
+		<p>
+			<span class="file">websrv</span> is a ring-3 HTTP/1.1 + WebDAV server
+			built on the kernel TCP listener. It serves the VFS:
+			<code>/</code> lists mounts, <code>/ramfs</code> is read-only, FAT
+			mounts accept only names that round-trip to 8.3, and
+			<code>/share</code> is the writable target.
+		</p>
+		<ul>
+			<li><strong>Concurrency.</strong> One active connection plus a small backlog (three backlog/closing slots in the current TCP server). Parallel clients queue with a zero window until the active request finishes.</li>
+			<li><strong>Bodies.</strong> Whole-file buffering, 4 MB normally and 1 MB when the heap cannot provide the larger buffer. A larger PUT gets 413.</li>
+			<li><strong>Methods.</strong> GET, PUT, DELETE, MKCOL, PROPFIND and MOVE to the extent described; directory <code>MOVE</code> is 501 and <code>PROPPATCH</code> is answered 200 without persisting.</li>
+			<li><strong>No auth.</strong> This is a trusted-LAN service; <code>/share</code> is writable by anyone who can reach it.</li>
+		</ul>
+		<p>
+			The WebDAV server and the packet-level <code>ping</code>/<code>curl</code>/
+			<code>netrecv</code> commands are mutually exclusive: both need the
+			single NIC receiver. Starting <code>websrv</code> while another
+			command owns the receiver fails.
+		</p>
+	</section>
+
+	<section id="capacity">
+		<h2>Capacity chart</h2>
+		<figure class="figure">
+			<div class="bars" role="img" aria-label="Capacity limits: /share 16 MB, ramfs decompressed pack 8 MB, USB rootfs image 8 MB, legacy compressed pack about 255 KB. Bar widths are relative to 16 MB.">
+				<div class="bar-row">
+					<span class="bar-label">/share</span>
+					<div class="bar-track"><span class="bar-fill green" style="--w:100%"></span></div>
+					<span class="bar-value">16 MB</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">ramfs (inflated)</span>
+					<div class="bar-track"><span class="bar-fill" style="--w:50%"></span></div>
+					<span class="bar-value">8 MB</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">rootfs image</span>
+					<div class="bar-track"><span class="bar-fill blue" style="--w:50%"></span></div>
+					<span class="bar-value">8 MB</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">legacy pack</span>
+					<div class="bar-track"><span class="bar-fill" style="--w:1.56%"></span></div>
+					<span class="bar-value">~255 KB</span>
+				</div>
+			</div>
+			<figcaption>
+				<strong>Different limits for different paths.</strong> The legacy
+				boot stage's compressed-pack cap is much smaller than the 8 MB
+				ramfs cap; UEFI and kexec avoid the low-gap bottleneck.
+			</figcaption>
+		</figure>
+	</section>
+
+	<section id="limits">
+		<h2>Limits</h2>
+		<ul>
+			<li><strong>Whole-file service.</strong> Commands read a complete file into memory; there is no stream API for general files.</li>
+			<li><strong>FAT names.</strong> No long filename creation or lookup. WebDAV refuses names that cannot be represented exactly in 8.3.</li>
+			<li><strong>ramfs is read-only.</strong> Writes return <code>SYS_EROFS</code>; use <code>/share</code> for mutable data.</li>
+			<li><strong>Pack volatile at runtime.</strong> Runtime pack replacement is RAM only; a cold boot uses the flashed rootfs.</li>
+			<li><strong>Directory listing cache.</strong> Only the first 64 entries of the last FAT directory are cached; a very large directory still costs a walk.</li>
+		</ul>
+	</section>
+
+	<section id="sources">
+		<h2>Source map</h2>
+		<ul class="filelist">
+			<li><code>vfs.c</code>, <code>vfs.h</code> — mounts and dispatch</li>
+			<li><code>fat.c</code>, <code>fat.h</code> — FAT12/16/32</li>
+			<li><code>ramfs.c</code>, <code>ramfs.h</code> — pack inflate</li>
+			<li><code>share.c</code>, <code>share.h</code> — /share</li>
+			<li><code>sys_fs.c</code> — ring-3 file service</li>
+			<li><code>mkpack.c</code>, <code>mkrootfs.c</code>, <code>rootfs.h</code></li>
+			<li><code>inflate.c</code> — DEFLATE/gzip</li>
+			<li><code>ucmd_websrv.c</code> — HTTP/WebDAV</li>
+			<li><code>fatdetect.c</code>, <code>fatformat.c</code> — format</li>
+		</ul>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

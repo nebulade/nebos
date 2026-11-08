@@ -72,17 +72,7 @@
 /* Process snapshot for the `top` command (see process.c). */
 #define SYS_PROCINFO     49  /* (unsigned int index, struct sys_procinfo *out)
 				-> 1 when found, 0 at the end of the table */
-#define SYS_GET_CURSOR   50  /* () -> cursor position of the caller's screen */
-#define SYS_SET_CURSOR   51  /* (unsigned int pos) -> 0 */
-
-/* Window graphics service (see sys_gfx.c): a ring-3 command maps its terminal
- * window's RGB565 back buffer and draws directly into it; SYS_GFX_PRESENT
- * copies it into the composited front buffer (double buffering, so the WM
- * never shows a half-drawn frame).  One session per process and per window. */
-#define SYS_GFX_BEGIN    52  /* (struct sys_gfx_info *out) -> 0/-1 */
-#define SYS_GFX_PRESENT  53  /* () -> 0/-1; publish a finished frame */
-#define SYS_GFX_END      54  /* () -> 0/-1; unmap + free the canvas */
-#define SYS_KEY_POLL     55  /* () -> 0 none, ASCII, or IO_KEY_*; gfx session only */
+#define SYS_KEY_POLL     55  /* () -> 0 none, ASCII, or IO_KEY_* for the caller's window */
 #define SYS_RTC_HMS      56  /* (struct sys_time *out) -> 0/-1 */
 
 /* Window-manager service (see wm_abi.h).  Only the kernel-spawned WM process
@@ -278,13 +268,6 @@ struct sys_tpec_sensors {
 	int temp_c[SYS_TPEC_TEMP_MAX];
 	unsigned int fan_rpm;
 	unsigned int fan_level;
-};
-
-/* Window canvas handed to a ring-3 graphics command (see sys_gfx.c). */
-struct sys_gfx_info {
-	unsigned int width;    /* canvas (= window content) size in pixels */
-	unsigned int height;
-	void *fb;              /* user VA of the mapped RGB565 canvas */
 };
 
 /* Wall clock for the ring-3 clock (see rtc.c). */

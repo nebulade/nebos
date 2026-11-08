@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Development | NebOS Architecture</title>
+<meta name="description" content="NebOS development: toolchain and build flags, image targets, QEMU runs, serial and network hot reload, runtime command-pack updates, tests and debugging tools.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html">Memory</a>
+		<a href="cpu.html">CPU</a>
+		<a href="drivers.html">Drivers</a>
+		<a href="filesystems.html">Filesystems</a>
+		<a href="graphics.html">Graphics</a>
+		<a href="network.html">Network</a>
+		<a href="userland.html">Userland</a>
+		<a href="development.html" aria-current="page">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">Development</p>
+		<h1>Edit, reload, watch the boot line.</h1>
+		<p class="lede">
+			A normal iteration does not reflash anything. The board receives a
+			new kernel and rootfs over serial or UDP, parks its APs, jumps into
+			the new image and prints the same version line on COM1. A runtime
+			command-pack update can skip even the kernel reload.
+		</p>
+		<div class="meta">
+			<span class="pill">gcc · as · ld · objcopy</span>
+			<span class="pill">QEMU + real hardware</span>
+			<span class="pill">KXE2 · KXN2 · KXNP</span>
+			<span class="pill">headless tests</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#toolchain">Toolchain</a></li>
+			<li><a href="#pipeline">Build pipeline</a></li>
+			<li><a href="#targets">Make targets</a></li>
+			<li><a href="#serial">Serial reload</a></li>
+			<li><a href="#network">Network reload</a></li>
+			<li><a href="#pack">Runtime pack</a></li>
+			<li><a href="#tests">Tests</a></li>
+			<li><a href="#debug">Debugging</a></li>
+			<li><a href="#conventions">Conventions</a></li>
+			<li><a href="#docs">Keeping docs current</a></li>
+			<li><a href="#sources">Source map</a></li>
+		</ul>
+	</nav>
+
+	<section id="toolchain">
+		<h2>Toolchain</h2>
+		<p>
+			NebOS builds with a normal GNU toolchain for 32-bit x86, plus
+			<code>mtools</code> for FAT images and QEMU for testing. The UEFI
+			loader is the only 64-bit component and needs the mingw cross
+			compiler.
+		</p>
+		<ul>
+			<li><strong>Compiler.</strong> <code>gcc</code> with 32-bit multilib, <code>as</code>, <code>ld</code>, <code>objcopy</code>.</li>
+			<li><strong>Kernel flags.</strong> <code>-m32 -march=i586 -ffreestanding -fno-pie -nostdlib -fno-stack-protector -mno-sse -mno-sse2 -mno-mmx -O2</code>.</li>
+			<li><strong>Warnings.</strong> The build uses <code>-Wall -Wextra</code>; a new warning is a bug, not noise.</li>
+			<li><strong>User commands.</strong> Linked at <code>0x40000000</code> with <code>ucmd.ld</code>, stripped, and packed as <code>bin/&lt;name&gt;</code>.</li>
+			<li><strong>UEFI.</strong> <code>x86_64-w64-mingw32-gcc</code> builds <code>BOOTX64.EFI</code>; <code>make all</code> does not require it.</li>
+			<li><strong>Images.</strong> <code>mtools</code> builds <code>root.img</code> and the ESP.</li>
+		</ul>
+	</section>
+
+	<section id="pipeline">
+		<h2>Build pipeline</h2>
+		<figure class="figure">
+			<svg viewBox="0 0 920 360" role="img" aria-labelledby="build-title build-desc">
+				<title id="build-title">NebOS build pipeline</title>
+				<desc id="build-desc">Kernel sources become kernel.bin and boot.bin; ring-3 sources become cmds.pack and a gzip rootfs; the UEFI loader embeds kernel, pack and trampoline. The outputs feed floppy, USB and dual-boot images.</desc>
+
+				<rect class="svg-box blue" x="20" y="20" width="250" height="64" rx="9"/>
+				<text class="svg-text" x="40" y="46">kernel sources</text>
+				<text class="svg-sub" x="40" y="66">*.c · *.S · linker scripts</text>
+
+				<rect class="svg-box blue" x="20" y="116" width="250" height="64" rx="9"/>
+				<text class="svg-text" x="40" y="142">ring-3 sources</text>
+				<text class="svg-sub" x="40" y="162">ucmd_*.c · ngui · browser</text>
+
+				<rect class="svg-box blue" x="20" y="212" width="250" height="64" rx="9"/>
+				<text class="svg-text" x="40" y="238">UEFI loader</text>
+				<text class="svg-sub" x="40" y="258">efi/*.c · tramp.S</text>
+
+				<path class="svg-line blue" d="M270 52h62"/>
+				<path class="svg-line blue" d="M326 46l7 6-7 6"/>
+				<path class="svg-line blue" d="M270 148h62"/>
+				<path class="svg-line blue" d="M326 142l7 6-7 6"/>
+				<path class="svg-line blue" d="M270 244h62"/>
+				<path class="svg-line blue" d="M326 238l7 6-7 6"/>
+
+				<rect class="svg-box accent" x="338" y="20" width="230" height="64" rx="9"/>
+				<text class="svg-text" x="358" y="46">gcc · as · ld · objcopy</text>
+				<text class="svg-sub" x="358" y="66">kernel.elf → kernel.bin</text>
+
+				<rect class="svg-box accent" x="338" y="116" width="230" height="64" rx="9"/>
+				<text class="svg-text" x="358" y="142">mkpack · gzip · mkrootfs</text>
+				<text class="svg-sub" x="358" y="162">cmds.pack → NBROOT1</text>
+
+				<rect class="svg-box accent" x="338" y="212" width="230" height="64" rx="9"/>
+				<text class="svg-text" x="358" y="238">mingw gcc</text>
+				<text class="svg-sub" x="358" y="258">BOOTX64.EFI</text>
+
+				<path class="svg-line accent" d="M568 52h62"/>
+				<path class="svg-line accent" d="M624 46l7 6-7 6"/>
+				<path class="svg-line accent" d="M568 148h62"/>
+				<path class="svg-line accent" d="M624 142l7 6-7 6"/>
+				<path class="svg-line accent" d="M568 244h62"/>
+				<path class="svg-line accent" d="M624 238l7 6-7 6"/>
+
+				<rect class="svg-box green" x="636" y="20" width="264" height="64" rx="9"/>
+				<text class="svg-text" x="656" y="46">floppy.img · final.bin</text>
+				<text class="svg-sub" x="656" y="66">boot sector + kernel + rootfs</text>
+
+				<rect class="svg-box green" x="636" y="116" width="264" height="64" rx="9"/>
+				<text class="svg-text" x="656" y="142">usb.img</text>
+				<text class="svg-sub" x="656" y="162">MBR + boot + 8 MB rootfs</text>
+
+				<rect class="svg-box green" x="636" y="212" width="264" height="64" rx="9"/>
+				<text class="svg-text" x="656" y="238">usb-efi.img · 17 MB</text>
+				<text class="svg-sub" x="656" y="258">usb.img + 8 MB FAT16 ESP</text>
+
+				<line class="svg-line" x1="20" y1="310" x2="900" y2="310"/>
+				<text class="svg-sub" x="20" y="335">Hot reload skips the image step: make dev / net-dev sends kernel.bin + cmds_pack_gz.bin; cmds-dev / net-cmds sends cmds.pack.</text>
+			</svg>
+			<figcaption>
+				<strong>Two independent products.</strong> The kernel image and
+				the rootfs container have separate lifetimes: a kernel reload can
+				keep the running rootfs, and a pack update can keep the kernel.
+			</figcaption>
+		</figure>
+	</section>
+
+	<section id="targets">
+		<h2>Make targets</h2>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Target</th><th>What it does</th></tr>
+				</thead>
+				<tbody>
+					<tr><td><code>make all</code></td><td>Build <code>floppy.img</code>, <code>usb.img</code>, <code>final.bin</code> and <code>root.img</code>.</td></tr>
+					<tr><td><code>make run</code> / <code>run-smp</code></td><td>Boot the floppy in QEMU, optionally with four CPUs (Atom 330 topology).</td></tr>
+					<tr><td><code>make run-usb</code></td><td>Boot <code>usb.img</code> as an IDE disk.</td></tr>
+					<tr><td><code>make run-uhci</code> / <code>run-ehci</code> / <code>run-xhci</code></td><td>Exercise the USB backends with a mouse/keyboard (and storage on EHCI).</td></tr>
+					<tr><td><code>make run-ehci-asix</code> / <code>run-xhci-asix</code></td><td>Pass through a real ASIX AX88772 dongle.</td></tr>
+					<tr><td><code>make run-net</code></td><td>Add a PCI NE2000 on QEMU's slirp network with host port 8080 forwarded.</td></tr>
+					<tr><td><code>make run-ahci</code></td><td>Add an ICH9 AHCI controller and a 512 MB SATA disk.</td></tr>
+					<tr><td><code>make uefi</code> / <code>run-uefi</code> / <code>test-uefi</code></td><td>Build the dual-boot image, boot it under OVMF, or run the headless serial check.</td></tr>
+					<tr><td><code>make rootfs</code></td><td>Rebuild <code>cmds.img</code> only.</td></tr>
+					<tr><td><code>make nowm</code></td><td>Diagnostic kernel with the WM disabled; the boot console stays visible.</td></tr>
+					<tr><td><code>make dev</code> / <code>kernel-dev</code></td><td>Serial reload of kernel + rootfs, or kernel only (keep the running rootfs).</td></tr>
+					<tr><td><code>make net-dev</code> / <code>kernel-net-dev</code></td><td>Network reload of kernel + rootfs, or kernel only.</td></tr>
+					<tr><td><code>make cmds-dev</code> / <code>net-cmds</code></td><td>Replace <code>/ramfs</code> at runtime over serial or UDP.</td></tr>
+					<tr><td><code>make monitor</code> / <code>netmon</code></td><td>Open the serial console, or listen to the UDP console mirror.</td></tr>
+					<tr><td><code>make flash</code></td><td>Write the dual-boot image to a USB stick (needs mingw and prompts for the device).</td></tr>
+					<tr><td><code>make test-usb</code></td><td>Headless QEMU mouse/keyboard regression tests using QMP and screen dumps.</td></tr>
+					<tr><td><code>make test-images</code> / <code>test-images-asan</code></td><td>Host image-decoder and blit tests, with an AddressSanitizer variant.</td></tr>
+					<tr><td><code>make test-crypto</code></td><td>Host vectors for SHA-256, ChaCha20-Poly1305, X25519 and TLS helpers.</td></tr>
+				</tbody>
+			</table>
+		</div>
+	</section>
+
+	<section id="serial">
+		<h2>Serial reload</h2>
+		<p>
+			COM1 runs at 115200 8N1. The WM idle loop watches the receive ring for
+			the <code>KXE2</code> magic and auto-spawns the reload, so a plain
+			<code>make dev</code> is enough. The manual <code>kexec</code> command
+			is a fallback that waits for the same image.
+		</p>
+		<pre><code>[magic "KXE2"][entry u32][kernel_size u32][pack_size u32]
+[kernel][rootfs gzip][checksum u8]</code></pre>
+		<ul>
+			<li><strong>Full reload.</strong> <code>make dev</code> stages kernel and rootfs in one page-allocated buffer, copies the kernel to <code>0x7E00</code> and publishes the pack range in boot info.</li>
+			<li><strong>Kernel only.</strong> <code>make kernel-dev</code> sends <code>pack_size == 0</code>; the new kernel keeps the running rootfs.</li>
+			<li><strong>Pack only.</strong> <code>make cmds-dev</code> uses <code>KXNP</code> and <code>ramfs_replace()</code>, without a kernel jump.</li>
+			<li><strong>Monitor.</strong> Run <code>make monitor</code> in a second terminal; each reload prints <code>NebOS v0.2.0 booted</code> on COM1.</li>
+		</ul>
+		<p>
+			The serial receive drops the BKL while it waits for bytes, so the WM
+			and the other CPU's syscalls stay responsive during a reload.
+		</p>
+		<div class="note">
+			<p><strong>One-time install on a 9600-baud machine.</strong> Use the
+			<code>bootstrap</code> program loaded through <code>serial recv</code>
+			+ <code>run serial</code>. It switches the link to 115200 and waits
+			for a normal <code>KXE2</code> transfer.</p>
+		</div>
+	</section>
+
+	<section id="network">
+		<h2>Network reload</h2>
+		<p>
+			For boards without a serial port, the same reload runs over UDP port
+			19288 with the <code>KXN2</code> magic. The host tool sends the
+			kernel and rootfs as one stop-and-wait stream; the board acknowledges
+			every datagram with the next expected offset and verifies a 32-bit
+			checksum before jumping.
+		</p>
+		<pre><code>make net-dev                    # kernel + rootfs to 192.168.178.240
+make net-dev BOARD_IP=192.168.178.42
+make kernel-net-dev             # kernel only; keep the rootfs
+make net-cmds                   # replace /ramfs only</code></pre>
+		<p>
+			The board must be idle at a shell prompt. The WM loop answers
+			ARP/ICMP, detects the <code>KXN2</code>/<code>KXNP</code> header and
+			pauses the auto-detect while a packet-level command owns the NIC or a
+			transfer is in progress. Datagrams are at most 1400 bytes.
+		</p>
+		<p>
+			The board address comes from DHCP when a server is present; use
+			<code>make net-dev BOARD_IP=&lt;leased-address&gt;</code>, or pin an
+			address with <code>netip</code> on the board.
+		</p>
+	</section>
+
+	<section id="pack">
+		<h2>Runtime command pack</h2>
+		<p>
+			<code>make cmds-dev</code> sends the raw <code>cmds.pack</code> with
+			the <code>KXNP</code> magic. The receiver validates the pack before
+			the swap, so a truncated transfer leaves the running commands
+			untouched. A good pack is installed by <code>ramfs_replace()</code>
+			and the old heap copy is freed.
+		</p>
+		<ul>
+			<li><strong>Existing processes are unaffected.</strong> They already loaded their ELF.</li>
+			<li><strong>The next spawn sees the new files.</strong></li>
+			<li><strong>RAM only.</strong> A cold boot uses the flashed rootfs; reflash after changing the bundle.</li>
+		</ul>
+	</section>
+
+	<section id="tests">
+		<h2>Tests</h2>
+		<ul>
+			<li><strong>USB regression.</strong> <code>make test-usb</code> runs QMP cursor and keyboard tests against UHCI, OHCI, EHCI and xHCI, including hotplug.</li>
+			<li><strong>Image library.</strong> <code>make test-images</code> decodes a corpus of PNG/JPEG/GIF/BMP/TGA/PNM/ICO/PAM files and checks blits; the ASan variant catches memory errors.</li>
+			<li><strong>Crypto.</strong> <code>make test-crypto</code> runs host vectors for the freestanding crypto code.</li>
+			<li><strong>UEFI.</strong> <code>make test-uefi</code> boots the dual image under OVMF headless and greps the serial log for the boot line.</li>
+		</ul>
+	</section>
+
+	<section id="debug">
+		<h2>Debugging</h2>
+		<ul>
+			<li><strong>Serial log.</strong> <code>make monitor</code> shows the boot trace and printf-style driver output. The <code>NebOS v… booted</code> line is written before the framebuffer is ready.</li>
+			<li><strong>Network console.</strong> <code>make netmon</code> listens to UDP 19290 for serial and terminal output; <code>netconsole host &lt;ip&gt;</code> narrows the target.</li>
+			<li><strong>dbg.</strong> The ring-0 serial monitor accepts <code>r addr len</code>, <code>w addr b0 …</code>, <code>i port</code>, <code>o port val</code>, <code>h</code> and <code>q</code>.</li>
+			<li><strong>Panic.</strong> A ring-0 fault dumps vector, error code, registers, CRs, EIP bytes and stack candidates to the LFB and COM1. Resolve addresses with <code>nm kernel.elf</code> / <code>addr2line -e kernel.elf</code>.</li>
+			<li><strong>Profiling.</strong> <code>gfxbench</code> times fill/copy/cell/canvas/flush; <code>top</code>, <code>sched</code>, <code>sensors</code>, <code>power</code> and <code>lspci</code>/<code>lsusb</code> expose live state.</li>
+			<li><strong>Memory.</strong> <code>peek addr len</code> hex-dumps identity-mapped memory (MMIO too); <code>poke addr val</code> writes one dword and prints the read-back.</li>
+		</ul>
+	</section>
+
+	<section id="conventions">
+		<h2>Conventions &amp; gotchas</h2>
+		<ul>
+			<li><strong>Freestanding C.</strong> No libc, no <code>malloc</code>, no <code>printf</code>. Use <code>io_putstr</code>, <code>io_putchar</code> and <code>io_puthex</code>.</li>
+			<li><strong>Fresh memory is not zeroed.</strong> Clear structures whose fields are read before being written. QEMU starts RAM clear and hides the bug.</li>
+			<li><strong>Keep the memory map in sync.</strong> Hardcoded addresses appear in assembly, C headers and linker scripts; changing one without the others breaks boot or loading.</li>
+			<li><strong>Ring-3 data segments.</strong> An IRET to ring 3 nulls DS/ES/FS/GS whose DPL is below CPL 3. Kernel stubs must restore selector <code>0x23</code> with <code>IRQ_RETURN_DS</code>. QEMU does not model this; only real hardware fails.</li>
+			<li><strong>Paging is flat.</strong> Physical equals virtual everywhere; there is no process isolation.</li>
+			<li><strong>The BKL is not preemptible.</strong> A BKL holder can be in the middle of kernel structures; block points drop it, and <code>bkl_pause()</code> is for long waits.</li>
+			<li><strong>Kernel size wall.</strong> <code>_end</code> must stay below <code>0x7F000</code>; the legacy staging gap also constrains BSS and the compressed pack.</li>
+		</ul>
+	</section>
+
+	<section id="docs">
+		<h2>Keeping docs current</h2>
+		<p>
+			This site is static HTML with one shared stylesheet, no JavaScript and
+			no build step. It is part of the tree, not generated output. When a
+			subsystem changes, update the matching page and the overview card in
+			the same change:
+		</p>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Change</th><th>Update</th></tr>
+				</thead>
+				<tbody>
+					<tr><td>Boot path, boot info, image layout</td><td><a href="boot.html">boot.html</a></td></tr>
+					<tr><td>Address map, allocator, paging, user arenas</td><td><a href="memory.html">memory.html</a></td></tr>
+					<tr><td>Scheduler, interrupts, SMP, BKL, power</td><td><a href="cpu.html">cpu.html</a></td></tr>
+					<tr><td>PCI, storage, USB, input, sensors</td><td><a href="drivers.html">drivers.html</a></td></tr>
+					<tr><td>VFS, FAT, ramfs, /share, WebDAV</td><td><a href="filesystems.html">filesystems.html</a></td></tr>
+					<tr><td>Framebuffer, WM, canvas, ngui, images</td><td><a href="graphics.html">graphics.html</a></td></tr>
+					<tr><td>NIC, protocols, TLS, netconsole</td><td><a href="network.html">network.html</a></td></tr>
+					<tr><td>Syscalls, shell, pack, apps</td><td><a href="userland.html">userland.html</a></td></tr>
+					<tr><td>Build targets, reload, tests, debugging</td><td><a href="development.html">development.html</a></td></tr>
+				</tbody>
+			</table>
+		</div>
+		<p>
+			<code>AGENTS.md</code> repeats the rule and lists the same page map.
+			Numbers in charts must come from a source constant or table; if a
+			constant moves, update the chart caption and the source file that
+			defines it.
+		</p>
+	</section>
+
+	<section id="sources">
+		<h2>Source map</h2>
+		<ul class="filelist">
+			<li><code>Makefile</code> — targets and image rules</li>
+			<li><code>kexec.c</code>, <code>kexec_send.c</code> — serial reload</li>
+			<li><code>netkexec.c</code>, <code>netkexec_send.c</code> — network reload</li>
+			<li><code>netlog.c</code>, <code>netmonitor.c</code> — UDP console</li>
+			<li><code>dbg.c</code> — serial debug monitor</li>
+			<li><code>panic.c</code> — fatal exception dump</li>
+			<li><code>kernel.ld</code>, <code>ucmd.ld</code> — link limits</li>
+			<li><code>tools/</code> — QMP USB tests</li>
+			<li><code>AGENTS.md</code> — developer notes and maintenance rule</li>
+		</ul>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overview | NebOS Architecture</title>
+<meta name="description" content="Architecture overview of NebOS: a freestanding 32-bit x86 hobby operating system with its own boot chain, kernel, window manager, filesystem and network stack.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html" aria-current="page">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html">Memory</a>
+		<a href="cpu.html">CPU</a>
+		<a href="drivers.html">Drivers</a>
+		<a href="filesystems.html">Filesystems</a>
+		<a href="graphics.html">Graphics</a>
+		<a href="network.html">Network</a>
+		<a href="userland.html">Userland</a>
+		<a href="development.html">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">NebOS 0.2.0 · Architecture notes</p>
+		<h1>One small OS, from boot sector to browser.</h1>
+		<p class="lede">
+			NebOS is a from-scratch, freestanding 32-bit x86 operating system
+			written in C and assembly. It targets a first-generation Pentium,
+			boots from a floppy, a USB disk or x86-64 UEFI firmware, and carries
+			its own scheduler, filesystems, window manager, TCP/IP stack and
+			ring-3 command pack.
+		</p>
+		<div class="meta">
+			<span class="pill accent">i586 · 32-bit</span>
+			<span class="pill">freestanding · no libc</span>
+			<span class="pill">BIOS + UEFI</span>
+			<span class="pill">serial + net hot reload</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#stack">System stack</a></li>
+			<li><a href="#numbers">At a glance</a></li>
+			<li><a href="#constraints">Design constraints</a></li>
+			<li><a href="#reading">Reading path</a></li>
+			<li><a href="#subsystems">Subsystems</a></li>
+			<li><a href="#tour">Repository tour</a></li>
+		</ul>
+	</nav>
+
+	<section id="stack">
+		<h2>The system stack</h2>
+		<p>
+			Almost everything is built in-tree: the boot sectors, the physical
+			memory manager, the scheduler, the FAT driver, the USB host
+			controllers, the TCP client, the TLS implementation and the
+			applications. The only runtime contract with the outside world is
+			the PC firmware and the x86 instruction set.
+		</p>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 474" role="img" aria-labelledby="stack-title stack-desc">
+				<title id="stack-title">NebOS software stack</title>
+				<desc id="stack-desc">Five layers: ring-3 commands and GUI apps, the int 0x80 syscall boundary, kernel services, drivers and platform support, and firmware and hardware.</desc>
+
+				<rect class="svg-box accent" x="100" y="8" width="720" height="72" rx="9"/>
+				<text class="svg-text" x="124" y="35">Ring 3 · commands &amp; GUI apps</text>
+				<text class="svg-sub" x="124" y="55">ls · cat · edit · view · files · browser · gallery · solitaire</text>
+				<text class="svg-tiny" x="796" y="35" text-anchor="end">0x40000000</text>
+
+				<path class="svg-line" d="M460 80v22"/>
+				<path class="svg-line" d="M454 96l6 7 6-7"/>
+
+				<rect class="svg-box blue" x="100" y="104" width="720" height="72" rx="9"/>
+				<text class="svg-text" x="124" y="131">Syscall boundary · int 0x80</text>
+				<text class="svg-sub" x="124" y="151">SYS_* services · one string argument · canvas mapped at 0x50000000</text>
+
+				<path class="svg-line" d="M460 176v22"/>
+				<path class="svg-line" d="M454 192l6 7 6-7"/>
+
+				<rect class="svg-box" x="100" y="200" width="720" height="92" rx="9"/>
+				<text class="svg-text" x="124" y="227">Kernel services</text>
+				<text class="svg-sub" x="124" y="247">CFS-lite scheduler · VFS · FAT + ramfs · TCP/IP + TLS</text>
+				<text class="svg-sub" x="124" y="267">window server · file / info / memory services</text>
+
+				<path class="svg-line" d="M460 292v22"/>
+				<path class="svg-line" d="M454 308l6 7 6-7"/>
+
+				<rect class="svg-box" x="100" y="316" width="720" height="92" rx="9"/>
+				<text class="svg-text" x="124" y="343">Drivers &amp; platform</text>
+				<text class="svg-sub" x="124" y="363">PCI · PATA/SATA · FDC · USB UHCI/OHCI/EHCI/xHCI · NICs</text>
+				<text class="svg-sub" x="124" y="383">PS/2 + USB HID · serial · ACPI/MADT · thermal · power</text>
+
+				<path class="svg-line" d="M460 408v22"/>
+				<path class="svg-line" d="M454 424l6 7 6-7"/>
+
+				<rect class="svg-box green" x="100" y="432" width="720" height="36" rx="9"/>
+				<text class="svg-text" x="124" y="455">Firmware &amp; hardware · BIOS or UEFI · i586 CPU · VGA/VBE · RAM</text>
+
+				<text class="svg-tiny" x="40" y="52" text-anchor="middle">user</text>
+				<text class="svg-tiny" x="40" y="240" text-anchor="middle">kernel</text>
+				<text class="svg-tiny" x="40" y="360" text-anchor="middle">drivers</text>
+				<text class="svg-tiny" x="40" y="454" text-anchor="middle">firmware</text>
+			</svg>
+			<figcaption>
+				<strong>The layering is real, not just conceptual.</strong>
+				Ring-3 commands enter the kernel only through <code>int 0x80</code>;
+				the kernel owns the devices and exposes narrow services. The one
+				deliberate exception is the legacy ring-0 <code>run</code> area used
+				by <code>prog</code> and <code>space</code>.
+			</figcaption>
+		</figure>
+	</section>
+
+	<section id="numbers">
+		<h2>At a glance</h2>
+		<div class="grid">
+			<div class="card">
+				<h3>8 CPUs</h3>
+				<p>BSP plus up to seven APs, discovered through ACPI/MADT and started with INIT-SIPI-SIPI. Without ACPI the machine stays on the uniprocessor path.</p>
+			</div>
+			<div class="card">
+				<h3>64 process slots</h3>
+				<p>Kernel threads and ring-3 processes share a sparse, stable PCB table. Kernel threads are pinned to the BSP; user work can run on any AP.</p>
+			</div>
+			<div class="card">
+				<h3>8 windows</h3>
+				<p>Terminal and canvas windows are composited by the window manager, with per-window RGB565 canvases mapped into the owning process.</p>
+			</div>
+			<div class="card">
+				<h3>8 MB rootfs</h3>
+				<p>The command pack travels as a compressed <code>NBROOT1</code> image and is inflated into a read-only ramfs at boot. Runtime replacement needs no reboot.</p>
+			</div>
+		</div>
+	</section>
+
+	<section id="constraints">
+		<h2>Design constraints</h2>
+		<p>
+			The unusual parts of the architecture follow from a few hard rules.
+			They explain why the code uses fixed low-memory blocks, why the kernel
+			is linked below <code>0x7F000</code>, and why so much care goes into
+			keeping the kernel image small.
+		</p>
+		<ul>
+			<li><strong>Freestanding C.</strong> No libc, no <code>malloc</code>, no <code>printf</code>, no external runtime. Formatting and allocation are in-tree.</li>
+			<li><strong>i586 baseline.</strong> Builds use <code>-march=i586 -mno-sse -mno-sse2 -mno-mmx</code>; SSE2 drawing paths are probed at runtime.</li>
+			<li><strong>Identity-mapped paging.</strong> Physical and virtual addresses are equal. There is no per-process address space or isolation.</li>
+			<li><strong>128 MB physical ceiling.</strong> The frame bitmap covers 128 MB; anything above that is unmapped.</li>
+			<li><strong>Hardcoded low memory.</strong> Boot info, the E820 map, the framebuffer block and the AP trampoline have fixed addresses that every boot path must honour.</li>
+			<li><strong>No firmware runtime.</strong> <code>reboot</code> and <code>poweroff</code> use legacy ports; UEFI runtime services are not called after <code>ExitBootServices</code>.</li>
+		</ul>
+		<div class="warn">
+			<p><strong>Fresh memory is not zeroed.</strong> <code>mm_alloc_page</code> and <code>kmalloc</code> return whatever RAM contained. Every structure read before it is written must be cleared on allocation; QEMU hides this because its RAM starts clear.</p>
+		</div>
+	</section>
+
+	<section id="reading">
+		<h2>Reading path</h2>
+		<p>If you are new to the tree, follow the machine through a boot:</p>
+		<ol>
+			<li><a href="boot.html">Boot</a> — the real-mode stage, the UEFI loader and the <code>0x500</code>/<code>0x600</code> handoff contract.</li>
+			<li><a href="memory.html">Memory</a> — the fixed low-memory map and the 4 KB frame allocator it feeds.</li>
+			<li><a href="cpu.html">CPU &amp; scheduling</a> — interrupt setup, the CFS-lite scheduler and the big kernel lock.</li>
+			<li><a href="drivers.html">Drivers</a> — how storage, USB, input and sensors are discovered.</li>
+			<li><a href="graphics.html">Graphics</a> — the shadow buffer, compositor and ring-3 canvas model.</li>
+		</ol>
+		<p>
+			The remaining pages cover the filesystem and command-pack pipeline,
+			the network stack, the ring-3 ABI and the development workflow.
+		</p>
+	</section>
+
+	<section id="subsystems">
+		<h2>Subsystem map</h2>
+		<div class="grid">
+			<a class="card" href="boot.html">
+				<h3>Boot &amp; firmware</h3>
+				<p>BIOS boot sector, VESA stage, MBR, UEFI loader, kexec trampoline and the boot-info block.</p>
+				<span class="card-tag">boot.html</span>
+			</a>
+			<a class="card" href="memory.html">
+				<h3>Memory &amp; paging</h3>
+				<p>E820 map, 4 KB frame bitmap, kmalloc, process stacks, user arena and the hardcoded address ladder.</p>
+				<span class="card-tag">memory.html</span>
+			</a>
+			<a class="card" href="cpu.html">
+				<h3>CPU &amp; scheduling</h3>
+				<p>GDT/TSS, interrupts, AP bring-up, CFS-lite weights, wait queues, the BKL, idle and power states.</p>
+				<span class="card-tag">cpu.html</span>
+			</a>
+			<a class="card" href="drivers.html">
+				<h3>Drivers &amp; buses</h3>
+				<p>PCI enumeration, FDC/PATA/SATA, the USB core and four host controllers, HID, serial and board sensors.</p>
+				<span class="card-tag">drivers.html</span>
+			</a>
+			<a class="card" href="filesystems.html">
+				<h3>Storage &amp; filesystems</h3>
+				<p>VFS vtable, FAT12/16/32, the ramfs pack pipeline, <code>/share</code> and the WebDAV view of the VFS.</p>
+				<span class="card-tag">filesystems.html</span>
+			</a>
+			<a class="card" href="graphics.html">
+				<h3>Graphics &amp; UI</h3>
+				<p>VBE framebuffer, shadow buffer, damage rectangles, compositor, canvas ABI, ngui and image codecs.</p>
+				<span class="card-tag">graphics.html</span>
+			</a>
+			<a class="card" href="network.html">
+				<h3>Networking</h3>
+				<p>NIC registry, ARP/ICMP/UDP, DHCP, DNS, TCP client and listener, TLS 1.3, netconsole and netkexec.</p>
+				<span class="card-tag">network.html</span>
+			</a>
+			<a class="card" href="userland.html">
+				<h3>Userland</h3>
+				<p>Ring-3 address space, ELF loading, syscall groups, PATH dispatch, the command pack and GUI apps.</p>
+				<span class="card-tag">userland.html</span>
+			</a>
+			<a class="card" href="development.html">
+				<h3>Development</h3>
+				<p>Toolchain, build images, QEMU targets, serial/network reload, tests and low-level debugging tools.</p>
+				<span class="card-tag">development.html</span>
+			</a>
+		</div>
+	</section>
+
+	<section id="tour">
+		<h2>Repository tour</h2>
+		<p>
+			NebOS is deliberately flat: the kernel, the freestanding libraries
+			and the ring-3 commands live side by side at the repository root.
+			The linker scripts and the Makefile are the map.
+		</p>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Area</th><th>Important files</th></tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td>Boot chain</td>
+						<td><span class="file">boot.S</span> <span class="file">mbr.S</span> <span class="file">vesa_stage.S</span> <span class="file">entry.S</span> <span class="file">efi/</span></td>
+					</tr>
+					<tr>
+						<td>Kernel core</td>
+						<td><span class="file">kernel.c</span> <span class="file">sched.c</span> <span class="file">process.c</span> <span class="file">mm.c</span> <span class="file">paging.c</span> <span class="file">syscall.c</span></td>
+					</tr>
+					<tr>
+						<td>Devices</td>
+						<td><span class="file">usb.c</span> <span class="file">uhci.c</span> <span class="file">ohci.c</span> <span class="file">ehci.c</span> <span class="file">xhci.c</span> <span class="file">ata.c</span> <span class="file">ahci.c</span></td>
+					</tr>
+					<tr>
+						<td>Services</td>
+						<td><span class="file">sys_fs.c</span> <span class="file">sys_net.c</span> <span class="file">gfx.c</span> <span class="file">sys_wm.c</span> <span class="file">sys_info.c</span></td>
+					</tr>
+					<tr>
+						<td>Userland</td>
+						<td><span class="file">ucmd_*.c</span> <span class="file">ucmd_lib.h</span> <span class="file">ngui.c</span> <span class="file">browser.c</span> <span class="file">gallery.c</span></td>
+					</tr>
+					<tr>
+						<td>Build &amp; pack</td>
+						<td><span class="file">Makefile</span> <span class="file">mkpack.c</span> <span class="file">mkrootfs.c</span> <span class="file">kernel.ld</span> <span class="file">ucmd.ld</span></td>
+					</tr>
+					<tr>
+						<td>Documentation</td>
+						<td><span class="file">AGENTS.md</span> and this <span class="file">docs/</span> folder</td>
+					</tr>
+				</tbody>
+			</table>
+		</div>
+		<div class="tip">
+			<p><strong>Keep both maps current.</strong> Architecture changes belong in <code>AGENTS.md</code> and in the matching page under <code>docs/</code>. The maintenance rule is repeated in <code>AGENTS.md</code>.</p>
+		</div>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

@@ -16,16 +16,9 @@ unsigned int io_get_rows(void);
 #define IO_DATETIME_POS   (io_get_cols() - IO_DATETIME_LEN)
 
 void io_init(void);
-void io_clear_screen(void);
-int io_did_scroll(void);  /* returns 1 once after a scroll, then 0 until next scroll */
 void io_putchar(char c);
 void io_putstr(const char *s);
 void io_puthex(unsigned int n);  /* print n as 8 hex digits, no 0x prefix */
-unsigned int io_get_cursor(void);
-void io_set_cursor(unsigned int pos);
-void io_cursor_show_block(void);
-void io_cursor_hide_block(void);
-void io_vga_write(unsigned int pos, unsigned short value);
 void io_drain_keyboard(void);
 
 /* Poll keyboard; returns 0 = no key, 1..255 = ASCII, or an IO_KEY_* code. */

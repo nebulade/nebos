@@ -137,6 +137,11 @@ int sys_wm_present(const struct wm_present_info *in)
 	return wm_server_present(&p);
 }
 
+int sys_wm_key_poll(void)
+{
+	return wm_server_key_poll();
+}
+
 int sys_wm_sync(void)
 {
 	return wm_server_sync();

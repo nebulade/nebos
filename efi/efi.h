@@ -1,4 +1,4 @@
-/* Minimal UEFI definitions for the Nebs OS x86-64 loader.
+/* Minimal UEFI definitions for the NebOS x86-64 loader.
  *
  * Only the tables and protocols the loader uses are declared, but the fields
  * before them are in their exact UEFI order so the offsets match the

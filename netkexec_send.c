@@ -1,4 +1,4 @@
-/* Push a kernel + rootfs pack to a Nebs OS board over UDP (the board's WM
+/* Push a kernel + rootfs pack to a NebOS board over UDP (the board's WM
  * loop auto-detects the header and jumps into the new kernel).
  *
  *   netkexec_send <board-ip> <port> <entry-hex> <kernel> [pack]

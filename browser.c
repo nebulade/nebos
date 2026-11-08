@@ -1594,7 +1594,7 @@ static void load_home(int push)
 	browser_rules_alloc();
 	{
 		static const char home[] =
-			"<html><head><title>Nebs Browser</title><style>"
+			"<html><head><title>NebOS Browser</title><style>"
 			"body { margin: 10px; color: #e4e6f0; }"
 			"h1 { color: #7fb0ff; }"
 			".box { background-color: #262b3a; margin: 12px; "
@@ -1602,7 +1602,7 @@ static void load_home(int push)
 			"a { color: #7fb0ff; }"
 			"pre { background-color: #32384a; }"
 			"</style></head><body>"
-			"<h1>Nebs Browser</h1>"
+			"<h1>NebOS Browser</h1>"
 			"<p>A small HTML/CSS browser built on <b>ngui</b>, the "
 			"shared HTTP client and the image library.</p>"
 			"<div class=\"box\"><b>Try:</b>"

@@ -21,7 +21,6 @@
 #include "process.h"
 #include "ramfs.h"
 #include "sched.h"
-#include "sys_gfx.h"
 #include "thermal.h"
 #include "timer.h"
 #include "tpec.h"
@@ -237,14 +236,11 @@ static void system_housekeeping(void)
 	mouse_poll_update();
 #ifndef NOWM
 	wm_pump_keyboard();
-	wm_blink_cursor();
 #endif
 	netlog_flush();
 #ifndef NOWM
 	wm_handle_kexec();
 	wm_server_supervise();
-	if (wm_server_can_reap())
-		sys_gfx_collect();
 	if (!wm_server_frame_active())
 		vga_fb_flush_budget(VGA_FLUSH_BUDGET_BYTES);
 #else
@@ -495,9 +491,6 @@ void kernel_main(void)
 	 * while storage and the network are still being probed. */
 	wm_server_init();
 	boot_trace("wm init");
-	/* The WM's first frame covers this console; stop drawing before it can
-	 * run, or a later stage line would appear on top of the desktop. */
-	bootcon_set_enabled(0);
 	wm_server_start();
 	boot_trace("wm");
 #else
@@ -530,12 +523,12 @@ void kernel_main(void)
 	vfs_mount_all();
 	boot_trace("storage");
 
-	/* The first terminal is spawned only now: while the boot scan was
-	 * rebuilding the mount table, no user command could touch the disks.
-	 * The desktop itself was already painted from /ramfs. */
+	/* The WM spawns the first terminal once it sees boot_ready: while the
+	 * boot scan was rebuilding the mount table, no user command could touch
+	 * the disks.  The desktop itself was already painted from /ramfs. */
 #ifndef NOWM
-	wm_spawn_terminal();
-	boot_trace("terminal");
+	wm_server_boot_ready();
+	boot_trace("terminal ready");
 #else
 	boot_trace("terminal off");
 #endif

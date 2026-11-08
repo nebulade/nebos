@@ -15,6 +15,7 @@ int sys_wm_close(unsigned int index);
 int sys_wm_poll(struct wm_status *out);
 int sys_wm_begin(void);
 int sys_wm_present(const struct wm_present_info *in);
+int sys_wm_key_poll(void);
 int sys_wm_sync(void);
 
 int sys_win_create(const struct win_create *in, struct win_info *out);

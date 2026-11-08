@@ -1,4 +1,4 @@
-/* Nebs OS UEFI loader (x86-64).
+/* NebOS UEFI loader (x86-64).
  *
  * The kernel is a 32-bit i586 image linked at 0x7E00.  This loader gives it
  * the same two boot structures the real-mode VESA stage produces:
@@ -172,7 +172,7 @@ static void fail_before(EFI_SYSTEM_TABLE *st, const char *msg)
 	com1_puts("nebos-efi: ");
 	com1_puts(msg);
 	com1_puts("\n");
-	conout_puts(st, "Nebs OS EFI loader: ");
+	conout_puts(st, "NebOS EFI loader: ");
 	conout_puts(st, msg);
 	conout_puts(st, "\n");
 	halt_forever();

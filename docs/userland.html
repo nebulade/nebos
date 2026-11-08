@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Userland | NebOS Architecture</title>
+<meta name="description" content="NebOS userland: ring-3 address space, ELF loading, the syscall ABI, the shell and PATH dispatch, the 42-command pack, GUI applications and the browser.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html">Memory</a>
+		<a href="cpu.html">CPU</a>
+		<a href="drivers.html">Drivers</a>
+		<a href="filesystems.html">Filesystems</a>
+		<a href="graphics.html">Graphics</a>
+		<a href="network.html">Network</a>
+		<a href="userland.html" aria-current="page">Userland</a>
+		<a href="development.html">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">Userland</p>
+		<h1>Commands are ELFs. The shell is a dispatcher.</h1>
+		<p class="lede">
+			Ring-3 programs are freestanding ELFs linked at <code>0x40000000</code>.
+			The shell resolves a command name against builtins, the per-terminal
+			PATH and the kernel command registry, then spawns it with one
+			argument string. The command pack supplies 42 PATH commands by default.
+		</p>
+		<div class="meta">
+			<span class="pill">int 0x80</span>
+			<span class="pill">one string argument</span>
+			<span class="pill">42 PATH commands</span>
+			<span class="pill">8 TTYs · 8 windows</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#model">Ring-3 model</a></li>
+			<li><a href="#spawn">Spawn path</a></li>
+			<li><a href="#syscalls">Syscall ABI</a></li>
+			<li><a href="#shell">Shell &amp; PATH</a></li>
+			<li><a href="#registry">Kernel commands</a></li>
+			<li><a href="#pack">Command pack</a></li>
+			<li><a href="#apps">GUI applications</a></li>
+			<li><a href="#browser">Browser</a></li>
+			<li><a href="#legacy">Legacy ring-0 programs</a></li>
+			<li><a href="#sources">Source map</a></li>
+		</ul>
+	</nav>
+
+	<section id="model">
+		<h2>Ring-3 model</h2>
+		<p>
+			A user process gets a page directory cloned from the kernel identity
+			map, a 2 MB image/stack window at <code>0x40000000</code>, an optional
+			4 MB canvas at <code>0x50000000</code> and a growable heap at
+			<code>0x60000000</code>. The kernel remains mapped because paging is
+			identity-mapped; this is isolation in privilege level only, not a
+			separate address space.
+		</p>
+		<ul>
+			<li><strong>No libc.</strong> Commands include <span class="file">ucmd_lib.h</span> for syscall wrappers and string helpers.</li>
+			<li><strong>One argument.</strong> The shell passes the raw remainder of the line as a C string at the top of the user stack; <code>_start(const char *arg)</code> needs no crt0.</li>
+			<li><strong>Inherited context.</strong> Each process inherits the spawning terminal's cwd and TTY id; the file syscalls resolve relative paths against the PCB cwd.</li>
+			<li><strong>Page-fault policy.</strong> A ring-3 fault kills the process and prints a short message; it does not halt the kernel.</li>
+		</ul>
+		<div class="note">
+			<p><strong>Not a sandbox.</strong> Because physical and virtual addresses
+			are identical and the kernel is mapped, a ring-3 bug can read or write
+			any mapped kernel page. The privilege boundary protects against
+			accidental corruption from ordinary code, not against malicious code.</p>
+		</div>
+	</section>
+
+	<section id="spawn">
+		<h2>Spawn path</h2>
+		<figure class="figure">
+			<svg viewBox="0 0 920 232" role="img" aria-labelledby="spawn-title spawn-desc">
+				<title id="spawn-title">Command spawn path</title>
+				<desc id="spawn-desc">A shell line is matched against builtins, then the PATH, then the kernel registry. A PATH hit loads the ELF through the VFS and creates a ring-3 process; a kernel registry hit spawns a kernel thread.</desc>
+
+				<rect class="svg-box" x="20" y="24" width="160" height="58" rx="9"/>
+				<text class="svg-text" x="38" y="49">shell line</text>
+				<text class="svg-sub" x="38" y="69">word + remainder</text>
+
+				<rect class="svg-box blue" x="216" y="24" width="160" height="58" rx="9"/>
+				<text class="svg-text" x="234" y="49">builtins</text>
+				<text class="svg-sub" x="234" y="69">cd · path · help · clear</text>
+
+				<rect class="svg-box accent" x="412" y="24" width="180" height="58" rx="9"/>
+				<text class="svg-text" x="430" y="49">PATH lookup</text>
+				<text class="svg-sub" x="430" y="69">/ramfs/bin by default</text>
+
+				<rect class="svg-box" x="628" y="24" width="270" height="58" rx="9"/>
+				<text class="svg-text" x="646" y="49">kernel registry</text>
+				<text class="svg-sub" x="646" y="69">privileged / inline commands</text>
+
+				<path class="svg-line" d="M180 53h24"/>
+				<path class="svg-line" d="M196 47l7 6-7 6"/>
+				<path class="svg-line" d="M376 53h24"/>
+				<path class="svg-line" d="M392 47l7 6-7 6"/>
+				<path class="svg-line" d="M592 53h24"/>
+				<path class="svg-line" d="M608 47l7 6-7 6"/>
+
+				<rect class="svg-box green" x="216" y="146" width="376" height="58" rx="9"/>
+				<text class="svg-text" x="236" y="171">VFS load → process_create_user</text>
+				<text class="svg-sub" x="236" y="191">ELF segments · page directory · 8-page stack · arg</text>
+
+				<rect class="svg-box amber" x="628" y="146" width="270" height="58" rx="9"/>
+				<text class="svg-text" x="646" y="171">kernel process</text>
+				<text class="svg-sub" x="646" y="191">ring 0 · pinned to the BSP</text>
+
+				<path class="svg-line accent" d="M502 82v54"/>
+				<path class="svg-line accent" d="M496 128l6 7 6-7"/>
+				<path class="svg-line" d="M763 82v54"/>
+				<path class="svg-line" d="M757 128l6 7 6-7"/>
+			</svg>
+			<figcaption>
+				<strong>A packed command can shadow a kernel command.</strong>
+				The PATH is searched before the kernel registry, so a new
+				<code>bin/&lt;name&gt;</code> changes behaviour without editing the
+				kernel. Builtins are handled inline, before either lookup.
+			</figcaption>
+		</figure>
+	</section>
+
+	<section id="syscalls">
+		<h2>Syscall ABI</h2>
+		<p>
+			The gate is <code>int 0x80</code>. <code>eax</code> carries the
+			number, <code>ebx</code>/<code>ecx</code>/<code>edx</code> the first
+			three arguments, and the negative <code>SYS_E*</code> codes are
+			stable. The wrappers in <span class="file">ucmd_lib.h</span> cover
+			zero to three arguments.
+		</p>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Group</th><th>Numbers</th><th>Purpose</th></tr>
+				</thead>
+				<tbody>
+					<tr><td>Console &amp; time</td><td>1–4, 56, 69</td><td>putstr, ticks, sleep, exit, RTC time/date</td></tr>
+					<tr><td>Files</td><td>5–11, 48, 98</td><td>whole-file read/write, list, unlink, mkdir/rmdir, mounts, cwd, stat</td></tr>
+					<tr><td>System info</td><td>12–16, 49–51, 91–92, 102</td><td>memory, E820, mouse, storage, blkdev, procinfo, cursor, CPU temp, sensors, EC</td></tr>
+					<tr><td>Network</td><td>17–47</td><td>NIC config/acquire, raw frames, DHCP/DNS, TCP client, ARP, cwd</td></tr>
+					<tr><td>Window &amp; WM</td><td>55, 57–72, 80, 83–87</td><td>key poll, WM attach/info/map/present/create_term, window create/present/input/resize</td></tr>
+					<tr><td>Process &amp; memory</td><td>73–79, 81, 88–90</td><td>TTY, spawn, alive, kill, chdir, scheduler info, heap alloc/grow/free</td></tr>
+					<tr><td>TCP server</td><td>93–97, 99–101</td><td>listen, accept, server recv/send/close, peer, speed, MAC set</td></tr>
+				</tbody>
+			</table>
+		</div>
+		<p>
+			The file service is whole-file, not stream-oriented. The network
+			service has a single TCP connection and one NIC owner. There is no
+			<code>fork</code>, <code>exec</code> or shared memory: a command
+			either runs as its own process from an ELF or calls a kernel command.
+		</p>
+	</section>
+
+	<section id="shell">
+		<h2>Shell &amp; PATH</h2>
+		<p>
+			The windowed shell is <span class="file">ucmd_term.c</span>; the
+			kernel-side <span class="file">terminal.c</span> holds the privileged
+			command registry used through <code>SYS_SPAWN_KCMD</code>. There is
+			no kernel terminal fallback; the WM spawns the first terminal once
+			storage is ready. Each terminal has a current working directory and
+			a PATH (default <code>/ramfs/bin</code>). Pressing Tab completes
+			builtin and PATH names; <code>help</code> lists both.
+		</p>
+		<ul>
+			<li><strong>Dispatch order.</strong> Builtins → PATH file → kernel command. A PATH hit loads the ELF through the VFS and spawns it as ring 3.</li>
+			<li><strong>Builtins.</strong> <code>cd</code>, <code>path</code>, <code>help</code>, <code>clear</code>; the ring-3 shell also handles <code>ps</code> and <code>kill</code> inline. <code>bootlog</code> is a kernel command.</li>
+			<li><strong>Arguments.</strong> The raw remainder of the line is passed verbatim; commands parse their own flags.</li>
+			<li><strong>Working directory.</strong> The prompt shows <code>[dir] &gt;</code>; <code>cd</code> changes only the current terminal's cwd, and spawned commands inherit it.</li>
+			<li><strong>Windows.</strong> A window receives keys through its window key queue (<code>SYS_WIN_KEY_WAIT</code>) or the generic <code>SYS_KEY_POLL</code>; closing the window kills its owner process.</li>
+		</ul>
+	</section>
+
+	<section id="registry">
+		<h2>Kernel commands</h2>
+		<p>
+			These commands must run in ring 0 or inline in the shell; they are not
+			files in the pack. The split keeps privileged hardware access out of
+			ring 3 while most user-facing tools remain replaceable ELFs.
+		</p>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Group</th><th>Commands</th></tr>
+				</thead>
+				<tbody>
+					<tr><td>Shell</td><td><code>cd</code> <code>path</code> <code>help</code> <code>clear</code> <code>bootlog</code></td></tr>
+					<tr><td>Process / scheduler</td><td><code>ps</code> <code>sched</code> <code>renice</code> <code>kill</code> <code>idle</code> <code>cpufreq</code> <code>power</code></td></tr>
+					<tr><td>Hardware / debug</td><td><code>display</code> <code>gfxbench</code> <code>lsusb</code> <code>lspci</code> <code>peek</code> <code>poke</code> <code>format</code> <code>dbg</code> <code>serial</code></td></tr>
+					<tr><td>Network control</td><td><code>netdev</code></td></tr>
+					<tr><td>Boot / power</td><td><code>reboot</code> <code>poweroff</code> <code>kexec</code> <code>run</code> <code>space</code> <code>prog</code></td></tr>
+				</tbody>
+			</table>
+		</div>
+		<p>
+			<code>run</code> and the embedded <code>prog</code>/<code>space</code>
+			programs are the remaining ring-0 user-code path: binaries load at
+			<code>0x80000</code> and call the program API at <code>0x7FF00</code>.
+			Everything else user-facing is a ring-3 ELF.
+		</p>
+	</section>
+
+	<section id="pack">
+		<h2>Command pack</h2>
+		<p>
+			The pack is built from the <code>UCMDS</code> list in the Makefile as
+			<code>bin/&lt;name&gt;</code>, plus <code>hello</code> and the real
+			<code>browser.app</code> and <code>gallery.app</code>. It is mounted
+			read-only at <code>/ramfs</code>; the shell's default PATH points at
+			<code>/ramfs/bin</code>.
+		</p>
+		<div class="grid">
+			<div class="card">
+				<h3>Files &amp; text</h3>
+				<p><code>ls</code> <code>cat</code> <code>save</code> <code>rm</code> <code>mkdir</code> <code>rmdir</code> <code>edit</code> <code>files</code> <code>view</code></p>
+			</div>
+			<div class="card">
+				<h3>System</h3>
+				<p><code>cpuinfo</code> <code>meminfo</code> <code>storage</code> <code>top</code> <code>mouseinfo</code> <code>sensors</code> <code>spin</code> <code>clock</code> <code>colors</code></p>
+			</div>
+			<div class="card">
+				<h3>Network</h3>
+				<p><code>netinfo</code> <code>netip</code> <code>netdns</code> <code>host</code> <code>dhcp</code> <code>ping</code> <code>pong</code> <code>netsend</code> <code>netrecv</code> <code>netlog</code> <code>netconsole</code> <code>netregs</code> <code>netloop</code> <code>netreset</code> <code>net100</code> <code>netmac</code> <code>curl</code> <code>websrv</code></p>
+			</div>
+			<div class="card">
+				<h3>GUI</h3>
+				<p><code>wm</code> <code>term</code> <code>files</code> <code>view</code> <code>mines</code> <code>solitaire</code> <code>gallery</code> <code>browser</code> <code>clock</code> <code>colors</code></p>
+			</div>
+		</div>
+		<p>
+			The launchers <code>bin/browser</code> and <code>bin/gallery</code>
+			forward their argument and cwd, and prefer a development copy under
+			<code>/share</code> (<code>BROWSER</code> or <code>GALLERY</code>)
+			before the pack copy and the FAT fallback on <code>root.img</code>.
+			This lets <code>make browser-dev</code> and <code>make gallery-dev</code>
+			update an app without rebuilding the pack.
+		</p>
+	</section>
+
+	<section id="apps">
+		<h2>GUI applications</h2>
+		<ul>
+			<li><strong>files</strong> — browser for the VFS; opens text in <code>edit</code>, images in <code>view</code>, HTML in <code>browser</code>. First user of ngui.</li>
+			<li><strong>gallery</strong> — live widget and primitive showcase; the real app ships in the pack.</li>
+			<li><strong>solitaire</strong> — Klondike with drag-and-drop, scoring and a win animation.</li>
+			<li><strong>mines</strong> — second ngui canvas app; shares the toolkit and event model.</li>
+			<li><strong>view</strong> — fit/1:1/zoom/pan image viewer, animated GIF playback.</li>
+			<li><strong>edit</strong> — text editor that draws its own text with the 8x16 font.</li>
+			<li><strong>clock</strong> / <strong>colors</strong> — small window canvas demos.</li>
+			<li><strong>wm</strong> / <strong>term</strong> — the ring-3 window manager and terminal launcher used by the desktop.</li>
+		</ul>
+	</section>
+
+	<section id="browser">
+		<h2>Browser</h2>
+		<p>
+			The real browser is <code>bin/browser.app</code> in the pack. It links
+			ngui, the image library, inflate, TLS and uhttp. It owns a 960×640
+			window, a URL bar, history, a status bar and inline images. Network
+			work runs in a headless <code>curl __fetch</code> helper that writes
+			the body and metadata under <code>/share</code>, so the UI keeps
+			drawing and scrolling.
+		</p>
+		<ul>
+			<li><strong>HTML/CSS subset.</strong> External and inline stylesheets, tag/class/id and descendant/child selectors, colours, backgrounds, font size, weights, margins, padding, borders, alignment, percentage widths, basic floats and <code>@media</code> blocks evaluated at a fixed 1000 px viewport.</li>
+			<li><strong>Not supported.</strong> JavaScript, forms, flex/grid, CSS variables, absolute/fixed positioning, standalone image documents, tables with column widths, video/audio.</li>
+			<li><strong>Caps.</strong> 2 MB page body, 832 KB CSS, 6144 DOM nodes, 2304 rules, 16 images; images are downscaled to at most 1000 px wide and decoded into a 24 MB shared arena.</li>
+			<li><strong>Fetching.</strong> Each network fetch starts a one-shot helper process and a fresh TCP/TLS connection; images load one per loop within the viewport plus 160 px.</li>
+			</ul>
+		<p>
+			The browser's default canvas is dark, matching the ngui theme. Pages
+			that set dark text but rely on a white default background can be hard
+			to read; pages with their own full background and colour rules are
+			unaffected. See <a href="graphics.html#images">Graphics → Image
+			library</a> for the decoder limits.
+		</p>
+	</section>
+
+	<section id="legacy">
+		<h2>Legacy ring-0 programs</h2>
+		<p>
+			<code>run &lt;name&gt;</code>, <code>prog</code> and <code>space</code>
+			are the last programs that execute in ring 0. They load as raw
+			binaries at <code>0x80000</code> and use the function-pointer API at
+			<code>0x7FF00</code>. <code>prog</code>/<code>space</code> are also
+			embedded in the kernel image, so a board with no readable filesystem
+			can still run them.
+		</p>
+		<p>
+			These programs draw directly over the WM, which keeps repainting its
+			desktop, so they are demos rather than windowed applications. Moving
+			them to ring 3 would let the fixed low-memory block
+			(<code>0x7FF00</code>/<code>0x80000</code>) go away.
+		</p>
+	</section>
+
+	<section id="sources">
+		<h2>Source map</h2>
+		<ul class="filelist">
+			<li><code>syscall.c</code>, <code>syscall_stub.S</code>, <code>syscall.h</code></li>
+			<li><code>process.c</code> — ELF load and spawn</li>
+			<li><code>elf.c</code> — ELF parser</li>
+			<li><code>ucmd_term.c</code> — windowed shell, scrollback, PATH</li>
+			<li><code>terminal.c</code> — privileged kernel command registry</li>
+			<li><code>ucmd_lib.h</code> — user shim</li>
+			<li><code>ucmd.ld</code> — ring-3 link address</li>
+			<li><code>Makefile</code> — <code>UCMDS</code> and pack rules</li>
+			<li><code>ucmd_*.c</code> — commands</li>
+			<li><code>browser.c</code>, <code>browser_html.c</code>, <code>gallery.c</code></li>
+			<li><code>run.c</code>, <code>run_api.h</code>, <code>prog.c</code>, <code>space.c</code></li>
+		</ul>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

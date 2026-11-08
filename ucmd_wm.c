@@ -31,6 +31,7 @@ static int resize_id = -1;
 static unsigned int resize_mx, resize_my, resize_ow, resize_oh;
 static unsigned int prev_buttons;
 static int full_redraw = 1;
+static int boot_term_spawned;
 static unsigned int bar_kexec_busy, bar_kexec_progress, bar_kexec_total;
 static int bar_temp_c = -1;
 static char bar_msg[24];
@@ -365,6 +366,21 @@ static void do_update(struct wm_status *st)
 	int kexec_changed = (st->kexec_busy != bar_kexec_busy) ||
 		(st->kexec_busy && st->kexec_progress != bar_kexec_progress);
 	unsigned int msg_now = u_ticks_ms();
+
+	/* Spawn the first terminal once the kernel says the storage scan is
+	 * done, so a shell command can never race the mount table. */
+	if (st->boot_ready && !boot_term_spawned) {
+		boot_term_spawned = 1;
+		if (!free_window_slot()) {
+			bar_notice("window limit");
+			full_redraw = 1;
+		} else if (u_wm_create_term() < 0) {
+			bar_notice("cannot start term");
+			full_redraw = 1;
+		} else {
+			full_redraw = 1;
+		}
+	}
 
 	if (bar_msg_dirty ||
 	    (bar_msg_until && (int)(msg_now - bar_msg_until) >= 0)) {

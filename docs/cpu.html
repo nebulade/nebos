@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPU &amp; Scheduling | NebOS Architecture</title>
+<meta name="description" content="NebOS CPU architecture: GDT/TSS, PIC/PIT and LAPIC interrupts, ACPI SMP bring-up, CFS-lite scheduling, wait queues, the big kernel lock, idle and power management.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html">Memory</a>
+		<a href="cpu.html" aria-current="page">CPU</a>
+		<a href="drivers.html">Drivers</a>
+		<a href="filesystems.html">Filesystems</a>
+		<a href="graphics.html">Graphics</a>
+		<a href="network.html">Network</a>
+		<a href="userland.html">Userland</a>
+		<a href="development.html">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">CPU &amp; scheduling</p>
+		<h1>Weighted fairness, one global run queue, one big lock.</h1>
+		<p class="lede">
+			NebOS runs a CFS-lite scheduler over a single global run queue and
+			per-CPU <code>current</code> pointers. ACPI/MADT brings up the APs,
+			each CPU has its own GDT, TSS and timer, and a sleeping recursive
+			mutex — the big kernel lock — serializes kernel execution.
+		</p>
+		<div class="meta">
+			<span class="pill">8 CPUs max</span>
+			<span class="pill">64 process slots</span>
+			<span class="pill">10 ms slice</span>
+			<span class="pill">1 kHz busy / 100 Hz idle</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#bringup">Boot CPU bring-up</a></li>
+			<li><a href="#interrupts">Interrupts &amp; timers</a></li>
+			<li><a href="#smp">SMP bring-up</a></li>
+			<li><a href="#process">Process model</a></li>
+			<li><a href="#scheduler">CFS-lite scheduler</a></li>
+			<li><a href="#bkl">Big kernel lock</a></li>
+			<li><a href="#idle">Idle &amp; power</a></li>
+			<li><a href="#sources">Source map</a></li>
+		</ul>
+	</nav>
+
+	<section id="bringup">
+		<h2>Boot CPU bring-up</h2>
+		<p>
+			After <code>kernel_main</code> clears BSS and starts the boot console,
+			the first structural step is <code>gdt_tss_init(0)</code>. The GDT/TSS
+			and the per-CPU GS base must exist before any code that calls
+			<code>current_proc()</code> or <code>this_cpu()</code>.
+		</p>
+		<ul>
+			<li>Each CPU has a <code>struct cpu</code> holding <code>current</code>, <code>idle</code>, its TSS, LAPIC id, tick period and scheduling flags.</li>
+			<li><code>%gs:0</code> points at the current CPU's <code>current</code> field; <span class="file">switch.S</span> reads it directly. A static assert locks the offsets.</li>
+			<li>The TSS <code>esp0</code> is updated by <code>schedule()</code>, so ring-3 entry always lands on the process's kernel stack.</li>
+			<li><code>process_init()</code> must run before <code>timer_init()</code>: once the PIT starts, the timer stub can switch context on every tick.</li>
+		</ul>
+	</section>
+
+	<section id="interrupts">
+		<h2>Interrupts &amp; timers</h2>
+		<p>
+			The BSP keeps the legacy 8259 PIC and PIT. Device IRQs stay on the
+			BSP because there is no IOAPIC driver. APs mask their LINT0/LINT1
+			inputs and use only their local APIC timer and IPIs.
+		</p>
+		<div class="table-wrap">
+			<table>
+				<thead>
+					<tr><th>Source</th><th>Vector</th><th>Role</th></tr>
+				</thead>
+				<tbody>
+					<tr><td>8259 PIC + PIT</td><td>IRQ0, etc.</td><td>BSP global clock and device interrupts; PIT tick advances the millisecond clock.</td></tr>
+					<tr><td>LAPIC timer</td><td><code>0x30</code></td><td>Per-AP scheduling tick; 1 ms busy, 10 ms idle.</td></tr>
+					<tr><td>LAPIC IPI</td><td><code>0x31</code></td><td>Reschedule request; must be EOIed on the target LAPIC.</td></tr>
+					<tr><td><code>int 0x80</code></td><td>syscall gate</td><td>Ring-3 service entry.</td></tr>
+					<tr><td><code>int 0x81</code></td><td>voluntary yield</td><td>Blocking helpers and <code>schedule()</code>.</td></tr>
+				</tbody>
+			</table>
+		</div>
+		<p>
+			The timer period is not fixed. While a process runs, the BSP PIT ticks
+			at 1 kHz and AP LAPIC timers tick every 1 ms. While a CPU is idle, the
+			BSP drops to 100 Hz and APs to 10 ms so MWAIT/HLT can hold a deeper
+			state. The global millisecond clock remains accurate because the PIT
+			stub advances it by the current tick period.
+		</p>
+
+		<figure class="figure">
+			<div class="bars" role="img" aria-label="Timer rates: 1000 Hz while busy, 100 Hz while idle. Bar widths are relative to 1000 Hz.">
+				<div class="bar-row">
+					<span class="bar-label">BSP busy</span>
+					<div class="bar-track"><span class="bar-fill green" style="--w:100%"></span></div>
+					<span class="bar-value">1000 Hz</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">BSP idle</span>
+					<div class="bar-track"><span class="bar-fill" style="--w:10%"></span></div>
+					<span class="bar-value">100 Hz</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">AP busy</span>
+					<div class="bar-track"><span class="bar-fill green" style="--w:100%"></span></div>
+					<span class="bar-value">1 ms</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">AP idle</span>
+					<div class="bar-track"><span class="bar-fill" style="--w:10%"></span></div>
+					<span class="bar-value">10 ms</span>
+				</div>
+			</div>
+			<figcaption>
+				<strong>Race to idle, then stay there.</strong> When a wake-up
+				arrives, <code>smp_resched_wake()</code> shortens the idle period so
+				the woken process runs at the next millisecond instead of waiting
+				out a 10 ms nap.
+			</figcaption>
+		</figure>
+	</section>
+
+	<section id="smp">
+		<h2>SMP bring-up</h2>
+		<p>
+			SMP is ACPI-only: RSDP → RSDT/XSDT → MADT → CPU/LAPIC list. There is
+			deliberately no Intel MP-table parser. A machine without ACPI, a
+			usable MADT, the CPUID APIC bit or a LAPIC stays uniprocessor and
+			follows exactly the old 8259/PIT path.
+		</p>
+		<ol>
+			<li>Copy the AP trampoline to <code>0x6000</code> (SIPI vector <code>0x06</code>).</li>
+			<li>Allocate an AP idle PCB and kernel stack via <code>process_init_ap()</code>.</li>
+			<li>Fill the startup block at <code>0x6F00</code> with CR3, stack top, C entry and CPU index.</li>
+			<li>Send INIT, then SIPI-SIPI, with a second SIPI retry.</li>
+			<li>The AP enters <code>smp_ap_main</code>, initialises its LAPIC timer and idle loop, and waits.</li>
+			<li>After device/FS setup, <code>smp_enable_sched()</code> lets APs take user work.</li>
+		</ol>
+		<p>
+			Kernel threads stay pinned to the BSP; only ring-3 processes may run
+			on an AP. Each AP runs <code>cpu_enable_sse()</code> because it starts
+			with firmware <code>CR4</code>; without OSFXSR/OSXMMEXCPT the SSE2
+			drawing fast paths would <code>#UD</code>.
+		</p>
+		<div class="warn">
+			<p><strong>No IOAPIC.</strong> Device IRQs never reach an AP, and
+			<code>pit_irq_stub</code> is BSP-only. A platform that routes ISA IRQs
+			through the IOAPIC would need a mask-all setup step after ACPI init.</p>
+		</div>
+	</section>
+
+	<section id="process">
+		<h2>Process model</h2>
+		<p>
+			Every process is a stable heap-allocated PCB referenced from a sparse
+			<code>procs[64]</code> table, so a process pointer never moves when
+			another slot changes. The idle context is not a process slot: the
+			<code>kernel_main</code> context becomes the BSP idle state, and APs
+			have their own idle PCBs.
+		</p>
+		<ul>
+			<li><strong>Kernel threads</strong> are created with <code>process_create</code> and take the BKL automatically.</li>
+			<li><strong>Ring-3 processes</strong> are created from an ELF image with their own page directory, 8-page user stack and cwd.</li>
+			<li><strong>The kworker</strong> is an ordinary kernel process that performs housekeeping and zombie reaping, so it cannot be starved by a busy system.</li>
+			<li><strong>Stable naming:</strong> process names are 12 bytes; the PCB holds the TTY id, cwd, affinity mask, CPU accounting and the scheduling entity.</li>
+		</ul>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 260" role="img" aria-labelledby="states-title states-desc">
+				<title id="states-title">Process state transitions</title>
+				<desc id="states-desc">Processes move between ready, running, sleeping, blocked and dead states. Wake-ups return to ready, and exit or kill moves to dead.</desc>
+
+				<rect class="svg-box green" x="48" y="96" width="150" height="58" rx="9"/>
+				<text class="svg-text" x="123" y="120" text-anchor="middle">READY</text>
+				<text class="svg-sub" x="123" y="140" text-anchor="middle">run queue</text>
+
+				<rect class="svg-box accent" x="288" y="96" width="150" height="58" rx="9"/>
+				<text class="svg-text" x="363" y="120" text-anchor="middle">RUNNING</text>
+				<text class="svg-sub" x="363" y="140" text-anchor="middle">one per CPU</text>
+
+				<rect class="svg-box blue" x="528" y="28" width="150" height="58" rx="9"/>
+				<text class="svg-text" x="603" y="52" text-anchor="middle">SLEEPING</text>
+				<text class="svg-sub" x="603" y="72" text-anchor="middle">deadline in sleep list</text>
+
+				<rect class="svg-box blue" x="528" y="164" width="150" height="58" rx="9"/>
+				<text class="svg-text" x="603" y="188" text-anchor="middle">BLOCKED</text>
+				<text class="svg-sub" x="603" y="208" text-anchor="middle">wait queue</text>
+
+				<rect class="svg-box amber" x="756" y="96" width="136" height="58" rx="9"/>
+				<text class="svg-text" x="824" y="120" text-anchor="middle">DEAD</text>
+				<text class="svg-sub" x="824" y="140" text-anchor="middle">zombie queue</text>
+
+				<path class="svg-line green" d="M198 118h84"/>
+				<path class="svg-line green" d="M276 112l7 6-7 6"/>
+				<text class="svg-tiny" x="240" y="108" text-anchor="middle">pick</text>
+
+				<path class="svg-line" d="M363 154v28H198v-24"/>
+				<path class="svg-line" d="M192 162l6-7 6 7"/>
+				<text class="svg-tiny" x="300" y="196" text-anchor="middle">slice / yield</text>
+
+				<path class="svg-line blue" d="M438 112h84"/>
+				<path class="svg-line blue" d="M516 106l7 6-7 6"/>
+				<text class="svg-tiny" x="480" y="103" text-anchor="middle">sleep</text>
+
+				<path class="svg-line blue" d="M438 138v46h84"/>
+				<path class="svg-line blue" d="M516 178l7 6-7 6"/>
+				<text class="svg-tiny" x="480" y="176" text-anchor="middle">wait</text>
+
+				<path class="svg-line" d="M603 86V62h-240v34"/>
+				<path class="svg-line" d="M357 90l6-7 6 7"/>
+				<text class="svg-tiny" x="475" y="56" text-anchor="middle">wake</text>
+
+				<path class="svg-line" d="M603 222v18H363v-18"/>
+				<path class="svg-line" d="M357 228l6-7 6 7"/>
+				<text class="svg-tiny" x="478" y="248" text-anchor="middle">wake</text>
+
+				<path class="svg-line amber" d="M438 125h312"/>
+				<path class="svg-line amber" d="M744 119l7 6-7 6"/>
+				<text class="svg-tiny" x="594" y="119" text-anchor="middle">exit / kill</text>
+			</svg>
+			<figcaption>
+				<strong>Five states, two queues.</strong> The run queue is global;
+				the sleep list is sorted by deadline; wait queues are per-object.
+				A woken process is clamped to the current minimum vruntime so an
+				interactive wake-up is scheduled promptly without accumulating
+				unbounded credit.
+			</figcaption>
+		</figure>
+	</section>
+
+	<section id="scheduler">
+		<h2>CFS-lite scheduler</h2>
+		<p>
+			Weight is an integer from 1 to 16. Each ready process carries a
+			64-bit <code>vruntime</code> and a <code>stride = 2<sup>20</sup> / weight</code>.
+			While a process runs, its vruntime advances by
+			<code>elapsed_ms × stride</code>; the scheduler picks the runnable
+			process with the smallest vruntime. The result is a long-term CPU
+			share proportional to weight.
+		</p>
+		<ul>
+			<li><strong>10 ms slice.</strong> A running process is preempted at the slice boundary unless it holds the BKL or has preemption disabled.</li>
+			<li><strong>Global run queue.</strong> A single linked list protected by <code>sched_lock</code>; every CPU scans it for the minimum vruntime.</li>
+			<li><strong>Wake-up clamp.</strong> A process waking from sleep or a wait queue is moved forward to the current minimum vruntime rather than receiving unlimited credit.</li>
+			<li><strong>Affinity.</strong> A CPU bitmask restricts where a process may run; kernel threads are pinned to the BSP.</li>
+			<li><strong><code>renice</code></strong> changes a live process's weight from the shell; the new stride takes effect immediately.</li>
+		</ul>
+
+		<figure class="figure">
+			<div class="bars" role="img" aria-label="Scheduler weights: window manager 16, default processes and terminals 8, kworker 4, minimum 1. Bar widths are relative to 16.">
+				<div class="bar-row">
+					<span class="bar-label">WM / max</span>
+					<div class="bar-track"><span class="bar-fill" style="--w:100%"></span></div>
+					<span class="bar-value">16</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">default / terminal</span>
+					<div class="bar-track"><span class="bar-fill blue" style="--w:50%"></span></div>
+					<span class="bar-value">8</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">kworker</span>
+					<div class="bar-track"><span class="bar-fill green" style="--w:25%"></span></div>
+					<span class="bar-value">4</span>
+				</div>
+				<div class="bar-row">
+					<span class="bar-label">minimum</span>
+					<div class="bar-track"><span class="bar-fill" style="--w:6.25%"></span></div>
+					<span class="bar-value">1</span>
+				</div>
+			</div>
+			<figcaption>
+				<strong>Weights seen in the tree.</strong> The ring-3 WM is raised
+				to 16, the kworker is set to 4 and a new process starts at 8. Bar
+				widths are relative to the maximum weight of 16.
+			</figcaption>
+		</figure>
+
+		<p>
+			The run queue is a flat list rather than a red-black tree; picking
+			the minimum is a scan. With at most 64 processes this is simple and
+			predictable, and the scheduler core stays small enough to audit.
+			Sleeping processes sit in a sorted sleep list, so the tick handler
+			wakes due sleepers without scanning every process.
+		</p>
+	</section>
+
+	<section id="bkl">
+		<h2>The big kernel lock</h2>
+		<p>
+			<code>bkl_*</code> is a sleeping recursive mutex, not a spinlock.
+			Every ring-3 syscall and every kernel thread takes it; voluntary
+			block and sleep points release it through <code>sched_yield</code>.
+			Long serial and network waits use <code>bkl_pause()</code> /
+			<code>bkl_resume()</code> so another CPU can make progress.
+		</p>
+		<ul>
+			<li><strong>Not timer-preempted.</strong> A CPU running a BKL holder is skipped by the tick decision, so the owner can safely be in the middle of kernel data structures.</li>
+			<li><strong>Recursive.</strong> The owner may re-enter; the depth is restored across a block in the PCB's <code>bkl_saved</code> field.</li>
+			<li><strong>Sleep, not spin.</strong> A waiter blocks on the BKL wait queue and is woken when the owner releases.</li>
+			<li><strong>Idle uses trylock.</strong> The idle fallback never blocks on the BKL; kworker and kernel commands take it normally.</li>
+		</ul>
+		<div class="note">
+			<p><strong>Why one big lock?</strong> The kernel is small and not
+			designed around fine-grained locking. The BKL keeps every kernel
+			invariant simple, at the cost of serializing long kernel operations.
+			Disk I/O still holds it; network and serial waits drop it.</p>
+		</div>
+	</section>
+
+	<section id="idle">
+		<h2>Idle, power &amp; thermals</h2>
+		<p>
+			<code>idle auto</code> is the default. It asks <span class="file">power.c</span>
+			for the deepest usable hint: C6 (<code>0x20</code>) on the
+			Nehalem/Westmere allowlist, HLT everywhere else. The Atom boards keep
+			HLT because of an old USB-legacy SMM hang; the UHCI/OHCI
+			<code>0xC0</code> legacy-SMI disable addresses it.
+		</p>
+		<ul>
+			<li><strong>P-states.</strong> On the allowlisted Nehalem/Westmere models, <code>power_init</code> enables SpeedStep, raises the package C-state limit to C6 when unlocked, reads min/max ratios and starts at the maximum non-turbo ratio.</li>
+			<li><strong>Governor.</strong> A 100 ms window picks min/max/linear target ratios; short busy streaks jump to max immediately. Each CPU writes its own <code>IA32_PERF_CTL</code>.</li>
+			<li><strong>Telemetry.</strong> <code>power</code> prints effective MHz from APERF/MPERF, ratios and C3/C6 residency; <code>sensors</code> prints DTS, board sensors and ThinkPad EC data.</li>
+			<li><strong>Thermal.</strong> Each CPU samples its DTS once a second from its scheduler tick; the hottest core is exposed to ring 3.</li>
+		</ul>
+	</section>
+
+	<section id="sources">
+		<h2>Source map</h2>
+		<ul class="filelist">
+			<li><code>sched.c</code>, <code>sched.h</code> — scheduler core and BKL</li>
+			<li><code>process.c</code>, <code>process.h</code> — PCBs and lifecycle</li>
+			<li><code>switch.S</code> — context switch</li>
+			<li><code>tss.c</code>, <code>tss.h</code> — per-CPU TSS</li>
+			<li><code>acpi.c</code>, <code>lapic.c</code>, <code>smp.c</code> — SMP</li>
+			<li><code>ap_tramp.S</code> — AP startup blob</li>
+			<li><code>timer.S</code>, <code>idle.c</code>, <code>power.c</code></li>
+			<li><code>thermal.c</code> — DTS sampling</li>
+			<li><code>spinlock.h</code> — IRQ-safe spinlocks</li>
+		</ul>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graphics &amp; UI | NebOS Architecture</title>
+<meta name="description" content="NebOS graphics architecture: VBE framebuffer, shadow buffer, damage rectangles, blit vtable, window manager, canvas ABI, ngui toolkit and image library.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+	<a class="brand" href="index.html">
+		<span class="brand-mark" aria-hidden="true"></span>
+		<span>NebOS <span class="brand-sub">Architecture</span></span>
+	</a>
+	<nav class="site-nav" aria-label="Architecture sections">
+		<a href="index.html">Overview</a>
+		<a href="boot.html">Boot</a>
+		<a href="memory.html">Memory</a>
+		<a href="cpu.html">CPU</a>
+		<a href="drivers.html">Drivers</a>
+		<a href="filesystems.html">Filesystems</a>
+		<a href="graphics.html" aria-current="page">Graphics</a>
+		<a href="network.html">Network</a>
+		<a href="userland.html">Userland</a>
+		<a href="development.html">Development</a>
+	</nav>
+</header>
+
+<main id="main" class="page">
+	<div class="page-head">
+		<p class="kicker">Graphics &amp; UI</p>
+		<h1>Draw into a shadow, publish by damage.</h1>
+		<p class="lede">
+			The display path is intentionally simple: drawing lands in a RAM
+			shadow buffer, damage rectangles describe what changed, and a
+			budgeted flush copies those rectangles to VRAM. Windows add a
+			compositor and a mapped-canvas ABI on top; a small immediate-mode
+			toolkit supplies the widgets.
+		</p>
+		<div class="meta">
+			<span class="pill">VBE LFB</span>
+			<span class="pill">1 MiB flush budget</span>
+			<span class="pill">8 windows</span>
+			<span class="pill">RGB565 canvases</span>
+		</div>
+	</div>
+
+	<nav class="toc" aria-label="On this page">
+		<h2>On this page</h2>
+		<ul>
+			<li><a href="#framebuffer">Framebuffer</a></li>
+			<li><a href="#shadow">Shadow &amp; damage</a></li>
+			<li><a href="#blit">Blit backends</a></li>
+			<li><a href="#wm">Window manager</a></li>
+			<li><a href="#canvas">Canvas ABI</a></li>
+			<li><a href="#ngui">ngui toolkit</a></li>
+			<li><a href="#apps">Applications</a></li>
+			<li><a href="#images">Image library</a></li>
+			<li><a href="#gpu">GPU quirks</a></li>
+			<li><a href="#sources">Source map</a></li>
+		</ul>
+	</nav>
+
+	<section id="framebuffer">
+		<h2>Framebuffer</h2>
+		<p>
+			The boot path writes a <code>struct vga_boot_fb_info</code> to
+			<code>0x600</code>: LFB base, pitch, width, height, bits per pixel
+			and an RGBX flag for GOP's byte order. The legacy VESA stage chooses
+			a mode with at least 16 bpp, a linear framebuffer, it must fit the
+			card's VRAM, and width at most 1280 pixels. The UEFI loader imposes
+			its own GOP constraints.
+		</p>
+		<p>
+			<span class="file">vga.c</span> owns the visible surface. On a
+			normal boot the render target is a RAM shadow buffer at
+			<code>0x100000</code>, not the LFB; the 8 MB reserve leaves room for
+			future modes. A surface carries width, height, pitch, format and a
+			pixel-pointer, so the same drawing code can target a window layer or
+			a canvas.
+		</p>
+	</section>
+
+	<section id="shadow">
+		<h2>Shadow buffer &amp; damage</h2>
+		<p>
+			Drawing never writes VRAM directly. Each operation records a damage
+			rectangle; overlapping or touching rectangles merge, so a keystroke's
+			cells collapse into one small rect while unrelated damage stays
+			apart. The main loop calls <code>vga_present_shadow()</code> on every
+			iteration with a byte budget of <code>VGA_FLUSH_BUDGET_BYTES</code>
+			(1 MiB by default).
+		</p>
+		<ul>
+			<li><strong>Small rects copy whole.</strong> A window repaint within the budget never tears.</li>
+			<li><strong>Large rects are chunked.</strong> A full-screen redraw continues across loop iterations; newer damage is queued behind it.</li>
+			<li><strong>No fixed frame rate.</strong> The loop flushes whenever there is pending damage, so a cursor move reaches the screen within one loop.</li>
+			<li><strong>Re-entry guard.</strong> <code>vga_present_shadow()</code> refuses to run while another process is mid-flush; a full-screen copy is long enough to be preempted.</li>
+			<li><strong>Window drags flush immediately.</strong> <code>wm_drag_shadow</code> copies each drag step as one consistent frame.</li>
+		</ul>
+		<p>
+			When the target is not the screen — a window layer or an app canvas —
+			<code>vga_target_damage()</code> is a no-op. The render target
+			override is stored in the PCB, so a preempted draw cannot leak into
+			another process's window.
+		</p>
+	</section>
+
+	<section id="blit">
+		<h2>Blit backends</h2>
+		<p>
+			<span class="file">blit.c</span> is the pixel-operation vtable:
+			fill, copy, blend, canvas, present and flip. Software is the only
+			backend today, but the WM calls the vtable rather than a fixed
+			function, so an accelerator can replace individual operations
+			without touching window logic.
+		</p>
+		<p>
+			The software fill uses an SSE2 row store when the CPU supports it.
+			Rows that do not fit the cache use streaming stores
+			(<code>movntdq</code>, one <code>sfence</code> per fill), which
+			avoids read-for-ownership traffic that makes large fills DRAM-bound
+			on the Atom. SSE/SSE2 are never assumed: the kernel is built with
+			<code>-mno-sse</code>, and <code>cpu_has_sse2()</code> probes CPUID,
+			sets <code>CR4.OSFXSR/OSXMMEXCPT</code> and is re-run on every AP.
+		</p>
+		<p>
+			<code>gfxbench</code> times fill, copy, cell, canvas and flush paths
+			and reports the bytes actually copied by the presenter.
+		</p>
+	</section>
+
+	<section id="wm">
+		<h2>Window manager</h2>
+		<p>
+			The WM is a process that owns the desktop and a fixed array of eight
+			windows. It draws a system bar with the banner, launcher buttons and
+			clock, plus draggable terminal and canvas windows with a title bar and
+			close button. Click-to-focus, drag-by-title-bar and close are routed
+			through the same pointer path.
+		</p>
+		<p>
+			The WM is the ring-3 process loaded from
+			<code>/ramfs/bin/wm</code>; there is no kernel WM fallback. The
+			kernel window server in <span class="file">wm.c</span> owns the
+			shadow mapping, the per-window canvases, input routing, the cursor,
+			kexec detection and the boot-console handoff. It starts the first
+			terminal after the storage mount
+			(<code>wm_server_boot_ready</code>) and leaves the boot console
+			visible until the WM attaches.
+		</p>
+
+		<figure class="figure">
+			<svg viewBox="0 0 920 260" role="img" aria-labelledby="wm-title wm-desc">
+				<title id="wm-title">Window anatomy</title>
+				<desc id="wm-desc">A window consists of a title bar, a content area backed by an RGB565 canvas, and a close control. The WM composites the canvas into the screen shadow buffer.</desc>
+
+				<rect class="svg-box" x="70" y="22" width="780" height="200" rx="10"/>
+				<rect class="svg-box accent" x="70" y="22" width="780" height="34" rx="10"/>
+				<text class="svg-text" x="88" y="45">Terminal · /ramfs/bin/ls</text>
+				<text class="svg-text" x="800" y="45">×</text>
+
+				<rect class="svg-box green" x="86" y="72" width="748" height="132" rx="6"/>
+				<text class="svg-text" x="104" y="98">content canvas · RGB565 · mapped at 0x50000000</text>
+				<text class="svg-sub" x="104" y="120">text cells, images, widgets, or arbitrary drawing</text>
+			</svg>
+			<figcaption>
+				<strong>One window, one canvas.</strong> The title bar belongs to
+				the WM; the content is whatever the owning process draws into its
+				mapped back buffer. The WM never reads the process's memory — it
+				composites the front canvas on <code>PRESENT</code>.
+			</figcaption>
+		</figure>
+
+		<ul>
+			<li><strong>Terminal windows</strong> are canvas clients: <span class="file">ucmd_term.c</span> renders its rows into the RGB565 window canvas; keys arrive through the generic <code>SYS_KEY_POLL</code> or <code>SYS_WIN_KEY_WAIT</code>. The WM no longer has a text-cell path.</li>
+			<li><strong>Canvas windows</strong> are generic: the app gets a back buffer, pointer position/buttons/focus and queued press/release edges with capture.</li>
+			<li><strong>Focus and z-order</strong> are explicit; closing a window kills its session and frees its canvas.</li>
+		</ul>
+	</section>
+
+	<section id="canvas">
+		<h2>Canvas ABI</h2>
+		<p>
+			<code>SYS_WIN_CREATE</code> maps the calling command's window canvas
+			read/write at <code>0x50000000</code>. The process draws RGB565
+			pixels and publishes a finished frame with
+			<code>SYS_WIN_PRESENT</code>. Present copies the back buffer into
+			the composited front canvas with interrupts off, so a half-drawn
+			frame can never reach the screen. Frames carry monotonic sequence
+			counters, so the WM cannot lose one.
+		</p>
+		<p>
+			<code>SYS_WIN_CREATE</code> creates a generic canvas window. Input is
+			exposed through <code>SYS_WIN_POINTER</code> (content-relative
+			position, button mask, focus) and <code>SYS_WIN_EVENT</code>, which
+			queues press/release edges and a capture window. A click that starts
+			in a window still receives its release after the pointer leaves.
+			The WM process itself is special: it maps the screen shadow at
+			<code>0x58000000</code> and each front canvas at
+			<code>0x59000000 + index × 2 MB</code>, which is how it composites
+			without reading another process's memory.
+			<code>SYS_WM_RESIZE</code> (WM side) and
+			<code>SYS_WIN_ACK_RESIZE</code> (client side) swap in a resized
+			canvas.
+		</p>
+		<div class="note">
+			<p><strong>Buttons fire on the release edge.</strong> The toolkit keeps
+			a button <code>active</code> until <code>ui-&gt;released</code>;
+			inferring release from the sampled button mask races the WM event
+			queue and drops clicks.</p>
+		</div>
+		<p>
+			When a process exits or crashes, the reaper releases its window
+			mappings and the window server frees the canvas. Closing a window
+			kills its owner. Keys go through the window key queue
+			(<code>SYS_WIN_KEY_WAIT</code>) or the generic
+			<code>SYS_KEY_POLL</code>; Ctrl+C still reaches the terminal.
+		</p>
+	</section>
+
+	<section id="ngui">
+		<h2>ngui toolkit</h2>
+		<p>
+			<span class="file">ngui.c</span>/<span class="file">ngui.h</span> is an
+			immediate-mode GUI toolkit shared by the ring-3 apps. It provides
+			clipped RGB565 primitives, buttons, menu items, text fields, nine
+			procedural icons, a theme palette, layout cut helpers and scrolling
+			panes. It is linked into <code>files</code>, <code>mines</code>,
+			<code>solitaire</code> and the real <code>gallery.elf</code>.
+		</p>
+		<ul>
+			<li><strong>Text fields</strong> support drag-selection, double-click select-all, Ctrl+Left/Right word jumps, Ctrl+Delete/Backspace word deletion and Ctrl+A.</li>
+			<li><strong>Clip stack</strong> keeps nested panes and popups inside their parents.</li>
+			<li><strong>Layout cuts</strong> split a rectangle into rows, columns and fixed margins without a constraint solver.</li>
+			<li><strong>No retained widget tree.</strong> Apps redraw from state every frame, which keeps the toolkit small and predictable.</li>
+		</ul>
+	</section>
+
+	<section id="apps">
+		<h2>Applications</h2>
+		<div class="grid">
+			<div class="card">
+				<h3>files</h3>
+				<p>File browser on the VFS: opens text in <code>edit</code>, images in <code>view</code> and HTML in <code>browser</code>. The first ngui user.</p>
+			</div>
+			<div class="card">
+				<h3>gallery</h3>
+				<p>Live showcase of every ngui control and primitive. Ships in the pack as <code>bin/gallery.app</code>; a launcher prefers <code>/share/GALLERY</code> for development.</p>
+			</div>
+			<div class="card">
+				<h3>solitaire</h3>
+				<p>Klondike with drag-and-drop, draw-one/three, scoring, animation and pixel-art cards on the canvas service.</p>
+			</div>
+			<div class="card">
+				<h3>view</h3>
+				<p>Image viewer with fit, 1:1, zoom, pan, EXIF orientation and animated GIF playback.</p>
+			</div>
+			<div class="card">
+				<h3>clock / colors</h3>
+				<p>Small canvas demos: a clock and a colour test window. Both are early users of the window canvas API.</p>
+			</div>
+			<div class="card">
+				<h3>browser</h3>
+				<p>HTML renderer with CSS subset, inline images and a headless fetch helper. The largest ring-3 application in the tree.</p>
+			</div>
+		</div>
+	</section>
+
+	<section id="images">
+		<h2>Image library</h2>
+		<p>
+			The codecs are independent of the OS and the toolkit: each takes an
+			input buffer plus a caller-provided <code>struct img_mem</code> arena
+			and returns an RGB565 image with an optional 8-bit alpha plane. The
+			browser links the same objects and decodes HTTP bodies in memory.
+		</p>
+		<ul>
+			<li><strong>Formats.</strong> PNG, baseline and progressive JPEG, animated GIF, BMP, TGA, PNM, ICO/CUR and PAM.</li>
+			<li><strong>Drawing.</strong> <code>img_draw()</code> is a clipped, scaled RGB565 blit: box-filter downscale, bilinear upscale, alpha over a checkerboard or over the destination.</li>
+			<li><strong>Orientation.</strong> EXIF orientation is applied; arithmetic JPEG and CMYK are rejected.</li>
+			<li><strong>Cost.</strong> Downscaling runs on the CPU. The viewer caches one image; the browser keeps a display bitmap but still rescales on repaint.</li>
+		</ul>
+	</section>
+
+	<section id="gpu">
+		<h2>GPU quirks</h2>
+		<ul>
+			<li><strong>ATI Mach64.</strong> A CRTC fixup is applied after mode set. The legacy CRTC is skipped under UEFI.</li>
+			<li><strong>NVIDIA.</strong> VBE-only. The legacy VGA CRTC is never touched. On the ION, the framebuffer is stolen DRAM behind a BAR3 aperture; <span class="file">nvidia.c</span> finds the stolen range and writes through a cached alias once a WC MTRR covers it.</li>
+			<li><strong>Intel.</strong> The Ironlake-era path supports a hardware cursor where available; the software cursor is the common fallback.</li>
+			<li><strong>UEFI.</strong> <code>vga.c</code> honours the RGBX flag and skips the VBE-only ATI CRTC reset and NVIDIA stolen-VRAM alias. <span class="file">mouse.c</span> forces the software cursor.</li>
+		</ul>
+	</section>
+
+	<section id="sources">
+		<h2>Source map</h2>
+		<ul class="filelist">
+			<li><code>vga.c</code>, <code>vga.h</code> — framebuffer and damage</li>
+			<li><code>vga_copy.S</code> — copy primitives</li>
+			<li><code>blit.c</code>, <code>blit.h</code> — pixel vtable</li>
+			<li><code>cpu.c</code> — SSE2 probing</li>
+			<li><code>wm.c</code>, <code>wm.h</code> — kernel window server</li>
+			<li><code>ucmd_wm.c</code>, <code>uwm_lib.c</code> — ring-3 WM</li>
+			<li><code>gfx.c</code>, <code>gfx.h</code> — RGB565 window canvases</li>
+			<li><code>sys_wm.c</code>, <code>sys_wm.h</code> — WM/window ABI</li>
+			<li><code>ngui.c</code>, <code>ngui.h</code> — toolkit</li>
+			<li><code>ucmd_files.c</code>, <code>gallery.c</code>, <code>ucmd_solitaire.c</code></li>
+			<li><code>img*.c</code> — image codecs</li>
+			<li><code>ati.c</code>, <code>nvidia.c</code>, <code>intel.c</code>, <code>nv50.c</code></li>
+		</ul>
+	</section>
+</main>
+
+<footer class="site-footer">
+	<div class="inner">
+		<p><strong>NebOS 0.2.0</strong> · Architecture documentation · <a href="index.html">overview</a></p>
+		<p>Maintain alongside <code>AGENTS.md</code> and the source files listed on each page.</p>
+	</div>
+</footer>
+</body>
+</html>

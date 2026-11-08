@@ -7,7 +7,6 @@
 #include "rtc.h"
 #include "serial.h"
 #include "sys_fs.h"
-#include "sys_gfx.h"
 #include "sys_info.h"
 #include "sys_mem.h"
 #include "sys_net.h"
@@ -180,19 +179,8 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 	case SYS_PROCINFO:
 		return process_procinfo((unsigned int)a1,
 					(struct sys_procinfo *)a2);
-	case SYS_GET_CURSOR:
-		return (int)io_get_cursor();
-	case SYS_SET_CURSOR:
-		io_set_cursor((unsigned int)a1);
-		return 0;
-	case SYS_GFX_BEGIN:
-		return sys_gfx_begin((struct sys_gfx_info *)a1);
-	case SYS_GFX_PRESENT:
-		return sys_gfx_present();
-	case SYS_GFX_END:
-		return sys_gfx_end();
 	case SYS_KEY_POLL:
-		return sys_gfx_key_poll();
+		return sys_wm_key_poll();
 	case SYS_RTC_HMS: {
 		struct sys_time *out = (struct sys_time *)a1;
 		unsigned int h, m, s;

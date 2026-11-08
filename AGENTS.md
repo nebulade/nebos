@@ -1,8 +1,51 @@
-# AGENTS.md — Nebs OS (`nebos`)
+# AGENTS.md — NebOS (`nebos`)
 
 A from-scratch, freestanding **32-bit x86 hobby operating system** written in C and
 x86 assembly. Single-author project (~7,000 SLOC, no external runtime, no libc).
 Targets i586 (first-gen Pentium); runs under QEMU or on real hardware.
+
+## Documentation site (`docs/`)
+
+`docs/` is the static architecture site: hand-written HTML5, one shared
+`style.css` and a small hand-written SVG favicon, with no JavaScript, no build
+step and no external fonts or CDNs. Open
+`docs/index.html` directly (`file://` works) or serve it with
+`python3 -m http.server -d docs`.
+
+Keep the site in the same change as the code.  Architecture changes belong in
+this file **and** the matching page:
+
+| Page | Covers |
+|------|--------|
+| `docs/index.html` | Overview, layer diagram, at-a-glance numbers, subsystem map |
+| `docs/boot.html` | BIOS/VESA, MBR, UEFI loader, kexec, boot info, image layout |
+| `docs/memory.html` | Address map, E820/bitmap allocator, paging, MTRR, user arenas |
+| `docs/cpu.html` | GDT/TSS, interrupts, ACPI/SMP, CFS-lite, BKL, idle/power |
+| `docs/drivers.html` | PCI, FDC/PATA/AHCI, USB core + UHCI/OHCI/EHCI/xHCI, HID, sensors |
+| `docs/filesystems.html` | VFS/`fs_ops`, FAT, ramfs pack, `/share`, WebDAV |
+| `docs/graphics.html` | VBE/shadow, damage, blit, WM, canvas ABI, ngui, images |
+| `docs/network.html` | netdev, ARP/ICMP/UDP/DHCP/DNS, TCP, TLS, netconsole/netkexec |
+| `docs/userland.html` | Ring-3 model, ELF spawn, syscalls, shell/PATH, pack, apps |
+| `docs/development.html` | Toolchain, make targets, hot reload, tests, debugging |
+
+Rules:
+
+- A change to a boot path, hardcoded address, scheduler/ABI, driver model,
+  file service, graphics/WM path, protocol, syscall number, build target or
+  reload workflow must update the corresponding page in the same change.  A
+  new subsystem needs a section on an existing page (or a new page linked from
+  the index) and a card on `docs/index.html`.
+- Update `AGENTS.md` whenever the architecture or a documented invariant
+  changes; `AGENTS.md` and `docs/` are both source-of-truth maps and must not
+  drift.  Each page's "Source map" lists the files it documents; keep it
+  current.
+- Charts and diagrams are hand-written HTML/CSS or inline SVG.  No JavaScript,
+  CDN, generated asset or build step.  Every charted number must come from a
+  source constant/table; cite the defining file in the caption or source map.
+- Keep internal links working, the active nav item correct, the layout usable
+  from a phone width to a wide desktop, and the site readable from `file://`.
+- Keep version strings in the page heads and footers in sync with
+  `OS_NAME`/`OS_VERSION` in `version.h`.
 
 ## Build & run
 
@@ -158,7 +201,7 @@ run area), so adding code no longer moves any address.
 
 - **Multitasking**: `sched.c/h`, `process.c/h`, `tss.c/h`, `switch.S` — CFS-lite
   weighted fair scheduling (weight 1..16, 64-bit vruntime, 10 ms slice; WM 16,
-  terminals 12, kworker 1, commands 8), a sorted sleep list and wait queues
+  default/commands/terminals 8, kworker 4), a sorted sleep list and wait queues
   (no polling scans), stable per-PCB objects in a sparse `PROC_MAX` pointer
   table, per-CPU `struct cpu`/GDT/TSS with `%gs`-based `this_cpu()`, and a
   per-CPU `current` (no global `current_pid`).  Idle is not a process slot; a
@@ -225,41 +268,47 @@ run area), so adding code no longer moves any address.
   CR3 can switch on the old stack); `paging_current_cr3()` reads CR3. The kexec
   trampoline (`kexec_tramp.S`) clears CR0.PG before the copy so it can overwrite
   the old kernel's page tables safely.
-- **Window manager**: `wm.c/h` — slot 0 runs `wm_run()`; fixed-size draggable
-  terminal windows (64×32) with a system bar (banner + purple "New", "Clock",
-  "Colors", "Files", "Mines", "Web" and "Cards" buttons + clock + CPU
-  temperature + rainbow). Click-to-focus,
-  drag-by-title-bar, close (×). The "New"
-  button and first boot spawn terminals; there is no `term` command.  Content is
-  repainted per damage rect (`wm_redraw_rect`: desktop fill + every intersecting
-  window back-to-front, clipped by `wm_draw_window_clip`), not by full redraws —
-  a text window only over its damaged cell block (`screen_damage_block`), a
-  canvas window over its whole content.
-- **Window graphics service**: `gfx.c/h` (RGB565 window canvases + bpp-aware
-  blits), `sys_gfx.c/h` — a ring-3 command gets its window's canvas mapped RW at
-  `0x50000000` (`SYS_GFX_BEGIN`; a mapped back buffer) and publishes frames with
-  `SYS_GFX_PRESENT`, which copies it into the composited front buffer (double
-  buffering; the copy runs with interrupts off, so a half-drawn frame can never
-  reach the screen).  Presented frames carry monotonic seq counters, so the WM
-  can never lose one.
-  Keys of a window with a live session go to the session (`SYS_KEY_POLL`; Ctrl+C
-  still reaches the terminal), closing a window kills its session, and
-  `sys_gfx_reap`/`sys_gfx_collect` free the canvas after exit/crash.  `clock`
-  and `colors` are its users.  Generic canvas windows (`SYS_WIN_CREATE`) also
-  get pointer input: `SYS_WIN_POINTER` reports the content-relative position,
-  buttons and focus, and `SYS_WIN_EVENT` queues press/release edges with a
-  capture window, so a click that starts in a window still gets its release
-  after the pointer leaves.  The userland `ngui.c/h` immediate-mode toolkit
-  builds on those: clipped RGB565 primitives, buttons, text input, procedural
-  icons and scrolling panes.  `files` (`ucmd_files.c`) is its first user;
-  `gallery` (`gallery.c`) is the live showcase of every control and primitive
-  the toolkit exports.  Buttons fire on the release edge and keep `active`
-  until `ui->released`: inferring release from the sampled `ui->buttons`
-  races the WM event queue and drops clicks.  Text fields support mouse
-  drag-selection, double-click select-all, Ctrl+Left/Right word jumps,
-  Ctrl+Delete/Ctrl+Backspace word deletion and Ctrl+A select-all; typing or
-  Backspace/Delete replaces a selection.  At the end of the line Ctrl+Delete
-  removes the word before the caret instead of doing nothing.
+- **Window manager / window server**: `wm.c/h` is the kernel window server;
+  the only WM is the ring-3 process loaded from `/ramfs/bin/wm` (`ucmd_wm.c`,
+  `uwm_lib.c`).  The kernel maps the shadow and each window's RGB565 front
+  canvas at `WM_CONTENT_VA_BASE`, routes input, owns the cursor, kexec
+  detection and the boot-console handoff.  Every window is a canvas client;
+  there is no in-kernel WM or terminal fallback.  The WM paints the desktop,
+  spawns the first terminal after `wm_server_boot_ready()` (set after the
+  storage mount), and composites the canvases into the shadow.  The boot
+  console stays visible until the WM attaches (`wm_server_attach` disables
+  it), so a missing `/ramfs/bin/wm` leaves the kernel boot log on screen and
+  the supervisor retries.  `wm_server_present` flushes the damage rects;
+  `wm_server_key_wait/poll` provide keys.  `terminal.c` keeps the privileged
+  kernel command registry for the ring-3 terminal (`SYS_SPAWN_KCMD` /
+  `term_kcmd_spawn`), but the kernel terminal entry/shell and the cell-window
+  ABI are gone.
+- **Window canvas API**: `gfx.c/h` allocates the RGB565 front/back canvases;
+  `sys_wm.c` is the ABI bridge.  `SYS_WIN_CREATE` gives a command its window
+  canvas mapped RW at `USER_WIN_BASE` (`0x50000000`); `SYS_WIN_PRESENT` copies
+  the back buffer into the front canvas with interrupts off, so a half-drawn
+  frame can never reach the screen.  `SYS_WIN_INFO`, `SYS_WIN_ACK_RESIZE`,
+  `SYS_WIN_POINTER`, `SYS_WIN_EVENT`, `SYS_WIN_KEY_WAIT` and the generic
+  `SYS_KEY_POLL` handle input.  The WM composites the front canvas; presented
+  frames carry monotonic seq counters, so the WM can never lose one.  Closing
+  a window kills its owner; the reaper frees the canvas.  `clock`, `colors`,
+  `term`, `files` and the other apps are canvas clients.  The old
+  `SYS_GFX_BEGIN/PRESENT/END` terminal-takeover service and the kernel
+  text-canvas renderer are removed.  Pointer input: `SYS_WIN_POINTER` reports
+  the content-relative position, buttons and focus, and `SYS_WIN_EVENT` queues
+  press/release edges with a capture window, so a click that starts in a
+  window still gets its release after the pointer leaves.  The userland
+  `ngui.c/h` immediate-mode toolkit builds on those: clipped RGB565
+  primitives, buttons, text input, procedural icons and scrolling panes.
+  `files` (`ucmd_files.c`) is its first user; `gallery` (`gallery.c`) is the
+  live showcase of every control and primitive the toolkit exports.  Buttons
+  fire on the release edge and keep `active` until `ui->released`: inferring
+  release from the sampled `ui->buttons` races the WM event queue and drops
+  clicks.  Text fields support mouse drag-selection, double-click select-all,
+  Ctrl+Left/Right word jumps, Ctrl+Delete/Ctrl+Backspace word deletion and
+  Ctrl+A select-all; typing or Backspace/Delete replaces a selection.  At the
+  end of the line Ctrl+Delete removes the word before the caret instead of
+  doing nothing.
 - **Graphics**: `vga.c/h`, `vga_copy.S`, `blit.c/h`, `gpu.c`, `ati.c`, `nvidia.c`,
   `nv50.c`, `pci.h` — VESA LFB + shadow buffer.  Drawing goes into a
   `struct surface` render target: `vga_target()` is the screen's shadow buffer
@@ -305,25 +354,21 @@ run area), so adding code no longer moves any address.
   mode itself), the cursor staging registers are engine-only, and a channel
   that has run cannot be restarted — see the header of `nv50.c`.
 - **Text console**: `fbtext.c`, `font_8x8.c/h`, `io.c/h`, `screen.c/h` — 8×8 font,
-  framebuffer glyph blitting (`fbtext_draw_cells`) and per-terminal cell buffers
-  (`struct text_screen`).  A screen tracks the changed cell block
-  (`screen_damage_block()`: `dmg_col0..dmg_col1`, `dmg_row0..dmg_row1`, grown by
-  `screen_damage_cell()`/`screen_damage_cursor()`, reset by
-  `screen_clear_damage()`), so the WM repaints a keystroke's cell instead of the
-  whole window content and the blink only marks the cursor's own cell.
+  framebuffer glyph blitting (`fbtext_draw_cells`) and the boot-console cell
+  buffer (`screen.c`, used by `io.c`'s fallback screen and `bootcon`).  The
+  ring-3 terminal renders its own rows into its canvas; the kernel window
+  manager has no text-cell content path.  `screen_damage_*` remains for the
+  boot console's own bookkeeping.
+- **Shell**: `ucmd_term.c` is the windowed shell (rows, scrollback, Tab,
+  builtins `cd`, `path`, `help`, `clear`).  `terminal.c` keeps the privileged
+  kernel command registry and `term_kcmd_spawn()` used through `SYS_SPAWN_KCMD`;
+  commands are files on the terminal PATH (`/ramfs/bin` by default), so a
+  packed command can shadow a kernel one.  The in-kernel terminal entry point
+  (`term_entry()`, `term_run()`) is gone.
 - **Fatal exception screen**: `panic.c/h`, `timer.S` — on a ring-0 fault,
   dumps vector/error code, GPRs, CRs, EIP instruction bytes and stack
   return-address candidates straight into the LFB (and COM1) before halting;
   see the panic section below.
-- **Shell**: `terminal.c` — history, line editing, and a table-driven command
-  registry (`cmds[]`: name, usage, spawn kind/handler) that holds only the
-  builtins (`cd`, `path`, `help`, `clear`) and the kernel commands.  Everything
-  else is a file on the per-terminal **PATH** (`struct term.path`, default
-  `/ramfs/bin`, `path` builtin to show/set): dispatch is builtins -> PATH ->
-  kernel commands, so a packed command can shadow a kernel one.  Tab
-  completion and `help` list the registry plus the PATH contents.  Runs in a
-  window (`term_run(struct term *)`); reads keys from its per-terminal queue
-  (filled by the WM).
 - **Filesystem**: `fat.c` (FAT12/16/32 read/write, device-parameterized),
   `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
   `blkdev.c` (floppy + IDE + SATA registry), `ata.c` (ATA PIO, either the
@@ -382,7 +427,7 @@ run area), so adding code no longer moves any address.
   shared ARP resolution (`net_arp_resolve`) and routing (`net_next_hop`), frame
   decode, `net_checksum()`/`net_checksum_tcp()`.  `dhcp.c` — minimal DHCP client
   (DISCOVER →
-  OFFER → REQUEST → ACK; runs at boot when a NIC is present, 3 s budget, keeps
+  OFFER → REQUEST → ACK; runs at boot when a NIC is present, 4 s budget, keeps
   the static address when no server answers; `dhcp` re-runs it; learns the DNS
   server from option 6). `netcmd.c` — the
   `netinfo`/`netrecv`/`netsend`/`netip`/`dhcp`/`pong`/`ping`/`netregs`
@@ -639,7 +684,7 @@ run area), so adding code no longer moves any address.
   net users, so being preempted mid-wait is safe.
 
   The server side is the WebDAV command: `tcp.c` has a small listener (one
-  active connection + 7 queued ones, SYN-ACK/RST, and a fast FIN that keeps
+  active connection + 3 backlog/closing slots, SYN-ACK/RST, and a fast FIN that keeps
   the tuple briefly so a late FIN/ACK is absorbed).  The SYN-ACK advertises a
   zero window; a queued connection may hold 1 KB of early request (usually
   the HTTP headers), `tcp_srv_accept()` opens the window, and the update is
@@ -686,7 +731,7 @@ set the resolver) and `host <name>` (one DNS A query).  `curl <url>` fetches
 status line, headers and body (redirects are followed, up to 5 hops; numeric
 hosts skip DNS).  `https` uses the phase-A TLS 1.3 client (no certificate
 verification; the leaf fingerprint is printed).  On
-boot, if a NIC is present, a DHCP client runs with a 3 s budget (requesting the
+boot, if a NIC is present, a DHCP client runs with a 4 s budget (requesting the
 current address) and falls back to the static default when no server answers.
 The board also answers ARP/ICMP for its IP while idle.
 `lspci` lists every PCI function (one line each); with a filter (`lspci 8168`,
@@ -742,7 +787,7 @@ make dev            # kernel.bin + cmds_pack_gz.bin (atomic; ~46 s at 115200)
 make kernel-dev     # kernel only; the new kernel keeps the running rootfs
 make cmds-dev       # runtime raw-pack update, no reboot
 ```
-The reload is automatic. On boot the kernel prints `Nebs OS v<version> booted`
+The reload is automatic. On boot the kernel prints `NebOS v<version> booted`
 to COM1, so a serial monitor can confirm the new build headlessly:
 
 ```sh
@@ -1010,7 +1055,7 @@ directly at boot — no keystroke injection needed:
      -display none -vga std
    # ...then: cat -A /tmp/opencode/serial.log
    ```
-   The `Nebs OS v<version> booted` line is already written to COM1 at boot, so
+   The `NebOS v<version> booted` line is already written to COM1 at boot, so
    serial is live before the framebuffer is up — a crash in early init still shows.
 4. **Revert before committing** — remove the `io.c` echo and any boot-time call;
    `git status` should show `io.c` and `kernel.c` unchanged.
@@ -1146,9 +1191,9 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     non-network driver wait or a big shadow-buffer operation can stall syscalls
     on the other CPUs for its duration.  `bkl_pause()`/`bkl_resume()` is used
     for serial/network waits, not yet for disk I/O.
-13. Kernel threads (kworker, kexec/payload, kernel commands, the kernel WM
-    fallback) are pinned to the BSP.  Only ring-3 processes use the APs, so a
-    single CPU-bound kernel driver still limits throughput.
+13. Kernel threads (kworker, kexec/payload, kernel commands) are pinned to
+    the BSP.  Only ring-3 processes use the APs, so a single CPU-bound kernel
+    driver still limits throughput.
 14. Page-table updates for another CPU's running process (e.g. an MMIO mapping)
     rely on not-present TLB entries not being cached; there is no cross-CPU
     TLB shootdown.  No process shares an address space with another, so normal
@@ -1168,8 +1213,8 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     also open extensionless files in the viewer.  Automatic decode-at-scale
     for oversized images is still missing.
 
-18. WebDAV limits: one request at a time (one active connection plus 7
-    queued; the queue holds each connection's first 1 KB with a zero window),
+18. WebDAV limits: one request at a time (one active connection plus 3
+    backlog/closing slots; the queue holds each connection's first 1 KB with a zero window),
     files are buffered whole (4 MB cap; a larger PUT gets 413), directory
     `MOVE` is 501, `PROPPATCH` is answered 200 without persisting, and there
     is no authentication.  Sends use a four-segment window, and keep-alive is

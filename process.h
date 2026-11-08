@@ -30,7 +30,6 @@
 #define PROC_NAME_LEN 12
 #define PROC_CWD_MAX  64
 
-struct text_screen;  /* forward decl (see screen.h) */
 struct sys_procinfo; /* forward decl (see syscall.h; `top` snapshot) */
 struct surface;      /* forward decl (see vga.h; render target override) */
 
@@ -40,7 +39,6 @@ struct process {
 	unsigned int pid;
 	unsigned int slot;           /* index in procs[], PROC_MAX for idle */
 	char         name[PROC_NAME_LEN];
-	struct text_screen *screen;  /* output target for io_putchar & co. */
 	unsigned int stack_base;     /* page to free on exit, or 0 (bootstrap/fallback) */
 	unsigned int cr3;            /* physical address of this process's page dir */
 	unsigned int heap_pages;     /* pages mapped at USER_HEAP_BASE, or 0 */
@@ -86,11 +84,10 @@ struct process {
 #define USER_BASE        0x40000000   /* user program link/load address */
 #define USER_STACK_TOP   0x40200000   /* user stack top (grows down) */
 #define USER_STACK_PAGES 8            /* user stack size in 4 KB pages */
-/* Where sys_gfx maps a command's canvas back buffer (see sys_gfx.c).  The
- * mapping is released by the reaper without freeing the canvas pages: the
- * gfx session owns those. */
-#define USER_GFX_BASE    0x50000000
-#define USER_GFX_RANGE   0x00400000   /* one 4 MB slot */
+/* Where a canvas window's back buffer is mapped.  The mapping is released by
+ * the reaper without freeing the canvas pages: the window owns those. */
+#define USER_WIN_BASE    0x50000000
+#define USER_WIN_RANGE   0x00400000   /* one 4 MB slot */
 /* Anonymous per-process heap (SYS_MEM_ALLOC/GROW/FREE): one growable arena
  * above the WM mappings.  Freed by the reaper. */
 #define USER_HEAP_BASE   0x60000000u
@@ -116,7 +113,6 @@ int process_create_user(const char *name, const void *image, unsigned int size,
 int process_create_user_tty(const char *name, const void *image,
 			unsigned int size, const char *arg, const char *cwd,
 			unsigned int tty);
-void process_set_screen(struct text_screen *screen);
 /* Render target override for the running process (0 = the screen). */
 struct surface *process_render_target(void);
 void process_set_render_target(struct surface *s);
