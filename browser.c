@@ -549,6 +549,171 @@ static void make_abs_local(const char *in, char *out, unsigned int cap)
 		s_copy(out, joined, cap);
 }
 
+/* ---- canonical origin cache ---- *
+ *
+ * Sites commonly redirect http://host to https://host and then to
+ * https://www.host.  Remember the final scheme/host of the last navigation so
+ * a bare domain typed again goes straight there instead of paying for two
+ * more connections and TLS handshakes.  Only default-port requests are
+ * rewritten; explicit ports are left alone. */
+#define ORIGIN_CACHE_MAX 8
+#define ORIGIN_FILE      "/share/borigins"
+#define ORIGIN_BUF_SIZE  (ORIGIN_CACHE_MAX * (UHTTP_HOST_MAX + 16 + \
+			   UHTTP_HOST_MAX + 2))
+
+struct origin_cache_entry {
+	char host[UHTTP_HOST_MAX];
+	char origin[UHTTP_HOST_MAX + 16];
+};
+static struct origin_cache_entry origins[ORIGIN_CACHE_MAX];
+static int origin_count;
+static char origin_buf[ORIGIN_BUF_SIZE];
+
+static int default_port(const struct uhttp_url *u)
+{
+	return u->secure ? u->port == 443 : u->port == 80;
+}
+
+static void url_origin(const struct uhttp_url *u, char *out,
+		       unsigned int cap)
+{
+	unsigned int n = 0;
+
+	s_append(out, &n, u->secure ? "https://" : "http://", cap);
+	s_append(out, &n, u->host, cap);
+	if (!default_port(u)) {
+		s_append(out, &n, ":", cap);
+		s_append_dec(out, &n, u->port, cap);
+	}
+}
+
+static void origin_cache_apply(char *url, unsigned int cap)
+{
+	struct uhttp_url u;
+	char out[BR_URL_MAX];
+	unsigned int n = 0;
+	int i;
+
+	if (uhttp_parse_url(url, &u) != 0 || !default_port(&u))
+		return;
+	for (i = 0; i < origin_count; i++) {
+		if (!s_eq(u.host, origins[i].host))
+			continue;
+		s_append(out, &n, origins[i].origin, sizeof(out));
+		s_append(out, &n, u.path, sizeof(out));
+		s_copy(url, out, cap);
+		return;
+	}
+}
+
+static void origin_cache_save(void)
+{
+	unsigned int n = 0;
+	int i;
+
+	for (i = 0; i < origin_count; i++) {
+		s_append(origin_buf, &n, origins[i].host, sizeof(origin_buf));
+		s_append(origin_buf, &n, " ", sizeof(origin_buf));
+		s_append(origin_buf, &n, origins[i].origin, sizeof(origin_buf));
+		s_append(origin_buf, &n, "\n", sizeof(origin_buf));
+	}
+	if (n)
+		u_syscall3(SYS_WRITE_FILE, (int)ORIGIN_FILE,
+			   (int)origin_buf, (int)n);
+}
+
+static void origin_cache_load(void)
+{
+	char *p;
+	int rn;
+
+	rn = u_syscall3(SYS_READ_FILE, (int)ORIGIN_FILE, (int)origin_buf,
+			(int)(sizeof(origin_buf) - 1));
+	if (rn <= 0)
+		return;
+	origin_buf[rn] = '\0';
+	p = origin_buf;
+	while (*p && origin_count < ORIGIN_CACHE_MAX) {
+		char *line = p, *origin;
+
+		while (*p && *p != '\n')
+			p++;
+		if (*p)
+			*p++ = '\0';
+		if (!line[0])
+			continue;
+		origin = line;
+		while (*origin && *origin != ' ')
+			origin++;
+		if (!*origin)
+			continue;
+		*origin++ = '\0';
+		if (!line[0] || !is_http(origin))
+			continue;
+		{
+			struct uhttp_url uo;
+
+			if (uhttp_parse_url(origin, &uo) != 0 ||
+			    !s_eq(uo.path, "/"))
+				continue;
+		}
+		s_copy(origins[origin_count].host, line,
+		       sizeof(origins[origin_count].host));
+		s_copy(origins[origin_count].origin, origin,
+		       sizeof(origins[origin_count].origin));
+		origin_count++;
+	}
+}
+
+static int host_is_www_of(const char *host, const char *base)
+{
+	return host[0] == 'w' && host[1] == 'w' && host[2] == 'w' &&
+	       host[3] == '.' && s_eq(host + 4, base);
+}
+
+static void origin_cache_learn(const char *requested, const char *final)
+{
+	struct uhttp_url from, to;
+	char origin[UHTTP_HOST_MAX + 16];
+	int i;
+
+	if (!is_http(requested) || !is_http(final))
+		return;
+	if (uhttp_parse_url(requested, &from) != 0 ||
+	    uhttp_parse_url(final, &to) != 0)
+		return;
+	if (!default_port(&from))
+		return;
+	if (s_eq(from.host, to.host) && from.secure == to.secure &&
+	    from.port == to.port)
+		return;
+	/* Only remember origin-level canonicalisation: the same path, and
+	 * either the same host or its www./apex sibling.  A path- or
+	 * host-specific redirect (a shortener, a login page) must not poison
+	 * every request to the typed host. */
+	if (!s_eq(from.path, to.path))
+		return;
+	if (!s_eq(from.host, to.host) &&
+	    !host_is_www_of(to.host, from.host) &&
+	    !host_is_www_of(from.host, to.host))
+		return;
+	url_origin(&to, origin, sizeof(origin));
+	for (i = 0; i < origin_count; i++) {
+		if (s_eq(origins[i].host, from.host)) {
+			if (!s_eq(origins[i].origin, origin)) {
+				s_copy(origins[i].origin, origin,
+				       sizeof(origins[i].origin));
+				origin_cache_save();
+			}
+			return;
+		}
+	}
+	i = origin_count < ORIGIN_CACHE_MAX ? origin_count++ : 0;
+	s_copy(origins[i].host, from.host, sizeof(origins[i].host));
+	s_copy(origins[i].origin, origin, sizeof(origins[i].origin));
+	origin_cache_save();
+}
+
 static int path_dir(const char *path, char *out, unsigned int cap)
 {
 	unsigned int i, last = 0;
@@ -1470,6 +1635,8 @@ static void load_page(const char *url, int local, int push)
 		url_in.scroll = 0;
 		return;
 	}
+	if (!local)
+		origin_cache_learn(url, final[0] ? final : url);
 	page_is_local = local;
 	if (final[0]) {
 		s_copy(page_url, final, sizeof(page_url));
@@ -1600,6 +1767,84 @@ static void load_home(int push)
 	ngui_invalidate(&ui);
 }
 
+/* Extensions the browser opens from the local filesystem.  A dotted input
+ * with one of these still resolves relative to the cwd. */
+static int local_file_ext(const char *s)
+{
+	static const char *const exts[] = {
+		"htm", "html", "txt", "text", "md", "css", "js", "json", "xml",
+		"png", "jpg", "jpeg", "gif", "bmp", "tga", "ppm", "pgm", "pbm",
+		"ico", "cur", "pam", "svg", "elf", "bin", "ttf", "log", "ini",
+		"cfg", "conf", 0
+	};
+	unsigned int i = 0, start = 0, len = 0, e;
+
+	while (s[i] && s[i] != '/' && s[i] != ':' && s[i] != '?' &&
+	       s[i] != '#') {
+		if (s[i] == '.') {
+			start = i + 1;
+			len = 0;
+		} else if (start) {
+			len++;
+		}
+		i++;
+	}
+	if (!len)
+		return 0;
+	for (e = 0; exts[e]; e++) {
+		const char *x = exts[e];
+		unsigned int xn = s_len(x), k;
+
+		if (xn != len)
+			continue;
+		for (k = 0; k < len; k++) {
+			char a = s[start + k];
+
+			if (a >= 'A' && a <= 'Z')
+				a = (char)(a - 'A' + 'a');
+			if (a != x[k])
+				break;
+		}
+		if (k == len)
+			return 1;
+	}
+	return 0;
+}
+
+/* A dotted first component (cloudron.io) is a hostname, not a local file.
+ * Skipping the VFS stat keeps a slow FAT/floppy lookup off the path from
+ * Enter to the first network request. */
+static int looks_like_host(const char *s)
+{
+	unsigned int i = 0;
+	int dot = 0;
+
+	while (s[i] && s[i] != '/' && s[i] != '?' && s[i] != '#' &&
+	       s[i] != ':') {
+		char c = s[i];
+
+		if (c == '.') {
+			dot = 1;
+		} else if (!((c >= 'a' && c <= 'z') ||
+			     (c >= 'A' && c <= 'Z') ||
+			     (c >= '0' && c <= '9') ||
+			     c == '-' || c == '_')) {
+			return 0;
+		}
+		i++;
+	}
+	return dot && i > 0 && !local_file_ext(s);
+}
+
+static void load_remote(const char *url, int push)
+{
+	char canon[BR_URL_MAX];
+
+	s_copy(canon, url, sizeof(canon));
+	origin_cache_apply(canon, sizeof(canon));
+	load_page(canon, 0, push);
+}
+
 static void navigate(const char *input, int push)
 {
 	char target[BR_URL_MAX];
@@ -1621,13 +1866,18 @@ static void navigate(const char *input, int push)
 		return;
 	}
 	if (is_http(t)) {
-		load_page(t, 0, push);
+		load_remote(t, push);
 		return;
 	}
-	{
+	if (t[0] == '/') {
+		make_abs_local(t, target, sizeof(target));
+		load_page(target, 1, push);
+		return;
+	}
+	if (!looks_like_host(t)) {
 		struct sys_stat st;
 
-		if (t[0] == '/' || (u_stat(t, &st) == 0 && !st.is_dir)) {
+		if (u_stat(t, &st) == 0 && !st.is_dir) {
 			make_abs_local(t, target, sizeof(target));
 			load_page(target, 1, push);
 			return;
@@ -1638,7 +1888,7 @@ static void navigate(const char *input, int push)
 		unsigned int n = 0;
 		s_append(with_scheme, &n, "http://", sizeof(with_scheme));
 		s_append(with_scheme, &n, t, sizeof(with_scheme));
-		load_page(with_scheme, 0, push);
+		load_remote(with_scheme, push);
 	}
 }
 
@@ -4136,6 +4386,7 @@ void _start(const char *arg)
 	if (u_getcwd(cwd, sizeof(cwd)) != 0 || !cwd[0])
 		s_copy(cwd, "/", sizeof(cwd));
 	heap_clear();
+	origin_cache_load();
 	page_scroll.offset = 0;
 	page_scroll.content_h = 0;
 

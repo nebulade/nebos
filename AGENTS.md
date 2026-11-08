@@ -708,9 +708,13 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `ngui_theme_dark` (dark page, light text, `theme.panel` for `<pre>`);
   a site's own `background-color`/`color` CSS still overrides it.  `browser.c`
   opens at 1100x700 (960x640 and 780x540 fallbacks on smaller screens), the
-  layout/render, URL bar, history, status bar and
-  inline `<img>` decoding.  Images are fetched one per main-loop iteration
-  (so text and scrolling stay responsive) and only when their measured
+  layout/render, URL bar, history, status bar and inline `<img>` decoding.
+  A dotted input without a scheme that is not a known local file extension
+  (`cloudron.io`) is treated as a hostname and skips the local-file stat;
+  origin-level redirects are remembered per process and in `/share/borigins`,
+  so later visits to a bare domain go straight to its canonical scheme/host.
+  Images are fetched one per main-loop iteration (so text and scrolling stay
+  responsive) and only when their measured
   position is within the viewport plus 160 px; deferred images are loaded as
   the page scrolls.  Network work runs in a headless `curl __fetch` helper
   process (`ucmd_curl.c`): it writes the raw body and a small metadata file
@@ -1236,8 +1240,8 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    compressed pack directly to `0x900000` with INT 15h AH=87h, so the cap is
    `PACK_MAX` 1 MB (not the old ~255 KB low-gap limit).  The browser and
    its ring-3 dependencies are compiled with function sections and linked
-   with `--gc-sections`; the current pack with the UI fonts is ~344 KiB
-   (351760 bytes), leaving ~680 KiB under the cap.  `libdeflate-gzip -12` is
+   with `--gc-sections`; the current pack with the UI fonts is ~351 KiB
+   (359532 bytes), leaving ~673 KiB under the cap.  `libdeflate-gzip -12` is
    still preferred for the extra headroom, though the 1 MB cap leaves room
    for `gzip -9` as a fallback.
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
