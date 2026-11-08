@@ -13,10 +13,11 @@
 
 #include "efi.h"
 #include "bootinfo.h"
+#include "phys.h"
 #include "vga.h"
 #include "efi_entry.h"
 
-#define MAX_PHYS    0x08000000u          /* MM_MAX_PHYS in mm.h */
+#define MAX_PHYS    ((UINT32)MM_MAX_PHYS)
 #define PAGE_SIZE_  0x1000u
 #define MAX_PAGES   (MAX_PHYS / PAGE_SIZE_)
 #define E820_ADDR   0x1000u
@@ -43,7 +44,7 @@ extern unsigned char tramp_blob_end[];
  * generous and keeps the retry loop simple. */
 static UINT8 memmap_buf[65536] __attribute__((aligned(8)));
 
-/* One bit per 4 KB page over the kernel's 128 MB identity window.  Starts
+/* One bit per 4 KB page over the kernel's 512 MB identity window.  Starts
  * all-used; only EfiConventional/BootServices memory is freed.  EfiLoader*
  * (this image and the staging buffer) stays reserved, which is safe and
  * costs only a few hundred KB. */
@@ -398,7 +399,7 @@ static void build_e820(EFI_MEMORY_DESCRIPTOR *map, UINTN map_size,
 	}
 
 	/* The scanout is MMIO, not RAM; make sure it can never be handed out
-	 * even when its BAR happens to sit below the 128 MB ceiling. */
+	 * even when its BAR happens to sit below the 512 MB ceiling. */
 	if (fb->valid)
 		use_range(fb->base, fb->size);
 
@@ -436,7 +437,7 @@ static void build_e820(EFI_MEMORY_DESCRIPTOR *map, UINTN map_size,
 
 /* ---- boot structures --------------------------------------------------- */
 
-/* Copy the embedded rootfs pack to the top of RAM (below the 128 MB
+/* Copy the embedded rootfs pack to the top of RAM (below the 512 MB
  * identity window and above the 1..9 MB VGA shadow reserve), matching the
  * legacy stage's placement.  Returns the address, or 0 when it does not fit.
  * Runs after ExitBootServices, so only plain memory accesses. */

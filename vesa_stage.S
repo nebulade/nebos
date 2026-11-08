@@ -25,7 +25,7 @@
 
 /* Rootfs/boot-info constants (must match rootfs.h / bootinfo.h). */
 .equ ROOTFS_VERSION,   1
-.equ PACK_MAX,         0x80000       /* 512 KB compressed rootfs cap */
+.equ PACK_MAX,         0x100000      /* 1 MB compressed rootfs cap */
 .equ PACK_HIGH_ADDR,   0x900000      /* above the 8 MB VGA-shadow reserve */
 .equ BOOT_INFO_MAGIC,  0x4E425349
 .equ BOOT_INFO_VERSION, 2

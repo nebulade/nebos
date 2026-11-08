@@ -183,6 +183,12 @@
 				</tbody>
 			</table>
 		</div>
+		<p>
+			QEMU guests default to 512 MB, matching <code>MM_MAX_PHYS</code> in
+			<span class="file">phys.h</span>. Override the size with
+			<code>QEMU_MEM</code>, for example <code>make run QEMU_MEM=1G</code>;
+			all run and UEFI targets pass it through.
+		</p>
 	</section>
 
 	<section id="serial">

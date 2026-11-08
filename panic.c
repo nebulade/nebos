@@ -3,6 +3,7 @@
 #include "panic.h"
 #include "bootinfo.h"
 #include "font_8x8.h"
+#include "phys.h"
 #include "process.h"
 #include "serial.h"
 #include "timer.h"
@@ -10,7 +11,7 @@
 
 #define LINE_H      10
 #define PANIC_LINES 12
-#define RAM_LIMIT   0x08000000u   /* MM_MAX_PHYS: identity-mapped RAM */
+#define RAM_LIMIT   ((unsigned int)MM_MAX_PHYS)
 #define KERNEL_BASE 0x7E00u       /* kernel load address (kernel.ld) */
 
 static unsigned int fb_w, fb_h, fb_pitch, fb_bpp;

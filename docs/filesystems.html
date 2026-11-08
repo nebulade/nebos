@@ -236,7 +236,7 @@
 			<figcaption>
 				<strong>The pack is the root filesystem.</strong> The kernel no
 				longer embeds it, so command growth does not move <code>_end</code>.
-				The high-memory legacy loader caps the compressed pack at 512 KB;
+				The high-memory legacy loader caps the compressed pack at 1 MB;
 				the 8 MB rootfs partition and ramfs cap remain the larger limits.
 			</figcaption>
 		</figure>
@@ -333,7 +333,7 @@
 	<section id="capacity">
 		<h2>Capacity chart</h2>
 		<figure class="figure">
-			<div class="bars" role="img" aria-label="Capacity limits: /share 16 MB, ramfs decompressed pack 8 MB, USB rootfs image 8 MB, legacy compressed pack 512 KB. Bar widths are relative to 16 MB.">
+			<div class="bars" role="img" aria-label="Capacity limits: /share 16 MB, ramfs decompressed pack 8 MB, USB rootfs image 8 MB, legacy compressed pack 1 MB. Bar widths are relative to 16 MB.">
 				<div class="bar-row">
 					<span class="bar-label">/share</span>
 					<div class="bar-track"><span class="bar-fill green" style="--w:100%"></span></div>
@@ -351,8 +351,8 @@
 				</div>
 				<div class="bar-row">
 					<span class="bar-label">legacy pack</span>
-					<div class="bar-track"><span class="bar-fill" style="--w:3.125%"></span></div>
-					<span class="bar-value">512 KB</span>
+					<div class="bar-track"><span class="bar-fill" style="--w:6.25%"></span></div>
+					<span class="bar-value">1 MB</span>
 				</div>
 			</div>
 			<figcaption>

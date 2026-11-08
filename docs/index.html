@@ -157,7 +157,7 @@
 			<li><strong>Freestanding C.</strong> The kernel has no libc, <code>malloc</code> or <code>printf</code>; ring-3 commands can link the in-tree <code>libc.a</code> (<code>malloc</code>, strings, stdlib). Formatting and allocation are in-tree either way.</li>
 			<li><strong>i586 baseline.</strong> Builds use <code>-march=i586 -mno-sse -mno-sse2 -mno-mmx</code>; SSE2 drawing paths are probed at runtime.</li>
 			<li><strong>Identity-mapped paging.</strong> Physical and virtual addresses are equal. There is no per-process address space or isolation.</li>
-			<li><strong>128 MB physical ceiling.</strong> The frame bitmap covers 128 MB; anything above that is unmapped.</li>
+			<li><strong>512 MB physical ceiling.</strong> The frame bitmap covers 512 MB; anything above that is unmapped.</li>
 			<li><strong>Hardcoded low memory.</strong> Boot info, the E820 map, the framebuffer block and the AP trampoline have fixed addresses that every boot path must honour.</li>
 			<li><strong>No firmware runtime.</strong> <code>reboot</code> and <code>poweroff</code> use legacy ports; UEFI runtime services are not called after <code>ExitBootServices</code>.</li>
 		</ul>

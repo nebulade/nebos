@@ -83,6 +83,8 @@ make clean
 
 - Build flags (in `Makefile`): `-m32 -march=i586 -ffreestanding -fno-pie -nostdlib
   -fno-stack-protector -mno-sse -mno-sse2 -mno-mmx -O2`.
+- QEMU guests default to 512 MB (`QEMU_MEM`, e.g. `make run QEMU_MEM=1G`),
+  matching `MM_MAX_PHYS` in `phys.h`; all run and UEFI targets pass `-m`.
 - The command pack is the system rootfs: `cmds.pack` (NBPAK1), gzip-compressed
   to `cmds_pack_gz.bin`, wrapped by `mkrootfs` with a one-sector `NBROOT1`
   header into `rootfs.bin` (floppy append) and `cmds.img` (the 8 MB USB
@@ -127,7 +129,7 @@ make clean
    12-dword `struct boot_info` (magic/checksum/rsdp/flags/pack range) to
    `0x500`, enters protected mode and jumps to `kernel_entry` (`entry.S`,
    re-points ESP to the current stack top, then `kernel_main`).  The pack
-   never occupies the low gap, so the cap is `PACK_MAX` (512 KB) and the
+   never occupies the low gap, so the cap is `PACK_MAX` (1 MB) and the
    kernel BSS/boot stack may extend past `0x60000`.  The stage prints
    `Loading rootfs [d=<drive> lba=<hex> e=<0|1> m=<C|L>]...`, then a dot
    after the header and one per 16 KB chunk, so a BIOS hang is localised.
@@ -143,7 +145,7 @@ make clean
    picks a GOP mode, converts `GetMemoryMap` into the E820 map at `0x1000`,
    stages `kernel.bin` below 4 GB, fills `0x500` (boot info) and `0x600`
    (framebuffer), calls `ExitBootServices`, copies the embedded gz rootfs to
-   the top of RAM below 128 MB, copies a 192-byte trampoline to `0x800`,
+   the top of RAM below 512 MB, copies a 192-byte trampoline to `0x800`,
    leaves IA-32e mode (`CR0.PG`, `EFER.LME`, `CR4.PAE/PGE/PCIDE/SMEP/SMAP/
    LA57`), copies the kernel to `0x7E00` and jumps to `kernel_entry`.  The
    BIOS boot sector / VESA stage are not executed on this path; the legacy
@@ -184,7 +186,7 @@ later.
 
 The boot-time rootfs pack placement depends on the boot path: the legacy
 stage copies it directly to `0x900000`, the UEFI loader puts it at the top of
-RAM below 128 MB, and kexec leaves it in the staging buffer
+RAM below 512 MB, and kexec leaves it in the staging buffer
 (≥ `0x900000`).  `mm_init` reserves `[pack_addr, pack_addr+pack_size)` from
 boot info when it is above the low 1 MB, so the legacy pack is protected
 from the frame allocator too.  `ramfs_init` copies/inflates it into fresh
@@ -239,9 +241,10 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   trampoline at `0x6000`), and `spinlock.h` (the IRQ-safe spinlocks).
   `cpu_enable_sse()` runs on every AP: an AP starts with firmware CR4, and the
   SSE2 drawing fast paths #UD until OSFXSR/OSXMMEXCPT are set.
-- **Memory**: `mm.c/h` — INT 15h E820 detection (real-mode in `vesa_stage.S`,
-  map at `0x1000`) + a bitmap page-frame allocator (4 KB pages). Reserves low
-  1 MB and an 8 MB VGA-shadow region. `kmalloc.c/h` — a power-of-two heap
+- **Memory**: `phys.h` — the shared 512 MB physical ceiling (`MM_MAX_PHYS`),
+  also used by the UEFI loader. `mm.c/h` — INT 15h E820 detection (real-mode in
+  `vesa_stage.S`, map at `0x1000`) + a bitmap page-frame allocator (4 KB
+  pages). Reserves low 1 MB and an 8 MB VGA-shadow region. `kmalloc.c/h` — a power-of-two heap
   allocator on top of the frame allocator (used for PCBs and command context).
   Process stacks (≥ `0x900000`) come from the frame allocator, with an 8-stack
   fallback pool (a static BSS array; no fixed address).
@@ -846,14 +849,14 @@ The commands live in `cmds.pack` (`bin/<name>` entries, built by `mkpack`),
 compressed with `libdeflate-gzip -12` when it is installed (falling back to
 `gzip -9`) to `cmds_pack_gz.bin` and wrapped by `mkrootfs` with a
 one-sector `NBROOT1` header (magic, version, exact `pack_bytes`, checksum,
-gzip flag).  The build rejects a pack above the `PACK_MAX` cap (512 KB);
+gzip flag).  The build rejects a pack above the `PACK_MAX` cap (1 MB);
 `libdeflate` buys several KB over `gzip -9` and is still preferred.  The boot
 path loads the gz pack into RAM — the legacy stage copies it directly to
 `0x900000` with INT 15h AH=87h, the UEFI loader via an embedded copy at the
-top of RAM below 128 MB, kexec via its staging buffer — and `ramfs_init()`
+top of RAM below 512 MB, kexec via its staging buffer — and `ramfs_init()`
 inflates it into page-allocated memory and mounts it read-only at `/ramfs`.
 The kernel image no longer contains it, so the pack no longer moves `_end`;
-the high-memory legacy path supports up to 512 KB (known issue 8).  The UI
+the high-memory legacy path supports up to 1 MB (known issue 8).  The UI
 font subsets live in the pack under `fonts/`.
 
 `rootfs.bin` is the floppy append (header + pack); `cmds.img` is the 8 MB
@@ -1158,7 +1161,7 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
   structure whose fields are read before being written must be cleared on
   allocation.  `clear_proc()` (`process.c`) exists for exactly this: a stale
   `procs[i].cr3` made the boot-time MMIO mapping (`paging_map_mmio_cr3`) fault
-  on the board while QEMU was fine.  Anything above `MM_MAX_PHYS` (128 MB) is
+  on the board while QEMU was fine.  Anything above `MM_MAX_PHYS` (512 MB) is
   also *unmapped*, so a wild pointer there is an instant #PF.
 - **All drawing goes into the current render target** (the shadow buffer by
   default; `vga_target()`, see the graphics bullet); the main loop flushes the
@@ -1203,12 +1206,12 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    load (the USB rootfs partition is 8 MB, so this only bites if the cap is
    raised without a bigger partition).  The legacy stage now copies the
    compressed pack directly to `0x900000` with INT 15h AH=87h, so the cap is
-   `PACK_MAX` 512 KB (not the old ~255 KB low-gap limit).  The browser and
+   `PACK_MAX` 1 MB (not the old ~255 KB low-gap limit).  The browser and
    its ring-3 dependencies are compiled with function sections and linked
-   with `--gc-sections`; the current pack with the UI fonts is ~343 KiB
-   (351472 bytes), leaving ~169 KiB under the cap.  Command growth
-   still needs care because `libdeflate-gzip -12` is already required (plain
-   `gzip -9` is over the cap).
+   with `--gc-sections`; the current pack with the UI fonts is ~344 KiB
+   (351760 bytes), leaving ~680 KiB under the cap.  `libdeflate-gzip -12` is
+   still preferred for the extra headroom, though the 1 MB cap leaves room
+   for `gzip -9` as a fallback.
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
     board that exposes only MP tables stays UP (deliberate; there is no test
     hardware).
@@ -1256,11 +1259,11 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     `websrv` while `ping`/`curl`/`netrecv` owns the NIC fails; kill the other
     command first.
 20. `/share` is RAM only: a reboot/kexec starts empty, and the 16 MB cap is
-    charged against the 128 MB identity-mapped window.
+    charged against the 512 MB identity-mapped window.
 
 21. The TCP backlog's early-request buffers cost 8 KB of kernel BSS
     (8 slots x 1 KB), and the FAT listing cache another 5 KB.  The command
-    pack is out of the kernel now, so `_end` keeps ~190 KB of headroom below
+    pack is out of the kernel now, so `_end` keeps ~170 KB of headroom below
     the `0x90000` wall; the remaining limit is kernel code/buffers only.
 
 22. Browser limits: no JavaScript, forms, pseudo-classes/elements,

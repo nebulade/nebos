@@ -169,7 +169,7 @@
 		</ol>
 		<p>
 			The pack no longer occupies the old <code>0x60000..0x9FBFF</code>
-			low gap, so the legacy cap is <code>PACK_MAX</code> (512 KB) and the
+			low gap, so the legacy cap is <code>PACK_MAX</code> (1 MB) and the
 			kernel BSS/boot stack may use the gap. The kernel image only has to
 			stay below <code>0x90000</code> so the top of low memory and the
 			EBDA remain untouched; <span class="file">kernel.ld</span> enforces
@@ -197,7 +197,7 @@
 			<li>Selects a GOP mode with BGRX or RGBX 32bpp, width at most 1280, <code>pitch × height</code> at most 8 MB, and a framebuffer below 4 GB.</li>
 			<li>Calls <code>GetMemoryMap</code> and converts the firmware map into the kernel's E820 format at <code>0x1000</code>.</li>
 			<li>Stages the kernel image below 4 GB and writes the boot-info and framebuffer blocks.</li>
-			<li>Calls <code>ExitBootServices</code>, copies the embedded rootfs pack to the top of RAM below 128 MB, and copies a 192-byte trampoline to <code>0x800</code>.</li>
+			<li>Calls <code>ExitBootServices</code>, copies the embedded rootfs pack to the top of RAM below 512 MB, and copies a 192-byte trampoline to <code>0x800</code>.</li>
 			<li>Leaves IA-32e mode (clears <code>CR0.PG</code>, <code>EFER.LME</code>, <code>CR4.PAE/PGE/PCIDE/SMEP/SMAP/LA57</code>), copies the kernel to <code>0x7E00</code>, and jumps to <code>kernel_entry</code>.</li>
 		</ol>
 		<p>
@@ -384,7 +384,7 @@
 		<h2>Failure modes to know</h2>
 		<ul>
 			<li><strong>No VBE mode.</strong> The legacy stage cannot produce a framebuffer; the kernel may start headless or the boot stops in the stage.</li>
-			<li><strong>Pack larger than the cap.</strong> The legacy and kexec paths share the 512 KB <code>PACK_MAX</code>; a larger pack needs the UEFI path or a bigger cap and loader change.</li>
+			<li><strong>Pack larger than the cap.</strong> The legacy BIOS path caps the compressed pack at 1 MB <code>PACK_MAX</code>; UEFI and kexec can carry larger packs up to the 8 MB ramfs cap.</li>
 			<li><strong>PIT not ticking.</strong> <code>kernel_main</code> prints <code>*** PIT NOT TICKING ***</code> and halts; no process scheduling is possible.</li>
 			<li><strong>UEFI Secure Boot.</strong> The unsigned <code>BOOTX64.EFI</code> is rejected before any NebOS code runs.</li>
 			<li><strong>Stale boot info.</strong> The checksum makes an invalid <code>0x500</code> block read as absent rather than as a bogus pack or RSDP.</li>

@@ -41,7 +41,7 @@
 			window canvases, the ring-3 heap and the rootfs copy — is dynamic.
 		</p>
 		<div class="meta">
-			<span class="pill">128 MB physical ceiling</span>
+			<span class="pill">512 MB physical ceiling</span>
 			<span class="pill">4 KB frames</span>
 			<span class="pill">4 MB PSE pages</span>
 			<span class="pill">identity map</span>
@@ -76,28 +76,28 @@
 		<figure class="figure">
 			<svg viewBox="0 0 920 180" role="img" aria-labelledby="phys-title phys-desc">
 				<title id="phys-title">Physical memory composition</title>
-				<desc id="phys-desc">Of the 128 MB addressable window, the low 1 MB and an 8 MB VGA shadow reserve are unavailable, leaving about 119 MB for the frame allocator.</desc>
+				<desc id="phys-desc">Of the 512 MB addressable window, the low 1 MB and an 8 MB VGA shadow reserve are unavailable, leaving about 503 MB for the frame allocator.</desc>
 				<text class="svg-text" x="20" y="28">0x00000000</text>
-				<text class="svg-text" x="900" y="28" text-anchor="end">0x08000000 · 128 MB</text>
+				<text class="svg-text" x="900" y="28" text-anchor="end">0x20000000 · 512 MB</text>
 
-				<rect class="svg-box blue" x="40" y="44" width="6.5" height="34" rx="1"/>
-				<rect class="svg-box accent" x="46.5" y="44" width="52.5" height="34" rx="1"/>
-				<rect class="svg-box green" x="99" y="44" width="781" height="34" rx="2"/>
+				<rect class="svg-box blue" x="40" y="44" width="2" height="34" rx="1"/>
+				<rect class="svg-box accent" x="42" y="44" width="13.5" height="34" rx="1"/>
+				<rect class="svg-box green" x="55.5" y="44" width="844.5" height="34" rx="2"/>
 
 				<text class="svg-tiny" x="40" y="100">low 1 MB</text>
-				<text class="svg-tiny" x="105" y="100">VGA shadow · 8 MB</text>
-				<text class="svg-tiny" x="420" y="100" text-anchor="middle">frame allocator · ~119 MB</text>
+				<text class="svg-tiny" x="64" y="100">VGA shadow · 8 MB</text>
+				<text class="svg-tiny" x="477" y="100" text-anchor="middle">frame allocator · ~503 MB</text>
 
-				<line class="svg-line" x1="43" y1="78" x2="43" y2="88"/>
-				<line class="svg-line" x1="73" y1="78" x2="73" y2="88"/>
+				<line class="svg-line" x1="41" y1="78" x2="41" y2="88"/>
+				<line class="svg-line" x1="48" y1="78" x2="48" y2="88"/>
 				<line class="svg-line" x1="490" y1="78" x2="490" y2="88"/>
 
 				<text class="svg-tiny" x="40" y="130">boot structures · kernel image · BIOS/UMA · DMA buffers</text>
 				<text class="svg-tiny" x="40" y="150">The 8 MB reserve protects the shadow buffer; the allocator starts at 0x900000.</text>
 			</svg>
 			<figcaption>
-				<strong>128 MB is a hard ceiling.</strong> The frame bitmap covers
-				<code>[0, 0x08000000)</code>; addresses above it are not mapped by
+				<strong>512 MB is a hard ceiling.</strong> The frame bitmap covers
+				<code>[0, 0x20000000)</code>; addresses above it are not mapped by
 				the kernel page tables. The VGA shadow reserve is conservative: the
 				actual buffer is smaller, but the gap keeps a future resolution bump
 				from colliding with allocated pages.
@@ -180,7 +180,7 @@
 		<h2>Frame allocator</h2>
 		<p>
 			<span class="file">mm.c</span> keeps one bit per 4 KB page for the
-			whole 128 MB window. The bitmap is not IRQ-safe; callers save and
+			whole 512 MB window. The bitmap is not IRQ-safe; callers save and
 			disable interrupts around allocations. The allocator returns:
 		</p>
 		<ul>
@@ -190,7 +190,7 @@
 		</ul>
 		<p>
 			At boot, <code>mm_init</code> reserves the low 1 MB, the 8 MB VGA
-			shadow region, any LFB that happens to live below 128 MB, and the
+			shadow region, any LFB that happens to live below 512 MB, and the
 			boot-time rootfs pack. The pack reservation is released by
 			<code>ramfs_init</code> after it copies/inflates the pack into fresh
 			pages.
@@ -293,7 +293,7 @@
 	<section id="pack">
 		<h2>Rootfs pack lifetime</h2>
 		<ol>
-			<li>The boot path places the gzip pack in RAM: the legacy stage copies it directly to <code>0x900000</code> with <code>INT 15h AH=87h</code>, UEFI at the top of RAM below 128 MB, kexec in its staging buffer.</li>
+			<li>The boot path places the gzip pack in RAM: the legacy stage copies it directly to <code>0x900000</code> with <code>INT 15h AH=87h</code>, UEFI at the top of RAM below 512 MB, kexec in its staging buffer.</li>
 			<li><code>mm_init</code> reserves <code>[pack_addr, pack_addr + pack_size)</code> so the frame allocator cannot reuse it.</li>
 			<li><code>ramfs_init</code> takes a private page-allocated copy, validates the <code>NBROOT1</code> header and inflates the pack into it.</li>
 			<li><code>mm_free_range</code> releases the boot region when it is above the VGA shadow reserve. The private copy lives until <code>ramfs_replace</code> or reboot.</li>
@@ -308,7 +308,7 @@
 		<h2>Limits &amp; leaks</h2>
 		<ul>
 			<li><strong>No per-process address spaces.</strong> Paging is identity-mapped; there is no memory protection between processes.</li>
-			<li><strong>128 MB ceiling.</strong> Physical memory above <code>0x08000000</code> is unmapped. A wild pointer there is an instant <code>#PF</code>.</li>
+			<li><strong>512 MB ceiling.</strong> Physical memory above <code>0x20000000</code> is unmapped. A wild pointer there is an instant <code>#PF</code>.</li>
 			<li><strong>User page leak on reap.</strong> Killing a ring-3 process frees its kernel stack and page directory but not all user pages mapped into it; a few pages leak per command run.</li>
 			<li><strong>Kernel heap fragmentation.</strong> <code>kmalloc</code>'s power-of-two size classes make long-running mixed-size kernel allocation wasteful; ring-3 commands use the separate first-fit libc heap described above.</li>
 			<li><strong>No TLB shootdown.</strong> Cross-CPU mapping changes rely on not-present entries not being cached.</li>
@@ -319,6 +319,7 @@
 		<h2>Source map</h2>
 		<ul class="filelist">
 			<li><code>mm.c</code>, <code>mm.h</code> — E820 + bitmap allocator</li>
+			<li><code>phys.h</code> — shared 512 MB physical ceiling</li>
 			<li><code>kmalloc.c</code>, <code>kmalloc.h</code> — kernel heap</li>
 			<li><code>libc/malloc.c</code>, <code>libc/ucmd_mem.c</code> — ring-3 heap and <code>SYS_MEM_*</code> backend</li>
 			<li><code>libc/string.c</code>, <code>libc/stdlib.c</code> — ring-3 libc support</li>

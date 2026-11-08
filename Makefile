@@ -56,7 +56,7 @@ all: floppy.img usb.img final.bin root.img
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.o: kernel.c acpi.h cpu.h idle.h io.h lapic.h mouse.h panic.h process.h sched.h smp.h terminal.h timer.h serial.h tss.h usbhid.h version.h vga.h
+kernel.o: kernel.c acpi.h cpu.h idle.h io.h lapic.h mouse.h panic.h phys.h process.h sched.h smp.h terminal.h timer.h serial.h tss.h usbhid.h version.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 screen.o: screen.c screen.h
@@ -194,7 +194,7 @@ usbhid.o: usbhid.c usbhid.h io.h usb.h usb_hcd.h serial.h timer.h
 lsusb.o: lsusb.c io.h usb.h
 	$(CC) $(CFLAGS) -Os -o $@ $<
 
-panic.o: panic.c panic.h bootinfo.h font_8x8.h process.h serial.h timer.h vga.h
+panic.o: panic.c panic.h bootinfo.h font_8x8.h phys.h process.h serial.h timer.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 bootcon.o: bootcon.c bootcon.h bootinfo.h font_8x8.h vga.h
@@ -314,13 +314,13 @@ ap_tramp_embed.o: ap_tramp.bin
 process.o: process.c process.h sched.h io.h kmalloc.h mm.h serial.h smp.h idle.h timer.h wm_abi.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-mm.o: mm.c mm.h
+mm.o: mm.c mm.h phys.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 kmalloc.o: kmalloc.c kmalloc.h mm.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-paging.o: paging.c paging.h mm.h mtrr.h vga.h serial.h
+paging.o: paging.c paging.h mm.h phys.h mtrr.h vga.h serial.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 elf.o: elf.c elf.h mm.h paging.h
@@ -469,7 +469,7 @@ efi/efi_entry.h: kernel.elf
 	if [ -z "$$entry" ]; then echo "efi: kernel_entry not found" >&2; exit 1; fi; \
 	printf '#define KERNEL_ENTRY 0x%s\n' "$$entry" > $@
 
-efi/main.o: efi/main.c efi/efi.h bootinfo.h vga.h efi/efi_entry.h
+efi/main.o: efi/main.c efi/efi.h bootinfo.h phys.h vga.h efi/efi_entry.h
 	$(EFI_CC) $(EFI_CFLAGS) -c -o $@ $<
 
 efi/payload.o: efi/payload.S kernel.bin cmds_pack_gz.bin efi/tramp.bin
@@ -515,11 +515,15 @@ uefi: usb-efi.img
 
 OVMF ?= $(firstword $(wildcard /usr/share/ovmf/x64/OVMF.4m.fd /usr/share/OVMF/OVMF.4m.fd))
 
+# Guest RAM for the QEMU targets.  The kernel ceiling is 512 MB (phys.h);
+# override with `make run QEMU_MEM=1G` for larger guests.
+QEMU_MEM ?= 512M
+
 # root.img is deliberately not attached: a running QEMU may hold its write
 # lock, and the UEFI boot test does not need a second filesystem.
 run-uefi: usb-efi.img
 	@test -n "$(OVMF)" || { echo "OVMF not found; set OVMF=/path/to/OVMF.4m.fd" >&2; exit 1; }
-	qemu-system-x86_64 -M pc -m 256 -smp 4 -bios $(OVMF) -snapshot \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -smp 4 -bios $(OVMF) -snapshot \
 	  -drive file=usb-efi.img,format=raw,if=ide \
 	  -device pci-ohci -device usb-mouse \
 	  -device ne2k_pci,netdev=n0 -netdev user,id=n0 \
@@ -528,7 +532,7 @@ run-uefi: usb-efi.img
 test-uefi: usb-efi.img
 	@test -n "$(OVMF)" || { echo "OVMF not found; set OVMF=/path/to/OVMF.4m.fd" >&2; exit 1; }
 	@rm -f /tmp/opencode/nebos-uefi-serial.log
-	timeout 40 qemu-system-x86_64 -M pc -m 256 -smp 4 -bios $(OVMF) -snapshot \
+	timeout 40 qemu-system-x86_64 -M pc -m $(QEMU_MEM) -smp 4 -bios $(OVMF) -snapshot \
 	  -drive file=usb-efi.img,format=raw,if=ide \
 	  -device pci-ohci -device usb-mouse \
 	  -device ne2k_pci,netdev=n0 -netdev user,id=n0 \
@@ -794,11 +798,11 @@ cmds.pack: $(addsuffix .elf,$(UCMDS)) hello.elf browser.elf gallery.elf \
 # The boot-time rootfs is gzip-compressed; the raw cmds.pack is still what
 # cmds-dev/net-cmds send for a runtime replacement.  Prefer libdeflate's
 # level 12 when it is installed: it saves about 8 KB over gzip -9 on the
-# current pack.  The high-memory rootfs loader supports up to 512 KB, which
-# leaves room for the font subsystem without touching the kernel image.
+# current pack.  The high-memory rootfs loader supports up to 1 MB; the
+# floppy image still has room for it after the kernel.
 CMDS_GZ     = $(shell command -v libdeflate-gzip >/dev/null 2>&1 && \
-		     echo "libdeflate-gzip -12 -n -c" || echo "gzip -9 -n -c")
-CMDS_GZ_MAX = 524288
+		     echo "libdeflate-gzip -12 -c" || echo "gzip -9 -n -c")
+CMDS_GZ_MAX = 1048576
 cmds_pack_gz.bin: cmds.pack
 	$(CMDS_GZ) $< > $@
 	@sz=$$(stat -c%s $@); \
@@ -853,8 +857,8 @@ run: image.bin root.img
 # Four logical CPUs (the Atom 330 topology).  UP is still the default so a
 # machine without ACPI/MADT boots exactly as before.
 run-smp: floppy.img root.img
-	qemu-system-i386 -M pc -smp 4 -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -smp 4 -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -smp 4 -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -smp 4 -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 floppy: floppy.img
 
@@ -870,34 +874,34 @@ flash: $(FLASH_IMG)
 	@./flash.sh "$(USB)" "$(FORCE)" "$(FLASH_IMG)"
 
 run-floppy: floppy.img root.img
-	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -device pci-ohci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 run-usb: usb.img root.img
-	qemu-system-i386 -M pc -boot c -device pci-ohci -device usb-mouse -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -boot c -device pci-ohci -device usb-mouse -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -boot c -device pci-ohci -device usb-mouse -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -boot c -device pci-ohci -device usb-mouse -drive file=usb.img,format=raw,if=ide -drive file=root.img,format=raw,if=floppy
 
 # UHCI variant (machines with an Intel/VIA-style controller, and the
 # regression test for the UHCI backend of the USB core).
 run-uhci: floppy.img root.img
-	qemu-system-i386 -M pc -device piix3-usb-uhci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -device piix3-usb-uhci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -device piix3-usb-uhci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -device piix3-usb-uhci -device usb-mouse -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 # xHCI variant (Braswell/Intel PCH and other USB 3.0-only machines).
 run-xhci: floppy.img root.img
-	qemu-system-i386 -M pc -device qemu-xhci -device usb-mouse -device usb-kbd -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -device qemu-xhci -device usb-mouse -device usb-kbd -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -device qemu-xhci -device usb-mouse -device usb-kbd -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -device qemu-xhci -device usb-mouse -device usb-kbd -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 # EHCI variant (USB 2.0 high-speed root ports).  usb-storage is high-speed
 # and lands on EHCI; the mouse/keyboard are full-speed and use the UHCI
 # companion, exercising the multi-controller USB core.
 run-ehci: floppy.img root.img
-	qemu-system-i386 -M pc -boot a -device usb-ehci,id=ehci0 -device piix3-usb-uhci,id=uhci0 \
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -boot a -device usb-ehci,id=ehci0 -device piix3-usb-uhci,id=uhci0 \
 	  -device usb-storage,bus=ehci0.0,drive=usbstick \
 	  -drive if=none,id=usbstick,file=root.img,format=raw \
 	  -device usb-mouse,bus=uhci0.0 -device usb-kbd,bus=uhci0.0 \
 	  -drive file=floppy.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -boot a -device usb-ehci,id=ehci0 -device piix3-usb-uhci,id=uhci0 \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -boot a -device usb-ehci,id=ehci0 -device piix3-usb-uhci,id=uhci0 \
 	  -device usb-storage,bus=ehci0.0,drive=usbstick \
 	  -drive if=none,id=usbstick,file=root.img,format=raw \
 	  -device usb-mouse,bus=uhci0.0 -device usb-kbd,bus=uhci0.0 \
@@ -909,29 +913,29 @@ run-ehci: floppy.img root.img
 # the only netdev.
 ASIX_HOST ?= vendorid=0x0b95,productid=0x7720
 run-ehci-asix: floppy.img root.img
-	qemu-system-i386 -M pc -nic none -device usb-ehci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -nic none -device usb-ehci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -nic none -device usb-ehci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -nic none -device usb-ehci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 run-xhci-asix: floppy.img root.img
-	qemu-system-i386 -M pc -nic none -device qemu-xhci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -nic none -device qemu-xhci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -nic none -device qemu-xhci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -nic none -device qemu-xhci -device usb-host,$(ASIX_HOST) -serial file:/tmp/opencode/serial-asix.log -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 # Network variant: a PCI NE2000 (RTL8029, the driver's QEMU match) on QEMU's
 # user-mode network (slirp).  DHCP/DNS come from slirp, the host is 10.0.2.2
 # (e.g. `python3 -m http.server` + `curl http://10.0.2.2:8000/` in a window).
 run-net: floppy.img root.img
-	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -device pci-ohci -device usb-mouse -device ne2k_pci,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 -drive file=floppy.img,format=raw,if=floppy -drive file=root.img,format=raw,if=floppy
 
 # Intel e1000 variant: QEMU's 82540EM exercises the e1000e driver's MAC/DMA
 # path.  (The X201's 82577LM uses the same registers; only its PCH PHY is
 # different.)  usb-kbd is there for headless QMP `send-key` typing.
 run-e1000: floppy.img root.img
-	qemu-system-i386 -M pc -device pci-ohci -device usb-mouse -device usb-kbd \
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -device pci-ohci -device usb-mouse -device usb-kbd \
 	  -device e1000,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 \
 	  -drive file=floppy.img,format=raw,if=floppy \
 	  -drive file=root.img,format=raw,if=floppy 2>/dev/null || \
-	qemu-system-x86_64 -M pc -device pci-ohci -device usb-mouse -device usb-kbd \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -device pci-ohci -device usb-mouse -device usb-kbd \
 	  -device e1000,netdev=n0 -netdev user,id=n0,hostfwd=tcp::8080-:8080 \
 	  -drive file=floppy.img,format=raw,if=floppy \
 	  -drive file=root.img,format=raw,if=floppy
@@ -942,13 +946,13 @@ run-e1000: floppy.img root.img
 SATA_IMG ?= /tmp/opencode/nebos-sata.img
 run-ahci: floppy.img root.img
 	@test -f $(SATA_IMG) || truncate -s 512M $(SATA_IMG)
-	qemu-system-i386 -M pc -boot order=a -device pci-ohci -device usb-mouse \
+	qemu-system-i386 -M pc -m $(QEMU_MEM) -boot order=a -device pci-ohci -device usb-mouse \
 	  -drive file=floppy.img,format=raw,if=floppy \
 	  -drive file=root.img,format=raw,if=floppy \
 	  -device ich9-ahci,id=sata \
 	  -drive file=$(SATA_IMG),format=raw,if=none,id=satadisk \
 	  -device ide-hd,drive=satadisk,bus=sata.0 2>/dev/null || \
-	qemu-system-x86_64 -M pc -boot order=a -device pci-ohci -device usb-mouse \
+	qemu-system-x86_64 -M pc -m $(QEMU_MEM) -boot order=a -device pci-ohci -device usb-mouse \
 	  -drive file=floppy.img,format=raw,if=floppy \
 	  -drive file=root.img,format=raw,if=floppy \
 	  -device ich9-ahci,id=sata \

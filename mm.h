@@ -9,6 +9,8 @@
 #ifndef MM_H
 #define MM_H
 
+#include "phys.h"
+
 #define PAGE_SIZE        0x1000
 
 /* E820 map storage (written by vesa_stage.S in real mode). */
@@ -17,9 +19,8 @@
 #define E820_MAX_ENTRIES 32
 
 /* Frame allocator covers physical RAM [0, MM_MAX_PHYS).  Bitmap: 1 bit/page.
- * 128 MB matches this machine and QEMU's default; raise it (and move the
- * kernel upper bound, see kernel.ld) if larger machines are targeted. */
-#define MM_MAX_PHYS      (128u * 1024 * 1024)  /* 128 MB ceiling */
+ * The ceiling lives in phys.h so the UEFI loader cannot drift; see
+ * kernel.ld for the loaded-image bound. */
 
 /* Regions the kernel already owns (marked used at init): */
 #define MM_RESERVE_LOW     0x100000   /* 0 .. 1 MB: kernel/DMA/UHCI/UMA/boot */

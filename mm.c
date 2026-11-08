@@ -95,8 +95,14 @@ void mm_init(void)
 		for (i = 0; i < n; i++) {
 			const struct e820_entry *e = &map->entry[i];
 			if (e->type == E820_RAM && e->length != 0) {
+				unsigned long long end = e->base + e->length;
+
 				mark_free(e->base, e->length);
-				total_ram_kb += (unsigned int)(e->length >> 10);
+				if (end > MM_MAX_PHYS)
+					end = MM_MAX_PHYS;
+				if (end > e->base)
+					total_ram_kb +=
+						(unsigned int)((end - e->base) >> 10);
 			}
 		}
 	} else {
