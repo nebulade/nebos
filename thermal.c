@@ -4,9 +4,10 @@
  * below TjMax in bits 22:16.  Bonnell (Atom 230/330) has no
  * IA32_TEMPERATURE_TARGET MSR, so TjMax has to come from a table; these are
  * the same values Linux's coretemp uses (the 330's DTS is calibrated against
- * 125 C, other Bonnell parts against 90 C).  Nehalem and later (including the
- * X201's Arrandale) publish TjMax in bits 23:16 of MSR 0x1A2, which is read
- * for the models that implement it; the table remains the fallback.  The DTS
+ * 125 C, other Bonnell parts against 90 C).  Nehalem and Westmere (including
+ * the X201's Arrandale) publish TjMax in bits 23:16 of MSR 0x1A2, which is
+ * read for those models; Airmont/Braswell uses coretemp's 90 C table instead
+ * (an unsupported rdmsr before the IDT exists would triple-fault).  The DTS
  * "valid" bit is ignored on purpose: coretemp does the same because the delta
  * stays meaningful (the bit can be clear at temperatures below the sensor's
  * range).
@@ -75,6 +76,7 @@ static int model_has_dts(unsigned int model)
 	case 0x2C:   /* Westmere-EP */
 	case 0x2E:   /* Nehalem-EX */
 	case 0x2F:   /* Westmere-EX */
+	case 0x4C:   /* Airmont: Braswell / Cherry Trail */
 		return 1;
 	default:
 		return 0;
@@ -146,6 +148,8 @@ static int pick_tjmax(unsigned int model, unsigned int stepping,
 			return 100;
 		return 90;
 	}
+	if (model == 0x4C)          /* Airmont (coretemp: 90 C) */
+		return 90;
 	return 100;
 }
 

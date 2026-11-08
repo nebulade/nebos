@@ -575,47 +575,67 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   re-enumerates the bus, after which `usbhid` re-inits itself via a scan
   generation counter.
 - **Power/idle**: `idle.c` — `idle auto` (the default) asks `power.c` for
-  the MWAIT hint: C6 (`0x20`) on the Nehalem/Westmere allowlist, HLT
-  everywhere else.  `idle hlt|c1e|c3|c6` (and the `c3ap`/`c6ap` AP-only
-  variants) are explicit overrides for testing; the Atom boards keep HLT
-  because of the old USB-legacy SMM hang (the UHCI/OHCI `0xC0` legacy-SMI
-  disable addresses it).  Arrandale hints are C1 `0x00`, C1E `0x01`, C3
-  `0x10`, C6 `0x20`.  The BSP PIT and each AP's LAPIC timer run at 1 kHz
-  while a process runs and drop to 100 Hz/10 ms while the CPU is idle
-  (`timer_set_hz`, `lapic_timer_set_ms`); the PIT stub advances the global
-  millisecond clock by `timer_tick_advance()`, and `smp_resched_wake()`
-  shortens the idle period when new work arrives.
-- **Frequency/package power**: `power.c/h` — Nehalem/Westmere P-states and
-  C-state setup, gated on the model allowlist (`0x1A/1E/1F/25/2C/2E/2F`)
-  because the MSRs must not be touched elsewhere.  `power_init()` enables
-  SpeedStep (`MISC_ENABLE` bit 16) and C1E (`POWER_CTL` bit 1), raises the
-  package C-state limit in `PKG_CST_CONFIG_CONTROL` to C6 only when it is
-  unlocked (bit 15), reads min/max ratios from `PLATFORM_INFO`, and starts at
-  the maximum non-turbo ratio.  The per-CPU tick runs a race-to-idle
-  governor: 100 ms windows pick min/max/linear target ratios (short busy
-  streaks jump to max immediately) and each CPU writes its own
-  `IA32_PERF_CTL`.  Nehalem/Westmere take the target ratio in bits 15:8 and
-  the low byte is written as zero (a preserved VID byte made the request
-  silently ineffective); `IA32_PERF_STATUS` reports the current ratio in
-  bits 7:0 (the X201 boot dump shows 0x12 at the 18x max non-turbo ratio).
-  The `power` command prints effective MHz (`APERF`/`MPERF`), the current
-  and requested ratios, per-core C3/C6 residency and package C3/C6;
-  `cpufreq [auto|min|max|off|<ratio>]` overrides the governor.
+  the MWAIT hint.  Nehalem/Westmere use C6 (`0x20`); Airmont/Braswell uses
+  C6N (`0x58`) when CPUID.5:EDX advertises the C6 substates and the MWAIT
+  interrupt-break extension is present; older Bonnell Atoms and APs without
+  ARAT keep HLT because of the old USB-legacy SMM hang (the UHCI/OHCI `0xC0`
+  legacy-SMI disable addresses it).  `idle hlt|c1e|c3|c6` (and the
+  `c3ap`/`c6ap` AP-only variants) are explicit overrides for testing.
+  Arrandale hints are C1 `0x00`, C1E `0x01`, C3 `0x10`, C6 `0x20`; the
+  Airmont auto path uses the Cherry Trail C6N hint.  The BSP PIT and each
+  AP's LAPIC timer run at 1 kHz while a process runs and drop to 100 Hz/10 ms
+  while the CPU is idle (`timer_set_hz`, `lapic_timer_set_ms`); the PIT stub
+  advances the global millisecond clock by `timer_tick_advance()`, and
+  `smp_resched_wake()` shortens the idle period when new work arrives.
+- **P-state/frequency power**: `power.c/h` — two platform paths, gated on
+  the model allowlist so the MSRs are not touched elsewhere.
+  Nehalem/Westmere (`0x1A/1E/1F/25/2C/2E/2F`) enable SpeedStep
+  (`MISC_ENABLE` bit 16) and C1E (`POWER_CTL` bit 1), raise the package
+  C-state limit in `PKG_CST_CONFIG_CONTROL` to C6 only when it is unlocked
+  (bit 15), read min/max ratios from `PLATFORM_INFO`, and start at the
+  maximum non-turbo ratio.  Their target ratio goes in bits 15:8 of
+  `IA32_PERF_CTL` with the low byte zero (a preserved VID byte made the
+  request silently ineffective); `IA32_PERF_STATUS` reports the current
+  ratio in bits 7:0 (the X201 boot dump shows 0x12 at the 18x max non-turbo
+  ratio).
+  Airmont/Braswell (family 6 model `0x4C`) reads `MSR_ATOM_CORE_RATIOS`
+  `0x66A` (min/max pstate), `MSR_ATOM_CORE_VIDS` `0x66B` (VID range),
+  `MSR_ATOM_CORE_TURBO_RATIOS/VIDS` `0x66C/0x66D`, `MSR_FSB_FREQ` `0xCD`
+  (the Airmont BCLK table) and `MSR_PLATFORM_INFO` as a fallback.  The
+  N3060 reports pstates 6..20, BCLK 80 MHz (1600 MHz nominal), turbo pstate
+  31 (2480 MHz) and VID 0x2D..0x3C.  It writes `IA32_PERF_CTL` as pstate in
+  15:8 and the Linux-interpolated VID in 7:0; the governor starts at max
+  non-turbo (pstate 20) and drops to min (pstate 6, 480 MHz).  Turbo is
+  detected but deliberately not requested, so `cpufreq max` means max
+  non-turbo.  No C1E/package-CST/auto-demotion MSR writes (coreboot
+  configures them) and no package-energy MSR reads; APERF/MPERF are used
+  only when CPUID.06H:ECX[0] says they exist.  C3/C6 residency is not read
+  on Airmont.
+  The per-CPU tick runs a race-to-idle governor: 100 ms windows pick
+  min/max/linear target pstates (short busy streaks jump to max immediately)
+  and each CPU writes its own `IA32_PERF_CTL`.  The `power` command prints
+  the platform, effective MHz (`APERF`/`MPERF`), current/requested pstate,
+  and on Nehalem the C3/C6 and package residency; the Airmont line adds the
+  FSB, nominal MHz, turbo pstate/VID, VID range and the live `PERF_CTL`.
+  `cpufreq [auto|min|max|off|<pstate>]` overrides the governor on both.
 - **CPU temperature**: `thermal.c/h` — Intel DTS through `IA32_THERM_STATUS`
   (MSR `0x19C`).  Each CPU samples itself once a second from its scheduler
   tick (`struct cpu.temp_c`), and `SYS_CPU_TEMP` (`sys_info.c`) exposes the
   hottest core plus TjMax to ring 3.  The model allowlist follows coretemp
-  (Core/Core 2, Nehalem/Westmere including the X201's Arrandale `0x25`, and
-  Bonnell) and is what keeps `rdmsr` away from CPUs that lack the MSR.
-  Nehalem and later read TjMax from `IA32_TEMPERATURE_TARGET` (MSR `0x1A2`,
-  bits 23:16; the X201's i5 M 520 reports 105 °C); Bonnell has no such MSR,
-  so its TjMax stays table-driven (Atom 330 = 125 °C, 230 = 100, other
-  Bonnell = 90, otherwise 100).  The 330's 125 °C is Linux coretemp's
-  empirical value; Intel only specifies TJ = 90 °C and Tcase-max = 85.2 °C,
-  so `sensors` prints the raw delta and the 90/100/125 °C scales as well as
-  the top bar's `CPU 43C` before the clock (with `AC on`/`AC off` and
-  `BAT 87%` to its left on ThinkPads) and `cpuinfo`'s value plus EIST state.
-  Platforms without DTS (QEMU, Pentium) hide it.
+  (Core/Core 2, Nehalem/Westmere including the X201's Arrandale `0x25`,
+  Bonnell, and Airmont/Braswell model `0x4C`) and is what keeps `rdmsr` away
+  from CPUs that lack the MSR.  Nehalem/Westmere read TjMax from
+  `IA32_TEMPERATURE_TARGET` (MSR `0x1A2`, bits 23:16; the X201's i5 M 520
+  reports 105 °C); Airmont uses the coretemp 90 °C table instead of reading
+  `0x1A2` (a missing MSR before the IDT is installed would triple-fault);
+  Bonnell has no such MSR, so its TjMax stays table-driven (Atom 330 =
+  125 °C, 230 = 100, other Bonnell = 90, otherwise 100).  The 330's 125 °C
+  is Linux coretemp's empirical value; Intel only specifies TJ = 90 °C and
+  Tcase-max = 85.2 °C, so `sensors` prints the raw delta and the 90/100/125 °C
+  scales as well as the top bar's `CPU 43C` before the clock (with
+  `AC on`/`AC off` and `BAT 87%` to its left on ThinkPads and the HP
+  Chromebook) and `cpuinfo`'s value plus EIST state.  Platforms without DTS
+  (QEMU, Pentium) hide it.
 - **Board sensors**: `it87.c/h` — read-only probe of the IT87xx Super I/O
   (the AT3IONT-I exposes three temperatures and three fan tachometers), used
   by `SYS_SENSORS` and the ring-3 `sensors` command to cross-check the DTS
@@ -638,6 +658,24 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `powerinfo` command prints AC/battery details and the WM top bar shows the
   AC adapter state plus the first present battery with a valid percentage.
   Machines without the EC show neither.
+  `ec.c/h` is the shared ACPI EC protocol (ports 0x62/0x66, command 0x80
+  read / 0x81 write, OBF/IBF waits, stale-byte drain, bounded polls); both
+  `tpec.c` and `cros_ec.c` use it.  `cros_ec.c/h` probes the Chrome OS EC:
+  ACPI memory version 2, the `'E','C'` memmap id, the device feature bits,
+  and skips the probe when the ThinkPad EC is present.  The ACPI window
+  0x20..0xFF mirrors memmap 0x00..0xDF: temperature sensors 0x00..0x0f and
+  0x18..0x1f (raw - 73 °C), fans 0x10..0x17 (0xffff = absent), switches
+  0x30 (lid/power button), and the battery block 0x40..0x7f (AC/present/
+  charging/discharging flags at 0x4c, voltage 0x40, rate 0x44, remaining
+  0x48, design 0x50, design voltage 0x54, last full 0x58, cycle count 0x5c,
+  and the 8-byte manufacturer/model/serial/type strings at 0x60..0x7f).
+  `EC_ACPI_MEM_BATTERY_INDEX` 0x12 selects the battery and waits for
+  `BATT_INDEX` 0x4e; `EC_ACPI_MEM_STRINGS_FIFO` 0x16 supplies longer strings
+  when supported.  The Cyan full-charge workaround is applied and the units
+  are mAh/mA.  `SYS_CROS_EC_SENSORS` (107) exposes temperatures, fans, fan
+  duty and switches; `SYS_POWER_INFO` reports source `SYS_POWER_SRC_CROS`.
+  `power_src.c` tries the ThinkPad backend first, then the Chrome EC, so the
+  WM top bar and the `powerinfo`/`sensors` commands work on both.
 - **Ring-3 address space**: the ELF image and 128 KB (32-page) stack live in
   the 4 MB `USER_BASE` (`0x40000000`)..`USER_STACK_TOP` (`0x40400000`)
   window, which is too small for a full-frame image.  `SYS_MEM_ALLOC`/`SYS_MEM_GROW`/`SYS_MEM_FREE`
@@ -874,7 +912,7 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
 `cd [path]`, `ls [path]`, `cat <path>`, `save <path> <text>`, `rm <path>`,
 `mkdir <path>`, `rmdir <path>`, `hello`, `reboot`, `poweroff`,
 `display`, `cpuinfo`, `mouseinfo`, `gfxbench`, `lsusb`, `touchpad`, `lspci [id]`, `peek <addr> [len]`, `poke <addr> <val>`, `storage`, `meminfo`, `top`, `sched`, `format <device> [size]` (binary units, e.g. `format ide0 100mb` or `1gb`; no size formats the whole disk),
-`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [auto|hlt|c1e|c3|c6]`, `power`, `powerinfo`, `cpufreq [auto|min|max|off|<ratio>]`, `spin [ms]`, `help`, `clear`, `serial test`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
+`ps`, `renice <pid> <weight>`, `kill <pid>`, `idle [auto|hlt|c1e|c3|c6]`, `power`, `powerinfo`, `cpufreq [auto|min|max|off|<pstate>]`, `spin [ms]`, `help`, `clear`, `serial test`, `kexec`, `dbg`, `view <file>` (image viewer; PNG, baseline/progressive JPEG, animated GIF, BMP, TGA, PNM, ICO, PAM), and `browser [url|file]` (disk app launcher).
 
 Network: `netinfo`, `netrecv`, `netsend`, `netip [a.b.c.d]`, `dhcp` (re-run the
 DHCP client), `netdev [name]` (kernel command: show the active NIC driver or
@@ -1539,3 +1577,25 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     scale is fixed (no pointer-acceleration curve).  The device stalls if
     the input register is read back-to-back, so a GPIO interrupt (or a
     larger minimum gap) is the prerequisite for a higher report rate.
+
+29. Airmont/Braswell power management: the governor caps at the maximum
+    non-turbo pstate (N3060: 20 = 1600 MHz) and never requests turbo pstate
+    31 (2480 MHz), so `cpufreq max` means max non-turbo.  C6N is enabled but
+    the kernel does not program package C-states/S0ix, does not read package
+    RAPL energy, and does not write the package C-state/auto-demotion MSRs
+    (coreboot/FSP configures them).  The Airmont probe deliberately avoids
+    package/power-SKU MSRs because an unsupported `rdmsr` before the IDT
+    triple-faults; the first read-only build hung at `power_init` that way.
+    C3/C6 residency is not reported on Airmont, and the explicit `idle c6`
+    override still uses the Nehalem `0x20` hint; use `idle auto` for the
+    validated Airmont C6N (`0x58`) path.
+
+30. Chrome EC limits: only the ACPI v2 memmap interface is used; the MEC
+    host-command/EMI interface, EC SCI events, charger current/voltage,
+    charging limit and EC firmware version are not implemented.  The
+    battery/AC values are polled (WM at 1 Hz), so a plug event can take up
+    to a second to appear.  Battery strings fall back to the 8-byte memmap
+    and can be truncated; fan entries may read 0 on fanless models instead
+    of 0xffff.  The lid/power-button switches are read by `sensors` but do
+    not trigger a power-off or display blank; suspend/S0ix is not
+    implemented.

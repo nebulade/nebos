@@ -35,17 +35,9 @@
  * (0 dynamic, 1 mode, 2 static design data, 5 manufacturer, 6 model).
  */
 #include "tpec.h"
+#include "ec.h"
 #include "paging.h"
-#include "pci.h"      /* port_inb/port_outb */
 #include "serial.h"
-
-#define EC_DATA 0x62
-#define EC_STS  0x66
-
-#define EC_OBF  0x01   /* output buffer full */
-#define EC_IBF  0x02   /* input buffer full */
-#define EC_READ 0x80
-#define EC_WRITE 0x81
 
 #define TP_FAN_LEVEL  0x2F
 #define TP_FAN_LSB    0x84
@@ -71,10 +63,6 @@
 #define TP_BAT_RSOC      0x06
 #define TP_BAT_RATE      0x08
 #define TP_BAT_VOLTAGE   0x0A
-
-/* Enough for a slow EC command (tens of milliseconds of port polls) but
- * short enough that a dead controller cannot stall the boot or a syscall. */
-#define EC_POLL_MAX 20000
 
 static int tpec_state = -1;   /* -1 unprobed, 0 absent, 1 present */
 static unsigned int tpec_ec_rev;
@@ -214,84 +202,6 @@ static int smbios_type1(char vendor[16], char product[32], char version[32])
 	return -1;
 }
 
-static int ec_wait(unsigned char mask, int set)
-{
-	unsigned int i;
-
-	for (i = 0; i < EC_POLL_MAX; i++) {
-		unsigned char st = port_inb(EC_STS);
-
-		if (st == 0xFF)           /* no controller on these ports */
-			return -1;
-		if (set ? (st & mask) != 0 : (st & mask) == 0)
-			return 0;
-	}
-	return -1;
-}
-
-/* Keep a stale output byte (a hotkey event) from shadowing the register we
- * are about to read. */
-static int ec_drain(void)
-{
-	unsigned int i;
-
-	for (i = 0; i < 64; i++) {
-		unsigned char st = port_inb(EC_STS);
-
-		if (st == 0xFF)
-			return -1;
-		if (!(st & EC_OBF))
-			return 0;
-		(void)port_inb(EC_DATA);
-	}
-	return -1;
-}
-
-static int ec_read(unsigned char reg, unsigned char *out)
-{
-	if (ec_drain())
-		return -1;
-	if (ec_wait(EC_IBF, 0))
-		return -1;
-	port_outb(EC_STS, EC_READ);
-	if (ec_wait(EC_IBF, 0))
-		return -1;
-	port_outb(EC_DATA, reg);
-	if (ec_wait(EC_OBF, 1))
-		return -1;
-	*out = port_inb(EC_DATA);
-	return 0;
-}
-
-/* ACPI EC "write EC RAM": command 0x81, then the register index and value. */
-static int ec_write(unsigned char reg, unsigned char val)
-{
-	if (ec_drain())
-		return -1;
-	if (ec_wait(EC_IBF, 0))
-		return -1;
-	port_outb(EC_STS, EC_WRITE);
-	if (ec_wait(EC_IBF, 0))
-		return -1;
-	port_outb(EC_DATA, reg);
-	if (ec_wait(EC_IBF, 0))
-		return -1;
-	port_outb(EC_DATA, val);
-	if (ec_wait(EC_IBF, 0))
-		return -1;
-	return 0;
-}
-
-static int ec_read16(unsigned char reg, unsigned int *out)
-{
-	unsigned char lo, hi;
-
-	if (ec_read(reg, &lo) != 0 || ec_read((unsigned char)(reg + 1), &hi) != 0)
-		return -1;
-	*out = (unsigned int)lo | ((unsigned int)hi << 8);
-	return 0;
-}
-
 /* Select an H8 battery information page.  Only writes 0x81 when the page
  * already differs; *dirty remembers that the original page must be restored. */
 static int ec_battery_page(unsigned int battery, unsigned int page, int *dirty)
@@ -392,6 +302,13 @@ void tpec_init(void)
 	serial_puts(SERIAL_COM1, "\n");
 }
 
+int tpec_present(void)
+{
+	if (tpec_state < 0)
+		tpec_init();
+	return tpec_state > 0;
+}
+
 void tpec_read(struct tpec_info *out)
 {
 	unsigned char b;
@@ -464,7 +381,7 @@ static void tpec_copy_ident(char *dst, unsigned int size, const char *src)
 	dst[i] = '\0';
 }
 
-static void tpec_read_battery(struct tpec_battery *b, unsigned int index,
+static void tpec_read_battery(struct power_battery *b, unsigned int index,
 			      int detail, int *page_dirty)
 {
 	unsigned char st;
@@ -572,7 +489,7 @@ static void tpec_read_battery(struct tpec_battery *b, unsigned int index,
 		b->error = 1;
 }
 
-void tpec_power_read(struct tpec_power *out, int detail)
+void tpec_power_read(struct power_info *out, int detail)
 {
 	unsigned int i;
 	unsigned char saved_page = 0, ac;
@@ -588,6 +505,7 @@ void tpec_power_read(struct tpec_power *out, int detail)
 		return;
 
 	out->present = 1;
+	out->source = SYS_POWER_SRC_TPEC;
 	out->ec_rev = tpec_ec_rev;
 	tpec_copy_ident(out->vendor, sizeof(out->vendor), tpec_vendor);
 	tpec_copy_ident(out->product, sizeof(out->product), tpec_product);
@@ -598,7 +516,7 @@ void tpec_power_read(struct tpec_power *out, int detail)
 	if (ec_read(TP_BAT_PAGE, &saved_page) == 0)
 		have_saved = 1;
 
-	for (i = 0; i < TPEC_BATTERY_COUNT; i++) {
+	for (i = 0; i < POWER_BATT_MAX; i++) {
 		tpec_read_battery(&out->battery[i], i, detail, &page_dirty);
 		if (out->battery[i].present)
 			out->battery_count++;

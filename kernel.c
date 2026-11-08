@@ -5,6 +5,7 @@
 #include "bootcon.h"
 #include "bootinfo.h"
 #include "cpu.h"
+#include "cros_ec.h"
 #include "idle.h"
 #include "io.h"
 #include "lapic.h"
@@ -412,11 +413,15 @@ void kernel_main(void)
 	 * the power module (deep MWAIT on Nehalem, HLT elsewhere). */
 	power_init();
 	idle_init();
+	boot_trace("power");
 	thermal_init();
+	boot_trace("thermal");
 	/* Board sensors: the ThinkPad EC probe is gated on SMBIOS identifying a
-	 * Lenovo/IBM machine, so it is a no-op everywhere else. */
+	 * Lenovo/IBM machine, so it is a no-op everywhere else.  The Chrome EC
+	 * probe is skipped when the ThinkPad EC was found. */
 	tpec_init();
-	boot_trace("idle");
+	cros_ec_init();
+	boot_trace("ec");
 
 	/* process_init must run before timer_init: once the PIT is started (sti
 	 * in timer_init) the context-switch stub runs on every tick and reads

@@ -1,4 +1,4 @@
-/* Intel Nehalem/Westmere P-state and deep C-state management. */
+/* Intel P-state and deep C-state management. */
 #ifndef POWER_H
 #define POWER_H
 
@@ -8,16 +8,19 @@
 #define POWER_CPUFREQ_FIXED 3
 #define POWER_CPUFREQ_OFF   4
 
-/* Probe the CPU and MSRs, enable SpeedStep/C1E/C6 and start at the maximum
- * non-turbo ratio.  Called once on the BSP before idle_init(); logs to COM1
- * and is a no-op on CPUs outside the Nehalem/Westmere allowlist. */
+/* Probe the CPU and MSRs.  Nehalem/Westmere and Airmont/Braswell run the
+ * race-to-idle P-state governor; Airmont uses the Linux Atom VID encoding
+ * (pstate in 15:8, interpolated VID in 7:0) and caps at max non-turbo.
+ * Called once on the BSP before idle_init(); logs to COM1 and is a no-op on
+ * CPUs outside the allowlist. */
 void power_init(void);
 
 /* Once per scheduler tick with the CPU's idle flag and the tick length. */
 void power_tick(int idle, unsigned int ms);
 
 /* Deep C-state hint for idle.c's automatic mode: -1 = use HLT, otherwise
- * the MWAIT hint (0x20 C6; 0x01 C1E on an AP whose local timer stops). */
+ * the MWAIT hint.  Airmont returns C6N (0x58), or -1 on an AP without ARAT;
+ * Nehalem returns C6 (0x20), or C1E on an AP whose local timer stops. */
 int power_idle_hint(void);
 
 /* `power` / `cpufreq` command support (terminal.c). */

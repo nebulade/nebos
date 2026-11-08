@@ -313,6 +313,11 @@ static int syscall_dispatch_locked(int num, int a1, int a2, int a3)
 					  sizeof(struct sys_tpec_sensors), 1))
 			return -1;
 		return sys_tpec_sensors((struct sys_tpec_sensors *)a1);
+	case SYS_CROS_EC_SENSORS:
+		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)a1,
+					  sizeof(struct sys_cros_sensors), 1))
+			return -1;
+		return sys_cros_sensors((struct sys_cros_sensors *)a1);
 	case SYS_POWER_INFO:
 		if (!paging_user_range_ok(current_proc()->cr3, (unsigned int)a1,
 					  sizeof(struct sys_powerinfo), 1))

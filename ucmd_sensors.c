@@ -1,8 +1,9 @@
 /* sensors: CPU DTS plus the board's hardware monitor.
  *
- * Two board sources exist: the IT87xx Super I/O (AT3IONT-I, three
- * temperatures and fan tachometers) and the ThinkPad embedded controller
- * (X201, temperatures at EC 0x78..0x7F / 0xC0..0xC7 plus the fan tachometer).
+ * Board sources: the IT87xx Super I/O (AT3IONT-I, three temperatures and fan
+ * tachometers), the ThinkPad embedded controller (X201, temperatures at EC
+ * 0x78..0x7F / 0xC0..0xC7 plus the fan tachometer) and the Chrome OS EC on
+ * Chromebooks (EC memmap temperatures/fans, lid and power-button switches).
  *
  * The DTS TjMax of the Atom 330 is not published; Intel only specifies
  * TJ = 90 C and Tcase-max = 85.2 C, while Linux coretemp uses 125 C for this
@@ -206,6 +207,70 @@ static int show_tpec(void)
 	return 1;
 }
 
+static int show_cros(void)
+{
+	struct sys_cros_sensors s;
+	unsigned int i, shown = 0;
+
+	if (u_cros_sensors(&s) != 0 || !s.present)
+		return 0;
+	u_puts("chrome ec (ACPI v");
+	u_putdec(s.acpi_version);
+	u_puts(", battery v");
+	u_putdec(s.battery_version);
+	u_puts(", thermal v");
+	u_putdec(s.thermal_version);
+	u_puts(")\n");
+	for (i = 0; i < SYS_CROS_TEMP_MAX; i++) {
+		unsigned int reg = i < 16 ? i : 0x18 + (i - 16);
+
+		if (s.temp_c[i] <= -50)
+			continue;
+		if (shown)
+			u_puts(", ");
+		u_puts("temp");
+		u_putdec(i + 1);
+		u_puts(" (0x");
+		u_put_hex2(reg);
+		u_puts(") ");
+		put_temp(s.temp_c[i]);
+		u_puts(" C");
+		shown++;
+	}
+	if (!shown)
+		u_puts("no EC temperature sensors");
+	u_putc('\n');
+	shown = 0;
+	for (i = 0; i < SYS_CROS_FAN_MAX; i++) {
+		if (!(s.fan_present & (1u << i)))
+			continue;
+		if (shown)
+			u_puts(", ");
+		u_puts("fan");
+		u_putdec(i + 1);
+		u_puts(" ");
+		u_putdec(s.fan_rpm[i]);
+		u_puts(" RPM");
+		shown++;
+	}
+	if (!shown)
+		u_puts("no EC fan tachometer");
+	u_putc('\n');
+	u_puts("fan duty ");
+	if (s.fan_duty == 0xFF) {
+		u_puts("auto");
+	} else {
+		u_putdec(s.fan_duty);
+		u_putc('%');
+	}
+	u_puts(", lid ");
+	u_puts((s.switches & 0x01) ? "open" : "closed");
+	u_puts(", power button ");
+	u_puts((s.switches & 0x02) ? "pressed" : "released");
+	u_putc('\n');
+	return 1;
+}
+
 void _start(void)
 {
 	int any;
@@ -213,6 +278,7 @@ void _start(void)
 	show_dts();
 	any = show_it87();
 	any |= show_tpec();
+	any |= show_cros();
 	if (!any)
 		u_puts("no board sensors found\n");
 	u_exit(0);

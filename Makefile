@@ -73,7 +73,7 @@ all: floppy.img usb.img final.bin root.img
 boot.o: boot.S
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.o: kernel.c acpi.h cpu.h idle.h io.h lapic.h mouse.h panic.h phys.h process.h sched.h smp.h terminal.h timer.h serial.h tss.h usbhid.h version.h vga.h
+kernel.o: kernel.c acpi.h cpu.h cros_ec.h idle.h io.h lapic.h mouse.h panic.h phys.h process.h sched.h smp.h terminal.h timer.h serial.h tss.h usbhid.h version.h vga.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 screen.o: screen.c screen.h
@@ -145,7 +145,16 @@ thermal.o: thermal.c thermal.h cpu.h sched.h serial.h
 power.o: power.c power.h cpu.h idle.h io.h sched.h serial.h
 	$(CC) $(CFLAGS) -o $@ $<
 
-tpec.o: tpec.c tpec.h paging.h pci.h serial.h
+tpec.o: tpec.c tpec.h power_src.h ec.h paging.h serial.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+ec.o: ec.c ec.h pci.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+cros_ec.o: cros_ec.c cros_ec.h power_src.h ec.h tpec.h serial.h
+	$(CC) $(CFLAGS) -o $@ $<
+
+power_src.o: power_src.c power_src.h tpec.h cros_ec.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 it87.o: it87.c it87.h pci.h
@@ -367,7 +376,7 @@ sys_mem.o: sys_mem.c sys_mem.h mm.h paging.h process.h
 inflate.o: inflate.c inflate.h
 	$(CC) $(CFLAGS) $(SECTION_CFLAGS) -o $@ $<
 
-sys_info.o: sys_info.c sys_info.h syscall.h ahci.h blkdev.h it87.h mm.h mouse.h thermal.h tpec.h usbhid.h vfs.h
+sys_info.o: sys_info.c sys_info.h syscall.h ahci.h blkdev.h cros_ec.h it87.h mm.h mouse.h power_src.h thermal.h tpec.h usbhid.h vfs.h
 	$(CC) $(CFLAGS) -o $@ $<
 
 sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h ntp.h process.h sched.h
@@ -376,7 +385,7 @@ sys_net.o: sys_net.c sys_net.h syscall.h dhcp.h dns.h net.h netdev.h netlog.h nt
 syscall_stub.o: syscall_stub.S irqret.inc
 	$(AS) $(ASFLAGS) -o $@ $<
 
-kernel.elf: kernel.ld vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o display.o mouse.o i2c.o touchpad.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o ntp.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o inflate.o ramfs.o share.o payload.o
+kernel.elf: kernel.ld vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o reboot.o poweroff.o disk.o fat.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o ec.o cros_ec.o power_src.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o fbtext.o gfx.o display.o mouse.o i2c.o touchpad.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o sys_net.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o ntp.o tcp.o acpi.o lapic.o smp.o ap_tramp_embed.o inflate.o ramfs.o share.o payload.o
 	$(LD) $(KERNEL_LDFLAGS) -o $@ $(filter-out kernel.ld,$^)
 
 MBR_LDFLAGS = -T mbr.ld -nostdlib -m elf_i386
@@ -1155,4 +1164,4 @@ kernel-net-dev: kernel.bin netkexec_send
 	./netkexec_send $(BOARD_IP) $(NETKEXEC_PORT) 0x$$entry kernel.bin
 
 clean:
-	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o disk.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o display.o mouse.o i2c.o touchpad.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o ntp.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img hello.elf cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h libc.a libc/*.o malloc_test format_test math_test div64_test setjmp_test mujs_test js_browser.o $(MUJS_DIR)/mujs.o ufont.o ufont_ttf.o ufont_draw.o ufont_file.o ufont_test ufont_test_asan
+	rm -f boot.o vesa_stage.o entry.o kernel.o timer.o switch.o sched.o process.o mm.o kmalloc.o paging.o elf.o tss.o syscall.o sys_wm.o syscall_stub.o screen.o io.o tty.o rtc.o terminal.o wm.o hello.o reboot.o poweroff.o fat.o disk.o serial.o serial_ring_buf.o serial_loop.o vga.o blit.o cpu.o thermal.o it87.o tpec.o ec.o cros_ec.o power_src.o power.o vga_copy.o gfxbench.o gpu.o ati.o cirrus.o intel.o nvidia.o nv50.o radeon.o mtrr.o font_8x8.o font_8x16.o fbtext.o gfx.o display.o mouse.o i2c.o touchpad.o uhci.o ohci.o ehci.o xhci.o asix.o usb.o usbhid.o lsusb.o panic.o bootcon.o blkdev.o ata.o ahci.o fatdetect.o fatformat.o format.o vfs.o sys_fs.o sys_info.o sys_mem.o inflate.o idle.o kexec.o kexec_tramp.o dbg.o lspci.o peek.o ne2000.o r8168.o e1000e.o netdev.o net.o netkexec.o netlog.o dhcp.o dns.o ntp.o tcp.o acpi.o lapic.o smp.o ap_tramp.o ap_tramp.elf ap_tramp.bin ap_tramp_embed.o mbr.o boot.elf kernel.elf mbr.elf boot.bin mbr.bin kernel.bin boot.bin.tmp boot.bin.patched image.bin floppy.img usb.img final.bin root.img hello.elf cmds.pack cmds_pack_gz.bin cmds_pack.o rootfs.bin cmds.img mkrootfs ramfs.o share.o payload.o mkpack uwm_lib.o ngui.o img.o img_mem.o img_blit.o img_png.o img_bmp.o img_gif.o img_jpeg.o img_tga.o img_pnm.o img_ico.o img_pam.o img_gif_anim.o img_file.o browser.o browser_html.o uhttp.o browser.elf img_test img_test_asan *.boot.tmp $(addsuffix .o,$(UCMDS)) $(addsuffix .elf,$(UCMDS)) gallery.o gallery.elf $(TLSLIB_OBJS) tls_test kexec_send netkexec_send netmonitor BOOTX64.EFI esp.img usb-efi.img efi/main.o efi/payload.o efi/tramp.o efi/tramp.elf efi/tramp.bin efi/efi_entry.h libc.a libc/*.o malloc_test format_test math_test div64_test setjmp_test mujs_test js_browser.o $(MUJS_DIR)/mujs.o ufont.o ufont_ttf.o ufont_draw.o ufont_file.o ufont_test ufont_test_asan

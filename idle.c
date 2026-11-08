@@ -1,14 +1,16 @@
-/* CPU idle: automatic deep C-states on Nehalem/Westmere, HLT elsewhere.
+/* CPU idle: automatic deep C-states on Nehalem/Westmere and Airmont/Braswell,
+ * HLT elsewhere.
  *
  * The default is IDLE_AUTO, which asks power.c for the MWAIT hint of the
- * CPU: C6 (0x20) on the Arrandale/Nehalem family, and -1 (HLT) on the
- * Atom, where the old USB-legacy SMM hang made deep states risky.  The
- * explicit c1e/c3/c6 modes remain for testing; the c3ap/c6ap variants only
- * apply to the APs.
+ * CPU: C6 (0x20) on the Arrandale/Nehalem family, C6N (0x58) on Braswell,
+ * and -1 (HLT) on the older Atom, where the old USB-legacy SMM hang made
+ * deep states risky.  The explicit c1e/c3/c6 modes remain for testing; the
+ * c3ap/c6ap variants only apply to the APs.
  *
  * Arrandale MWAIT state hints (coreboot model_2065x): C1 0x00, C1E 0x01,
- * C3 0x10, C6 0x20.  The MWAIT ECX bit 0 (interrupts break the state) is
- * set so a wake-up never waits for the full hint duration.
+ * C3 0x10, C6 0x20.  Airmont uses the Cherry Trail C6N hint 0x58.  The
+ * MWAIT ECX bit 0 (interrupts break the state) is set so a wake-up never
+ * waits for the full hint duration.
  */
 #include "idle.h"
 #include "power.h"

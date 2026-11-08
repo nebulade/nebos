@@ -338,16 +338,18 @@
 		<h2>Idle, power &amp; thermals</h2>
 		<p>
 			<code>idle auto</code> is the default. It asks <span class="file">power.c</span>
-			for the deepest usable hint: C6 (<code>0x20</code>) on the
-			Nehalem/Westmere allowlist, HLT everywhere else. The Atom boards keep
-			HLT because of an old USB-legacy SMM hang; the UHCI/OHCI
-			<code>0xC0</code> legacy-SMI disable addresses it.
+			for the deepest usable hint: C6 (<code>0x20</code>) on
+			Nehalem/Westmere, C6N (<code>0x58</code>) on Airmont/Braswell when
+			CPUID advertises the C6 substates, and HLT on the older Atom boards
+			where an old USB-legacy SMM hang made deep states risky.
 		</p>
 		<ul>
-			<li><strong>P-states.</strong> On the allowlisted Nehalem/Westmere models, <code>power_init</code> enables SpeedStep, raises the package C-state limit to C6 when unlocked, reads min/max ratios and starts at the maximum non-turbo ratio.</li>
-			<li><strong>Governor.</strong> A 100 ms window picks min/max/linear target ratios; short busy streaks jump to max immediately. Each CPU writes its own <code>IA32_PERF_CTL</code>.</li>
-			<li><strong>Telemetry.</strong> <code>power</code> prints effective MHz from APERF/MPERF, ratios and C3/C6 residency; <code>sensors</code> prints DTS, board sensors and ThinkPad EC temperatures/fan; <code>powerinfo</code> prints the AC adapter and battery state, and the WM top bar shows the AC adapter state and battery percentage on ThinkPads.</li>
-			<li><strong>Thermal.</strong> Each CPU samples its DTS once a second from its scheduler tick; the hottest core is exposed to ring 3.</li>
+			<li><strong>Nehalem/Westmere P-states.</strong> <code>power_init</code> enables SpeedStep, raises the package C-state limit to C6 when unlocked, reads min/max ratios from <code>PLATFORM_INFO</code> and starts at the maximum non-turbo ratio. The target ratio goes in bits 15:8 of <code>IA32_PERF_CTL</code> with the low byte zero.</li>
+			<li><strong>Airmont/Braswell P-states.</strong> Family 6 model <code>0x4C</code> reads the Atom ratio/VID MSRs (<code>0x66A..0x66D</code>), <code>MSR_FSB_FREQ</code> and the FSB table. The N3060 reports pstates 6..20, BCLK 80 MHz (1600 MHz nominal), turbo pstate 31 (2480 MHz) and VID 0x2D..0x3C. <code>power_init</code> enters at max non-turbo and the governor drops to pstate 6 (480 MHz); <code>IA32_PERF_CTL</code> carries the pstate in 15:8 and the Linux-interpolated VID in 7:0. Turbo is detected but not requested. The probe deliberately avoids package/power-SKU MSRs; an unsupported <code>rdmsr</code> before the IDT triple-faults.</li>
+			<li><strong>Governor.</strong> A 100 ms window picks min/max/linear target pstates; short busy streaks jump to max immediately. Each CPU writes its own <code>IA32_PERF_CTL</code>; <code>cpufreq [auto|min|max|off|&lt;pstate&gt;]</code> overrides it.</li>
+			<li><strong>Telemetry.</strong> <code>power</code> prints effective MHz from APERF/MPERF, the current/requested pstate and, on Airmont, the FSB, nominal MHz, turbo pstate/VID, VID range and live <code>PERF_CTL</code>; <code>sensors</code> prints DTS, board sensors and both EC types; <code>powerinfo</code> prints the AC adapter and battery state, and the WM top bar shows AC and battery percentage on ThinkPads and Chromebooks.</li>
+			<li><strong>Thermal.</strong> Each CPU samples its DTS once a second from its scheduler tick; the hottest core is exposed to ring 3. TjMax comes from <code>IA32_TEMPERATURE_TARGET</code> on Nehalem/Westmere, the coretemp 90 °C table on Airmont, and the Bonnell table on older Atoms.</li>
+			<li><strong>Limits.</strong> Package C-states/S0ix remain firmware-managed; Airmont reports no C3/C6 residency and does not request the turbo pstate. The explicit <code>idle c6</code> override is the Nehalem <code>0x20</code> hint; use <code>idle auto</code> for the Airmont C6N (<code>0x58</code>) path.</li>
 		</ul>
 	</section>
 

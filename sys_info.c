@@ -5,9 +5,11 @@
 #include "syscall.h"
 #include "ahci.h"
 #include "blkdev.h"
+#include "cros_ec.h"
 #include "it87.h"
 #include "mm.h"
 #include "mouse.h"
+#include "power_src.h"
 #include "sched.h"
 #include "sys_fs.h"
 #include "thermal.h"
@@ -19,8 +21,12 @@
 
 _Static_assert(TPEC_TEMP_COUNT == SYS_TPEC_TEMP_MAX,
 	       "sys_tpec_sensors.temp_c and tpec_info.temp_c must match");
-_Static_assert(TPEC_BATTERY_COUNT == SYS_POWER_BATT_MAX,
-	       "sys_powerinfo.battery and tpec_power.battery must match");
+_Static_assert(POWER_BATT_MAX == SYS_POWER_BATT_MAX,
+	       "sys_powerinfo.battery and power_info.battery must match");
+_Static_assert(CROS_EC_TEMP_MAX == SYS_CROS_TEMP_MAX,
+	       "sys_cros_sensors.temp_c and cros_ec_sensors.temp_c must match");
+_Static_assert(CROS_EC_FAN_MAX == SYS_CROS_FAN_MAX,
+	       "sys_cros_sensors.fan_rpm and cros_ec_sensors.fan_rpm must match");
 
 static void copy_str(char *dst, const char *src, unsigned int size)
 {
@@ -181,16 +187,17 @@ int sys_tpec_sensors(struct sys_tpec_sensors *out)
 
 int sys_powerinfo(struct sys_powerinfo *out, unsigned int flags)
 {
-	struct tpec_power p;
+	struct power_info p;
 	unsigned int i;
 
 	if (!out)
 		return -1;
-	tpec_power_read(&p, (flags & SYS_POWER_F_DETAIL) != 0);
+	power_source_read(&p, (flags & SYS_POWER_F_DETAIL) != 0);
 
 	for (i = 0; i < sizeof(*out); i++)
 		((unsigned char *)out)[i] = 0;
 	out->present = p.present ? 1u : 0u;
+	out->source = (unsigned int)p.source;
 	out->ac_online = p.ac_online;
 	out->ec_rev = p.ec_rev;
 	copy_str(out->vendor, p.vendor, sizeof(out->vendor));
@@ -199,7 +206,7 @@ int sys_powerinfo(struct sys_powerinfo *out, unsigned int flags)
 	out->battery_count = p.battery_count;
 	for (i = 0; i < SYS_POWER_BATT_MAX; i++) {
 		struct sys_battery *d = &out->battery[i];
-		const struct tpec_battery *s = &p.battery[i];
+		const struct power_battery *s = &p.battery[i];
 
 		d->present = s->present ? 1u : 0u;
 		d->error = s->error ? 1u : 0u;
@@ -215,9 +222,33 @@ int sys_powerinfo(struct sys_powerinfo *out, unsigned int flags)
 		d->rate = s->rate;
 		d->unit_known = s->unit_known ? 1u : 0u;
 		d->unit_mwh = s->unit_mwh ? 1u : 0u;
+		d->cycle_count = s->cycle_count;
 		copy_str(d->manufacturer, s->manufacturer,
 			 sizeof(d->manufacturer));
 		copy_str(d->model, s->model, sizeof(d->model));
+		copy_str(d->serial, s->serial, sizeof(d->serial));
 	}
+	return 0;
+}
+
+int sys_cros_sensors(struct sys_cros_sensors *out)
+{
+	struct cros_ec_sensors info;
+	unsigned int i;
+
+	if (!out)
+		return -1;
+	cros_ec_sensors_read(&info);
+	out->present = info.present ? 1u : 0u;
+	out->acpi_version = info.acpi_version;
+	out->battery_version = info.battery_version;
+	out->thermal_version = info.thermal_version;
+	for (i = 0; i < SYS_CROS_TEMP_MAX; i++)
+		out->temp_c[i] = info.temp_c[i];
+	for (i = 0; i < SYS_CROS_FAN_MAX; i++)
+		out->fan_rpm[i] = info.fan_rpm[i];
+	out->fan_present = info.fan_present;
+	out->fan_duty = info.fan_duty;
+	out->switches = info.switches;
 	return 0;
 }

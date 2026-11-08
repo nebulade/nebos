@@ -874,9 +874,9 @@ static void do_update(struct wm_status *st)
 				unsigned int bi;
 
 				if (u_power_info(&pi, 0) == 0) {
-					/* The ThinkPad EC is the laptop marker:
-					 * desktops have no EC, so neither the
-					 * AC state nor a battery is shown. */
+					/* A laptop EC (ThinkPad or Chrome
+					 * EC) marks a machine with AC/battery;
+					 * desktops show neither. */
 					if (pi.present) {
 						ac = pi.ac_online;
 						for (bi = 0; bi < SYS_POWER_BATT_MAX;

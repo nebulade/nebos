@@ -87,7 +87,7 @@
 					<tr><td>Touchpad</td><td><span class="file">i2c.c</span>, <span class="file">touchpad.c</span></td><td>LPSS DesignWare I2C, slave <code>0x15</code></td><td>Polled input register every 25 ms; no GPIO interrupt driver</td></tr>
 					<tr><td>Serial</td><td><span class="file">serial.c</span></td><td>16550 UART, COM1</td><td>IRQ 4 ring buffer + polled transmitter</td></tr>
 					<tr><td>Thermal</td><td><span class="file">thermal.c</span></td><td>Intel DTS MSR</td><td>Sampled once a second from the scheduler tick</td></tr>
-					<tr><td>Board sensors</td><td><span class="file">it87.c</span>, <span class="file">tpec.c</span></td><td>Super I/O, ThinkPad EC (temps, fan, battery, AC)</td><td>Polled; only the EC page selector is written, then restored</td></tr>
+					<tr><td>Board sensors / EC</td><td><span class="file">it87.c</span>, <span class="file">tpec.c</span>, <span class="file">ec.c</span>, <span class="file">cros_ec.c</span></td><td>Super I/O, ThinkPad H8 EC, Chrome OS EC (temps, fans, battery, AC, switches)</td><td>Polled; EC battery-index/FIFO/page-selector writes only</td></tr>
 					<tr><td>Wall clock</td><td><span class="file">rtc.c</span></td><td>CMOS RTC ports <code>0x70/0x71</code></td><td>Read/write under the BKL; update-cycle retries and a 1970–2069 two-digit year window</td></tr>
 				</tbody>
 			</table>
@@ -345,19 +345,22 @@
 	<section id="sensors">
 		<h2>Sensors, power &amp; thermals</h2>
 		<ul>
-			<li><strong>DTS.</strong> <span class="file">thermal.c</span> reads <code>IA32_THERM_STATUS</code> on an allowlist of Core/Core 2, Nehalem/Westmere and Bonnell models. TjMax comes from <code>IA32_TEMPERATURE_TARGET</code> on Nehalem and later; Bonnell uses a table.</li>
+			<li><strong>DTS.</strong> <span class="file">thermal.c</span> reads <code>IA32_THERM_STATUS</code> on an allowlist of Core/Core 2, Nehalem/Westmere, Bonnell and Airmont/Braswell models. TjMax comes from <code>IA32_TEMPERATURE_TARGET</code> on Nehalem/Westmere; Airmont uses coretemp's 90 °C table (the kernel does not read the MSR before the IDT exists), and Bonnell uses the table.</li>
 			<li><strong>IT87xx.</strong> <span class="file">it87.c</span> reads the Super I/O temperatures and fan tachometers on the ASUS AT3IONT-I. Nothing is written to fan control.</li>
-			<li><strong>ThinkPad EC.</strong> <span class="file">tpec.c</span> is gated on an SMBIOS Lenovo/IBM match and reads temperatures and fan mode through ports <code>0x62/0x66</code>. It drains pending output bytes and uses bounded waits. Battery/AC state comes from <code>0x38/0x39</code> (present, charging, discharging), <code>0x46</code> bit 4 (AC online), and the page-selected 16-byte window at <code>0xA0..0xAF</code>; <code>0x81</code> selects the battery and page (0 dynamic, 1 mode, 2 design, 5 manufacturer, 6 model). That page selector is the only EC write, and it is restored when it changed.</li>
+			<li><strong>ThinkPad EC.</strong> <span class="file">tpec.c</span> is gated on an SMBIOS Lenovo/IBM match and reads temperatures and fan mode through the shared ACPI EC protocol in <span class="file">ec.c</span> (ports <code>0x62/0x66</code>, command <code>0x80</code> read / <code>0x81</code> write, OBF/IBF waits, stale-byte drain, bounded polls). Battery/AC state comes from <code>0x38/0x39</code> (present, charging, discharging), <code>0x46</code> bit 4 (AC online), and the page-selected 16-byte window at <code>0xA0..0xAF</code>; <code>0x81</code> selects the battery and page (0 dynamic, 1 mode, 2 design, 5 manufacturer, 6 model). That page selector is the only EC write, and it is restored when it changed.</li>
+			<li><strong>Chrome EC.</strong> <span class="file">cros_ec.c</span> probes the Chrome OS EC, gated on the ACPI memory version, the <code>'E','C'</code> memmap id and the device feature bits; it skips the probe when the ThinkPad EC is present. Its ACPI window <code>0x20..0xFF</code> mirrors memmap <code>0x00..0xDF</code>: temperature sensors <code>0x00..0x0f</code>/<code>0x18..0x1f</code> (raw − 73 °C), fans <code>0x10..0x17</code> (<code>0xffff</code> absent), switches <code>0x30</code> (lid/power button), and the battery block <code>0x40..0x7f</code> (AC/present/charging flags at <code>0x4c</code>, voltage/rate/remaining/design/last-full/cycle count, and the 8-byte strings). <code>EC_ACPI_MEM_BATTERY_INDEX</code> <code>0x12</code> selects the battery and waits for <code>BATT_INDEX</code> <code>0x4e</code>; <code>EC_ACPI_MEM_STRINGS_FIFO</code> <code>0x16</code> returns longer strings when supported. The Cyan full-charge workaround is applied, and the units are mAh/mA. <span class="file">power_src.c</span> picks the ThinkPad backend first, then the Chrome EC; <code>SYS_CROS_EC_SENSORS</code> (107) exposes the EC temperature/fan/switch snapshot.</li>
 			<li><strong>MTRRs.</strong> <span class="file">mtrr.c</span> manages write-combining ranges for the framebuffer and reports the effective mapping.</li>
 		</ul>
 		<p>
 			<code>sensors</code> prints DTS values on the 90/100/125 °C scales,
-			board sensors and EC registers; <code>powerinfo</code> prints the
-			AC adapter and battery state from <code>SYS_POWER_INFO</code>;
-			<code>power</code> prints ratios, effective MHz and C-state
-			residency. The WM top bar shows the AC adapter state and the first
-			present battery with a valid percentage next to the CPU
-			temperature; machines without the EC show neither.
+			board sensors and both EC types; <code>powerinfo</code> prints the
+			source (<code>thinkpad</code> or <code>chrome ec</code>), the AC
+			adapter, battery model/manufacturer/serial, capacities, voltage,
+			rate and cycle count through <code>SYS_POWER_INFO</code>;
+			<code>power</code> prints ratios, effective MHz and C-state hints.
+			The WM top bar shows the AC adapter state and the first present
+			battery with a valid percentage next to the CPU temperature on
+			both ThinkPads and Chromebooks; machines without an EC show neither.
 		</p>
 	</section>
 
@@ -419,6 +422,8 @@
 			<li><strong>HID.</strong> Report IDs are not handled, absolute pointers/tablets are ignored, and there is no wheel support.</li>
 			<li><strong>AHCI.</strong> First controller only, no hotplug after boot, disks above 2 TB are clamped to 32-bit LBA.</li>
 			<li><strong>Storage serialization.</strong> A FAT/floppy operation sets <code>sys_fs_busy</code> and stalls process switching for its duration; the PIT keeps ticking.</li>
+			<li><strong>EC.</strong> The Chrome EC path uses the ACPI v2 memmap only: no MEC host-command interface, EC SCI events, charger current/voltage, charging limit or EC firmware version. The ThinkPad H8 path is limited to its page-selected battery window and has no SCI handler. Battery/AC is polled by the WM once a second.</li>
+			<li><strong>Suspend.</strong> There is no S0ix/suspend path; package C-states and the EC sleep handshake remain firmware-managed.</li>
 		</ul>
 	</section>
 
@@ -435,7 +440,7 @@
 			<li><code>i2c.c</code>, <code>i2c.h</code> — DesignWare/LPSS I2C master</li>
 			<li><code>touchpad.c</code>, <code>touchpad.h</code> — Elan HID-over-I2C touchpad</li>
 			<li><code>serial.c</code>, <code>serial_ring_buf.c</code></li>
-			<li><code>thermal.c</code>, <code>it87.c</code>, <code>tpec.c</code>, <code>mtrr.c</code></li>
+			<li><code>thermal.c</code>, <code>it87.c</code>, <code>tpec.c</code>, <code>ec.c</code>, <code>cros_ec.c</code>, <code>power_src.c</code>, <code>mtrr.c</code></li>
 			<li><code>rtc.c</code> — CMOS wall clock read/write</li>
 			<li><code>panic.c</code>, <code>timer.S</code> — fatal exceptions</li>
 		</ul>

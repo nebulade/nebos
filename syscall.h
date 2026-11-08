@@ -146,10 +146,18 @@
 /* ThinkPad embedded-controller sensors (see tpec.c); read-only. */
 #define SYS_TPEC_SENSORS  102  /* (struct sys_tpec_sensors *out) -> 0/-1 */
 
-/* ThinkPad AC/battery snapshot (see tpec.c).  SYS_POWER_F_DETAIL also reads
- * design capacity, the capacity unit and the manufacturer/model strings. */
+/* AC/battery snapshot from the board EC (see power_src.c, tpec.c and
+ * cros_ec.c).  SYS_POWER_F_DETAIL also reads design capacity, the capacity
+ * unit and the manufacturer/model/serial strings. */
 #define SYS_POWER_INFO     103  /* (struct sys_powerinfo *out, flags) -> 0/-1 */
 #define SYS_POWER_F_DETAIL 0x1
+
+#define SYS_POWER_SRC_NONE 0
+#define SYS_POWER_SRC_TPEC 1   /* ThinkPad H8 EC */
+#define SYS_POWER_SRC_CROS 2   /* Chrome OS EC */
+
+/* Chrome OS EC temperature/fan/switch snapshot (see cros_ec.c). */
+#define SYS_CROS_EC_SENSORS 107  /* (struct sys_cros_sensors *out) -> 0/-1 */
 
 /* Stat one path (the file service has no open handle). */
 #define SYS_FS_STAT        98  /* (path, struct sys_stat *out) -> 0/<0 */
@@ -293,14 +301,15 @@ struct sys_tpec_sensors {
 	unsigned int fan_level;
 };
 
-/* ThinkPad AC/battery snapshot.  rate is the signed present rate in the same
- * unit as the capacities; unit_mwh (when unit_known) selects mWh/mW vs
- * mAh/mA.  percent is valid only when percent_valid is set. */
+/* AC/battery snapshot.  rate is the signed present rate in the same unit as
+ * the capacities; unit_mwh (when unit_known) selects mWh/mW vs mAh/mA.
+ * percent is valid only when percent_valid is set.  cycle_count/serial are
+ * zero/empty when the backend does not provide them. */
 #define SYS_POWER_BATT_MAX 2
 struct sys_battery {
 	unsigned int present;
 	unsigned int error;
-	unsigned int status;      /* raw EC 0x38/0x39 byte */
+	unsigned int status;      /* raw EC status/flags byte */
 	unsigned int charging;
 	unsigned int discharging;
 	unsigned int percent;
@@ -314,10 +323,13 @@ struct sys_battery {
 	unsigned int unit_mwh;
 	char manufacturer[16];
 	char model[16];
+	unsigned int cycle_count;
+	char serial[16];
 };
 
 struct sys_powerinfo {
-	unsigned int present;     /* ThinkPad EC found */
+	unsigned int present;     /* a supported EC was found */
+	unsigned int source;      /* SYS_POWER_SRC_* */
 	int ac_online;            /* -1 unknown, 0 offline, 1 online */
 	unsigned int ec_rev;
 	char vendor[16];
@@ -325,6 +337,23 @@ struct sys_powerinfo {
 	char version[32];
 	unsigned int battery_count;
 	struct sys_battery battery[SYS_POWER_BATT_MAX];
+};
+
+/* Chrome OS EC board sensors (see cros_ec.c).  temp_c[] is -128 when the
+ * sensor is absent/unavailable; fan_present is a bitmask over fan_rpm[].
+ * switches follows EC_MEMMAP_SWITCHES (bit 0 lid open, bit 1 power button). */
+#define SYS_CROS_TEMP_MAX 24
+#define SYS_CROS_FAN_MAX 4
+struct sys_cros_sensors {
+	unsigned int present;
+	unsigned int acpi_version;
+	unsigned int battery_version;
+	unsigned int thermal_version;
+	int temp_c[SYS_CROS_TEMP_MAX];
+	unsigned int fan_rpm[SYS_CROS_FAN_MAX];
+	unsigned int fan_present;
+	unsigned int fan_duty;     /* 0xff = automatic */
+	unsigned int switches;
 };
 
 /* Wall clock for the ring-3 clock (see rtc.c). */

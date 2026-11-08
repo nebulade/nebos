@@ -1,8 +1,9 @@
-/* powerinfo: AC adapter and battery state from the ThinkPad H8 EC.
+/* powerinfo: AC adapter and battery state from the board EC.
  *
  * The EC access lives in the kernel (SYS_POWER_INFO); this command only
  * formats the snapshot.  The same syscall feeds the WM's top-bar AC and
- * battery indicators.
+ * battery indicators.  Both the ThinkPad H8 EC and the Chrome OS EC fill
+ * the same snapshot.
  */
 #include "ucmd_lib.h"
 
@@ -111,6 +112,16 @@ static void show_battery(unsigned int index, const struct sys_battery *b)
 		}
 		u_putc('\n');
 	}
+	if (b->serial[0]) {
+		u_puts("  serial ");
+		u_puts(b->serial);
+		u_putc('\n');
+	}
+	if (b->cycle_count) {
+		u_puts("  cycles ");
+		u_putdec(b->cycle_count);
+		u_putc('\n');
+	}
 }
 
 void _start(void)
@@ -123,12 +134,17 @@ void _start(void)
 		u_exit(1);
 	}
 	if (!p.present) {
-		u_puts("no ThinkPad embedded controller detected\n");
+		u_puts("no supported embedded controller detected\n");
 		u_puts("battery/AC status unavailable on this platform\n");
 		u_exit(0);
 	}
 
-	u_puts("thinkpad");
+	if (p.source == SYS_POWER_SRC_CROS)
+		u_puts("chrome ec");
+	else if (p.source == SYS_POWER_SRC_TPEC)
+		u_puts("thinkpad");
+	else
+		u_puts("embedded controller");
 	if (p.vendor[0]) {
 		u_putc(' ');
 		u_puts(p.vendor);
