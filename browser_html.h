@@ -22,6 +22,8 @@
 /* Node types. */
 #define BR_NODE_TEXT     0
 #define BR_NODE_ELEM     1
+#define BR_NODE_COMMENT  2
+#define BR_NODE_FRAGMENT 3
 
 /* Text-node flag: whitespace was preserved (<pre>). */
 #define BR_NODE_PREFORMAT 1
@@ -29,6 +31,8 @@
 #define BR_NODE_HIDDEN   2
 /* Element flag: width_attr/height_attr hold an SVG viewBox. */
 #define BR_NODE_VIEWBOX  4
+/* Node is not part of the document tree (created or removed at runtime). */
+#define BR_NODE_DETACHED 8
 
 /* Extra attribute presence flags (data-collapse-*, state attributes).
  * Stored separately because struct br_style/selector matching needs them
@@ -140,6 +144,8 @@ struct br_node {
 	unsigned int color_off;
 	unsigned int rel_off;
 	unsigned int name_off;      /* raw tag name for custom elements */
+	unsigned int extra_off;     /* packed name\0value\0 list for getAttribute */
+	unsigned short extra_len;
 	unsigned short width_attr;
 	unsigned short height_attr;
 	unsigned char width_pct;
@@ -238,10 +244,48 @@ unsigned int br_tag_from_name(const char *name);
  * node + 1 (0 means no match); br_text_content concatenates the subtree's
  * text nodes into out and returns the (possibly truncated) length. */
 unsigned int br_find_id(struct br_doc *d, const char *id);
+unsigned int br_find_tag(struct br_doc *d, unsigned int tag);
 unsigned int br_text_content(struct br_doc *d, unsigned int node,
 			     char *out, unsigned int cap);
 int br_set_text_content(struct br_doc *d, unsigned int node,
 			const char *text, unsigned int len);
+int br_set_text_node(struct br_doc *d, unsigned int node,
+		     const char *text, unsigned int len);
+
+/* Runtime DOM construction and mutation (node handles are index + 1). */
+unsigned int br_create_element(struct br_doc *d, const char *name,
+			       unsigned int len);
+unsigned int br_create_text(struct br_doc *d, const char *text,
+			    unsigned int len);
+unsigned int br_create_comment(struct br_doc *d, const char *text,
+			       unsigned int len);
+unsigned int br_create_fragment(struct br_doc *d);
+unsigned int br_clone_node(struct br_doc *d, unsigned int node, int deep);
+int br_append_child(struct br_doc *d, unsigned int parent,
+		    unsigned int child);
+int br_insert_before(struct br_doc *d, unsigned int parent,
+		     unsigned int child, unsigned int before);
+int br_remove_child(struct br_doc *d, unsigned int parent,
+		    unsigned int child);
+unsigned int br_find_child(struct br_doc *d, unsigned int parent,
+			   unsigned int child);
+
+const char *br_find_attr(struct br_doc *d, unsigned int node,
+			 const char *name);
+int br_set_attr(struct br_doc *d, unsigned int node, const char *name,
+		const char *value, unsigned int len);
+int br_remove_attr(struct br_doc *d, unsigned int node, const char *name);
+
+/* Replace a node's children with a parsed HTML fragment. */
+int br_set_inner_html(struct br_doc *d, unsigned int node,
+		      const char *html, unsigned int len);
+
+/* Simple selector subset: #id, .class, tag, [attr], [attr=v],
+ * [attr^=v], [attr$=v], [attr*=v], compounds and descendant chains. */
+unsigned int br_query_all(struct br_doc *d, unsigned int root,
+			  const char *selector, unsigned int *out,
+			  unsigned int max);
+int br_matches(struct br_doc *d, unsigned int node, const char *selector);
 
 const char *br_href(struct br_doc *d, unsigned int node);
 const char *br_src(struct br_doc *d, unsigned int node);

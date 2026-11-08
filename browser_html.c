@@ -778,6 +778,7 @@ static void doc_reset(struct br_doc *d)
 		d->nodes[i].color_off = d->nodes[i].rel_off = 0;
 		d->nodes[i].width_attr = d->nodes[i].height_attr = 0;
 		d->nodes[i].name_off = 0;
+		d->nodes[i].extra_off = d->nodes[i].extra_len = 0;
 		d->nodes[i].width_pct = d->nodes[i].height_pct = 0;
 		d->nodes[i].svg_x = d->nodes[i].svg_y = 0;
 		d->nodes[i].svg_rx = 0;
@@ -850,6 +851,28 @@ static int same_string(const char *a, const char *b)
 	return *a == *b;
 }
 
+static int same_string_n(const char *a, const char *b, unsigned int n)
+{
+	unsigned int i;
+
+	for (i = 0; i < n; i++)
+		if (a[i] != b[i])
+			return 0;
+	return 1;
+}
+
+static int node_detached(struct br_doc *d, unsigned int node)
+{
+	unsigned int guard = 0;
+
+	while (node && node < d->nnode && guard++ <= d->nnode) {
+		if (d->nodes[node].flags & BR_NODE_DETACHED)
+			return 1;
+		node = d->nodes[node].parent;
+	}
+	return 0;
+}
+
 unsigned int br_find_id(struct br_doc *d, const char *id)
 {
 	unsigned int i;
@@ -860,7 +883,8 @@ unsigned int br_find_id(struct br_doc *d, const char *id)
 		struct br_node *n = &d->nodes[i];
 
 		if (n->type == BR_NODE_ELEM && n->id_off &&
-		    same_string(d->attrs + n->id_off, id))
+		    same_string(d->attrs + n->id_off, id) &&
+		    !node_detached(d, i))
 			return i + 1;
 	}
 	return 0;
@@ -912,6 +936,12 @@ int br_set_text_content(struct br_doc *d, unsigned int node,
 
 	/* Detach the old subtree; its arena storage is reclaimed on the next
 	 * navigation. */
+	{
+		unsigned int c;
+
+		for (c = d->nodes[node].first; c; c = d->nodes[c].next)
+			d->nodes[c].flags |= BR_NODE_DETACHED;
+	}
 	d->nodes[node].first = d->nodes[node].last = 0;
 	d->nodes[node].style_valid = 0;
 	if (len == 0)
@@ -933,6 +963,944 @@ int br_set_text_content(struct br_doc *d, unsigned int node,
 	n->flags = 0;
 	d->text_used += len + 1;
 	return 0;
+}
+
+/* Replace the value of an existing text or comment node in place, keeping the
+ * node handle (and therefore the JS wrapper) valid. */
+int br_set_text_node(struct br_doc *d, unsigned int node,
+		     const char *text, unsigned int len)
+{
+	struct br_node *n;
+	unsigned int i;
+
+	if (!d || node >= d->nnode)
+		return -1;
+	n = &d->nodes[node];
+	if (n->type != BR_NODE_TEXT && n->type != BR_NODE_COMMENT)
+		return -1;
+	if (d->text_used + len + 1 > BR_TEXT_SIZE) {
+		d->truncated = 1;
+		return -1;
+	}
+	for (i = 0; i < len; i++)
+		d->text[d->text_used + i] = text[i];
+	d->text[d->text_used + len] = '\0';
+	n->text_off = (unsigned short)d->text_used;
+	n->text_len = (unsigned short)len;
+	d->text_used += len + 1;
+	return 0;
+}
+
+/* ---- runtime DOM construction and mutation ---- */
+
+static unsigned int text_len(const char *s)
+{
+	unsigned int n = 0;
+
+	while (s && s[n])
+		n++;
+	return n;
+}
+
+static void node_zero(struct br_node *n)
+{
+	unsigned int i;
+
+	for (i = 0; i < sizeof(*n); i++)
+		((unsigned char *)n)[i] = 0;
+	n->img_index = -1;
+}
+
+static void node_unlink(struct br_doc *d, unsigned int handle)
+{
+	unsigned int node, parent, c, prev = 0;
+
+	if (!d || handle == 0 || handle > d->nnode)
+		return;
+	node = handle - 1;
+	parent = d->nodes[node].parent;
+	if (parent >= d->nnode) {
+		d->nodes[node].parent = 0;
+		d->nodes[node].next = 0;
+		return;
+	}
+	c = d->nodes[parent].first;
+	while (c && c != node) {
+		prev = c;
+		c = d->nodes[c].next;
+	}
+	if (c == node) {
+		if (prev)
+			d->nodes[prev].next = d->nodes[node].next;
+		else
+			d->nodes[parent].first = d->nodes[node].next;
+		if (d->nodes[parent].last == node)
+			d->nodes[parent].last = (unsigned short)prev;
+	}
+	d->nodes[node].parent = 0;
+	d->nodes[node].next = 0;
+	d->nodes[node].flags |= BR_NODE_DETACHED;
+}
+
+static void parse_attrs(struct br_doc *d, struct br_node *n,
+			const char *s, unsigned int len);
+
+static unsigned int find_tag_end(const char *s, unsigned int i,
+				 unsigned int len)
+{
+	char quote = 0;
+
+	while (i < len) {
+		char c = s[i];
+
+		if (quote) {
+			if (c == quote)
+				quote = 0;
+		} else if (c == '"' || c == '\'') {
+			quote = c;
+		} else if (c == '>') {
+			return i;
+		}
+		i++;
+	}
+	return len;
+}
+
+int br_set_inner_html(struct br_doc *d, unsigned int node,
+		      const char *html, unsigned int len)
+{
+	unsigned int stack[64];
+	unsigned int sp = 1, i = 0;
+
+	if (!d || node >= d->nnode)
+		return -1;
+	stack[0] = node;
+	{
+		unsigned int c;
+
+		for (c = d->nodes[node].first; c; c = d->nodes[c].next)
+			d->nodes[c].flags |= BR_NODE_DETACHED;
+	}
+	d->nodes[node].first = d->nodes[node].last = 0;
+	d->nodes[node].style_valid = 0;
+
+	while (i < len) {
+		if (html[i] != '<') {
+			unsigned int start = i, end;
+
+			while (i < len && html[i] != '<')
+				i++;
+			end = i;
+			if (end > start) {
+				unsigned int h = br_create_text(d, html + start,
+								end - start);
+
+				if (h)
+					br_append_child(d, stack[sp - 1], h);
+			}
+			continue;
+		}
+		if (i + 3 < len && html[i + 1] == '!' && html[i + 2] == '-' &&
+		    html[i + 3] == '-') {
+			int p = find_ci(html, len, "-->", 3, i + 4);
+			unsigned int end = p >= 0 ? (unsigned int)p : len;
+			unsigned int h = br_create_comment(d, html + i + 4,
+							   end > i + 4 ?
+							   end - i - 4 : 0);
+
+			if (h)
+				br_append_child(d, stack[sp - 1], h);
+			i = p >= 0 ? (unsigned int)p + 3 : len;
+			continue;
+		}
+		if (html[i + 1] == '/') {
+			unsigned int p = find_tag_end(html, i + 2, len);
+
+			i = p < len ? p + 1 : len;
+			if (sp > 1)
+				sp--;
+			continue;
+		}
+		if (html[i + 1] == '!' || html[i + 1] == '?') {
+			unsigned int p = find_tag_end(html, i + 2, len);
+			i = p < len ? p + 1 : len;
+			continue;
+		}
+		{
+			unsigned int p = find_tag_end(html, i + 1, len);
+			unsigned int ns = i + 1, ne, as, ae;
+			unsigned int h, k;
+			char name[32];
+			int selfclose = 0;
+
+			while (ns < p && is_space(html[ns]))
+				ns++;
+			ne = ns;
+			while (ne < p && !is_space(html[ne]) && html[ne] != '/')
+				ne++;
+			as = ne;
+			ae = p;
+			if (ae > as && html[ae - 1] == '/') {
+				selfclose = 1;
+				ae--;
+			}
+			if (ne == ns) {
+				i = p < len ? p + 1 : len;
+				continue;
+			}
+			if (ne - ns >= sizeof(name)) {
+				i = p < len ? p + 1 : len;
+				continue;
+			}
+			for (k = 0; k < ne - ns; k++)
+				name[k] = html[ns + k];
+			name[ne - ns] = '\0';
+			h = br_create_element(d, name, ne - ns);
+			if (!h) {
+				i = p < len ? p + 1 : len;
+				continue;
+			}
+			if (ae > as)
+				parse_attrs(d, &d->nodes[h - 1], html + as,
+					    ae - as);
+			br_append_child(d, stack[sp - 1], h);
+			{
+				unsigned int tag = d->nodes[h - 1].tag;
+
+				if (!selfclose && !br_tag_is_void(tag) &&
+				    sp < sizeof(stack) / sizeof(stack[0]))
+					stack[sp++] = h - 1;
+			}
+			i = p < len ? p + 1 : len;
+		}
+	}
+	return 0;
+}
+
+unsigned int br_find_tag(struct br_doc *d, unsigned int tag)
+{
+	unsigned int i;
+
+	if (!d)
+		return 0;
+	for (i = 0; i < d->nnode; i++)
+		if (d->nodes[i].type == BR_NODE_ELEM &&
+		    d->nodes[i].tag == (unsigned char)tag &&
+		    !node_detached(d, i))
+			return i + 1;
+	return 0;
+}
+
+unsigned int br_create_element(struct br_doc *d, const char *name,
+			       unsigned int len)
+{
+	struct br_node *n;
+	unsigned int idx;
+
+	if (!d || !name)
+		return 0;
+	if (d->nnode >= BR_MAX_NODES) {
+		d->truncated = 1;
+		return 0;
+	}
+	idx = d->nnode++;
+	n = &d->nodes[idx];
+	node_zero(n);
+	n->type = BR_NODE_ELEM;
+	n->flags = BR_NODE_DETACHED;
+	n->tag = (unsigned char)br_tag_from_name(name);
+	if (n->tag == BR_TAG_UNKNOWN && len)
+		n->name_off = store_attr(d, name, len, 31);
+	return idx + 1;
+}
+
+unsigned int br_create_text(struct br_doc *d, const char *text,
+			    unsigned int len)
+{
+	struct br_node *n;
+	unsigned int idx, i;
+
+	if (!d)
+		return 0;
+	if (d->nnode >= BR_MAX_NODES || d->text_used + len + 1 > BR_TEXT_SIZE) {
+		d->truncated = 1;
+		return 0;
+	}
+	idx = d->nnode++;
+	n = &d->nodes[idx];
+	node_zero(n);
+	n->type = BR_NODE_TEXT;
+	n->flags = BR_NODE_DETACHED;
+	n->text_off = (unsigned short)d->text_used;
+	n->text_len = (unsigned short)len;
+	for (i = 0; i < len; i++)
+		d->text[d->text_used + i] = text[i];
+	d->text[d->text_used + len] = '\0';
+	d->text_used += len + 1;
+	return idx + 1;
+}
+
+unsigned int br_create_comment(struct br_doc *d, const char *text,
+			       unsigned int len)
+{
+	unsigned int h = br_create_text(d, text, len);
+
+	if (h)
+		d->nodes[h - 1].type = BR_NODE_COMMENT;
+	return h;
+}
+
+unsigned int br_create_fragment(struct br_doc *d)
+{
+	struct br_node *n;
+	unsigned int idx;
+
+	if (!d)
+		return 0;
+	if (d->nnode >= BR_MAX_NODES) {
+		d->truncated = 1;
+		return 0;
+	}
+	idx = d->nnode++;
+	n = &d->nodes[idx];
+	node_zero(n);
+	n->type = BR_NODE_FRAGMENT;
+	n->flags = BR_NODE_DETACHED;
+	return idx + 1;
+}
+
+int br_append_child(struct br_doc *d, unsigned int parent,
+		    unsigned int child)
+{
+	unsigned int p;
+
+	if (!d || parent >= d->nnode || child == 0 || child > d->nnode ||
+	    parent == child - 1)
+		return -1;
+	if (d->nodes[child - 1].type == BR_NODE_FRAGMENT) {
+		/* Appending a fragment inserts its children, not the fragment. */
+		unsigned int c = d->nodes[child - 1].first;
+
+		while (c) {
+			unsigned int next = d->nodes[c].next;
+
+			br_append_child(d, parent, c + 1);
+			c = next;
+		}
+		return 0;
+	}
+	for (p = parent; p && p < d->nnode; p = d->nodes[p].parent)
+		if (p == child - 1)
+			return -1;
+
+	node_unlink(d, child);
+	d->nodes[child - 1].flags &= (unsigned char)~BR_NODE_DETACHED;
+	d->nodes[child - 1].parent = (unsigned short)parent;
+	d->nodes[child - 1].next = 0;
+	if (d->nodes[parent].last)
+		d->nodes[d->nodes[parent].last].next = (unsigned short)(child - 1);
+	else
+		d->nodes[parent].first = (unsigned short)(child - 1);
+	d->nodes[parent].last = (unsigned short)(child - 1);
+	return 0;
+}
+
+int br_insert_before(struct br_doc *d, unsigned int parent,
+		     unsigned int child, unsigned int before)
+{
+	unsigned int prev = 0, c;
+
+	if (before == 0)
+		return br_append_child(d, parent, child);
+	if (!d || parent >= d->nnode || child == 0 || child > d->nnode ||
+	    before > d->nnode || parent == child - 1)
+		return -1;
+	if (d->nodes[before - 1].parent != parent)
+		return -1;
+	if (d->nodes[child - 1].type == BR_NODE_FRAGMENT) {
+		unsigned int c = d->nodes[child - 1].first;
+
+		while (c) {
+			unsigned int next = d->nodes[c].next;
+
+			br_insert_before(d, parent, c + 1, before);
+			c = next;
+		}
+		return 0;
+	}
+	{
+		unsigned int p;
+
+		for (p = parent; p && p < d->nnode; p = d->nodes[p].parent)
+			if (p == child - 1)
+				return -1;
+	}
+	node_unlink(d, child);
+	d->nodes[child - 1].flags &= (unsigned char)~BR_NODE_DETACHED;
+	c = d->nodes[parent].first;
+	while (c && c != before - 1) {
+		prev = c;
+		c = d->nodes[c].next;
+	}
+	if (c != before - 1)
+		return -1;
+	d->nodes[child - 1].parent = (unsigned short)parent;
+	d->nodes[child - 1].next = (unsigned short)(before - 1);
+	if (prev)
+		d->nodes[prev].next = (unsigned short)(child - 1);
+	else
+		d->nodes[parent].first = (unsigned short)(child - 1);
+	return 0;
+}
+
+int br_remove_child(struct br_doc *d, unsigned int parent,
+		    unsigned int child)
+{
+	if (!d || child == 0 || child > d->nnode ||
+	    d->nodes[child - 1].parent != parent)
+		return -1;
+	node_unlink(d, child);
+	return 0;
+}
+
+unsigned int br_find_child(struct br_doc *d, unsigned int parent,
+			   unsigned int child)
+{
+	unsigned int c;
+
+	if (!d || parent >= d->nnode || child == 0 || child > d->nnode)
+		return 0;
+	for (c = d->nodes[parent].first; c; c = d->nodes[c].next)
+		if (c == child - 1)
+			return child;
+	return 0;
+}
+
+const char *br_find_attr(struct br_doc *d, unsigned int node,
+			 const char *name)
+{
+	struct br_node *n;
+	const char *p, *end, *found = 0;
+
+	if (!d || node >= d->nnode || !name)
+		return 0;
+	n = &d->nodes[node];
+	p = d->attrs + n->extra_off;
+	end = p + n->extra_len;
+	while (p + 1 < end) {
+		const char *an = p;
+		const char *av;
+
+		p += text_len(p) + 1;
+		if (p >= end)
+			break;
+		av = p;
+		p += text_len(p) + 1;
+		if (same_string(an, name))
+			found = av;
+	}
+	if (found)
+		return found;
+	if (same_string(name, "id") && n->id_off)
+		return d->attrs + n->id_off;
+	if (same_string(name, "class") && n->class_off)
+		return d->attrs + n->class_off;
+	if (same_string(name, "style") && n->style_off)
+		return d->attrs + n->style_off;
+	if (same_string(name, "href") && n->href_off)
+		return d->attrs + n->href_off;
+	if (same_string(name, "src") && n->src_off)
+		return d->attrs + n->src_off;
+	if (same_string(name, "alt") && n->alt_off)
+		return d->attrs + n->alt_off;
+	if (same_string(name, "rel") && n->rel_off)
+		return d->attrs + n->rel_off;
+	return 0;
+}
+
+static void attr_note_known(struct br_doc *d, struct br_node *n,
+			    const char *name, const char *value,
+			    unsigned int len)
+{
+	if (same_string(name, "id"))
+		n->id_off = len ? store_attr(d, value, len, 64) : 0;
+	else if (same_string(name, "class"))
+		n->class_off = len ? store_attr(d, value, len, 120) : 0;
+	else if (same_string(name, "style"))
+		n->style_off = len ? store_attr(d, value, len, 240) : 0;
+	else if (same_string(name, "href"))
+		n->href_off = len ? store_attr(d, value, len, 480) : 0;
+	else if (same_string(name, "src"))
+		n->src_off = len ? store_attr(d, value, len, 400) : 0;
+	else if (same_string(name, "alt"))
+		n->alt_off = len ? store_attr(d, value, len, 120) : 0;
+	else if (same_string(name, "rel"))
+		n->rel_off = len ? store_attr(d, value, len, 64) : 0;
+}
+
+int br_set_attr(struct br_doc *d, unsigned int node, const char *name,
+		const char *value, unsigned int len)
+{
+	struct br_node *n;
+	unsigned int start, nl, need;
+	const char *p, *old, *oldend;
+
+	if (!d || node >= d->nnode || !name)
+		return -1;
+	n = &d->nodes[node];
+	nl = text_len(name);
+	need = nl + 1 + len + 1;
+	start = d->attrs_used;
+	old = d->attrs + n->extra_off;
+	oldend = old + n->extra_len;
+	if (start + n->extra_len + need > BR_ATTR_SIZE) {
+		d->truncated = 1;
+		return -1;
+	}
+	p = old;
+	while (p + 1 < oldend) {
+		const char *an = p;
+		const char *av;
+		unsigned int anl, avl, k;
+
+		anl = text_len(an);
+		p += anl + 1;
+		if (p >= oldend)
+			break;
+		av = p;
+		avl = text_len(av);
+		p += avl + 1;
+		if (same_string(an, name))
+			continue;
+		for (k = 0; k < anl; k++)
+			d->attrs[d->attrs_used++] = an[k];
+		d->attrs[d->attrs_used++] = '\0';
+		for (k = 0; k < avl; k++)
+			d->attrs[d->attrs_used++] = av[k];
+		d->attrs[d->attrs_used++] = '\0';
+	}
+	{
+		unsigned int k;
+
+		for (k = 0; k < nl; k++)
+			d->attrs[d->attrs_used++] = name[k];
+		d->attrs[d->attrs_used++] = '\0';
+		for (k = 0; k < len; k++)
+			d->attrs[d->attrs_used++] = value[k];
+		d->attrs[d->attrs_used++] = '\0';
+	}
+	n = &d->nodes[node];
+	n->extra_off = start;
+	n->extra_len = (unsigned short)(d->attrs_used - start);
+	n->style_valid = 0;
+	attr_note_known(d, n, name, value, len);
+	return 0;
+}
+
+int br_remove_attr(struct br_doc *d, unsigned int node, const char *name)
+{
+	struct br_node *n;
+	unsigned int start;
+	const char *p, *oldend;
+	int found = 0;
+
+	if (!d || node >= d->nnode || !name)
+		return -1;
+	n = &d->nodes[node];
+	start = d->attrs_used;
+	p = d->attrs + n->extra_off;
+	oldend = p + n->extra_len;
+	if (start + n->extra_len > BR_ATTR_SIZE)
+		return -1;
+	while (p + 1 < oldend) {
+		const char *an = p;
+		const char *av;
+		unsigned int anl, avl, k;
+
+		anl = text_len(an);
+		p += anl + 1;
+		if (p >= oldend)
+			break;
+		av = p;
+		avl = text_len(av);
+		p += avl + 1;
+		if (same_string(an, name)) {
+			found = 1;
+			continue;
+		}
+		for (k = 0; k < anl; k++)
+			d->attrs[d->attrs_used++] = an[k];
+		d->attrs[d->attrs_used++] = '\0';
+		for (k = 0; k < avl; k++)
+			d->attrs[d->attrs_used++] = av[k];
+		d->attrs[d->attrs_used++] = '\0';
+	}
+	n = &d->nodes[node];
+	n->extra_off = start;
+	n->extra_len = (unsigned short)(d->attrs_used - start);
+	n->style_valid = 0;
+	attr_note_known(d, n, name, "", 0);
+	return found ? 0 : -1;
+}
+
+unsigned int br_clone_node(struct br_doc *d, unsigned int node, int deep)
+{
+	struct br_node *src;
+	unsigned int h;
+	const char *name;
+
+	if (!d || node == 0 || node > d->nnode)
+		return 0;
+	src = &d->nodes[node - 1];
+	if (src->type == BR_NODE_TEXT)
+		return br_create_text(d, d->text + src->text_off, src->text_len);
+	if (src->type == BR_NODE_COMMENT)
+		return br_create_comment(d, d->text + src->text_off,
+					 src->text_len);
+	if (src->type == BR_NODE_FRAGMENT)
+		h = br_create_fragment(d);
+	else {
+		if (src->tag == BR_TAG_UNKNOWN && src->name_off)
+			name = d->attrs + src->name_off;
+		else
+			name = br_tag_name(src->tag);
+		h = br_create_element(d, name, text_len(name));
+	}
+	if (!h)
+		return 0;
+	{
+		const char *p = d->attrs + src->extra_off;
+		const char *end = p + src->extra_len;
+
+		while (p + 1 < end) {
+			const char *an = p;
+			const char *av;
+			unsigned int anl, avl;
+
+			anl = text_len(an);
+			p += anl + 1;
+			if (p >= end)
+				break;
+			av = p;
+			avl = text_len(av);
+			p += avl + 1;
+			br_set_attr(d, h, an, av, avl);
+		}
+	}
+	if (deep) {
+		unsigned int c;
+
+		for (c = src->first; c; c = d->nodes[c].next) {
+			unsigned int ch = br_clone_node(d, c + 1, 1);
+
+			if (ch)
+				br_append_child(d, h - 1, ch);
+		}
+	}
+	return h;
+}
+
+static int attr_value_match(const char *have, const char *want,
+			    unsigned int want_len, int op)
+{
+	unsigned int n = text_len(have);
+	unsigned int i;
+
+	if (!op)
+		return have != 0;
+	if (!have)
+		return 0;
+	if (op == '=')
+		return n == want_len && same_string_n(have, want, want_len);
+	if (op == '^')
+		return n >= want_len && same_string_n(have, want, want_len);
+	if (op == '$') {
+		if (n < want_len)
+			return 0;
+		have += n - want_len;
+		for (i = 0; i < want_len; i++)
+			if (have[i] != want[i])
+				return 0;
+		return 1;
+	}
+	if (op == '*') {
+		for (i = 0; i + want_len <= n; i++)
+			if (same_string_n(have + i, want, want_len))
+				return 1;
+		return 0;
+	}
+	return 0;
+}
+
+static int class_contains(const char *classes, const char *want,
+			  unsigned int want_len)
+{
+	unsigned int i = 0;
+
+	if (!classes)
+		return 0;
+	while (classes[i]) {
+		unsigned int start;
+
+		while (classes[i] == ' ' || classes[i] == '\t' ||
+		       classes[i] == '\r' || classes[i] == '\n')
+			i++;
+		start = i;
+		while (classes[i] && classes[i] != ' ' && classes[i] != '\t' &&
+		       classes[i] != '\r' && classes[i] != '\n')
+			i++;
+		if (i - start == want_len &&
+		    same_string_n(classes + start, want, want_len))
+			return 1;
+	}
+	return 0;
+}
+
+static int match_compound(struct br_doc *d, unsigned int node,
+			  const char *sel, unsigned int len)
+{
+	struct br_node *n = &d->nodes[node];
+	unsigned int i = 0;
+
+	while (i < len && sel[i] != '.' && sel[i] != '#' && sel[i] != '[')
+		i++;
+	if (i > 0 && !(i == 1 && sel[0] == '*')) {
+		char tag[32];
+		unsigned int tl = i < sizeof(tag) - 1 ? i : sizeof(tag) - 1;
+		unsigned int k;
+
+		for (k = 0; k < tl; k++)
+			tag[k] = sel[k];
+		tag[tl] = '\0';
+		if (n->tag == BR_TAG_UNKNOWN) {
+			if (!n->name_off ||
+			    !same_string(d->attrs + n->name_off, tag))
+				return 0;
+		} else if (n->tag != br_tag_from_name(tag)) {
+			return 0;
+		}
+	}
+	while (i < len) {
+		if (sel[i] == '.') {
+			unsigned int start;
+
+			i++;
+			start = i;
+			while (i < len && sel[i] != '.' && sel[i] != '#' &&
+			       sel[i] != '[' && sel[i] != ' ')
+				i++;
+			if (!class_contains(br_find_attr(d, node, "class"),
+					    sel + start, i - start))
+				return 0;
+		} else if (sel[i] == '#') {
+			unsigned int start;
+
+			i++;
+			start = i;
+			while (i < len && sel[i] != '.' && sel[i] != '#' &&
+			       sel[i] != '[' && sel[i] != ' ')
+				i++;
+			{
+				const char *id = br_find_attr(d, node, "id");
+				if (!id || !same_string_n(id, sel + start,
+							  i - start) ||
+				    text_len(id) != i - start)
+					return 0;
+			}
+		} else if (sel[i] == '[') {
+			unsigned int start, nl, op = 0, vs, ve;
+			char quote = 0;
+
+			i++;
+			start = i;
+			while (i < len && sel[i] != '=' && sel[i] != ']' &&
+			       sel[i] != '^' && sel[i] != '$' && sel[i] != '*')
+				i++;
+			nl = i - start;
+			if (i < len && sel[i] != ']') {
+				op = sel[i++];
+				if (i < len && sel[i] == '=')
+					i++;
+			}
+			while (i < len && sel[i] == ' ')
+				i++;
+			if (i < len && (sel[i] == '"' || sel[i] == '\'')) {
+				quote = sel[i++];
+				vs = i;
+				while (i < len && sel[i] != quote)
+					i++;
+				ve = i;
+				if (i < len)
+					i++;
+			} else {
+				vs = i;
+				while (i < len && sel[i] != ']')
+					i++;
+				ve = i;
+			}
+			if (i < len && sel[i] == ']')
+				i++;
+			{
+				char name[32];
+				unsigned int k;
+
+				if (nl >= sizeof(name))
+					return 0;
+				for (k = 0; k < nl; k++)
+					name[k] = sel[start + k];
+				name[nl] = '\0';
+				if (!attr_value_match(br_find_attr(d, node, name),
+						      sel + vs, ve - vs, op))
+					return 0;
+			}
+		} else {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int match_selector(struct br_doc *d, unsigned int node,
+			  const char *sel, unsigned int len)
+{
+	unsigned int i, split = 0, depth = 0;
+	char quote = 0;
+
+	while (len > 0 && sel[0] == ' ') {
+		sel++;
+		len--;
+	}
+	while (len > 0 && sel[len - 1] == ' ')
+		len--;
+	if (len == 0)
+		return 0;
+	for (i = 0; i < len; i++) {
+		char c = sel[i];
+
+		if (quote) {
+			if (c == quote)
+				quote = 0;
+		} else if (c == '"' || c == '\'') {
+			quote = c;
+		} else if (c == '[') {
+			depth++;
+		} else if (c == ']' && depth) {
+			depth--;
+		} else if (!depth && c == ' ') {
+			split = i;
+		}
+	}
+	if (split) {
+		unsigned int p = d->nodes[node].parent;
+
+		if (!match_compound(d, node, sel + split + 1,
+				    len - split - 1))
+			return 0;
+		while (p) {
+			unsigned int next = d->nodes[p].parent;
+
+			if (match_selector(d, p, sel, split))
+				return 1;
+			p = next;
+		}
+		return 0;
+	}
+	return match_compound(d, node, sel, len);
+}
+
+static int query_add(unsigned int *out, unsigned int max,
+		     unsigned int *count, unsigned int node)
+{
+	unsigned int i;
+
+	for (i = 0; i < *count; i++)
+		if (out[i] == node + 1)
+			return 0;
+	if (*count < max)
+		out[(*count)++] = node + 1;
+	return 0;
+}
+
+static void query_walk(struct br_doc *d, unsigned int node,
+		       const char *sel, unsigned int len, unsigned int *out,
+		       unsigned int max, unsigned int *count)
+{
+	unsigned int c;
+
+	if (match_selector(d, node, sel, len))
+		query_add(out, max, count, node + 1);
+	for (c = d->nodes[node].first; c; c = d->nodes[c].next)
+		query_walk(d, c, sel, len, out, max, count);
+}
+
+int br_matches(struct br_doc *d, unsigned int node, const char *selector)
+{
+	unsigned int len;
+
+	if (!d || !selector || node == 0 || node > d->nnode)
+		return 0;
+	len = text_len(selector);
+	while (len > 0 && selector[0] == ' ') {
+		selector++;
+		len--;
+	}
+	while (len > 0 && selector[len - 1] == ' ')
+		len--;
+	return match_selector(d, node - 1, selector, len);
+}
+
+unsigned int br_query_all(struct br_doc *d, unsigned int root,
+			  const char *selector, unsigned int *out,
+			  unsigned int max)
+{
+	unsigned int count = 0, i = 0;
+
+	if (!d || !selector || !out || max == 0)
+		return 0;
+	while (selector[i]) {
+		unsigned int start = i, depth = 0;
+		char quote = 0;
+
+		while (selector[i]) {
+			char c = selector[i];
+
+			if (quote) {
+				if (c == quote)
+					quote = 0;
+			} else if (c == '"' || c == '\'') {
+				quote = c;
+			} else if (c == '[') {
+				depth++;
+			} else if (c == ']' && depth) {
+				depth--;
+			} else if (!depth && c == ',') {
+				break;
+			}
+			i++;
+		}
+		if (i > start) {
+			if (root == 0) {
+				unsigned int n;
+
+				for (n = 1; n < d->nnode; n++)
+					if (!node_detached(d, n) &&
+					    match_selector(d, n, selector + start,
+							   i - start))
+						query_add(out, max, &count,
+							  n + 1);
+			} else if (root <= d->nnode) {
+				unsigned int c;
+
+				for (c = d->nodes[root - 1].first; c;
+				     c = d->nodes[c].next)
+					query_walk(d, c, selector + start,
+						   i - start, out, max, &count);
+			}
+		}
+		if (selector[i] == ',')
+			i++;
+	}
+	return count;
 }
 
 /* ---- attribute parsing ---- */
@@ -1006,6 +1974,80 @@ static void note_attr_flag(struct br_node *n, const char *name)
 		n->attr_flags |= BR_ATTR_OPEN;
 	else if (str_eq(name, "inert"))
 		n->attr_flags |= BR_ATTR_INERT;
+}
+
+/* Store a packed name/value list for getAttribute()/selectors.  This is a
+ * second pass so the block stays contiguous even though the known attributes
+ * above also use the shared attr arena. */
+static void parse_attrs_generic(struct br_doc *d, struct br_node *n,
+				const char *s, unsigned int len)
+{
+	unsigned int i = 0;
+	unsigned int start = d->attrs_used;
+
+	while (i < len) {
+		char name[32];
+		unsigned int nl = 0, vstart, vlen;
+		char quote = 0;
+
+		while (i < len && is_space(s[i]))
+			i++;
+		if (i >= len || s[i] == '/')
+			break;
+		while (i < len && !is_space(s[i]) && s[i] != '=' && s[i] != '>') {
+			char c = s[i++];
+			if (c >= 'A' && c <= 'Z')
+				c = (char)(c - 'A' + 'a');
+			if (nl + 1 < sizeof(name))
+				name[nl++] = c;
+		}
+		name[nl] = '\0';
+		while (i < len && is_space(s[i]))
+			i++;
+		if (i < len && s[i] == '=') {
+			i++;
+			while (i < len && is_space(s[i]))
+				i++;
+			if (i < len && (s[i] == '"' || s[i] == '\'')) {
+				quote = s[i++];
+				vstart = i;
+				while (i < len && s[i] != quote)
+					i++;
+				vlen = i - vstart;
+				if (i < len)
+					i++;
+			} else {
+				vstart = i;
+				while (i < len && !is_space(s[i]) && s[i] != '>')
+					i++;
+				vlen = i - vstart;
+			}
+		} else {
+			/* Boolean attribute: expose it with an empty value. */
+			vstart = 0;
+			vlen = 0;
+		}
+		if (!nl)
+			continue;
+		if (d->attrs_used + nl + 1 + vlen + 1 > BR_ATTR_SIZE) {
+			d->truncated = 1;
+			break;
+		}
+		{
+			unsigned int k;
+
+			for (k = 0; k < nl; k++)
+				d->attrs[d->attrs_used++] = name[k];
+			d->attrs[d->attrs_used++] = '\0';
+			for (k = 0; k < vlen; k++)
+				d->attrs[d->attrs_used++] = s[vstart + k];
+			d->attrs[d->attrs_used++] = '\0';
+		}
+	}
+	if (d->attrs_used > start) {
+		n->extra_off = start;
+		n->extra_len = (unsigned short)(d->attrs_used - start);
+	}
 }
 
 /* Parse attributes from `s` (between the tag name and '>'). */
@@ -1123,6 +2165,7 @@ static void parse_attrs(struct br_doc *d, struct br_node *n,
 				n->attr_flags |= BR_ATTR_ANCHOR_END;
 		}
 	}
+	parse_attrs_generic(d, n, s, len);
 }
 
 static int str_eq(const char *a, const char *b)

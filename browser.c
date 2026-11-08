@@ -376,8 +376,9 @@ static void js_host_navigate(const char *url)
 
 static void js_host_changed(void)
 {
-	/* textContent only replaces text nodes; computed styles are unchanged.
-	 * A future class/style binding must call br_reset_styles() itself. */
+	/* Class/style/attribute mutations change computed styles, not just the
+	 * text: drop the per-node style cache before the next layout. */
+	br_reset_styles(&doc);
 	layout_valid = 0;
 	ngui_invalidate(&ui);
 }
@@ -417,6 +418,8 @@ static void run_page_scripts(void)
 	host.navigate = js_host_navigate;
 	host.changed = js_host_changed;
 	host.page_url = page_url;
+	host.width = ui.w;
+	host.height = ui.h;
 	if (js_browser_start(&doc, &host) != 0) {
 		js_host_status("JavaScript: out of memory", 1);
 		return;
@@ -470,7 +473,8 @@ static void run_page_scripts(void)
 		if (pending_action)
 			break;
 	}
-	js_browser_stop();
+	/* Keep the state alive for setTimeout/ready callbacks; load_page() and
+	 * load_home() stop it before the next navigation. */
 	if (doc.scripts_truncated && !js_last_error)
 		js_host_status("Page has more than 32 scripts; extra scripts skipped",
 			       1);
@@ -4842,6 +4846,9 @@ void _start(const char *arg)
 			preload_node = 0;
 			preload_active = 1;
 		}
+		js_browser_tick();
+		if (pending_action)
+			continue;
 		now = u_ticks_ms();
 		if (status_until && (int)(now - status_until) >= 0) {
 			status_text[0] = '\0';

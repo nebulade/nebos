@@ -752,10 +752,29 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `<script src>` bodies are fetched through the same local/network path as
   pages and CSS (512 KB cap), in document order, through the vendored MuJS
   engine in `third_party/mujs/` (linked only into `browser.elf`);
-  `js_browser.c/h` exposes `console.log`, `alert`,
-  `document.getElementById(...).textContent` and `location.href`.  A state
-  is created after `heap_start()`, shared by the page's scripts and freed
-  before `heap_reset()`.  `js_setlimit()` caps every script at 8M
+  `js_browser.c/h` is the DOM layer on top of the engine: one interned MuJS
+  userdata wrapper per node (so `===` and library expando caches work) with
+  `getAttribute`/`setAttribute`/`hasAttribute`, `appendChild`/
+  `insertBefore`/`removeChild`/`replaceChild`/`cloneNode`/`remove`,
+  `querySelector(All)`/`getElementsByTagName`/`getElementsByClassName`,
+  `classList` (including `toggle`'s force argument), `dataset`, inline
+  `style` (`cssText`, property get/set and `getPropertyValue`/
+  `setProperty`/`removeProperty`), `innerHTML` (fragment parser in
+  `browser_html.c`), `textContent`/`nodeValue`, child/sibling/parent
+  traversal, `matches` and `getBoundingClientRect`.  `<a>` elements expose
+  the DOM URL components (`href`/`protocol`/`host`/`hostname`/`port`/
+  `pathname`/`search`/`hash`/`origin`) resolved against the page URL.
+  `document` exposes `createElement`/`createTextNode`/`createComment`/
+  `createDocumentFragment`/`createAttribute`, `documentElement`/`body`/
+  `head` and `readyState`; `navigator`, `history`, `matchMedia`,
+  `getComputedStyle`, `setTimeout`/`setInterval`/`clearTimeout` and
+  `requestAnimationFrame` exist, and due timers run from
+  `js_browser_tick()` in the browser loop.  `location` carries the split
+  protocol/host/hostname/port/pathname/search/hash/origin fields, so
+  Angular-style URL code works.  jQuery 1.11, Bootstrap 3.2 tooltips and
+  AngularJS 1.3 with ngRoute/ngSanitize initialize on a local test page.
+  A state is created after `heap_start()`, shared by the page's scripts and
+  freed before `heap_reset()`.  `js_setlimit()` caps every script at 8M
   instructions, so a runaway loop reports `script ran too long` instead of
   freezing the browser.  Math, Date and JSON come from the engine plus the
   libc math/time layers.  The parsed page is painted before scripts are
@@ -763,9 +782,10 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `/share/bjs-*` for the current boot.  Classic scripts run sloppy by
   default; the vendored engine also carries small Annex B parser fixes for
   regex literals after control parentheses and identity escapes/braces.
-  There are no timers, event listeners, `innerHTML` or forms yet; flex/grid,
-  basic tables, inline SVG and CSS variables are supported (see known issue
-  22 for the remaining CSS gaps).  `SYS_SPAWN`
+  `addEventListener`/`removeEventListener`/`dispatchEvent` are no-ops (no
+  event dispatch yet), and forms are not supported; flex/grid, basic tables,
+  inline SVG and CSS variables are supported (see known issue 22 for the
+  remaining CSS and DOM gaps).  `SYS_SPAWN`
   loads FAT ELFs through `kmalloc` now (the old 16 KB `fat_load_buf` is gone)
   and wraps the load in `sys_fs_enter/exit`,
   since the floppy needs IRQ 6.
@@ -1312,8 +1332,8 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    compressed pack directly to `0x900000` with INT 15h AH=87h, so the cap is
    `PACK_MAX` 1 MB (not the old ~255 KB low-gap limit).  The browser and
    its ring-3 dependencies are compiled with function sections and linked
-   with `--gc-sections`; the current pack with the UI fonts is ~431 KiB
-   (441580 bytes), leaving ~593 KiB under the cap.  `libdeflate-gzip -12` is
+   with `--gc-sections`; the current pack with the UI fonts is ~444 KiB
+   (455092 bytes), leaving ~580 KiB under the cap.  `libdeflate-gzip -12` is
    still preferred for the extra headroom, though the 1 MB cap leaves room
    for `gzip -9` as a fallback.
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
@@ -1370,14 +1390,21 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     pack is out of the kernel now, so `_end` keeps ~170 KB of headroom below
     the `0x90000` wall; the remaining limit is kernel code/buffers only.
 
-22. Browser limits: JavaScript is only the first MuJS slice (inline and
-    external classic scripts, `document.getElementById(...).textContent`,
-    `console.log`, `alert`, `location.href`; no timers, event listeners,
-    `innerHTML` or form submission; `type="module"`, `defer` and `async` are
-    ignored).  The DOM bindings remain small: pages that expect
-    `document.createElement`, `querySelector(All)`, `classList`,
-    `addEventListener` or timers (jQuery/Bootstrap/Angular) log errors even
-    though their static HTML renders.  Also no pseudo-classes/elements,
+22. Browser limits: JavaScript runs inline and external classic scripts on
+    MuJS with the DOM surface described above (creation/mutation/selectors/
+    attributes/classList/dataset/style/innerHTML/timers).  Still missing:
+    event dispatch (`addEventListener` is a no-op), form submission,
+    `type="module"`, `defer`/`async`, `MutationObserver`/
+    `IntersectionObserver`, `XMLHttpRequest`/`fetch`, `DOMParser`, canvas/2D
+    contexts and pseudo-class/element selectors.  `getComputedStyle` is a
+    stub (it returns empty values), `outerHTML` returns only the string last
+    assigned to `innerHTML`, and `style`/`dataset` cover inline state rather
+    than computed style.  Libraries that need those APIs (jQuery plugins
+    beyond Bootstrap's tooltip, Angular apps that use `$http`) still log
+    errors even though the static page renders.  CSS also lacks
+    border-radius clipping of descendant content, gradients/box-shadow/
+    transitions (a gradient background falls back to its last solid colour),
+    or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with  Also no pseudo-classes/elements,
     border-radius clipping of descendant content, gradients/box-shadow/
     transitions (a gradient background falls back to its last solid colour),
     or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with
