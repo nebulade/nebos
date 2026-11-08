@@ -144,6 +144,7 @@ struct lay_run {
 	unsigned short href;
 	char lit[28];
 	short img;
+	signed short dy;       /* inline image vertical offset */
 	unsigned short iw, ih;
 	unsigned short w;
 	unsigned char font_px, bold, italic, mono, underline;
@@ -1701,6 +1702,7 @@ static void flush_line(struct lay *l)
 	for (i = 0; i < l->nruns; i++) {
 		struct lay_run *r = &l->runs[i];
 		int w = run_width(r);
+		int ry = l->line_y + r->dy;
 
 		x += r->gap;
 		if (l->draw && vis) {
@@ -1708,12 +1710,12 @@ static void flush_line(struct lay *l)
 				int hh = r->ih ? r->ih : 20;
 
 				ngui_fill_rect(l->ui,
-					(struct ngui_rect){x, l->line_y, w, hh},
+					(struct ngui_rect){x, ry, w, hh},
 					l->ui->theme.panel_alt);
 				ngui_frame(l->ui,
-					(struct ngui_rect){x, l->line_y, w, hh},
+					(struct ngui_rect){x, ry, w, hh},
 					l->ui->theme.border);
-				ngui_text_px(l->ui, x + 6, l->line_y + 2,
+				ngui_text_px(l->ui, x + 6, ry + 2,
 					     r->lit, s_len(r->lit), r->color,
 					     r->font_px, r->bold, r->italic,
 					     r->mono);
@@ -1729,7 +1731,7 @@ static void flush_line(struct lay *l)
 					b.clip_w = page_rect.w - 12;
 					b.clip_h = page_rect.h;
 					b.x = x;
-					b.y = l->line_y;
+					b.y = ry;
 					b.scale = ((unsigned int)r->iw << 16) /
 						  bi->img.w;
 					b.bg = ui.theme.bg;
@@ -1742,13 +1744,13 @@ static void flush_line(struct lay *l)
 						doc.text + r->off;
 				unsigned int n = r->has_lit ? s_len(r->lit) :
 						r->len;
-				ngui_text_px(l->ui, x, l->line_y, s, n,
+				ngui_text_px(l->ui, x, ry, s, n,
 					     r->color, r->font_px, r->bold,
 					     r->italic, r->mono);
 				if (r->underline)
 					ngui_fill_rect(l->ui,
 						(struct ngui_rect){x,
-						 l->line_y +
+						 ry +
 						 ngui_text_ascent(l->ui,
 								  r->font_px,
 								  r->mono) + 2,
@@ -1762,7 +1764,7 @@ static void flush_line(struct lay *l)
 						 r->font_px, r->mono);
 					int merge = nhits > 0 &&
 						hits[nhits - 1].node == r->href &&
-						hits[nhits - 1].y == l->line_y &&
+						hits[nhits - 1].y == ry &&
 						hits[nhits - 1].h == hh &&
 						x <= hits[nhits - 1].x +
 						     hits[nhits - 1].w + 2;
@@ -1773,7 +1775,7 @@ static void flush_line(struct lay *l)
 							p->w = end - p->x;
 					} else {
 						h->x = x;
-						h->y = l->line_y;
+						h->y = ry;
 						h->w = w;
 						h->h = hh;
 						h->node = r->href;
@@ -1818,6 +1820,7 @@ static void add_run(struct lay *l, unsigned short off, unsigned short len,
 		r->len = len;
 		r->color = st->color;
 		r->href = href;
+		r->dy = 0;
 		r->has_lit = 0;
 		r->lit[0] = '\0';
 		if (lit && lit[0]) {
@@ -2001,6 +2004,9 @@ static void add_image_run(struct lay *l, unsigned int node,
 		r->len = 0;
 		r->color = 0;
 		r->href = href;
+		/* Inline replaced elements honour their vertical margins; this
+		 * is how Bootstrap's negative logo margins centre the wordmark. */
+		r->dy = st->mt;
 		r->has_lit = 0;
 		r->lit[0] = '\0';
 		r->img = (short)idx;
@@ -2205,6 +2211,7 @@ static void add_form_run(struct lay *l, unsigned int node,
 	r->off = r->len = 0;
 	r->color = st->color;
 	r->href = href;
+	r->dy = 0;
 	r->has_lit = 1;
 	for (i = 0; i + 1 < (int)sizeof(r->lit) && text[i]; i++)
 		r->lit[i] = text[i];
@@ -2748,6 +2755,11 @@ static int text_node_blank(const struct br_node *nd)
  * text/image widths in the subtree, plus padding and margins.  This keeps
  * Bootstrap's floated nav items on one line instead of giving each the whole
  * row. */
+static int text_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
+}
+
 static int intrinsic_width(struct ngui *ui, unsigned int node,
 			   const struct br_style *pst, int depth)
 {
@@ -2761,10 +2773,39 @@ static int intrinsic_width(struct ngui *ui, unsigned int node,
 		struct br_style cs;
 
 		if (nd->type == BR_NODE_TEXT) {
-			w += (int)ngui_text_width_px(ui,
-				doc.text + nd->text_off, nd->text_len,
-				pst->font_px, pst->bold, pst->italic,
-				pst->mono);
+			const char *t = doc.text + nd->text_off;
+			unsigned int tn = nd->text_len;
+
+			if (doc.nodes[node].tag == BR_TAG_PRE) {
+				w += (int)ngui_text_width_px(ui, t, tn,
+					pst->font_px, pst->bold, pst->italic,
+					pst->mono);
+			} else {
+				unsigned int ti = 0;
+				int first = 1;
+				int sp = (int)ngui_text_width_px(ui, " ", 1,
+					pst->font_px, pst->bold, pst->italic,
+					pst->mono);
+
+				while (ti < tn) {
+					unsigned int ts;
+
+					while (ti < tn && text_space(t[ti]))
+						ti++;
+					ts = ti;
+					while (ti < tn && !text_space(t[ti]))
+						ti++;
+					if (ti == ts)
+						break;
+					if (!first)
+						w += sp;
+					w += (int)ngui_text_width_px(ui,
+						t + ts, ti - ts,
+						pst->font_px, pst->bold,
+						pst->italic, pst->mono);
+					first = 0;
+				}
+			}
 			continue;
 		}
 		br_style_for(&doc, c, pst, &cs);
@@ -2806,17 +2847,18 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 {
 	unsigned int n = first;
 	int row_left = l->left, row_right = l->right;
-	int row_top, row_bottom, x, any = 0;
+	int row_top, row_bottom, xl, xr, any = 0;
 
 	flush_line(l);
 	row_top = l->y;
 	row_bottom = l->y;
-	x = row_left;
+	xl = row_left;
+	xr = row_right;
 	while (n) {
 		struct br_node *nd = &doc.nodes[n];
 		struct br_style cs;
 		unsigned short lk = link;
-		int colw;
+		int colw, right;
 
 		if (nd->type == BR_NODE_TEXT) {
 			if (text_node_blank(nd)) {
@@ -2834,6 +2876,7 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 			break;
 		if (nd->tag == BR_TAG_A && nd->href_off)
 			lk = (unsigned short)n;
+		right = cs.float_left == 2;
 		if (cs.width_kind == 2)
 			colw = (row_right - row_left) * (int)cs.width / 100;
 		else if (cs.width_kind == 1)
@@ -2848,13 +2891,33 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 			colw = 8;
 		if (colw > row_right - row_left)
 			colw = row_right - row_left;
-		if (any && x + colw > row_right) {
-			row_top = row_bottom;
-			row_bottom = row_top;
-			x = row_left;
+		if (right) {
+			if (any && xr - colw < xl) {
+				row_top = row_bottom;
+				row_bottom = row_top;
+				xl = row_left;
+				xr = row_right;
+			}
+			if (xr - colw < xl)
+				colw = xr - xl;
+			if (colw < 8)
+				colw = 8;
+			l->left = xr - colw;
+			if (l->left < row_left)
+				l->left = row_left;
+			l->right = xr;
+			xr = l->left;
+		} else {
+			if (any && xl + colw > xr) {
+				row_top = row_bottom;
+				row_bottom = row_top;
+				xl = row_left;
+				xr = row_right;
+			}
+			l->left = xl;
+			l->right = xl + colw;
+			xl += colw;
 		}
-		l->left = x;
-		l->right = x + colw;
 		if (l->right < l->left + 8)
 			l->right = l->left + 8;
 		l->y = row_top;
@@ -2868,8 +2931,7 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 		layout_block(l, n, &cs, depth + 1, lk);
 		if (l->y > row_bottom)
 			row_bottom = l->y;
-		x += colw;
-		any++;
+		any = 1;
 		n = nd->next;
 	}
 	l->left = row_left;
@@ -2884,10 +2946,6 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 	return n;
 }
 
-/* A deliberately simple flex row: items are placed left to right, grow
- * items share the leftover width, and a row wraps when the next item does not
- * fit.  It is enough for site headers, cards and Wikipedia's main-page boxes;
- * flex-direction: column uses the normal block path. */
 static int flex_item_width(struct lay *l, unsigned int n,
 			   const struct br_style *cs, int avail)
 {

@@ -1276,9 +1276,10 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     `max-width` are not applied to block flow (they collapsed nested
     percentage columns); flex/grid items still use them.  Float support is
     the basic Bootstrap-grid case: consecutive floated blocks are laid side
-    by side with percentage/px widths, `float:right` is treated like left,
-    there is no `clear`, percentage margins are approximated as pixels, and
-    a float without a width uses a text-width estimate.  `@media` width
+    by side with percentage/px widths, left floats pack from the row's left
+    edge and right floats from its right edge, there is no `clear`,
+    percentage margins are approximated as pixels, and a float without a
+    width uses a text-width estimate.  `@media` width
     blocks are evaluated against a fixed 1000 px desktop viewport (so
     narrow/adaptive pages get the desktop rules, not their mobile layout),
     and pseudo-classes are never matched.  `font-size` now maps to real pixel
