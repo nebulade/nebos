@@ -177,7 +177,7 @@
 					<tr><td><code>make test-usb</code></td><td>Headless QEMU mouse/keyboard regression tests using QMP and screen dumps.</td></tr>
 					<tr><td><code>make test-images</code> / <code>test-images-asan</code></td><td>Host image-decoder and blit tests, with an AddressSanitizer variant.</td></tr>
 					<tr><td><code>make test-crypto</code></td><td>Host vectors for SHA-256, ChaCha20-Poly1305, X25519 and TLS helpers.</td></tr>
-					<tr><td><code>make test-libc</code></td><td>Host stress test for the ring-3 <code>malloc</code>, realloc, calloc and <code>heap_reset</code>.</td></tr>
+					<tr><td><code>make test-libc</code></td><td>Host tests for the ring-3 malloc, stdio/float formatting, math, 64-bit division helpers and setjmp/longjmp.</td></tr>
 					<tr><td><code>make test-font</code> / <code>test-font-asan</code></td><td>Host specimen test for the fixed-point TrueType parser/rasterizer and glyph cache, with an AddressSanitizer/UBSan variant.</td></tr>
 					<tr><td><code>make fonts</code></td><td>Regenerate the checked-in Arimo/Liberation Mono subsets with <code>pyftsubset</code>.</td></tr>
 				</tbody>
@@ -261,7 +261,7 @@ make net-cmds                   # replace /ramfs only</code></pre>
 			<li><strong>USB regression.</strong> <code>make test-usb</code> runs QMP cursor and keyboard tests against UHCI, OHCI, EHCI and xHCI, including hotplug.</li>
 			<li><strong>Image library.</strong> <code>make test-images</code> decodes a corpus of PNG/JPEG/GIF/BMP/TGA/PNM/ICO/PAM files and checks blits; the ASan variant catches memory errors.</li>
 			<li><strong>Crypto.</strong> <code>make test-crypto</code> runs host vectors for the freestanding crypto code.</li>
-			<li><strong>Ring-3 libc.</strong> <code>make test-libc</code> runs a deterministic allocation/free/realloc stress test and a browser-like large-buffer sequence; the backend simulates the fixed 32 MB arena and poisons new pages.</li>
+			<li><strong>Ring-3 libc.</strong> <code>make test-libc</code> runs the malloc stress test (32 MB simulated arena with poisoned pages), exact <code>snprintf</code> float/string checks against the host, x87 math values, the 64-bit division helpers and a 32-bit setjmp/longjmp test.</li>
 			<li><strong>Fonts.</strong> <code>make test-font</code> parses the checked-in Arimo subset on the host, measures Latin-1 text, renders composites (for example <code>Äé</code>) and writes a specimen PPM. The browser must also be exercised across a navigation to verify detach/reattach around <code>heap_reset()</code>.</li>
 			<li><strong>UEFI.</strong> <code>make test-uefi</code> boots the dual image under OVMF headless and greps the serial log for the boot line.</li>
 			<li><strong>Compositor stats.</strong> The ring-3 WM overwrites <code>/share/wmstats</code> every two seconds with <code>frames</code>, total and worst compositing time in milliseconds, and the pixels drawn in the interval. Read it in a terminal or fetch it over WebDAV to measure a target.</li>

@@ -74,7 +74,7 @@ make kernel-net-dev
 make flash      # write the dual-boot image (legacy BIOS + UEFI) to a USB stick
 make test-usb   # headless USB mouse/keyboard regression tests (QEMU + python3)
 make test-images  # host image-decoder + blit tests (ASan variant: test-images-asan)
-make test-libc  # host stress test for the ring-3 malloc
+make test-libc  # host tests for ring-3 malloc, stdio, math, div64 and setjmp
 make test-font  # host TrueType parser/rasterizer specimen test
 make test-font-asan  # ASan/UBSan variant
 make fonts      # regenerate fonts/*.ttf with pyftsubset + system fonts
@@ -613,18 +613,27 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   are not called by application code.  The canvas mapping at
   `USER_GFX_BASE` (`0x50000000`) and the WM mappings are separate.
 - **Ring-3 libc**: `libc/include/` (stddef/stdint/stdarg/stdlib/string/ctype/
-  assert/ucmd_heap), `libc/malloc.c`, `libc/string.c`, `libc/strdup.c`,
-  `libc/stdlib.c`, `libc/ucmd_mem.c`, linked as `libc.a` only into commands
-  that reference it.  `malloc` is a boundary-tag first-fit allocator with
+  assert/ucmd_heap, setjmp/errno/stdio/math/time/sys/time/sys/types, float/
+  limits/inttypes/alloca), `libc/malloc.c`, `libc/string.c`, `libc/strdup.c`,
+  `libc/stdlib.c`, `libc/ucmd_mem.c`, `libc/setjmp.S`, `libc/errno.c`,
+  `libc/div64.c`, `libc/dtoa.c`, `libc/stdio.c`, `libc/stdio_file.c`,
+  `libc/math.c`, `libc/time.c`, linked as `libc.a` only into commands that
+  reference it.  `malloc` is a boundary-tag first-fit allocator with
   immediate coalescing: 16-byte aligned, `calloc` zeroes, `realloc` grows in
   place when the next block is free, and the heap maps 64 KB lazily then
   grows in page-rounded steps with 64 KB slack up to the 32 MB arena cap.
   `heap_reset()` (`ucmd_heap.h`) discards every allocation and unmaps the
   arena for page-scoped apps such as the browser.  There are no threads, so
   there is no lock; application code uses this heap, and the libc backend is
-  the only caller of `SYS_MEM_*`.  The archive plus
+  the only caller of `SYS_MEM_*`.  `stdio` provides integer/string/float
+  `printf`/`snprintf`/`sprintf` formatting and a read-only whole-file `FILE`
+  (`fopen("rb")`, `fread`, `fseek`, `ftell`, `fclose`; stdout/stderr are
+  console streams; stdin is EOF).  `time` uses `SYS_RTC_GET`/`SYS_RTC_SET`
+  with UTC-only `gmtime`/`localtime` and 64-bit `time_t`; `math` is the x87
+  double set used by MuJS.  The archive plus
   `-ffunction-sections`/`--gc-sections` keeps unused code out of the legacy
-  pack.  Host test: `make test-libc` (`libc/test_malloc.c`).
+  pack.  Host tests: `make test-libc` (malloc, format/dtoa, math, div64,
+  setjmp).
 - **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld`, `mkpack.c`,
   `rootfs.h`, `mkrootfs.c`, `ramfs.c/h` — static ELFs linked at
   `USER_BASE` (`0x40000000`), packed by `mkpack` into `cmds.pack` (as
@@ -1382,3 +1391,14 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     evicted glyphs.  The browser must detach/re-attach its font arena around
     `heap_reset()`; terminal/editor cell grids stay on the 8×16 bitmap font,
     while ngui text fields use the proportional face.
+
+27. Ring-3 stdio/time/math limits: `FILE` is read-only and whole-file
+    (4 MB cap); there is no `open/read/write/lseek`/fd layer yet, and
+    `stdin` is EOF.  The TODO is in `libc/stdio_file.c`; writable files and
+    streaming need kernel `SYS_OPEN/READ/WRITE/LSEEK/CLOSE` plus offset
+    `fs_ops`.  `time` is UTC-only, `time_t` is 64-bit, and the RTC range is
+    1970-2069; there is no timezone database.  `math` is an x87
+    double-rounding implementation, not a full fdlibm; `long double`, `%a`
+    and some exact edge cases are not supported.  Float printf supports
+    `%f/%e/%g` with a 900-digit precision cap.  These are sufficient for
+    MuJS but are not a complete POSIX libc.

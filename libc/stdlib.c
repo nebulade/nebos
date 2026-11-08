@@ -9,6 +9,16 @@ int abs(int value)
 	return value < 0 ? -value : value;
 }
 
+int atoi(const char *str)
+{
+	return (int)strtol(str, 0, 10);
+}
+
+long atol(const char *str)
+{
+	return strtol(str, 0, 10);
+}
+
 long strtol(const char *str, char **endptr, int base)
 {
 	const char *p = str;

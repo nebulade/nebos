@@ -17,4 +17,8 @@ ufont_test
 ufont_test_asan
 libc.a
 malloc_test
+format_test
+math_test
+div64_test
+setjmp_test
 mkrootfs

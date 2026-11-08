@@ -98,7 +98,11 @@
 			<span class="file">libc/include/</span> and cover
 			<code>stddef</code>, <code>stdint</code>, <code>stdarg</code>,
 			<code>stdlib</code>, <code>string</code>, <code>ctype</code>,
-			<code>assert</code> and the OS-specific <code>ucmd_heap.h</code>.
+			<code>assert</code>, <code>setjmp</code>, <code>errno</code>,
+			<code>stdio</code>, <code>math</code>, <code>time</code>,
+			<code>sys/time</code>, <code>sys/types</code>, <code>float</code>,
+			<code>limits</code>, <code>inttypes</code>, <code>alloca</code>
+			and the OS-specific <code>ucmd_heap.h</code>.
 		</p>
 		<ul>
 			<li><strong>malloc.</strong> Boundary-tag blocks, first-fit free
@@ -114,15 +118,37 @@
 			<code>malloc</code>; the <code>SYS_MEM_ALLOC/GROW/FREE</code>
 			syscalls are the backend in <span class="file">libc/ucmd_mem.c</span>
 			and are not called by application code.</li>
+			<li><strong>stdio.</strong> <code>printf</code>,
+			<code>snprintf</code>, <code>sprintf</code> and
+			<code>vfprintf</code> share an exact decimal float formatter
+			(<code>%f/%e/%g</code>, width/precision), and
+			<code>fopen("rb")</code> provides read-only whole-file
+			<code>FILE</code> objects with <code>fread</code>/<code>fseek</code>/
+			<code>ftell</code>/<code>fclose</code>. stdout and stderr are
+			console streams; stdin is EOF. There is no kernel fd layer yet: the
+			<code>stdio_file.c</code> TODO records the future
+			<code>SYS_OPEN/READ/WRITE/LSEEK/CLOSE</code> replacement.</li>
+			<li><strong>time.</strong> <code>time</code>, <code>gmtime</code>,
+			<code>localtime</code>, <code>mktime</code>, <code>strftime</code>,
+			<code>gettimeofday</code>/<code>settimeofday</code> and
+			<code>clock_gettime</code> use <code>SYS_RTC_GET</code>/<code>SET</code>.
+			<code>time_t</code> is 64-bit, local time is UTC-only, and the RTC's
+			1970-2069 range is enforced.</li>
+			<li><strong>math.</strong> The full MuJS set is provided with x87
+			double arithmetic: <code>sqrt</code>, <code>pow</code>,
+			<code>exp</code>/<code>log</code>, trig, <code>floor</code>/<code>ceil</code>/
+			<code>round</code>, <code>fmod</code>, <code>ldexp</code>/
+			<code>frexp</code> and the IEEE predicates. It is a compact
+			double-rounding implementation, not a full fdlibm.</li>
 			<li><strong>Limits.</strong> No threads or locking, no
 			<code>free()</code>-to-page unmap, and requests near 32 MB fail
-			because headers are charged against the same arena. Console
-			<code>printf</code>/<code>FILE</code> I/O is not part of this layer;
-			file access still uses the whole-file syscalls.</li>
-			<li><strong>Test.</strong> <code>make test-libc</code> runs a host
-			stress test over a simulated 32 MB arena, checking alignment,
-			coalescing, <code>realloc</code>/<code>calloc</code>, growth and
-			<code>heap_reset</code>.</li>
+			because headers are charged against the same arena. The file layer
+			is read-only and whole-file (4 MB cap); writable files and streaming
+			need the kernel fd layer. There is no timezone database and no
+			<code>long double</code>/<code>%a</code> support.</li>
+			<li><strong>Tests.</strong> <code>make test-libc</code> covers the
+			malloc arena, format/dtoa, math, 64-bit division helpers and
+			<code>setjmp</code>/<code>longjmp</code> on the host.</li>
 		</ul>
 	</section>
 
@@ -354,7 +380,7 @@
 			<li><code>ucmd_term.c</code> — windowed shell, scrollback, PATH</li>
 			<li><code>terminal.c</code> — privileged kernel command registry</li>
 			<li><code>ucmd_lib.h</code> — user shim</li>
-			<li><code>libc/</code> — headers, malloc, string/stdlib support and the <code>SYS_MEM_*</code> backend</li>
+			<li><code>libc/</code> — headers, malloc, string/stdlib, setjmp/errno, stdio/dtoa, math, time and the <code>SYS_MEM_*</code> backend</li>
 			<li><code>libc.a</code> — optional static ring-3 libc</li>
 			<li><code>ucmd.ld</code> — ring-3 link address</li>
 			<li><code>Makefile</code> — <code>UCMDS</code> and pack rules</li>
