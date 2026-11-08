@@ -36,7 +36,7 @@ static unsigned int bar_kexec_busy, bar_kexec_progress, bar_kexec_total;
 static int bar_temp_c = -1;
 static int bar_batt_pct = -1;
 static int bar_batt_charging;
-static int bar_batt_ac;
+static int bar_ac_online = -1;
 static char bar_msg[24];
 static unsigned int bar_msg_until;
 static int bar_msg_dirty;
@@ -171,9 +171,34 @@ static unsigned int batt_color(int pct, int charging, int ac)
 		return 0xFF5050u;
 	if (pct <= 20)
 		return 0xFFD250u;
-	if (charging || ac)
+	if (charging || ac > 0)
 		return 0x55FF55u;
 	return 0x55D2FFu;
+}
+
+/* "AC on" / "AC off" (no libc printf here).  Only drawn on machines whose
+ * ThinkPad EC reported the adapter state. */
+static unsigned int ac_text(char *b, int online)
+{
+	unsigned int n = 0;
+
+	b[n++] = 'A';
+	b[n++] = 'C';
+	b[n++] = ' ';
+	b[n++] = 'o';
+	if (online) {
+		b[n++] = 'n';
+	} else {
+		b[n++] = 'f';
+		b[n++] = 'f';
+	}
+	b[n] = '\0';
+	return n;
+}
+
+static unsigned int ac_color(int online)
+{
+	return online ? 0x55FF55u : 0xFFD250u;
 }
 
 static void draw_bar(void)
@@ -277,12 +302,26 @@ static void draw_bar(void)
 			(void)batt_text(bb, bar_batt_pct);
 			bx = right - (int)usurf_text_width(&screen, bb);
 
-			if (bx >= min_x)
+			if (bx >= min_x) {
 				usurf_text(&screen, bx, 5, bb,
 					   batt_color(bar_batt_pct,
 						      bar_batt_charging,
-						      bar_batt_ac),
+						      bar_ac_online),
 					   0, 0, fbw, WM_BAR_H);
+				right = bx - 8;
+			}
+		}
+		if (bar_ac_online >= 0) {
+			char ab[8];
+			int ax;
+
+			(void)ac_text(ab, bar_ac_online);
+			ax = right - (int)usurf_text_width(&screen, ab);
+
+			if (ax >= min_x)
+				usurf_text(&screen, ax, 5, ab,
+					   ac_color(bar_ac_online), 0, 0,
+					   fbw, WM_BAR_H);
 		}
 	}
 }
@@ -721,12 +760,15 @@ static void do_update(struct wm_status *st)
 			}
 			{
 				struct sys_powerinfo pi;
-				int pct = -1, charging = 0, ac = 0;
+				int pct = -1, charging = 0, ac = -1;
 				unsigned int bi;
 
 				if (u_power_info(&pi, 0) == 0) {
-					ac = pi.ac_online > 0;
+					/* The ThinkPad EC is the laptop marker:
+					 * desktops have no EC, so neither the
+					 * AC state nor a battery is shown. */
 					if (pi.present) {
+						ac = pi.ac_online;
 						for (bi = 0; bi < SYS_POWER_BATT_MAX;
 						     bi++) {
 							struct sys_battery *b =
@@ -742,10 +784,10 @@ static void do_update(struct wm_status *st)
 					}
 					if (pct != bar_batt_pct ||
 					    charging != bar_batt_charging ||
-					    ac != bar_batt_ac) {
+					    ac != bar_ac_online) {
 						bar_batt_pct = pct;
 						bar_batt_charging = charging;
-						bar_batt_ac = ac;
+						bar_ac_online = ac;
 						bar_dirty = 1;
 					}
 				}

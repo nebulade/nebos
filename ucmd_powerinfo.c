@@ -1,7 +1,8 @@
 /* powerinfo: AC adapter and battery state from the ThinkPad H8 EC.
  *
  * The EC access lives in the kernel (SYS_POWER_INFO); this command only
- * formats the snapshot.  The same syscall feeds the WM's top-bar percentage.
+ * formats the snapshot.  The same syscall feeds the WM's top-bar AC and
+ * battery indicators.
  */
 #include "ucmd_lib.h"
 

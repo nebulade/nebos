@@ -346,7 +346,7 @@
 		<ul>
 			<li><strong>P-states.</strong> On the allowlisted Nehalem/Westmere models, <code>power_init</code> enables SpeedStep, raises the package C-state limit to C6 when unlocked, reads min/max ratios and starts at the maximum non-turbo ratio.</li>
 			<li><strong>Governor.</strong> A 100 ms window picks min/max/linear target ratios; short busy streaks jump to max immediately. Each CPU writes its own <code>IA32_PERF_CTL</code>.</li>
-			<li><strong>Telemetry.</strong> <code>power</code> prints effective MHz from APERF/MPERF, ratios and C3/C6 residency; <code>sensors</code> prints DTS, board sensors and ThinkPad EC temperatures/fan; <code>powerinfo</code> prints the AC adapter and battery state, and the WM top bar shows the battery percentage.</li>
+			<li><strong>Telemetry.</strong> <code>power</code> prints effective MHz from APERF/MPERF, ratios and C3/C6 residency; <code>sensors</code> prints DTS, board sensors and ThinkPad EC temperatures/fan; <code>powerinfo</code> prints the AC adapter and battery state, and the WM top bar shows the AC adapter state and battery percentage on ThinkPads.</li>
 			<li><strong>Thermal.</strong> Each CPU samples its DTS once a second from its scheduler tick; the hottest core is exposed to ring 3.</li>
 		</ul>
 	</section>

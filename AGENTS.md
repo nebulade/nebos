@@ -575,9 +575,9 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   Bonnell = 90, otherwise 100).  The 330's 125 °C is Linux coretemp's
   empirical value; Intel only specifies TJ = 90 °C and Tcase-max = 85.2 °C,
   so `sensors` prints the raw delta and the 90/100/125 °C scales as well as
-  the top bar's `CPU 43C` before the clock (with `BAT 87%` to its left on
-  ThinkPads) and `cpuinfo`'s value plus EIST state.  Platforms without DTS
-  (QEMU, Pentium) hide it.
+  the top bar's `CPU 43C` before the clock (with `AC on`/`AC off` and
+  `BAT 87%` to its left on ThinkPads) and `cpuinfo`'s value plus EIST state.
+  Platforms without DTS (QEMU, Pentium) hide it.
 - **Board sensors**: `it87.c/h` — read-only probe of the IT87xx Super I/O
   (the AT3IONT-I exposes three temperatures and three fan tachometers), used
   by `SYS_SENSORS` and the ring-3 `sensors` command to cross-check the DTS
@@ -598,7 +598,8 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   page selector, restored when it changed.  `sensors` labels the EC
   registers and decodes the fan mode (auto / full speed / level); the ring-3
   `powerinfo` command prints AC/battery details and the WM top bar shows the
-  first present battery with a valid percentage.
+  AC adapter state plus the first present battery with a valid percentage.
+  Machines without the EC show neither.
 - **Ring-3 address space**: the ELF image and 8 KB stack live in the 2 MB
   `USER_BASE` (`0x40000000`)..`USER_STACK_TOP` (`0x40200000`) window, which is
   too small for a full-frame image.  `SYS_MEM_ALLOC`/`SYS_MEM_GROW`/`SYS_MEM_FREE`
