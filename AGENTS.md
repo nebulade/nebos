@@ -674,13 +674,15 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   weights, `!important`, line-height, alignment, margins, padding, borders,
   `list-style: none`, `text-transform: uppercase`, `display`, percentage
   `width`/`height`/`max-width`, and basic `float: left/right` columns.
-  `@media (min-width/max-width)` blocks are evaluated against a fixed 1000 px
-  desktop viewport; `@font-face`/`@import`/`@keyframes` are skipped.  Inline
+  `@media (min-width/max-width)` blocks are evaluated against the browser
+  canvas width when the page is parsed; `@font-face`/`@import`/`@keyframes` are
+  skipped.  Inline
   `<svg>` subtrees and closed `<details>` are skipped (not renderable), and
   `<video>` gets a placeholder box.  The default page canvas follows
   `ngui_theme_dark` (dark page, light text, `theme.panel` for `<pre>`);
   a site's own `background-color`/`color` CSS still overrides it.  `browser.c`
-  owns a 960x640 window, the layout/render, URL bar, history, status bar and
+  opens at 1100x700 (960x640 and 780x540 fallbacks on smaller screens), the
+  layout/render, URL bar, history, status bar and
   inline `<img>` decoding.  Images are fetched one per main-loop iteration
   (so text and scrolling stay responsive) and only when their measured
   position is within the viewport plus 160 px; deferred images are loaded as
@@ -1280,12 +1282,13 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     percentage columns); flex/grid items still use them.  Float support is
     the basic Bootstrap-grid case: consecutive floated blocks are laid side
     by side with percentage/px widths, left floats pack from the row's left
-    edge and right floats from its right edge, there is no `clear`,
-    percentage margins are approximated as pixels, and a float without a
-    width uses a text-width estimate.  `@media` width
-    blocks are evaluated against a fixed 1000 px desktop viewport (so
-    narrow/adaptive pages get the desktop rules, not their mobile layout),
-    and pseudo-classes are never matched.  `font-size` now maps to real pixel
+    edge and right floats from its right edge, inline floats are blockified
+    (Bootstrap floats the navbar brand and its text links), there is no
+    `clear`, percentage margins are approximated as pixels, and a float
+    without a width uses a text-width estimate.  `@media` width
+    blocks are evaluated against the canvas width at page-parse time, so a
+    window resize does not re-evaluate them until the next load, and
+    pseudo-classes are never matched.  `font-size` now maps to real pixel
     sizes (8..48), `font-weight` selects the bold face, `font-style: italic`
     selects the italic face, `font-family: monospace` selects Liberation Mono,
     and `em`/`rem` use a 16 px root.  Text is Latin-1 only (non-Latin-1

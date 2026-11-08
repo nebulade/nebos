@@ -18,10 +18,10 @@
 #include "img.h"
 #include "inflate.h"
 
-#define BR_W            960
-#define BR_H            640
-/* CSS media queries are evaluated as a desktop browser. */
-#define BR_VIEWPORT_W   1000
+/* Start wide enough for the desktop nav; smaller screens fall back to
+ * 960x640 and 780x540, which still fit a 1024x768 panel. */
+#define BR_W            1100
+#define BR_H            700
 #define BR_TOOLBAR_H    30
 #define BR_STATUS_H     18
 
@@ -1489,6 +1489,7 @@ static void load_page(const char *url, int local, int push)
 			decode_direct_image(body, len, node);
 		s_copy(page_title, "Image", sizeof(page_title));
 	} else {
+		br_set_viewport(ui.w);
 		br_parse(&doc, (const char *)body, len);
 		s_copy(page_title, doc.title[0] ? doc.title : page_url,
 		       sizeof(page_title));
@@ -1578,6 +1579,7 @@ static void load_home(int push)
 			"<pre>javascript: not supported\nforms: not supported"
 			"\nimages: PNG JPEG GIF BMP TGA PNM ICO</pre>"
 			"</body></html>";
+		br_set_viewport(ui.w);
 		br_parse(&doc, home, sizeof(home) - 1);
 		br_parse_inline_css(&doc);
 		br_reset_styles(&doc);
@@ -2783,6 +2785,7 @@ static int intrinsic_width(struct ngui *ui, unsigned int node,
 			} else {
 				unsigned int ti = 0;
 				int first = 1;
+				int lead = w > 0 && tn > 0 && text_space(t[0]);
 				int sp = (int)ngui_text_width_px(ui, " ", 1,
 					pst->font_px, pst->bold, pst->italic,
 					pst->mono);
@@ -2797,8 +2800,9 @@ static int intrinsic_width(struct ngui *ui, unsigned int node,
 						ti++;
 					if (ti == ts)
 						break;
-					if (!first)
+					if (!first || lead)
 						w += sp;
+					lead = 0;
 					w += (int)ngui_text_width_px(ui,
 						t + ts, ti - ts,
 						pst->font_px, pst->bold,
@@ -2811,22 +2815,42 @@ static int intrinsic_width(struct ngui *ui, unsigned int node,
 		br_style_for(&doc, c, pst, &cs);
 		if (cs.display == BR_DISPLAY_NONE)
 			continue;
-		if (cs.float_left)
-			w += 8;
 		if (nd->tag == BR_TAG_BR) {
 			w += 8;
 			continue;
 		}
 		if (nd->tag == BR_TAG_IMG) {
+			/* Measure the image as layout will draw it: a CSS or
+			 * attribute height keeps the intrinsic aspect ratio, and
+			 * a CSS width overrides the native pixel width.  Bootstrap
+			 * sizes the Cloudron logo with height:40px only. */
 			int idx = nd->img_index;
+			int iw = 0, ih = 0;
 
 			if (idx >= 0 && idx < image_count &&
-			    images[idx].state == 1)
-				w += (int)images[idx].img.w;
-			else if (nd->width_attr)
-				w += nd->width_attr;
-			else
+			    images[idx].state == 1) {
+				iw = (int)images[idx].native_w;
+				ih = (int)images[idx].native_h;
+				if (iw <= 0 || ih <= 0) {
+					iw = (int)images[idx].img.w;
+					ih = (int)images[idx].img.h;
+				}
+			}
+			if (cs.width_kind == 1) {
+				w += cs.width;
+			} else if (cs.width_kind == 2) {
 				w += 64;
+			} else if (nd->width_attr) {
+				w += nd->width_attr;
+			} else if (nd->height_attr && iw && ih) {
+				w += iw * (int)nd->height_attr / ih;
+			} else if (cs.height_kind == 1 && iw && ih) {
+				w += iw * (int)cs.height / ih;
+			} else if (iw) {
+				w += iw;
+			} else {
+				w += 64;
+			}
 			continue;
 		}
 		w += cs.pl + cs.pr + cs.ml + cs.mr;
@@ -2872,7 +2896,10 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 			n = nd->next;
 			continue;
 		}
-		if (!cs.float_left || cs.display != BR_DISPLAY_BLOCK)
+		/* A float blockifies its box: Bootstrap floats inline
+		 * anchors too (the navbar brand and its text links), and
+		 * their padding must be honoured. */
+		if (!cs.float_left)
 			break;
 		if (nd->tag == BR_TAG_A && nd->href_off)
 			lk = (unsigned short)n;
@@ -2883,7 +2910,7 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 			colw = (int)cs.width;
 		else {
 			colw = intrinsic_width(l->ui, n, &cs, 0) +
-			       cs.pl + cs.pr + cs.ml + cs.mr + 8;
+			       cs.pl + cs.pr + cs.ml + cs.mr;
 			if (colw < 8)
 				colw = 8;
 		}
@@ -3654,7 +3681,7 @@ static void layout_children(struct lay *l, unsigned int parent,
 			n = nd->next;
 			continue;
 		}
-		if (cs.float_left && cs.display == BR_DISPLAY_BLOCK) {
+		if (cs.float_left) {
 			n = layout_float_group(l, n, pst, depth, lk);
 			continue;
 		}
@@ -4092,7 +4119,9 @@ void _start(const char *arg)
 {
 	struct win_info wi;
 
-	if (u_win_create(BR_W, BR_H, "Browser", &wi) != 0) {
+	if (u_win_create(BR_W, BR_H, "Browser", &wi) != 0 &&
+	    u_win_create(960, 640, "Browser", &wi) != 0 &&
+	    u_win_create(780, 540, "Browser", &wi) != 0) {
 		u_puts("browser: no graphics window\n");
 		u_exit(1);
 	}
@@ -4101,7 +4130,7 @@ void _start(const char *arg)
 	br_doc_init(&doc);
 	br_set_theme(ui.theme.text, ui.theme.bg, ui.theme.panel,
 		     ui.theme.accent);
-	br_set_viewport(BR_VIEWPORT_W);
+	br_set_viewport(wi.width);
 	if (u_getcwd(cwd, sizeof(cwd)) != 0 || !cwd[0])
 		s_copy(cwd, "/", sizeof(cwd));
 	heap_clear();

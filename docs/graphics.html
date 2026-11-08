@@ -235,7 +235,8 @@
 			without reading another process's memory.
 			<code>SYS_WM_RESIZE</code> (WM side) and
 			<code>SYS_WIN_ACK_RESIZE</code> (client side) swap in a resized
-			canvas.
+			canvas; the content size is bounded by the framebuffer, so a
+			window can grow to the edge of the screen.
 		</p>
 		<div class="note">
 			<p><strong>Buttons fire on the release edge.</strong> The toolkit keeps

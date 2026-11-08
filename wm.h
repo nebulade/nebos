@@ -8,6 +8,12 @@
 
 #define MAX_WINDOWS WM_MAX_WINDOWS
 
+/* Hard sanity bound for a canvas window (stops size arithmetic wrapping);
+ * the framebuffer check below it is the real limit.  The old 1024 px cap
+ * left a 1280x800 panel unable to enlarge a window past 1024. */
+#define WM_WIN_MAX_W 2048
+#define WM_WIN_MAX_H 2048
+
 struct window {
 	int used;
 	unsigned int x, y;       /* pixel origin (title bar top-left) */

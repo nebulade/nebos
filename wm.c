@@ -190,7 +190,7 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 		return -1;
 	cw = in->w;
 	ch = in->h;
-	if (cw == 0 || ch == 0 || cw > 1024 || ch > 1024)
+	if (cw == 0 || ch == 0 || cw > WM_WIN_MAX_W || ch > WM_WIN_MAX_H)
 		return -1;
 	if (cw + 2 > vga_fb_width() || ch + WM_TITLE_H + 2 > vga_fb_height())
 		return -1;
@@ -477,7 +477,7 @@ int wm_server_resize(unsigned int index, unsigned int cw, unsigned int ch)
 	w = &windows[index];
 	if (!w->canvas_window || !process_is_alive(w->pid))
 		return -1;
-	if (cw < 160 || ch < 80 || cw > 1024 || ch > 1024)
+	if (cw < 160 || ch < 80 || cw > WM_WIN_MAX_W || ch > WM_WIN_MAX_H)
 		return -1;
 	if (cw + 2 > vga_fb_width() || ch + WM_TITLE_H + 2 > vga_fb_height())
 		return -1;
