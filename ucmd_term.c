@@ -8,6 +8,8 @@
  * flag (the line continued because it did not fit), which lets a window
  * resize re-flow the whole log at the new width instead of clearing it. */
 
+#include <stdlib.h>
+
 #include "ucmd_lib.h"
 #include "uwm_lib.h"
 #include "io.h"
@@ -25,8 +27,8 @@
 #define SB_W 8
 #define SB_BOTTOM 16
 
-/* Total row storage (screen + scrollback).  Allocated from the per-process
- * heap; the fallback keeps a screen-only terminal working if that fails. */
+/* Total row storage (screen + scrollback).  Allocated from the libc heap;
+ * the fallback keeps a screen-only terminal working if that fails. */
 #define SCROLL_ROWS_PREF 512
 #define SCROLL_ROWS_MIN  128
 
@@ -1381,11 +1383,11 @@ static void term_alloc_rows(void)
 
 	row_cap = SCROLL_ROWS_PREF;
 	bytes = 2 * row_cap * (unsigned int)sizeof(struct trow);
-	row_mem = (struct trow *)u_mem_alloc(bytes);
+	row_mem = (struct trow *)malloc(bytes);
 	if (!row_mem) {
 		row_cap = SCROLL_ROWS_MIN;
 		bytes = 2 * row_cap * (unsigned int)sizeof(struct trow);
-		row_mem = (struct trow *)u_mem_alloc(bytes);
+		row_mem = (struct trow *)malloc(bytes);
 	}
 	if (row_mem) {
 		row_scratch = row_mem + row_cap;

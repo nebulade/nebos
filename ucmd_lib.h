@@ -395,26 +395,6 @@ static inline int u_power_info(struct sys_powerinfo *out, unsigned int flags)
 	return u_syscall2(SYS_POWER_INFO, (int)out, (int)flags);
 }
 
-/* Raw per-process anonymous heap.  Commands that link libc.a should use
- * malloc/free instead; never mix these raw calls with the libc heap in one
- * process, because both own the same SYS_MEM_* arena. */
-static inline void *u_mem_alloc(unsigned int bytes)
-{
-	int r = u_syscall1(SYS_MEM_ALLOC, (int)bytes);
-
-	return r < 0 ? 0 : (void *)r;
-}
-
-static inline int u_mem_grow(unsigned int bytes)
-{
-	return u_syscall1(SYS_MEM_GROW, (int)bytes);
-}
-
-static inline int u_mem_free(void)
-{
-	return u_syscall0(SYS_MEM_FREE);
-}
-
 /* Path metadata (size, directory flag, read-only mount). */
 static inline int u_stat(const char *path, struct sys_stat *out)
 {

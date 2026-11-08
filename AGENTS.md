@@ -567,9 +567,10 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   `USER_HEAP_BASE` (`0x60000000`), capped at 32 MB; the initial allocation is
   zeroed but pages appended by `SYS_MEM_GROW` are not (decoders initialize
   what they use), which keeps large image arenas fast to map.  The reaper
-  frees it with the rest of the process and `top` counts its pages.  Commands
-  that link `libc.a` own this arena through `libc/malloc.c`; the raw syscalls
-  and libc malloc must never be mixed in one process.  The canvas mapping at
+  frees it with the rest of the process and `top` counts its pages.  Ring-3
+  commands use `libc/malloc.c` (malloc/free/heap_reset), which owns this
+  arena; the `SYS_MEM_*` calls are the libc backend (`libc/ucmd_mem.c`) and
+  are not called by application code.  The canvas mapping at
   `USER_GFX_BASE` (`0x50000000`) and the WM mappings are separate.
 - **Ring-3 libc**: `libc/include/` (stddef/stdint/stdarg/stdlib/string/ctype/
   assert/ucmd_heap), `libc/malloc.c`, `libc/string.c`, `libc/strdup.c`,
@@ -580,8 +581,8 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   grows in page-rounded steps with 64 KB slack up to the 32 MB arena cap.
   `heap_reset()` (`ucmd_heap.h`) discards every allocation and unmaps the
   arena for page-scoped apps such as the browser.  There are no threads, so
-  there is no lock; each process uses either this heap or the raw
-  `SYS_MEM_*` calls, never both.  The archive plus
+  there is no lock; application code uses this heap, and the libc backend is
+  the only caller of `SYS_MEM_*`.  The archive plus
   `-ffunction-sections`/`--gc-sections` keeps unused code out of the legacy
   pack.  Host test: `make test-libc` (`libc/test_malloc.c`).
 - **Ring-3 commands**: `ucmd_*.c`, `ucmd_lib.h`, `ucmd.ld`, `mkpack.c`,
@@ -1124,9 +1125,9 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
 ## Conventions & gotchas
 
 - **Freestanding C** — the kernel has no libc, no `malloc`, no `printf`; use
-  `io_putstr` / `io_putchar` / `io_puthex` (`io.h`).  Ring-3 commands may
-  link the in-tree `libc.a` (`malloc`, strings, stdlib); a command either uses
-  libc malloc or the raw `SYS_MEM_*` arena, never both.
+  `io_putstr` / `io_putchar` / `io_puthex` (`io.h`).  Ring-3 commands link
+  the in-tree `libc.a` when they need allocation or standard string/stdlib
+  functions; the `SYS_MEM_*` syscalls are internal to the libc backend.
 - **Paging is on but flat** — identity-mapped 4 MB pages (`paging.c`), so
   physical == virtual everywhere. Still no per-process address spaces or process
   isolation: everything runs ring-0 and shares the address space.
@@ -1184,7 +1185,7 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
    legacy path; a larger pack needs the UEFI/kexec path or a chunked
    high-memory loader.  The browser and its ring-3 dependencies are compiled
    with function sections and linked with `--gc-sections`; the current pack
-   is ~242 KiB (247493 bytes), leaving ~13 KB under the cap.  Command growth
+   is ~243 KiB (248428 bytes), leaving ~12 KB under the cap.  Command growth
    still needs care because `libdeflate-gzip -12` is already required (plain
    `gzip -9` is over the cap).
 9. SMP is **ACPI/MADT only**: no Intel MP-table fallback, so a Pentium II SMP
@@ -1317,9 +1318,9 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     pointer into the middle of a block or a stale pointer is silently
     ignored by `free()`.  The allocator is first-fit with immediate
     coalescing, so a pathological small/large lifetime mix can still
-    fragment; the browser and viewer use it for a handful of large,
-    page-scoped buffers.  A program must not mix `malloc` with raw
-    `u_mem_alloc`/`u_mem_grow`/`u_mem_free`, and near-32 MB requests fail
-    because the block headers are charged to the same cap.  The `libc.a`
-    members are only pulled into commands that reference them; the legacy
-    pack still needs every added byte checked against `CMDS_GZ_MAX`.
+    fragment; the terminal, browser, viewer, websrv and curl use it for a
+    handful of large buffers.  Commands allocate through `libc.a`; the raw
+    `SYS_MEM_*` calls are backend-only.  Near-32 MB requests fail because the
+    block headers are charged to the same cap.  The `libc.a` members are only
+    pulled into commands that reference them; the legacy pack still needs
+    every added byte checked against `CMDS_GZ_MAX`.

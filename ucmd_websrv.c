@@ -16,6 +16,8 @@
  * because the VFS has no open/read/write-at interface.
  */
 
+#include <stdlib.h>
+
 #include "ucmd_lib.h"
 
 #define REQ_MAX       4096u
@@ -1657,10 +1659,10 @@ void _start(const char *arg)
 	}
 	u_syscall1(SYS_NET_GET_IP, (int)ip);
 
-	body = u_mem_alloc(BODY_MAX);
+	body = (unsigned char *)malloc(BODY_MAX);
 	body_max = BODY_MAX;
 	if (!body) {
-		body = u_mem_alloc(BODY_FALLBACK);
+		body = (unsigned char *)malloc(BODY_FALLBACK);
 		body_max = BODY_FALLBACK;
 	}
 	if (!body) {

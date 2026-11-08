@@ -561,6 +561,11 @@ ucmd_%.elf: ucmd_%.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $<
 	$(OBJCOPY) --strip-all $@ $@
 
+# websrv buffers its whole PUT/GET body on the libc heap.
+ucmd_websrv.elf: ucmd_websrv.o ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
+	$(OBJCOPY) --strip-all $@ $@
+
 # edit draws text itself, so it links the kernel's 8x8 font into its ELF.
 ucmd_edit.o: ucmd_edit.c ucmd_lib.h syscall.h font_8x16.h
 	$(CC) $(CFLAGS) -o $@ $<
@@ -580,11 +585,11 @@ ucmd_wm.elf: ucmd_wm.o uwm_lib.o font_8x16.o ucmd.ld
 	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
-ucmd_term.o: ucmd_term.c ucmd_lib.h syscall.h wm_abi.h uwm_lib.h io.h vfs.h
-	$(CC) $(CFLAGS) -o $@ $<
+ucmd_term.o: ucmd_term.c ucmd_lib.h syscall.h wm_abi.h uwm_lib.h io.h vfs.h $(LIBC_HEADERS)
+	$(CC) $(CFLAGS) -Ilibc/include -o $@ $<
 
-ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x16.o ucmd.ld
-	$(LD) -T ucmd.ld -z max-page-size=0x100 -nostdlib -m elf_i386 -o $@ $(filter %.o,$^)
+ucmd_term.elf: ucmd_term.o uwm_lib.o font_8x16.o ucmd.ld libc.a
+	$(LD) -T ucmd.ld -z max-page-size=0x100 --gc-sections -nostdlib -m elf_i386 -o $@ $(filter-out ucmd.ld,$^)
 	$(OBJCOPY) --strip-all $@ $@
 
 # ngui: the userland immediate-mode GUI toolkit and its apps.

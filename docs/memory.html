@@ -216,11 +216,11 @@
 		<p>
 			The kernel heap is separate from userspace. Ring-3 processes get one
 			anonymous arena through <code>SYS_MEM_ALLOC</code>,
-			<code>SYS_MEM_GROW</code> and <code>SYS_MEM_FREE</code>; commands
-			that link <span class="file">libc.a</span> manage it with
-			<code>malloc</code>/<code>free</code> from
-			<span class="file">libc/malloc.c</span>, while small commands may
-			still use the raw syscalls. A process must not mix the two.
+			<code>SYS_MEM_GROW</code> and <code>SYS_MEM_FREE</code>;
+			commands manage it with <code>malloc</code>/<code>free</code>
+			from <span class="file">libc/malloc.c</span>. The syscalls are the
+			backend in <span class="file">libc/ucmd_mem.c</span> and are not
+			called by application code.
 		</p>
 	</section>
 
@@ -272,8 +272,8 @@
 			</table>
 		</div>
 		<p>
-			Commands that link <span class="file">libc.a</span> treat that arena
-			as a real heap: <span class="file">libc/malloc.c</span> maps 64 KB on
+			Ring-3 commands treat that arena as a real heap:
+			<span class="file">libc/malloc.c</span> maps 64 KB on
 			first use, grows in page-rounded steps with 64 KB slack, and uses
 			boundary-tag blocks with a first-fit free list and immediate
 			coalescing. <code>heap_reset()</code> discards everything and unmaps
@@ -310,7 +310,7 @@
 			<li><strong>No per-process address spaces.</strong> Paging is identity-mapped; there is no memory protection between processes.</li>
 			<li><strong>128 MB ceiling.</strong> Physical memory above <code>0x08000000</code> is unmapped. A wild pointer there is an instant <code>#PF</code>.</li>
 			<li><strong>User page leak on reap.</strong> Killing a ring-3 process frees its kernel stack and page directory but not all user pages mapped into it; a few pages leak per command run.</li>
-			<li><strong>Heap fragmentation.</strong> Power-of-two size classes make long-running mixed-size allocation wasteful compared with a real allocator.</li>
+			<li><strong>Kernel heap fragmentation.</strong> <code>kmalloc</code>'s power-of-two size classes make long-running mixed-size kernel allocation wasteful; ring-3 commands use the separate first-fit libc heap described above.</li>
 			<li><strong>No TLB shootdown.</strong> Cross-CPU mapping changes rely on not-present entries not being cached.</li>
 		</ul>
 	</section>

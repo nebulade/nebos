@@ -110,10 +110,10 @@
 			<li><strong>heap_reset.</strong> Discards every allocation and
 			unmaps the whole arena. Page-scoped programs such as the browser
 			use it on navigation instead of tracking individual frees.</li>
-			<li><strong>Ownership.</strong> A command either uses libc
-			<code>malloc</code> or the raw
-			<code>SYS_MEM_ALLOC/GROW/FREE</code> arena, never both. The raw
-			calls remain for small commands that allocate one buffer and exit.</li>
+			<li><strong>Ownership.</strong> Commands allocate through libc
+			<code>malloc</code>; the <code>SYS_MEM_ALLOC/GROW/FREE</code>
+			syscalls are the backend in <span class="file">libc/ucmd_mem.c</span>
+			and are not called by application code.</li>
 			<li><strong>Limits.</strong> No threads or locking, no
 			<code>free()</code>-to-page unmap, and requests near 32 MB fail
 			because headers are charged against the same arena. Console
