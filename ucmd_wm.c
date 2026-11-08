@@ -237,35 +237,18 @@ static void draw_window_clip(unsigned int idx, int cx, int cy,
 	usurf_text(&screen, (int)bx + 4, y + 3, "x", COL_WHITE,
 		   cx, cy, cw, ch);
 
-	/* Content. */
+	/* Content: every window presents an RGB565 canvas (the terminal
+	 * renders its cells into one; gfx commands own theirs). */
 	fill_clip((int)content_x, (int)cony, content_w, content_h,
 		  0x000000u, cx, cy, cw, ch);
-	if (u->mapped) {
-		if (w->kind == WM_KIND_GFX) {
-			struct uwm_canvas c;
+	if (u->mapped && u->map.kind == WM_KIND_GFX) {
+		struct uwm_canvas c;
 
-			c.px = (const unsigned short *)u->map.va;
-			c.w = u->map.w;
-			c.h = u->map.h;
-			usurf_canvas(&screen, &c, (int)content_x, (int)cony,
-				     cx, cy, cw, ch);
-		} else if (u->map.kind == WM_KIND_TEXT) {
-			usurf_cells(&screen, (const unsigned short *)u->map.va,
-				    w->cols, w->rows, (int)content_x, (int)cony,
-				    cx, cy, cw, ch);
-		}
-	}
-
-	/* Text cursor overlay (only for the focused terminal). */
-	if (w->kind == WM_KIND_TEXT && w->focused && w->cursor_visible &&
-	    w->cols && w->rows && w->cursor < w->cols * w->rows) {
-		unsigned int col = w->cursor % w->cols;
-		unsigned int row = w->cursor / w->cols;
-		unsigned int px = content_x + col * 8;
-		unsigned int py = cony + row * 10;
-
-		fill_clip((int)px, (int)py, 2, 10, COL_WHITE,
-			  cx, cy, cw, ch);
+		c.px = (const unsigned short *)u->map.va;
+		c.w = u->map.w;
+		c.h = u->map.h;
+		usurf_canvas(&screen, &c, (int)content_x, (int)cony,
+			     cx, cy, cw, ch);
 	}
 
 	/* Resize grip (bottom-right corner). */
@@ -413,11 +396,11 @@ static void do_update(struct wm_status *st)
 			wins[i].mapped = 0;
 			continue;
 		}
-		if (!wins[i].info.used || info.content_gen != wins[i].info.content_gen ||
-		    info.kind != wins[i].info.kind)
+		if (!wins[i].info.used ||
+		    info.content_gen != wins[i].info.content_gen)
 			full_redraw = 1;
 		wins[i].info = info;
-		if (!wins[i].mapped || wins[i].map.kind != info.kind ||
+		if (!wins[i].mapped ||
 		    wins[i].map.generation != info.content_gen) {
 			struct wm_map_info map;
 
@@ -502,19 +485,12 @@ static void do_update(struct wm_status *st)
 
 		if (!w->used || !w->dirty)
 			continue;
-		if (w->kind == WM_KIND_GFX) {
-			rx = w->x + 1;
-			ry = w->y + 1 + WM_TITLE_H;
-			rw = w->content_w;
-			rh = w->content_h;
-		} else {
-			if (!w->dmg_cols || !w->dmg_rows)
-				continue;
-			rx = w->x + 1 + (int)w->dmg_col0 * 8;
-			ry = w->y + 1 + WM_TITLE_H + (int)w->dmg_row0 * 10;
-			rw = w->dmg_cols * 8;
-			rh = w->dmg_rows * 10;
-		}
+		if (!w->dmg_w || !w->dmg_h)
+			continue;
+		rx = w->x + 1 + (int)w->dmg_x;
+		ry = w->y + 1 + WM_TITLE_H + (int)w->dmg_y;
+		rw = w->dmg_w;
+		rh = w->dmg_h;
 		add_rect(&present, rx, ry, rw, rh);
 		u->ack_seq = u->mapped ? w->dirty_seq : 0;
 		need = 1;

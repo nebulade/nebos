@@ -54,8 +54,7 @@
 
 /* Window content kind. */
 #define WM_KIND_NONE 0
-#define WM_KIND_TEXT 1
-#define WM_KIND_GFX  2
+#define WM_KIND_GFX  1
 
 struct wm_screen_info {
 	unsigned int width;
@@ -82,18 +81,14 @@ struct wm_status {
 
 struct wm_window_info {
 	unsigned int used;
-	unsigned int kind;         /* WM_KIND_* */
 	unsigned int focused;
 	unsigned int pid;
 	int x, y;
 	unsigned int w, h;         /* outer window rectangle */
 	unsigned int content_w, content_h;
-	unsigned int cols, rows;   /* text cells (0 for gfx) */
-	unsigned int cursor;
-	unsigned int cursor_visible;
 	unsigned int dirty;
 	unsigned int dirty_seq;
-	unsigned int dmg_col0, dmg_row0, dmg_cols, dmg_rows;
+	unsigned int dmg_x, dmg_y, dmg_w, dmg_h; /* content-relative pixels */
 	unsigned int content_gen;
 	char title[16];
 };

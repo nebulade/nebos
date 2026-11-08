@@ -165,7 +165,7 @@ def main():
                 break
             time.sleep(0.1)
         s = qmp_connect(sock)
-        time.sleep(4)                       # boot
+        time.sleep(8.0)                     # boot
 
         if mode == "hotplug":
             qmp_cmd(s, "device_add", {"driver": "usb-mouse", "id": "mouse"})

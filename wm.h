@@ -37,6 +37,11 @@ struct window {
 	unsigned int mapped_gen;
 	unsigned int mapped_pages;
 	const void *mapped_src;
+	/* Fallback kernel terminal canvas: the window server renders the cell
+	 * grid into this RGB565 canvas and the WM composites it like any other
+	 * window content. */
+	int text_ready;
+	unsigned int text_dmg_x, text_dmg_y, text_dmg_w, text_dmg_h;
 };
 
 void wm_run(void);

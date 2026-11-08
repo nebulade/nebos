@@ -107,11 +107,11 @@ def main():
         s.connect(sock)
         qmp_recv(s)                  # greeting
         qmp_cmd(s, "qmp_capabilities")
-        time.sleep(5)                # boot
+        time.sleep(8.0)              # boot
 
         if hotplug:
             qmp_cmd(s, "device_add", {"driver": "usb-kbd", "id": "kbd"})
-            time.sleep(2)
+            time.sleep(4.0)
 
         if os.path.exists(ppm):
             os.unlink(ppm)

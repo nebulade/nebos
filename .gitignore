@@ -13,4 +13,5 @@ mkpack
 tls_test
 img_test
 img_test_asan
+text_canvas_test
 mkrootfs

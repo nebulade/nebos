@@ -19,6 +19,7 @@
 #include "rtc.h"
 #include "serial.h"
 #include "sys_gfx.h"
+#include "text_canvas.h"
 #include "thermal.h"
 #include "timer.h"
 #include "tty.h"
@@ -149,7 +150,8 @@ int wm_content_size(struct term *t, unsigned int *w, unsigned int *h)
 	for (i = 0; i < MAX_WINDOWS; i++)
 		if (windows[i].used && windows[i].term == t) {
 			*w = windows[i].pw - 2;
-			*h = SCREEN_ROWS * 10;
+			*h = windows[i].canvas.px ? windows[i].canvas.h
+						  : SCREEN_ROWS * TEXT_CELL_H;
 			return 0;
 		}
 	return -1;
@@ -357,10 +359,7 @@ int wm_server_win_create(const struct win_create *in, struct win_info *out)
 		w->title[j] = in->title[j];
 	w->title[j] = '\0';
 
-	for (j = 0; j < MAX_WINDOWS; j++)
-		if (windows[j].used)
-			windows[j].focused = (j == i);
-	wm_request_redraw();
+	wm_focus_index(i);
 
 	out->fb = (void *)USER_GFX_BASE;
 	out->width = cw;
@@ -677,6 +676,48 @@ int wm_server_attach(struct wm_screen_info *out)
 	return 0;
 }
 
+/* Render the fallback kernel terminal's cell grid into its RGB565 canvas.
+ * The ring-3 terminal owns its own canvas and never comes here.  The canvas
+ * stays valid between damage blocks; the WM composites it like any other
+ * window content. */
+static void wm_text_sync(struct window *w)
+{
+	struct text_screen *s;
+	struct text_canvas tc;
+	unsigned int c0, r0, nc, nr;
+
+	if (!w || !w->term || !w->canvas.px)
+		return;
+	s = &w->term->screen;
+	tc.px = w->canvas.px;
+	tc.w = w->canvas.w;
+	tc.h = w->canvas.h;
+
+	if (!w->text_ready) {
+		text_canvas_render(&tc, s->cells, s->cols, s->rows,
+				   0, 0, s->cols, s->rows,
+				   s->cursor, s->cursor_visible, w->focused);
+		w->text_dmg_x = 0;
+		w->text_dmg_y = 0;
+		w->text_dmg_w = w->canvas.w;
+		w->text_dmg_h = w->canvas.h;
+		w->text_ready = 1;
+	} else if (s->damage_seq != w->canvas.seq) {
+		if (!screen_damage_block(s, &c0, &r0, &nc, &nr))
+			return;
+		text_canvas_render(&tc, s->cells, s->cols, s->rows,
+				   c0, r0, nc, nr,
+				   s->cursor, s->cursor_visible, w->focused);
+		w->text_dmg_x = c0 * TEXT_CELL_W;
+		w->text_dmg_y = r0 * TEXT_CELL_H;
+		w->text_dmg_w = nc * TEXT_CELL_W;
+		w->text_dmg_h = nr * TEXT_CELL_H;
+	} else {
+		return;
+	}
+	w->canvas.seq = s->damage_seq;
+}
+
 int wm_server_info(unsigned int index, struct wm_window_info *out)
 {
 	struct window *w;
@@ -691,21 +732,15 @@ int wm_server_info(unsigned int index, struct wm_window_info *out)
 		return 0;
 
 	out->used = 1;
-	out->kind = WM_KIND_NONE;
 	out->focused = w->focused ? 1 : 0;
 	out->pid = w->pid;
 	out->x = (int)w->x;
 	out->y = (int)w->y;
 	out->w = w->pw;
 	out->h = w->ph;
-	out->cols = 0;
-	out->rows = 0;
-	out->cursor = 0;
-	out->cursor_visible = 0;
 	out->dirty = 0;
 	out->dirty_seq = 0;
-	out->dmg_col0 = out->dmg_row0 = 0;
-	out->dmg_cols = out->dmg_rows = 0;
+	out->dmg_x = out->dmg_y = out->dmg_w = out->dmg_h = 0;
 	out->content_gen = w->content_gen;
 	for (i = 0; i < sizeof(out->title) - 1 && w->title[i]; i++)
 		out->title[i] = w->title[i];
@@ -716,33 +751,30 @@ int wm_server_info(unsigned int index, struct wm_window_info *out)
 	} else if (w->term) {
 		s = &w->term->screen;
 		g = sys_gfx_canvas_for(s);
+		if (!g) {
+			wm_text_sync(w);
+			if (w->canvas.px)
+				g = &w->canvas;
+		}
 	} else {
 		return 1;
 	}
 
 	if (g) {
-		out->kind = WM_KIND_GFX;
 		out->content_w = g->w;
 		out->content_h = g->h;
 		out->dirty = (g->seq != g->drawn);
 		out->dirty_seq = g->seq;
-	} else if (s) {
-		unsigned int c0, r0, nc, nr;
-
-		out->kind = WM_KIND_TEXT;
-		out->content_w = w->pw - 2;
-		out->content_h = SCREEN_ROWS * 10;
-		out->cols = s->cols;
-		out->rows = s->rows;
-		out->cursor = s->cursor;
-		out->cursor_visible = s->cursor_visible;
-		out->dirty_seq = s->damage_seq;
-		if (screen_damage_block(s, &c0, &r0, &nc, &nr)) {
-			out->dirty = 1;
-			out->dmg_col0 = c0;
-			out->dmg_row0 = r0;
-			out->dmg_cols = nc;
-			out->dmg_rows = nr;
+		if (w->term && g == &w->canvas) {
+			out->dmg_x = w->text_dmg_x;
+			out->dmg_y = w->text_dmg_y;
+			out->dmg_w = w->text_dmg_w;
+			out->dmg_h = w->text_dmg_h;
+		} else {
+			out->dmg_x = 0;
+			out->dmg_y = 0;
+			out->dmg_w = g->w;
+			out->dmg_h = g->h;
 		}
 	}
 	return 1;
@@ -752,10 +784,8 @@ int wm_server_map(unsigned int index, struct wm_map_info *out)
 {
 	struct window *w;
 	struct gfx_canvas *g = 0;
-	struct text_screen *s = 0;
 	const void *src;
-	unsigned int kind, pages, i, va;
-	unsigned int wpx, hpx, stride;
+	unsigned int pages, i, va, stride;
 
 	if (!wm_server_is_wm() || !out || index >= MAX_WINDOWS || !wm_cr3)
 		return -1;
@@ -765,45 +795,35 @@ int wm_server_map(unsigned int index, struct wm_map_info *out)
 	if (w->canvas_window) {
 		g = &w->canvas;
 	} else if (w->term) {
-		s = &w->term->screen;
-		g = sys_gfx_canvas_for(s);
+		g = sys_gfx_canvas_for(&w->term->screen);
+		if (!g) {
+			wm_text_sync(w);
+			if (w->canvas.px)
+				g = &w->canvas;
+		}
+		if (!g)
+			return -1;
 	} else {
 		return -1;
 	}
-	kind = g ? WM_KIND_GFX : WM_KIND_TEXT;
-	src = g ? (const void *)g->px : (const void *)w->term;
+	src = (const void *)g->px;
+	stride = g->w * 2;
 
-	if (w->mapped_kind == kind && w->mapped_gen == w->content_gen &&
+	if (w->mapped_kind == WM_KIND_GFX && w->mapped_gen == w->content_gen &&
 	    w->mapped_src == src) {
 		out->va = (void *)(WM_CONTENT_VA_BASE + index * WM_CONTENT_SLOT);
-		out->kind = kind;
+		out->kind = WM_KIND_GFX;
 		out->generation = w->content_gen;
-		if (g) {
-			out->w = g->w;
-			out->h = g->h;
-			out->stride = g->w * 2;
-		} else {
-			out->w = s->cols;
-			out->h = s->rows;
-			out->stride = s->cols * 2;
-		}
+		out->w = g->w;
+		out->h = g->h;
+		out->stride = stride;
 		return 0;
 	}
 
 	wm_server_unmap_index(index);
-	if (g) {
-		wpx = g->w;
-		hpx = g->h;
-		stride = g->w * 2;
-		pages = (wpx * hpx * 2 + PAGE_SIZE - 1) / PAGE_SIZE;
-		if (pages * PAGE_SIZE > WM_CONTENT_SLOT)
-			return -1;
-	} else {
-		wpx = s->cols;
-		hpx = s->rows;
-		stride = s->cols * 2;
-		pages = 1;
-	}
+	pages = (g->w * g->h * 2 + PAGE_SIZE - 1) / PAGE_SIZE;
+	if (pages * PAGE_SIZE > WM_CONTENT_SLOT)
+		return -1;
 	va = WM_CONTENT_VA_BASE + index * WM_CONTENT_SLOT;
 	for (i = 0; i < pages; i++) {
 		if (!paging_map_page(wm_cr3, va + i * PAGE_SIZE,
@@ -815,15 +835,15 @@ int wm_server_map(unsigned int index, struct wm_map_info *out)
 		}
 		invlpg_va(va + i * PAGE_SIZE);
 	}
-	w->mapped_kind = kind;
+	w->mapped_kind = WM_KIND_GFX;
 	w->mapped_gen = w->content_gen;
 	w->mapped_pages = pages;
 	w->mapped_src = src;
 
 	out->va = (void *)va;
-	out->kind = kind;
-	out->w = wpx;
-	out->h = hpx;
+	out->kind = WM_KIND_GFX;
+	out->w = g->w;
+	out->h = g->h;
 	out->stride = stride;
 	out->generation = w->content_gen;
 	return 0;
@@ -833,6 +853,7 @@ int wm_server_ack(unsigned int index, unsigned int seq)
 {
 	struct window *w;
 	struct gfx_canvas *g;
+	struct text_screen *s;
 
 	if (!wm_server_is_wm() || index >= MAX_WINDOWS)
 		return -1;
@@ -846,13 +867,17 @@ int wm_server_ack(unsigned int index, unsigned int seq)
 	}
 	if (!w->term)
 		return -1;
-	g = sys_gfx_canvas_for(&w->term->screen);
+	s = &w->term->screen;
+	g = sys_gfx_canvas_for(s);
 	if (g) {
 		if (seq == g->seq)
 			g->drawn = seq;
-	} else if (seq == w->term->screen.damage_seq) {
-		screen_clear_damage(&w->term->screen);
+		return 0;
 	}
+	if (w->canvas.px && seq == w->canvas.seq)
+		w->canvas.drawn = seq;
+	if (seq == s->damage_seq)
+		screen_clear_damage(s);
 	return 0;
 }
 
@@ -1195,7 +1220,7 @@ static void wm_make_title(struct window *w, unsigned int n)
 
 int wm_spawn_terminal(void)
 {
-	unsigned int i, j, fbw = vga_fb_width();
+	unsigned int i, fbw = vga_fb_width();
 	struct window *w;
 	struct term *t;
 	int pid;
@@ -1255,9 +1280,19 @@ int wm_spawn_terminal(void)
 	w->used = 1;
 	w->term = t;
 	w->canvas_window = 0;
-	w->canvas.px = 0;
-	w->canvas.w = w->canvas.h = 0;
-	w->canvas.seq = w->canvas.drawn = 0;
+	if (gfx_alloc(&w->canvas, SCREEN_COLS * TEXT_CELL_W,
+		      SCREEN_ROWS * TEXT_CELL_H) != 0) {
+		serial_puts(SERIAL_COM1, "wm: no text canvas\n");
+		w->used = 0;
+		w->term = 0;
+		return -1;
+	}
+	w->canvas.drawn = 0xFFFFFFFFu;
+	w->text_ready = 0;
+	w->text_dmg_x = 0;
+	w->text_dmg_y = 0;
+	w->text_dmg_w = w->canvas.w;
+	w->text_dmg_h = w->canvas.h;
 	w->back = 0;
 	w->back_pages = 0;
 	w->owner_cr3 = 0;
@@ -1265,8 +1300,8 @@ int wm_spawn_terminal(void)
 	wait_queue_init(&w->key_wq);
 	w->pid = 0;
 	w->focused = 0;
-	w->pw = SCREEN_COLS * 8 + 2;
-	w->ph = WM_TITLE_H + SCREEN_ROWS * 10 + 2;
+	w->pw = SCREEN_COLS * TEXT_CELL_W + 2;
+	w->ph = WM_TITLE_H + SCREEN_ROWS * TEXT_CELL_H + 2;
 	w->content_gen = 1;
 	w->mapped_kind = WM_KIND_NONE;
 	w->mapped_gen = 0;
@@ -1287,17 +1322,15 @@ int wm_spawn_terminal(void)
 
 	pid = process_create_ptr("term", term_entry, t);
 	if (pid < 0) {
+		gfx_free(&w->canvas);
 		w->used = 0;
+		w->term = 0;
 		return -1;
 	}
 	process_set_weight((unsigned int)pid, 12);
 	w->pid = (unsigned int)pid;
 
-	for (j = 0; j < MAX_WINDOWS; j++)
-		if (windows[j].used)
-			windows[j].focused = (j == i);
-
-	wm_request_redraw();
+	wm_focus_index(i);
 	return (int)i;
 }
 
@@ -1306,9 +1339,17 @@ static void wm_focus_index(unsigned int idx)
 	unsigned int i;
 	if (windows[idx].used && windows[idx].focused)
 		return;
-	for (i = 0; i < MAX_WINDOWS; i++)
-		if (windows[i].used)
-			windows[i].focused = (i == idx);
+	for (i = 0; i < MAX_WINDOWS; i++) {
+		int now = windows[i].used && (i == idx);
+
+		if (!windows[i].used || windows[i].focused == now)
+			continue;
+		windows[i].focused = now;
+		/* The terminal cursor lives in the text canvas, so a focus
+		 * change must repaint that cell in both windows. */
+		if (windows[i].term && windows[i].canvas.px)
+			screen_damage_cursor(&windows[i].term->screen);
+	}
 	wm_request_redraw();
 }
 
@@ -1360,6 +1401,9 @@ static void wm_close_window(unsigned int idx)
 	w->mapped_gen = 0;
 	w->mapped_pages = 0;
 	w->mapped_src = 0;
+	if (w->term && w->canvas.px)
+		gfx_free(&w->canvas);
+	w->text_ready = 0;
 	wm_focus_top();
 	wm_request_redraw();
 }
@@ -1659,6 +1703,11 @@ static void wm_draw_window_clip(struct window *w, unsigned int cx, unsigned int 
 		return;   /* generic canvas windows are drawn by the ring-3 WM */
 	s = &w->term->screen;
 	g = sys_gfx_canvas_for(s);
+	if (!g) {
+		wm_text_sync(w);
+		if (w->canvas.px)
+			g = &w->canvas;
+	}
 	unsigned int bx = w->x + w->pw - 1 - WM_CLOSE_W;
 	unsigned int cony = w->y + 1 + WM_TITLE_H;
 
@@ -1683,23 +1732,12 @@ static void wm_draw_window_clip(struct window *w, unsigned int cx, unsigned int 
 	fbtext_draw_string_xy_clip(bx + 4, w->y + 3, "x", 255, 255, 255,
 		cx, cy, cw, ch);
 
-	/* Content: text cells or the gfx canvas. */
-	wm_fill_rect_clip(w->x + 1, cony, w->pw - 2, SCREEN_ROWS * 10,
+	/* Content: the window's canvas (text canvas or a gfx command). */
+	wm_fill_rect_clip(w->x + 1, cony, w->pw - 2,
+		g ? g->h : SCREEN_ROWS * TEXT_CELL_H,
 		cx, cy, cw, ch, 0, 0, 0);
 	if (g)
 		blit->canvas(g, w->x + 1, cony, cx, cy, cw, ch);
-	else
-		fbtext_draw_cells_clip(s->cells, s->cols, s->rows,
-			w->x + 1, cony, cx, cy, cw, ch);
-
-	/* Blinking block cursor (text windows only). */
-	if (!g && w->focused && s->cursor_visible) {
-		unsigned int col = s->cursor % s->cols;
-		unsigned int row = s->cursor / s->cols;
-
-		wm_fill_rect_clip(w->x + 1 + col * 8, cony + row * 10, 2, 10,
-			cx, cy, cw, ch, 255, 255, 255);
-	}
 }
 
 static void wm_draw_window(struct window *w)
@@ -1792,29 +1830,34 @@ static void wm_redraw_if_needed(void)
 	for (i = 0; i < MAX_WINDOWS; i++) {
 		struct text_screen *s;
 		struct gfx_canvas *g;
-		unsigned int seq, col0, row0, ncols, nrows;
+		unsigned int seq;
 
 		if (!windows[i].used || !windows[i].term)
 			continue;
 		s = &windows[i].term->screen;
 		g = sys_gfx_canvas_for(s);
-		if (!screen_damage_block(s, &col0, &row0, &ncols, &nrows) &&
-		    !(g && g->seq != g->drawn))
+		if (!g) {
+			wm_text_sync(&windows[i]);
+			if (windows[i].canvas.px)
+				g = &windows[i].canvas;
+		}
+		if (!g || g->seq == g->drawn)
 			continue;
-		seq = g ? g->seq : 0;   /* capture before compositing */
+		seq = g->seq;   /* capture before compositing */
 		mouse_cursor_erase();
-		if (g)
+		if (g == &windows[i].canvas)
+			wm_redraw_rect(windows[i].x + 1 +
+				       (int)windows[i].text_dmg_x,
+				windows[i].y + 1 + WM_TITLE_H +
+				       (int)windows[i].text_dmg_y,
+				windows[i].text_dmg_w, windows[i].text_dmg_h);
+		else
 			wm_redraw_rect(windows[i].x + 1,
 				windows[i].y + 1 + WM_TITLE_H,
-				windows[i].pw - 2, SCREEN_ROWS * 10);
-		else
-			wm_redraw_rect(windows[i].x + 1 + col0 * 8,
-				windows[i].y + 1 + WM_TITLE_H + row0 * 10,
-				ncols * 8, nrows * 10);
+				g->w, g->h);
 		mouse_redraw_cursor();
 		screen_clear_damage(s);
-		if (g)
-			g->drawn = seq;
+		g->drawn = seq;
 	}
 }
 
