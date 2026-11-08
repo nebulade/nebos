@@ -86,14 +86,10 @@ static void send_line(const unsigned char *buf, unsigned int len)
 	if (!nd)
 		return;
 	netlog_get_host(dst);
-	if (nd->default_ip) {
-		unsigned int i;
-
-		for (i = 0; i < 4; i++)
-			src[i] = nd->default_ip[i];
-	} else {
-		net_get_ip(src);
-	}
+	/* Use the address the interface actually has: after DHCP the
+	 * driver's static default is no longer what is on the wire, and a
+	 * source address from another subnet is dropped by some paths. */
+	net_get_ip(src);
 	net_udp_send_from_dev(nd, src, bcast_mac, dst,
 			      NETLOG_PORT, NETLOG_PORT, buf, len);
 }

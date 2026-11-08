@@ -242,14 +242,7 @@ static void send_ack(unsigned int next_offset, unsigned int status)
 
 	if (!nd)
 		return;
-	if (nd->default_ip) {
-		unsigned int i;
-
-		for (i = 0; i < 4; i++)
-			src[i] = nd->default_ip[i];
-	} else {
-		net_get_ip(src);
-	}
+	net_get_ip(src);
 	wr32(ackbuf, X_MAGIC_ACK);
 	wr32(ackbuf + 4, next_offset);
 	wr32(ackbuf + 8, status);
