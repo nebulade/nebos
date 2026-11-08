@@ -14,11 +14,15 @@ li { margin: 6px 0; }
 <h1>MuJS demo</h1>
 <p id="out">The script has not run yet.</p>
 <ul>
+<li>External: <b id="ext">?</b></li>
 <li>2 + 3 = <b id="sum">?</b></li>
 <li>Math.sqrt(16) = <b id="sqrt">?</b></li>
 <li>Date: <span id="date">?</span></li>
 </ul>
+<script src="JSEXT.JS"></script>
 <script>
+if (typeof extLoaded === 'undefined')
+	throw new Error('external script did not run first');
 document.getElementById('sum').textContent = String(2 + 3);
 document.getElementById('sqrt').textContent = String(Math.sqrt(16));
 document.getElementById('date').textContent =

@@ -37,6 +37,8 @@
 #define BR_IMG_LAYOUT_W 1000
 #define BR_CSS_MAX      (832u * 1024u)
 #define BR_CSS_COMP_MAX (192u * 1024u)
+#define BR_SCRIPT_MAX   (512u * 1024u)
+#define FETCH_ABORT     (-2)
 /* Session cache for remote stylesheets (per launch; cleared at startup). */
 #define CSS_CACHE_MAX      16
 #define CSS_CACHE_FILE_MAX (256u * 1024u)
@@ -377,10 +379,29 @@ static void js_host_changed(void)
 	ngui_invalidate(&ui);
 }
 
-/* Run the page's inline <script> blocks in document order.  The state is
- * page-scoped: scripts share globals, then it is freed.  The source is
- * copied because MuJS needs NUL-terminated text and the parser's offsets
- * point into the page body. */
+static int fetch_script_text(const char *url, unsigned char **out,
+			     unsigned int *outlen, char *err,
+			     unsigned int errcap);
+
+static void script_error(const char *what, const char *url, const char *why)
+{
+	char msg[192];
+	unsigned int n = 0;
+
+	s_append(msg, &n, what, sizeof(msg));
+	if (url && url[0]) {
+		s_append(msg, &n, " ", sizeof(msg));
+		s_append(msg, &n, url, sizeof(msg));
+	}
+	if (why && why[0]) {
+		s_append(msg, &n, ": ", sizeof(msg));
+		s_append(msg, &n, why, sizeof(msg));
+	}
+	js_host_report(msg);
+}
+
+/* Run the page's scripts in document order: external <script src> bodies are
+ * fetched, inline bodies are copied because MuJS needs NUL-terminated text. */
 static void run_page_scripts(void)
 {
 	struct js_browser_host host;
@@ -392,25 +413,57 @@ static void run_page_scripts(void)
 	host.report = js_host_report;
 	host.navigate = js_host_navigate;
 	host.changed = js_host_changed;
+	host.page_url = page_url;
 	if (js_browser_start(&doc, &host) != 0) {
 		js_host_status("JavaScript: out of memory", 1);
 		return;
 	}
 	for (i = 0; i < doc.nscripts; i++) {
-		unsigned int off = doc.scripts[i].off;
-		unsigned int len = doc.scripts[i].len;
-		unsigned int k;
-		char *src = (char *)malloc(len + 1);
+		struct br_script *script = &doc.scripts[i];
 
-		if (!src) {
-			js_host_status("JavaScript: out of memory", 1);
-			break;
+		if (script->src_off) {
+			const char *src_attr = doc.attrs + script->src_off;
+			char url[BR_URL_MAX];
+			unsigned char *data;
+			unsigned int len;
+			char err[64];
+			int rv;
+
+			if (!src_attr[0])
+				continue;
+			if (resolve_link(page_url, src_attr, url,
+					 sizeof(url)) != 0) {
+				script_error("Cannot load script", src_attr,
+					     "unsupported URL");
+				continue;
+			}
+			set_status("Loading script...", 0, 0);
+			rv = fetch_script_text(url, &data, &len, err,
+					       sizeof(err));
+			if (rv == FETCH_ABORT)
+				break;
+			if (rv != 0) {
+				script_error("Cannot load script", url, err);
+				continue;
+			}
+			js_browser_run((const char *)data, url);
+			free(data);
+		} else {
+			unsigned int off = script->off;
+			unsigned int len = script->len;
+			unsigned int k;
+			char *src = (char *)malloc(len + 1);
+
+			if (!src) {
+				js_host_status("JavaScript: out of memory", 1);
+				break;
+			}
+			for (k = 0; k < len; k++)
+				src[k] = doc.script_src[off + k];
+			src[len] = '\0';
+			js_browser_run(src, page_url);
+			free(src);
 		}
-		for (k = 0; k < len; k++)
-			src[k] = doc.script_src[off + k];
-		src[len] = '\0';
-		js_browser_run(src, page_url);
-		free(src);
 		if (pending_action)
 			break;
 	}
@@ -986,7 +1039,6 @@ static int inflate_trunc(const unsigned char *src, unsigned int len,
 #define FETCH_BODY "/share/bfbody"
 #define FETCH_META "/share/bfmeta"
 #define FETCH_DONE "/share/bfdone"
-#define FETCH_ABORT (-2)
 
 struct fetch_meta {
 	int status;
@@ -1313,6 +1365,35 @@ static int read_url(const char *url, unsigned int cap, unsigned char **out,
 	*out = buf;
 	*outlen = len;
 	*truncated = tr;
+	return 0;
+}
+
+/* Fetch one external script into a heap buffer and NUL-terminate it. */
+static int fetch_script_text(const char *url, unsigned char **out,
+			     unsigned int *outlen, char *err,
+			     unsigned int errcap)
+{
+	unsigned char *buf;
+	unsigned int len;
+	int local, truncated = 0;
+	char ctype[64], final[BR_URL_MAX];
+	int rv;
+
+	*out = 0;
+	*outlen = 0;
+	rv = read_url(url, BR_SCRIPT_MAX, &buf, &len, &local, ctype,
+		      sizeof(ctype), final, sizeof(final), err, errcap,
+		      &truncated);
+	if (rv != 0)
+		return rv;
+	if (truncated || len >= BR_SCRIPT_MAX) {
+		free(buf);
+		s_copy(err, "script is too large", errcap);
+		return -1;
+	}
+	buf[len] = '\0';
+	*out = buf;
+	*outlen = len;
 	return 0;
 }
 
@@ -1959,7 +2040,7 @@ static void load_home(int push)
 			"</ul></div>"
 			"<p>Type a URL in the bar above.  Esc closes the "
 			"window, Ctrl+L focuses the address bar.</p>"
-			"<pre>javascript: inline scripts (limited DOM)\nforms: not supported"
+			"<pre>javascript: inline + external scripts (limited DOM)\nforms: not supported"
 			"\nimages: PNG JPEG GIF BMP TGA PNM ICO</pre>"
 			"</body></html>";
 		br_set_viewport(ui.w);

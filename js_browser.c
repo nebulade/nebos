@@ -212,7 +212,7 @@ int js_browser_start(struct br_doc *doc, const struct js_browser_host *h)
 		return -1;
 	D = doc;
 	host = *h;
-	current_url = 0;
+	current_url = h->page_url;
 	panic_armed = 0;
 
 	J = js_newstate(0, 0, JS_STRICT);
@@ -255,7 +255,6 @@ int js_browser_run(const char *source, const char *url)
 	if (!J || !D)
 		return -1;
 
-	current_url = url;
 	js_setlimit(J, JS_RUN_LIMIT, 0);
 
 	panic_armed = 1;

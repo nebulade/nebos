@@ -13,6 +13,7 @@ struct js_browser_host {
 	void (*report)(const char *msg);
 	void (*navigate)(const char *url);
 	void (*changed)(void);
+	const char *page_url;   /* location.href for every script on the page */
 };
 
 /* Create a state for this document.  Returns 0 on success. */

@@ -170,8 +170,9 @@ struct br_rule {
  * br_parse(); the caller must keep it alive for as long as the document (the
  * browser keeps the page body until the next navigation). */
 struct br_script {
-	unsigned int off;
+	unsigned int off;       /* inline body, or empty for src scripts */
 	unsigned int len;
+	unsigned int src_off;   /* src attribute in the attr arena, 0 if inline */
 };
 
 struct br_doc {

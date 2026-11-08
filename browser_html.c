@@ -4029,9 +4029,56 @@ static unsigned int skip_element(const char *html, unsigned int len,
 	return p;
 }
 
-/* Inline JavaScript only: skip structured-data/template script blocks
- * (JSON-LD, application/json, text/template, ...) and external sources,
- * which this browser does not fetch yet. */
+/* Store a <script src=...> value in the attribute arena.  Kept separate from
+ * parse_attrs() so script-only attributes cannot be confused with the
+ * value/d attributes that also use src_off on other elements. */
+static unsigned int script_src_attr(struct br_doc *d, const char *s,
+				    unsigned int len)
+{
+	unsigned int i = 0;
+
+	while (i < len) {
+		unsigned int ns, ne, vs, ve;
+		char quote = 0;
+
+		while (i < len && is_space(s[i]))
+			i++;
+		if (i >= len || s[i] == '/')
+			break;
+		ns = i;
+		while (i < len && !is_space(s[i]) && s[i] != '=' && s[i] != '>')
+			i++;
+		ne = i;
+		while (i < len && is_space(s[i]))
+			i++;
+		if (i >= len || s[i] != '=')
+			continue;
+		i++;
+		while (i < len && is_space(s[i]))
+			i++;
+		if (i < len && (s[i] == '"' || s[i] == '\'')) {
+			quote = s[i++];
+			vs = i;
+			while (i < len && s[i] != quote)
+				i++;
+			ve = i;
+			if (i < len)
+				i++;
+		} else {
+			vs = i;
+			while (i < len && !is_space(s[i]) && s[i] != '>')
+				i++;
+			ve = i;
+		}
+		if (ne > ns && ci_eq_n(s + ns, "src", ne - ns))
+			return store_attr(d, s + vs, ve - vs, 400);
+	}
+	return 0;
+}
+
+/* JavaScript only: skip structured-data/template script blocks (JSON-LD,
+ * application/json, text/template, ...) and non-JS type values.  External
+ * src scripts are allowed; the browser fetches them separately. */
 static int script_is_javascript(const char *s, unsigned int len)
 {
 	unsigned int i = 0;
@@ -4073,8 +4120,6 @@ static int script_is_javascript(const char *s, unsigned int len)
 		} else if (i == ne) {
 			i++;
 		}
-		if (ne > ns && ci_eq_n(s + ns, "src", ne - ns))
-			return 0;
 		if (ne > ns && ci_eq_n(s + ns, "type", ne - ns)) {
 			unsigned int vn = has_val ? ve - vs : 0;
 
@@ -4240,6 +4285,9 @@ int br_parse(struct br_doc *d, const char *html, unsigned int len)
 
 						script->off = i;
 						script->len = end > i ? end - i : 0;
+						script->src_off = script_src_attr(
+							d, html + attr_start,
+							attr_end - attr_start);
 					} else {
 						d->scripts_truncated = 1;
 					}

@@ -350,14 +350,14 @@
 			ngui, the image library, inflate, TLS, uhttp and the vendored MuJS
 			engine. It opens at 1100×700 (960×640 and 780×540 fallbacks on
 			smaller screens), with a URL bar, history, a status bar, inline
-			images and inline scripts. Network
+			images and inline/external scripts. Network
 			work runs in a headless <code>curl __fetch</code> helper that writes
 			the body and metadata under <code>/share</code>, so the UI keeps
 			drawing and scrolling.
 		</p>
 		<ul>
 			<li><strong>HTML/CSS subset.</strong> External and inline stylesheets, tag/class/id and descendant/child selectors, colours, backgrounds, real <code>font-size</code> (8–48 px), bold/italic faces, <code>font-family: monospace</code>, margins, padding, borders, alignment, percentage widths, basic floats and <code>@media</code> blocks evaluated at the browser canvas width when the page is parsed. Text is Latin-1; there is no shaping, bidi or <code>@font-face</code> yet.</li>
-			<li><strong>JavaScript.</strong> Inline <code>&lt;script&gt;</code> blocks run on the vendored MuJS engine: <code>console.log</code>, <code>alert</code>, <code>document.getElementById(...).textContent</code> and <code>location.href</code>. Math, Date and JSON are the engine's; each page gets one state, and an 8M-instruction limit turns a runaway loop into a <code>script ran too long</code> error instead of freezing the browser. Timers, event listeners, <code>innerHTML</code> and external <code>&lt;script src&gt;</code> are not implemented yet.</li>
+			<li><strong>JavaScript.</strong> Inline and external <code>&lt;script src&gt;</code> blocks run on the vendored MuJS engine in document order: <code>console.log</code>, <code>alert</code>, <code>document.getElementById(...).textContent</code> and <code>location.href</code>. External scripts use the same local/network fetch path as pages and CSS (512 KB cap). Math, Date and JSON are the engine's; each page gets one state, and an 8M-instruction limit turns a runaway loop into a <code>script ran too long</code> error instead of freezing the browser. Timers, event listeners, <code>innerHTML</code>, <code>type="module"</code> and <code>defer</code>/<code>async</code> semantics are not implemented yet.</li>
 			<li><strong>Not supported.</strong> Forms, pseudo-classes, border-radius clipping of descendants, gradients/box-shadow/transitions and CSS <code>color-mix</code>. Flex rows, card grids, basic tables, inline SVG and CSS variables are supported.</li>
 			<li><strong>Caps.</strong> 2 MB page body, 832 KB CSS, 6144 DOM nodes, 4608 rules, 16 images. Each image gets an <code>img_estimate()</code>-sized decode arena that is freed after the scaled bitmap is made; navigation calls <code>heap_reset()</code> and unmaps the page heap.</li>
 			<li><strong>Fetching.</strong> Each network fetch starts a one-shot helper process and a fresh TCP/TLS connection; images load one per loop within the viewport plus 160 px.</li>

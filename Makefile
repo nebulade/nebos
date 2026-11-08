@@ -917,7 +917,7 @@ hello.elf: hello.o
 	$(LD) -T hello.ld -nostdlib -m elf_i386 -o $@ $<
 	$(OBJCOPY) --strip-all $@ $@
 
-root.img: browser.elf gallery.elf testdata/browser/demo.html testdata/browser/js.html testdata/images/rgb.bmp
+root.img: browser.elf gallery.elf testdata/browser/demo.html testdata/browser/js.html testdata/browser/jsext.js testdata/images/rgb.bmp
 	dd if=/dev/zero of=$@ bs=512 count=2880 2>/dev/null
 	mkfs.fat -F 12 -n "ROOTDISK" $@
 	echo "Hello from the second floppy!" | mcopy -i $@ - ::HELLO.TXT
@@ -926,6 +926,7 @@ root.img: browser.elf gallery.elf testdata/browser/demo.html testdata/browser/js
 	mcopy -i $@ gallery.elf ::GALLERY
 	mcopy -i $@ testdata/browser/demo.html ::DEMO.HTM
 	mcopy -i $@ testdata/browser/js.html ::JS.HTM
+	mcopy -i $@ testdata/browser/jsext.js ::JSEXT.JS
 	mcopy -i $@ testdata/images/rgb.bmp ::PIC.BMP
 
 run: image.bin root.img
