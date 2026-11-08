@@ -156,7 +156,8 @@ static void kexec_write_bootinfo(unsigned int pack_addr, unsigned int pack_size)
 		net_get_mask(mask);
 		net_get_gateway(gw);
 		net_get_dns(dns);
-		flags |= BOOTINFO_FLAG_NET;
+		/* words[4] was copied from flags above, before this block. */
+		words[4] |= BOOTINFO_FLAG_NET;
 		words[7] = pack_ip(ip);
 		words[8] = pack_ip(mask);
 		words[9] = pack_ip(gw);
