@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>006 flex and grid</title>
+<style>
+html,body{margin:0;padding:0;background:#fff;color:#202020;font-family:sans-serif;font-size:13px}
+h1{font-size:20px;margin:10px 0 4px 10px}p{margin:0 0 10px 10px}
+.pane{float:left;width:440px;margin-left:10px}.label{background:#eee;padding:4px 6px;margin-bottom:4px}
+.stage{background:#fff;padding:8px;border:1px solid #999}
+.flex{display:flex;width:400px;height:60px}.f1{background:#cc3333;flex-grow:1}.f2{background:#22aa44;flex-grow:2}.f3{background:#2244cc;flex-grow:1}
+.grid{display:grid;grid-template-columns:100px 200px;gap:10px;margin-top:10px}.g{height:40px;background:#cccccc}
+</style></head><body>
+<h1>006 &middot; flex and grid</h1>
+<p>Flex items must grow 1:2:1; the grid must have two columns.</p>
+<div class="pane"><div class="label">A: flex + grid</div><div class="stage">
+<div class="flex"><div class="f1"></div><div class="f2"></div><div class="f3"></div></div>
+<div class="grid"><div class="g"></div><div class="g"></div></div>
+</div></div>
+<div class="pane"><div class="label">B: float reference</div><div class="stage">
+<div style="width:400px;height:60px"><div class="f1" style="float:left;width:100px;height:60px"></div><div class="f2" style="float:left;width:200px;height:60px"></div><div class="f3" style="float:left;width:100px;height:60px"></div></div>
+<div style="width:400px;margin-top:10px"><div class="g" style="float:left;width:100px"></div><div class="g" style="float:left;width:200px;margin-left:10px"></div></div>
+</div></div>
+</body></html>

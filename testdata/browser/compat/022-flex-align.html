@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>022 flex alignment</title>
+<style>
+html, body { margin: 0; padding: 0; background: #ffffff; color: #202020; }
+body { font-family: sans-serif; font-size: 13px; }
+h1 { font-size: 20px; margin: 10px 0 4px 10px; }
+p { margin: 0 0 10px 10px; }
+.pane { float: left; width: 440px; margin-left: 10px; }
+.label { background: #eeeeee; padding: 4px 6px; margin-bottom: 4px; }
+.stage { background: #ffffff; padding: 8px; border: 1px solid #999999; }
+.cover { background: #eeeeee; width: 360px; height: 100px; }
+.item { width: 60px; }
+.after { background: #333333; color: #ffffff; height: 24px; margin-top: 8px; padding-left: 4px; }
+</style>
+</head>
+<body>
+<h1>022 &middot; flex alignment</h1>
+<p>Three 60px items must be space-between and vertically centred in both panes.</p>
+<div class="pane">
+<div class="label">A: justify-content / align-items</div>
+<div class="stage">
+  <div class="cover" style="display: flex; justify-content: space-between; align-items: center">
+    <div class="item" style="height: 40px; background: #cc2222"></div>
+    <div class="item" style="height: 60px; background: #22aa44"></div>
+    <div class="item" style="height: 80px; background: #2244cc"></div>
+  </div>
+  <div class="after">after</div>
+</div>
+</div>
+<div class="pane">
+<div class="label">B: absolute reference</div>
+<div class="stage">
+  <div class="cover">
+    <div class="item" style="position: absolute; left: 0; top: 30px; height: 40px; background: #cc2222"></div>
+    <div class="item" style="position: absolute; left: 150px; top: 20px; height: 60px; background: #22aa44"></div>
+    <div class="item" style="position: absolute; left: 300px; top: 10px; height: 80px; background: #2244cc"></div>
+  </div>
+  <div class="after">after</div>
+</div>
+</div>
+</body>
+</html>

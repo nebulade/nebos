@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>NebOS browser compatibility ladder</title>
+<style>
+html, body { margin: 0; padding: 0; background: #ffffff; color: #202020; }
+body { font-family: sans-serif; font-size: 14px; padding: 16px; }
+h1 { font-size: 26px; margin: 0 0 4px 0; }
+p.note { color: #555555; margin: 0 0 14px 0; }
+table { border: 1px solid #999999; }
+th, td { padding: 5px 10px; border-bottom: 1px solid #dddddd; }
+th { background: #eeeeee; text-align: left; }
+a { color: #0645ad; }
+.pass { color: #117711; font-weight: bold; }
+.fail { color: #aa2222; font-weight: bold; }
+.todo { color: #777777; }
+</style>
+</head>
+<body>
+<h1>NebOS browser compatibility ladder</h1>
+<p class="note">One behaviour per page. A and B must look identical unless the page says otherwise.</p>
+<table>
+<tr><th>#</th><th>Page</th><th>Feature</th><th>Status</th></tr>
+<tr><td>001</td><td><a href="001-cascade.html">cascade</a></td><td>class, id, inline style, specificity</td><td class="pass">PASS</td></tr>
+<tr><td>002</td><td><a href="002-inline.html">inline</a></td><td>text, bold, italic, underline</td><td class="pass">PASS</td></tr>
+<tr><td>003</td><td><a href="003-lists.html">lists</a></td><td>ul/ol nesting and markers</td><td class="pass">PASS</td></tr>
+<tr><td>004</td><td><a href="004-float-row.html">float row</a></td><td>float left/right columns</td><td class="pass">PASS</td></tr>
+<tr><td>005</td><td><a href="005-table.html">table</a></td><td>basic rows, cells, padding</td><td class="pass">PASS</td></tr>
+<tr><td>006</td><td><a href="006-flex-grid.html">flex/grid</a></td><td>flex grow and two-column grid</td><td class="pass">PASS</td></tr>
+<tr><td>007</td><td><a href="007-absolute.html">absolute</a></td><td>absolute positioning</td><td class="pass">PASS</td></tr>
+<tr><td>008</td><td><a href="008-media.html">media</a></td><td>@media min-width</td><td class="pass">PASS</td></tr>
+<tr><td>010</td><td><a href="010-block-width.html">block width</a></td><td>width, min-width, max-width on a block</td><td class="pass">PASS</td></tr>
+<tr><td>011</td><td><a href="011-block-height.html">block height</a></td><td>height, min-height, max-height</td><td class="pass">PASS</td></tr>
+<tr><td>012</td><td><a href="012-auto-margin.html">auto margin</a></td><td>margin: 0 auto</td><td class="pass">PASS</td></tr>
+<tr><td>013</td><td><a href="013-box-sizing.html">box sizing</a></td><td>border-box vs content-box</td><td class="pass">PASS</td></tr>
+<tr><td>014</td><td><a href="014-em.html">em units</a></td><td>em lengths against root font size</td><td class="pass">PASS</td></tr>
+<tr><td>015</td><td><a href="015-font-shorthand.html">font shorthand</a></td><td>font: style weight size/line-height family</td><td class="pass">PASS</td></tr>
+<tr><td>016</td><td><a href="016-borders.html">borders</a></td><td>per-side widths/colors</td><td class="pass">PASS</td></tr>
+<tr><td>017</td><td><a href="017-z-index.html">z-index</a></td><td>stacking of positioned boxes</td><td class="pass">PASS</td></tr>
+<tr><td>018</td><td><a href="018-relative.html">relative</a></td><td>position: relative offsets</td><td class="pass">PASS</td></tr>
+<tr><td>019</td><td><a href="019-right-bottom.html">right/bottom</a></td><td>absolute right and bottom</td><td class="pass">PASS</td></tr>
+<tr><td>020</td><td><a href="020-table-span.html">table colspan</a></td><td>colspan (rowspan still open)</td><td class="pass">PASS</td></tr>
+<tr><td>021</td><td><a href="021-table-percent.html">table percent</a></td><td>table width and percentage columns</td><td class="pass">PASS</td></tr>
+<tr><td>022</td><td><a href="022-flex-align.html">flex align</a></td><td>justify-content and align-items</td><td class="pass">PASS</td></tr>
+<tr><td>023</td><td><a href="023-calc.html">calc</a></td><td>calc(percent +/- px)</td><td class="pass">PASS</td></tr>
+<tr><td>024</td><td><a href="024-nested-em.html">nested em</a></td><td>em against the element font size</td><td class="pass">PASS</td></tr>
+<tr><td>025</td><td><a href="025-nowrap.html">nowrap</a></td><td>white-space: nowrap</td><td class="pass">PASS</td></tr>
+<tr><td>026</td><td><a href="026-transform.html">transform</a></td><td>transform: translate</td><td class="pass">PASS</td></tr>
+<tr><td>027</td><td><a href="027-sticky.html">sticky</a></td><td>position: sticky top</td><td class="pass">PASS</td></tr>
+<tr><td>028</td><td><a href="028-background-image.html">background-image</a></td><td>background image stretched to the box</td><td class="pass">PASS</td></tr>
+<tr><td>029</td><td><a href="029-float-percent.html">percentage floats</a></td><td>float with width: 50%</td><td class="pass">PASS</td></tr>
+</table>
+</body>
+</html>

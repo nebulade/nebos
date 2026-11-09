@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>013 box sizing</title>
+<style>
+html, body { margin: 0; padding: 0; background: #ffffff; color: #202020; }
+body { font-family: sans-serif; font-size: 13px; }
+h1 { font-size: 20px; margin: 10px 0 4px 10px; }
+p { margin: 0 0 10px 10px; }
+.pane { float: left; width: 440px; margin-left: 10px; }
+.label { background: #eeeeee; padding: 4px 6px; margin-bottom: 4px; }
+.stage { background: #ffffff; padding: 8px; border: 1px solid #999999; }
+.red { background: #cc3333; border: 5px solid #333333; }
+.after { background: #333333; color: #ffffff; height: 24px; margin-top: 4px; padding-left: 4px; }
+</style>
+</head>
+<body>
+<h1>013 &middot; box-sizing</h1>
+<p>Both red boxes must be 200 x 80 px including padding and border.</p>
+<div class="pane">
+<div class="label">A: width: 200px; height: 80px; border-box</div>
+<div class="stage">
+  <div class="red" style="width: 200px; height: 80px; padding: 20px; box-sizing: border-box"></div>
+  <div class="after">after</div>
+</div>
+</div>
+<div class="pane">
+<div class="label">B: width: 150px; height: 30px; content-box</div>
+<div class="stage">
+  <div class="red" style="width: 150px; height: 30px; padding: 20px"></div>
+  <div class="after">after</div>
+</div>
+</div>
+</body>
+</html>

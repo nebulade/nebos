@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>025 white-space: nowrap</title>
+<style>
+html, body { margin: 0; padding: 0; background: #ffffff; color: #202020; }
+body { font-family: sans-serif; font-size: 13px; }
+h1 { font-size: 20px; margin: 10px 0 4px 10px; }
+p { margin: 0 0 10px 10px; }
+.pane { float: left; width: 440px; margin-left: 10px; }
+.label { background: #eeeeee; padding: 4px 6px; margin-bottom: 4px; }
+.stage { background: #ffffff; padding: 8px; border: 1px solid #999999; }
+.nowrap { width: 200px; white-space: nowrap; }
+.wide { width: 420px; }
+.after { background: #333333; color: #ffffff; height: 24px; margin-top: 8px; padding-left: 4px; }
+</style>
+</head>
+<body>
+<h1>025 &middot; white-space: nowrap</h1>
+<p>The sentence must stay on one line in both panes; A's line box is only 200 px wide.</p>
+<div class="pane">
+<div class="label">A: width: 200px; white-space: nowrap</div>
+<div class="stage">
+  <div class="nowrap">The quick brown fox jumps over the lazy dog.</div>
+  <div class="after">after</div>
+</div>
+</div>
+<div class="pane">
+<div class="label">B: width: 420px reference</div>
+<div class="stage">
+  <div class="wide">The quick brown fox jumps over the lazy dog.</div>
+  <div class="after">after</div>
+</div>
+</div>
+</body>
+</html>

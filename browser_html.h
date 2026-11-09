@@ -85,9 +85,12 @@ enum br_tag {
 struct br_style {
 	unsigned short color;
 	unsigned short bg;
-	unsigned short border_color;
+	unsigned short border_c[4]; /* top, right, bottom, left */
+	unsigned short bg_image;    /* 1-based background URL, 0 none */
 	unsigned char has_bg;
 	unsigned char font_px;      /* 8..48 */
+	unsigned short font_raw;    /* font-size before unit resolution */
+	unsigned char font_unit;    /* 0 inherited, 1 px, 2 em, 3 rem, 4 % */
 	unsigned char bold;
 	unsigned char italic;
 	unsigned char mono;
@@ -99,25 +102,43 @@ struct br_style {
 	unsigned char flex_grow;    /* flex-grow, 0..100 */
 	unsigned char flex_col;     /* flex-direction: column */
 	unsigned char flex_wrap;    /* flex-wrap: wrap */
+	unsigned char justify;      /* 0 start, 1 center, 2 end, 3 between, 4 around */
+	unsigned char align_items;  /* 0 start/stretch, 1 center, 2 end */
 	unsigned char grid_ncols;   /* 1 or 2 supported */
 	unsigned char grid_gap;     /* px */
 	unsigned char grid_slot;    /* 0 auto, 1 full, 2 left, 3 right */
 	unsigned char grid_auto;    /* repeat(auto-fit, minmax(width, 1fr)) */
-	unsigned char pos;          /* 0 static, 1 absolute, 2 fixed */
-	unsigned char left_set, top_set;
-	signed short left, top;
+	unsigned char pos;          /* 0 static, 1 absolute, 2 fixed, 3 relative */
+	unsigned char left_set, top_set, right_set, bottom_set;
+	signed short left, top, right, bottom;
+	signed short z_index;
+	unsigned char z_set;
+	signed short tx, ty;
+	unsigned char transform_set;
 	unsigned char no_bullet;    /* list-style: none (inherited) */
+	unsigned char list_item;    /* li marker is drawn */
+	unsigned char nowrap;       /* white-space: nowrap (inherited) */
 	unsigned char uppercase;    /* text-transform: uppercase (inherited) */
-	unsigned char border_w;
+	unsigned char border_w[4];  /* top, right, bottom, left */
 	/* border-radius in pixels, one entry per corner: TL, TR, BR, BL.
 	 * Percentages are stored as 255 so they clamp to the box half. */
 	unsigned char radius[4];
-	unsigned char width_kind;   /* 0 none, 1 px, 2 percent */
+	unsigned char width_kind;   /* 0 none, 1 px, 2 percent, 3 calc */
 	unsigned short width;
+	signed short width_calc_pct;
+	signed short width_calc_px;
 	unsigned char max_width_kind;
 	unsigned short max_width;
+	unsigned char min_width_kind;
+	unsigned short min_width;
 	unsigned char height_kind;
 	unsigned short height;
+	unsigned char min_height_kind;
+	unsigned short min_height;
+	unsigned char max_height_kind;
+	unsigned short max_height;
+	unsigned char box_sizing;   /* 0 content-box, 1 border-box */
+	unsigned char ml_auto, mr_auto;
 	unsigned char line_h_pct;   /* percent of font size, 0 = default */
 	unsigned short line_h_px;   /* absolute px, 0 = default */
 	signed short mt, mb, ml, mr;
@@ -150,6 +171,9 @@ struct br_node {
 	unsigned short height_attr;
 	unsigned char width_pct;
 	unsigned char height_pct;
+	unsigned char colspan;
+	unsigned char rowspan;
+	short bg_img_index;         /* -1 until loaded, -2 failed */
 	short img_index;            /* -1 until the image is loaded */
 	signed short svg_x, svg_y;  /* inline SVG x/y or line x1/y1 */
 	unsigned char svg_rx;       /* inline SVG rect corner radius */
@@ -239,6 +263,7 @@ int  br_tag_is_block(unsigned int tag);
 int  br_tag_is_void(unsigned int tag);
 const char *br_tag_name(unsigned int tag);
 unsigned int br_tag_from_name(const char *name);
+const char *br_bg_image_url(unsigned int idx);
 
 /* Runtime DOM helpers used by the JavaScript bindings.  br_find_id returns
  * node + 1 (0 means no match); br_text_content concatenates the subtree's

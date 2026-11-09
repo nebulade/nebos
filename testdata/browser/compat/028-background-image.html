@@ -1,0 +1,36 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>028 background-image</title>
+<style>
+html, body { margin: 0; padding: 0; background: #ffffff; color: #202020; }
+body { font-family: sans-serif; font-size: 13px; }
+h1 { font-size: 20px; margin: 10px 0 4px 10px; }
+p { margin: 0 0 10px 10px; }
+.pane { float: left; width: 440px; margin-left: 10px; }
+.label { background: #eeeeee; padding: 4px 6px; margin-bottom: 4px; }
+.stage { background: #ffffff; padding: 8px; border: 1px solid #999999; }
+.bg { width: 194px; height: 122px; background-image: url(PIC.BMP); }
+.after { background: #333333; color: #ffffff; height: 24px; margin-top: 8px; padding-left: 4px; }
+</style>
+</head>
+<body>
+<h1>028 &middot; background-image</h1>
+<p>The two images must be identical.</p>
+<div class="pane">
+<div class="label">A: background-image: url(PIC.BMP)</div>
+<div class="stage">
+  <div class="bg"></div>
+  <div class="after">after</div>
+</div>
+</div>
+<div class="pane">
+<div class="label">B: inline image reference</div>
+<div class="stage">
+  <img src="PIC.BMP" width="194" height="122" alt="PIC.BMP">
+  <div class="after">after</div>
+</div>
+</div>
+</body>
+</html>

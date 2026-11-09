@@ -1850,6 +1850,22 @@ static int node_hidden(unsigned int node)
 	return 0;
 }
 
+static struct br_style base_style(void);
+
+static void style_for_node(unsigned int node, struct br_style *out)
+{
+	unsigned int p = doc.nodes[node].parent;
+	struct br_style parent;
+
+	if (p) {
+		style_for_node(p, &parent);
+		br_style_for(&doc, node, &parent, out);
+	} else {
+		parent = base_style();
+		br_style_for(&doc, node, &parent, out);
+	}
+}
+
 /* Load at most one image per call.  Images below the current viewport are
  * left pending until the page is scrolled; this keeps a long article with
  * many 4K screenshots from stalling on content the user cannot see yet. */
@@ -1869,8 +1885,67 @@ static void preload_step(void)
 		unsigned int n = 0;
 		int rv;
 
-		if (nd->type != BR_NODE_ELEM || nd->tag != BR_TAG_IMG ||
-		    nd->img_index != -1) {
+		if (nd->type != BR_NODE_ELEM) {
+			preload_node++;
+			continue;
+		}
+		if (nd->tag != BR_TAG_IMG) {
+			if (nd->bg_img_index == -1) {
+				struct br_style bs;
+
+				style_for_node(i, &bs);
+				if (bs.display != BR_DISPLAY_NONE &&
+				    !bs.vis_hidden && bs.bg_image) {
+					const char *bsrc =
+						br_bg_image_url(bs.bg_image - 1);
+
+					if (bsrc[0] &&
+					    !contains_ci(bsrc, ".svg") &&
+					    !starts_with(bsrc, "data:") &&
+					    resolve_link(page_url, bsrc, url,
+							 sizeof(url)) == 0) {
+						if (image_count >=
+						    BR_MAX_IMAGES) {
+							preload_node =
+								doc.nnode;
+							break;
+						}
+						preload_node = i + 1;
+						data = 0;
+						len = 0;
+						rv = fetch_image(url,
+								 BR_IMG_FILE_MAX,
+								 &data, &len,
+								 err, sizeof(err));
+						if (rv == FETCH_ABORT) {
+							preload_active = 0;
+							preload_pending = 0;
+							return;
+						}
+						if (rv == 0 &&
+						    decode_image_data(
+							    data, len,
+							    &images[image_count]) == 0) {
+							nd->bg_img_index =
+								(short)image_count;
+							image_count++;
+							preload_loaded++;
+							layout_valid = 0;
+						} else {
+							nd->bg_img_index = -2;
+						}
+						ngui_invalidate(&ui);
+						if (++batch >= 4)
+							return;
+						continue;
+					}
+				}
+				nd->bg_img_index = -2;
+			}
+			preload_node++;
+			continue;
+		}
+		if (nd->img_index != -1) {
 			preload_node++;
 			continue;
 		}
@@ -2321,7 +2396,10 @@ static struct br_style base_style(void)
 	s.color = ui.theme.text;
 	s.bg = ui.theme.bg;
 	s.has_bg = 0;
-	s.border_color = 0;
+	for (int i = 0; i < 4; i++) {
+		s.border_c[i] = 0;
+		s.border_w[i] = 0;
+	}
 	s.font_px = 16;
 	s.bold = 0;
 	s.italic = 0;
@@ -2331,14 +2409,93 @@ static struct br_style base_style(void)
 	s.display = BR_DISPLAY_BLOCK;
 	s.no_bullet = 0;
 	s.uppercase = 0;
-	s.border_w = 0;
-	s.width_kind = s.max_width_kind = s.height_kind = 0;
-	s.width = s.max_width = s.height = 0;
+	s.width_kind = s.max_width_kind = s.min_width_kind = 0;
+	s.height_kind = s.min_height_kind = s.max_height_kind = 0;
+	s.width = s.max_width = s.min_width = 0;
+	s.height = s.min_height = s.max_height = 0;
+	s.box_sizing = 0;
+	s.ml_auto = s.mr_auto = 0;
 	s.line_h_pct = 0;
 	s.line_h_px = 0;
 	s.mt = s.mb = s.ml = s.mr = 0;
 	s.pt = s.pb = s.pl = s.pr = 0;
 	return s;
+}
+
+static int css_size(unsigned char kind, int val, int base)
+{
+	if (kind == 1)
+		return val;
+	if (kind == 2)
+		return base * val / 100;
+	return -1;
+}
+
+static void draw_border_box(struct ngui *ui, struct ngui_rect r,
+			    const struct br_style *st)
+{
+	int top = st->border_w[0], right = st->border_w[1];
+	int bottom = st->border_w[2], left = st->border_w[3];
+
+	if (r.w <= 0 || r.h <= 0)
+		return;
+	if (top >= r.h || bottom >= r.h || left >= r.w || right >= r.w) {
+		int i;
+
+		for (i = 0; i < 4; i++)
+			if (st->border_w[i]) {
+				ngui_fill_rect(ui, r, st->border_c[i]);
+				break;
+			}
+		return;
+	}
+	if (top)
+		ngui_fill_rect(ui, (struct ngui_rect){r.x, r.y, r.w, top},
+			       st->border_c[0]);
+	if (bottom)
+		ngui_fill_rect(ui, (struct ngui_rect){r.x,
+						      r.y + r.h - bottom,
+						      r.w, bottom},
+			       st->border_c[2]);
+	if (left)
+		ngui_fill_rect(ui, (struct ngui_rect){r.x, r.y + top, left,
+						      r.h - top - bottom},
+			       st->border_c[3]);
+	if (right)
+		ngui_fill_rect(ui, (struct ngui_rect){r.x + r.w - right,
+						      r.y + top, right,
+						      r.h - top - bottom},
+			       st->border_c[1]);
+}
+
+static void draw_bg_image(struct lay *l, struct ngui_rect box,
+			  unsigned int node, const struct br_style *st)
+{
+	struct br_image *bi;
+	struct img_blit b;
+
+	if (!st->bg_image || box.w <= 0 || box.h <= 0)
+		return;
+	if (doc.nodes[node].bg_img_index < 0 ||
+	    doc.nodes[node].bg_img_index >= image_count)
+		return;
+	bi = &images[doc.nodes[node].bg_img_index];
+	if (bi->state != 1 || bi->img.w <= 0)
+		return;
+	b.dst = l->ui->px;
+	b.dst_w = l->ui->w;
+	b.dst_h = l->ui->h;
+	b.clip_x = page_rect.x;
+	b.clip_y = page_rect.y;
+	b.clip_w = page_rect.w - 12;
+	b.clip_h = page_rect.h;
+	b.x = box.x;
+	b.y = box.y;
+	b.scale = ((unsigned int)box.w << 16) / bi->img.w;
+	b.bg = ui.theme.bg;
+	b.bg2 = ui.theme.bg;
+	b.flags = IMG_BLIT_OVER_DST;
+	img_draw(&bi->img, &b);
 }
 
 static int run_width(const struct lay_run *r)
@@ -2728,6 +2885,12 @@ static void emit_word(struct lay *l, const char *s, unsigned int start,
 	int w = text_width(l, s + start, n, st);
 	unsigned int off = start;
 
+	if (st->nowrap) {
+		if (n)
+			add_run(l, (unsigned short)(base + start),
+				(unsigned short)n, st, href, 0);
+		return;
+	}
 	if (l->line_x + w > l->right &&
 	    (l->nruns > 0 || l->line_x > l->left))
 		flush_line(l);
@@ -2809,7 +2972,7 @@ static void emit_text(struct lay *l, const char *s, unsigned int len,
 		n = i - start;
 		if (l->space_pending &&
 		    (l->nruns > 0 || l->line_x > l->left)) {
-			if (l->line_x + space_w <= l->right)
+			if (st->nowrap || l->line_x + space_w <= l->right)
 				l->line_x += space_w;
 		}
 		l->space_pending = 0;
@@ -2963,7 +3126,9 @@ static int flex_wants_row(unsigned int parent, const struct br_style *pst)
 		if (cs.display == BR_DISPLAY_NONE)
 			continue;
 		if (cs.display != BR_DISPLAY_INLINE || cs.flex_grow ||
-		    cs.width_kind || cs.has_bg || cs.border_w ||
+		    cs.width_kind || cs.has_bg ||
+		    cs.border_w[0] || cs.border_w[1] ||
+		    cs.border_w[2] || cs.border_w[3] ||
 		    nd->tag == BR_TAG_IMG)
 			return 1;
 	}
@@ -3148,27 +3313,27 @@ static void draw_svg(struct ngui *ui, unsigned node,
 				else
 					ngui_fill_rect(ui, r, st.bg);
 			}
-			if (st.border_w) {
+			if (st.border_w[0]) {
 				if (rx)
 					ngui_frame_round(ui, r, rx, rx, rx, rx,
-							 st.border_w,
-							 st.border_color);
+							 st.border_w[0],
+							 st.border_c[0]);
 				else
-					ngui_frame(ui, r, st.border_color);
+					draw_border_box(ui, r, &st);
 			}
 		} else if (s_eq(nm, "line")) {
-			if (st.border_w)
+			if (st.border_w[0])
 				ngui_line(ui,
 					  ox + (int)nd->svg_x * dw / vw,
 					  oy + (int)nd->svg_y * dh / vh,
 					  ox + (int)nd->width_attr * dw / vw,
 					  oy + (int)nd->height_attr * dh / vh,
-					  st.border_color);
+					  st.border_c[0]);
 		} else if (s_eq(nm, "path")) {
-			if (st.border_w && nd->src_off)
+			if (st.border_w[0] && nd->src_off)
 				svg_path(ui, doc.attrs + nd->src_off,
 					 ox, oy, dw, dh, vw, vh,
-					 st.border_color);
+					 st.border_c[0]);
 		} else if (s_eq(nm, "text")) {
 			unsigned int t = nd->first;
 			const char *s;
@@ -3206,26 +3371,69 @@ static void layout_block(struct lay *l, unsigned int node,
 {
 	int old_left = l->left, old_right = l->right, old_align = l->align;
 	int top, l0, r0;
-	int flow_y, flow_left, flow_right, positioned;
+	int flow_y, flow_left, flow_right, positioned, relative, sticky, shifted;
+	int cbw, ml, mr, bl, br, pl, pr, bt, bb, pt, pb;
+	int deco_w, deco_h, content_w, content_h, box_h;
+	int definite_w = 0;
+	int normal_top = 0;
+	int rel_dx = 0, rel_dy = 0;
 
 	if (depth > 24 || st->display == BR_DISPLAY_NONE)
 		return;
 	flow_y = l->y;
 	flow_left = l->left;
 	flow_right = l->right;
-	positioned = st->pos;
+	positioned = st->pos == 1 || st->pos == 2;
+	relative = st->pos == 3;
+	sticky = st->pos == 4;
+	shifted = relative || sticky || st->transform_set;
 	if (positioned) {
+		int def_w = st->width_kind == 1 ? st->width : -1;
+
 		if (st->pos == 2) {
-			l->y = page_rect.y + (st->top_set ? st->top : 0);
-			l->left = page_rect.x;
-			l->right = page_rect.x + page_rect.w - 12;
+			int avail_w = page_rect.w - 12;
+
+			if (st->right_set && def_w >= 0)
+				l->left = page_rect.x + avail_w - st->right -
+					  def_w;
+			else
+				l->left = page_rect.x +
+					  (st->left_set ? st->left : 0);
+			l->right = def_w >= 0 ? l->left + def_w :
+						page_rect.x + avail_w;
+			if (st->bottom_set && st->height_kind == 1)
+				l->y = page_rect.y + page_rect.h -
+				      st->bottom - st->height;
+			else
+				l->y = page_rect.y +
+				      (st->top_set ? st->top : 0);
 		} else {
+			int left = flow_left + (st->left_set ? st->left : 0);
+			unsigned int parent = doc.nodes[node].parent;
+
+			if (st->right_set && def_w >= 0)
+				left = flow_right - st->right - def_w;
+			l->left = left;
+			l->right = def_w >= 0 ? left + def_w :
+						flow_right +
+						(st->left_set ? st->left : 0);
 			l->y = flow_y + (st->top_set ? st->top : 0);
-			l->left = flow_left + (st->left_set ? st->left : 0);
-			l->right = flow_right + (st->left_set ? st->left : 0);
+			if (st->bottom_set && st->height_kind == 1 &&
+			    parent < BR_MAX_NODES && block_h[parent] > 0)
+				l->y = flow_y + block_h[parent] - st->bottom -
+				      st->height;
 		}
 		old_left = l->left;
 		old_right = l->right;
+	} else if (relative) {
+		rel_dx = st->left_set ? st->left :
+			 (st->right_set ? -st->right : 0);
+		rel_dy = st->top_set ? st->top :
+			 (st->bottom_set ? -st->bottom : 0);
+	}
+	if (st->transform_set) {
+		rel_dx += st->tx;
+		rel_dy += st->ty;
 	}
 	if (doc.nodes[node].tag == BR_TAG_INPUT ||
 	    doc.nodes[node].tag == BR_TAG_TEXTAREA ||
@@ -3239,10 +3447,87 @@ static void layout_block(struct lay *l, unsigned int node,
 	flush_line(l);
 	l->y += st->mt;
 	top = l->y;
-	l0 = old_left + st->ml;
-	r0 = old_right - st->mr;
-	if (r0 < l0 + 16)
-		r0 = l0 + 16;
+	cbw = old_right - old_left;
+	if (cbw < 8)
+		cbw = 8;
+	ml = st->ml;
+	mr = st->mr;
+	bl = st->border_w[3];
+	br = st->border_w[1];
+	pl = st->pl;
+	pr = st->pr;
+	bt = st->border_w[0];
+	bb = st->border_w[2];
+	pt = st->pt;
+	pb = st->pb;
+	deco_w = bl + br + pl + pr;
+	deco_h = bt + bb + pt + pb;
+
+	if (st->width_kind) {
+		int w;
+
+		if (st->width_kind == 3)
+			w = cbw * st->width_calc_pct / 100 +
+			    st->width_calc_px;
+		else
+			w = css_size(st->width_kind, st->width, cbw);
+		if (w < 0)
+			w = 0;
+		content_w = st->box_sizing ? w - deco_w : w;
+		definite_w = 1;
+	} else {
+		content_w = cbw - ml - mr - deco_w;
+	}
+	if (content_w < 0)
+		content_w = 0;
+	if (st->max_width_kind) {
+		int mw = css_size(st->max_width_kind, st->max_width, cbw);
+		int max_box = st->box_sizing ? mw : mw + deco_w;
+
+		if (content_w + deco_w > max_box)
+			content_w = max_box - deco_w;
+	}
+	if (st->min_width_kind) {
+		int mw = css_size(st->min_width_kind, st->min_width, cbw);
+		int min_box = st->box_sizing ? mw : mw + deco_w;
+
+		if (content_w + deco_w < min_box) {
+			content_w = min_box - deco_w;
+			definite_w = 1;
+		}
+	}
+	if (content_w < 8)
+		content_w = 8;
+	if (definite_w) {
+		int free_w = cbw - ml - mr - deco_w - content_w;
+
+		if (free_w < 0)
+			free_w = 0;
+		if (st->ml_auto && st->mr_auto) {
+			ml = free_w / 2;
+			mr = free_w - ml;
+		} else if (st->ml_auto) {
+			ml = free_w;
+		} else if (st->mr_auto) {
+			mr = free_w;
+		}
+	}
+	l0 = old_left + ml;
+	r0 = l0 + deco_w + content_w;
+	if (r0 < l0 + 8)
+		r0 = l0 + 8;
+	normal_top = top;
+	if (sticky) {
+		int stick = page_rect.y + 4 + (st->top_set ? st->top : 0);
+
+		if (normal_top < stick)
+			rel_dy += stick - normal_top;
+	}
+	if (shifted && l->draw) {
+		top += rel_dy;
+		l0 += rel_dx;
+		r0 += rel_dx;
+	}
 	if (l->draw && block_h[node] &&
 	    top < page_rect.y + page_rect.h &&
 	    top + block_h[node] > page_rect.y) {
@@ -3254,9 +3539,9 @@ static void layout_block(struct lay *l, unsigned int node,
 
 		if (rtl || rtr || rbr || rbl) {
 			if (st->has_bg) {
-				int bw = st->border_w;
+				int bw = st->border_w[0];
 
-				if (bw > 0 && st->border_color != st->bg &&
+				if (bw > 0 && st->border_c[0] != st->bg &&
 				    box.w > bw * 2 && box.h > bw * 2) {
 					struct ngui_rect inner = {
 						box.x + bw, box.y + bw,
@@ -3269,7 +3554,7 @@ static void layout_block(struct lay *l, unsigned int node,
 
 					ngui_fill_round_rect(l->ui, box, rtl,
 							     rtr, rbr, rbl,
-							     st->border_color);
+							     st->border_c[0]);
 					ngui_fill_round_rect(l->ui, inner,
 							     itl, itr, ibr,
 							     ibl, st->bg);
@@ -3278,24 +3563,27 @@ static void layout_block(struct lay *l, unsigned int node,
 							     rtr, rbr, rbl,
 							     st->bg);
 				}
-			} else if (st->border_w) {
+			} else if (st->border_w[0]) {
 				ngui_frame_round(l->ui, box, rtl, rtr, rbr,
-						 rbl, st->border_w,
-						 st->border_color);
+						 rbl, st->border_w[0],
+						 st->border_c[0]);
 			}
 		} else {
 			if (st->has_bg)
 				ngui_fill_rect(l->ui, box, st->bg);
-			if (st->border_w)
-				ngui_frame(l->ui, box, st->border_color);
+			if (st->bg_image)
+				draw_bg_image(l, box, node, st);
+			if (st->border_w[0] || st->border_w[1] ||
+			    st->border_w[2] || st->border_w[3])
+				draw_border_box(l->ui, box, st);
 		}
 	}
-	l->left = l0 + st->pl;
-	l->right = r0 - st->pr;
+	l->left = l0 + bl + pl;
+	l->right = l->left + content_w;
 	if (l->right < l->left + 8)
 		l->right = l->left + 8;
 	l->align = st->align;
-	l->y += st->pt;
+	l->y = top + bt + pt;
 
 	if (doc.nodes[node].tag == BR_TAG_HR) {
 		if (l->draw)
@@ -3323,7 +3611,7 @@ static void layout_block(struct lay *l, unsigned int node,
 			ngui_fill_rect(l->ui, (struct ngui_rect){l->left, l->y,
 							 vw, vh}, 0xD69A);
 			ngui_frame(l->ui, (struct ngui_rect){l->left, l->y,
-							 vw, vh}, 0x8410);
+							     vw, vh}, 0x8410);
 			ngui_text(l->ui, l->left + 8, l->y + 8, "[video]",
 				  0x4208);
 		}
@@ -3350,7 +3638,8 @@ static void layout_block(struct lay *l, unsigned int node,
 		}
 		l->y += dh;
 	} else {
-		if (doc.nodes[node].tag == BR_TAG_LI && !st->no_bullet) {
+		if (doc.nodes[node].tag == BR_TAG_LI && st->list_item &&
+		    !st->no_bullet) {
 			char *m = li_marker[node];
 			if (!m[0]) {
 				unsigned int parent = doc.nodes[node].parent;
@@ -3384,27 +3673,44 @@ static void layout_block(struct lay *l, unsigned int node,
 			layout_children(l, node, st, depth + 1, link);
 	}
 	flush_line(l);
-	l->y += st->pb;
-	/* Honour an explicit CSS height.  Fixed-height header/icon boxes often
-	 * contain only absolutely positioned children, so their flow height
-	 * would otherwise collapse to zero. */
-	if (st->height_kind == 1 && st->height > 0 &&
-	    l->y < top + st->height)
-		l->y = top + st->height;
+	if (st->height_kind == 1) {
+		content_h = st->height;
+		if (st->box_sizing)
+			content_h -= deco_h;
+	} else {
+		content_h = l->y - (top + bt + pt);
+	}
+	if (content_h < 0)
+		content_h = 0;
+	if (st->max_height_kind) {
+		int mh = css_size(st->max_height_kind, st->max_height, cbw);
+		int max_box = st->box_sizing ? mh : mh + deco_h;
+
+		if (content_h + deco_h > max_box)
+			content_h = max_box - deco_h;
+	}
+	if (st->min_height_kind) {
+		int mh = css_size(st->min_height_kind, st->min_height, cbw);
+		int min_box = st->box_sizing ? mh : mh + deco_h;
+
+		if (content_h + deco_h < min_box)
+			content_h = min_box - deco_h;
+	}
+	if (content_h < 0)
+		content_h = 0;
+	box_h = deco_h + content_h;
+	if (box_h < 0)
+		box_h = 0;
+	l->y = (shifted ? normal_top : top) + box_h;
 	l->left = old_left;
 	l->right = old_right;
 	l->align = old_align;
 	l->y += st->mb;
 	if (!l->draw) {
-		/* block_h is the element box, not the flow advance: the bottom
-		 * margin must not be painted as part of the background. */
-		int h = l->y - st->mb - top;
-		if (h < 0)
-			h = 0;
-		if (h > 65535)
-			h = 65535;
-		block_h[node] = (unsigned short)h;
-}
+		if (box_h > 65535)
+			box_h = 65535;
+		block_h[node] = (unsigned short)box_h;
+	}
 	if (positioned) {
 		l->y = flow_y;
 		l->left = flow_left;
@@ -3590,6 +3896,9 @@ static unsigned int layout_float_group(struct lay *l, unsigned int first,
 			colw = 8;
 		if (colw > row_right - row_left)
 			colw = row_right - row_left;
+		/* The float column width is already resolved. */
+		cs.width_kind = 0;
+		cs.max_width_kind = 0;
 		if (right) {
 			if (any && xr - colw < xl) {
 				row_top = row_bottom;
@@ -3721,6 +4030,8 @@ static unsigned int layout_inline_blocks(struct lay *l, unsigned int first,
 		colw += 8;
 		if (colw > avail)
 			colw = avail;
+		cs.width_kind = 0;
+		cs.max_width_kind = 0;
 		if (any && x + colw > row_right) {
 			y += row_h + 2;
 			x = row_left;
@@ -3763,15 +4074,22 @@ static unsigned int layout_inline_blocks(struct lay *l, unsigned int first,
 	return n;
 }
 
+struct flex_item {
+	unsigned int node;
+	unsigned short link;
+	int w;
+};
+
 static void layout_flex_children(struct lay *l, unsigned int parent,
 				 const struct br_style *pst, int depth,
 				 unsigned short link)
 {
-	unsigned int n, c;
+	struct flex_item it[32];
+	unsigned int c;
+	int nitem = 0, grow_count = 0, fixed = 0, grow_w, gap = pst->grid_gap;
 	int row_left = l->left, row_right = l->right;
 	int avail = row_right - row_left;
-	int grow_count = 0, fixed = 0, grow_w, gap = pst->grid_gap;
-	int x = row_left, row_top = l->y, row_bottom = l->y, any = 0;
+	int idx, row_top;
 
 	if (avail < 160 || depth > 24) {
 		layout_children(l, parent, pst, depth, link);
@@ -3789,7 +4107,9 @@ static void layout_flex_children(struct lay *l, unsigned int parent,
 		}
 	}
 
-	for (c = doc.nodes[parent].first; c; c = doc.nodes[c].next) {
+	for (c = doc.nodes[parent].first;
+	     c && nitem < (int)(sizeof(it) / sizeof(it[0]));
+	     c = doc.nodes[c].next) {
 		struct br_node *nd = &doc.nodes[c];
 		struct br_style cs;
 
@@ -3798,73 +4118,120 @@ static void layout_flex_children(struct lay *l, unsigned int parent,
 		br_style_for(&doc, c, pst, &cs);
 		if (cs.display == BR_DISPLAY_NONE)
 			continue;
+		it[nitem].node = c;
+		it[nitem].link = (nd->tag == BR_TAG_A && nd->href_off) ?
+				 (unsigned short)c : link;
+		it[nitem].w = 0;
 		if (cs.flex_grow && !cs.width_kind)
 			grow_count++;
 		else
 			fixed += flex_item_width(l, c, &cs, avail);
+		nitem++;
 	}
 	grow_w = grow_count ? (avail - fixed) / grow_count : 0;
 	if (grow_w < 96)
 		grow_w = 96;
-
-	n = doc.nodes[parent].first;
-	while (n) {
-		struct br_node *nd = &doc.nodes[n];
+	for (idx = 0; idx < nitem; idx++) {
 		struct br_style cs;
-		unsigned short lk = link;
-		int colw;
 
-		if (nd->type == BR_NODE_TEXT) {
-			n = nd->next;
-			continue;
-		}
-		br_style_for(&doc, n, pst, &cs);
-		if (cs.display == BR_DISPLAY_NONE) {
-			n = nd->next;
-			continue;
-		}
-		if (nd->tag == BR_TAG_A && nd->href_off)
-			lk = (unsigned short)n;
+		br_style_for(&doc, it[idx].node, pst, &cs);
 		if (cs.flex_grow && !cs.width_kind)
-			colw = grow_w;
+			it[idx].w = grow_w;
 		else
-			colw = flex_item_width(l, n, &cs, avail);
-		if (colw > row_right - row_left)
-			colw = row_right - row_left;
-		if (any && x + colw > row_right) {
-			if (pst->flex_wrap == 2) {
-				if (colw > row_right - x)
-					colw = row_right - x;
-			} else {
-				row_top = row_bottom;
-				row_bottom = row_top;
-				x = row_left;
-			}
+			it[idx].w = flex_item_width(l, it[idx].node, &cs, avail);
+		if (it[idx].w > avail)
+			it[idx].w = avail;
+		if (it[idx].w < 8)
+			it[idx].w = 8;
+	}
+
+	row_top = l->y;
+	idx = 0;
+	while (idx < nitem) {
+		int start = idx, count = 0, row_w = 0;
+		int free_w, x, extra = 0, row_h = 0, k;
+
+		while (idx < nitem) {
+			int add = it[idx].w + (count ? gap : 0);
+
+			if (count && pst->flex_wrap != 2 &&
+			    row_w + add > avail)
+				break;
+			row_w += add;
+			count++;
+			idx++;
 		}
-		if (any && gap && x > row_left)
-			x += gap;
-		l->left = x;
-		l->right = x + colw;
-		if (l->right < l->left + 8)
-			l->right = l->left + 8;
-		l->y = row_top;
-		l->line_x = l->left;
-		l->run_x = l->left;
-		l->line_y = l->y;
-		l->line_h = 0;
-		l->nruns = 0;
-		l->space_pending = 0;
-		l->align = cs.align;
-		layout_block(l, n, &cs, depth + 1, lk);
-		if (l->y > row_bottom)
-			row_bottom = l->y;
-		x += colw;
-		any++;
-		n = nd->next;
+		if (!count) {
+			count = 1;
+			row_w = it[start].w;
+			idx = start + 1;
+		}
+		free_w = avail - row_w;
+		if (free_w < 0)
+			free_w = 0;
+		x = row_left;
+		if (pst->justify == 1) {
+			x += free_w / 2;
+		} else if (pst->justify == 2) {
+			x += free_w;
+		} else if (pst->justify == 3) {
+			extra = count > 1 ? free_w / (count - 1) : 0;
+		} else if (pst->justify == 4) {
+			extra = count ? free_w / count : 0;
+			x += extra / 2;
+		}
+		for (k = 0; k < count; k++) {
+			int node = (int)it[start + k].node;
+			int h = block_h[node];
+
+			if (h > row_h)
+				row_h = h;
+		}
+		if (pst->height_kind == 1 && pst->height > row_h)
+			row_h = pst->height;
+		for (k = 0; k < count; k++) {
+			struct br_style cs;
+			int node = (int)it[start + k].node;
+			int yoff = 0;
+
+			br_style_for(&doc, node, pst, &cs);
+			cs.width_kind = 0;
+			cs.max_width_kind = 0;
+			if (l->draw && pst->align_items &&
+			    row_h > block_h[node]) {
+				if (pst->align_items == 1)
+					yoff = (row_h - block_h[node]) / 2;
+				else if (pst->align_items == 2)
+					yoff = row_h - block_h[node];
+			}
+			l->left = x;
+			l->right = x + it[start + k].w;
+			if (l->right < l->left + 8)
+				l->right = l->left + 8;
+			l->y = row_top + yoff;
+			l->line_x = l->left;
+			l->run_x = l->left;
+			l->line_y = l->y;
+			l->line_h = 0;
+			l->nruns = 0;
+			l->space_pending = 0;
+			l->align = cs.align;
+			layout_block(l, node, &cs, depth + 1, it[start + k].link);
+			if (!l->draw) {
+				int h = l->y - row_top;
+
+				if (h > row_h)
+					row_h = h;
+			}
+			x += it[start + k].w;
+			if (k + 1 < count)
+				x += gap + extra;
+		}
+		row_top += row_h;
 	}
 	l->left = row_left;
 	l->right = row_right;
-	l->y = row_bottom;
+	l->y = row_top;
 	l->line_x = l->left;
 	l->run_x = l->left;
 	l->line_y = l->y;
@@ -3998,6 +4365,8 @@ static void layout_grid_children(struct lay *l, unsigned int parent,
 			w = col1;
 			have_right = 1;
 		}
+		cs.width_kind = 0;
+		cs.max_width_kind = 0;
 		l->left = x;
 		l->right = x + w;
 		if (l->right < l->left + 8)
@@ -4080,6 +4449,8 @@ static void layout_grid_auto(struct lay *l, unsigned int parent,
 		}
 		if (nd->tag == BR_TAG_A && nd->href_off)
 			lk = (unsigned short)n;
+		cs.width_kind = 0;
+		cs.max_width_kind = 0;
 		l->left = x;
 		l->right = x + colw;
 		if (l->right < l->left + 8)
@@ -4126,14 +4497,19 @@ static void layout_grid_auto(struct lay *l, unsigned int parent,
  * rows line up.  The table model is still deliberately basic: no colspan,
  * border-collapse or percentage columns. */
 static void table_columns(struct lay *l, unsigned int table,
-			  const struct br_style *pst, int *raw, int maxcols,
-			  int *out_cols, int *out_total)
+			  const struct br_style *pst, int avail,
+			  int *raw, int maxcols, int *out_cols,
+			  int *out_total)
 {
 	unsigned int r, c;
-	int cols = 0, total = 0;
+	int cols = 0, total = 0, fixed_sum = 0, free_raw = 0, free_cols = 0;
+	int fixed[12];
 
-	for (c = 0; c < (unsigned int)maxcols; c++)
+	for (c = 0; c < (unsigned int)maxcols; c++) {
 		raw[c] = 0;
+		fixed[c] = 0;
+	}
+	/* Intrinsic widths of single-column cells. */
 	for (r = doc.nodes[table].first; r; r = doc.nodes[r].next) {
 		struct br_node *rn = &doc.nodes[r];
 		int col = 0;
@@ -4143,29 +4519,143 @@ static void table_columns(struct lay *l, unsigned int table,
 		for (c = rn->first; c; c = doc.nodes[c].next) {
 			struct br_node *cn = &doc.nodes[c];
 			struct br_style cs;
-			int w;
+			int w, span;
 
 			if (cn->type != BR_NODE_ELEM ||
 			    (cn->tag != BR_TAG_TD && cn->tag != BR_TAG_TH))
 				continue;
-			if (col >= maxcols)
-				break;
+			span = cn->colspan ? cn->colspan : 1;
 			br_style_for(&doc, c, pst, &cs);
 			if (cs.display == BR_DISPLAY_NONE)
 				continue;
+			if (col + span > maxcols)
+				span = maxcols - col;
+			if (span < 1)
+				break;
 			w = intrinsic_width(l->ui, c, &cs, 0) + cs.pl + cs.pr +
-			    cs.ml + cs.mr;
+			    cs.ml + cs.mr +
+			    cs.border_w[0] + cs.border_w[1] +
+			    cs.border_w[2] + cs.border_w[3];
 			if (w < 24)
 				w = 24;
-			if (w > raw[col])
-				raw[col] = w;
-			if (col + 1 > cols)
-				cols = col + 1;
-			col++;
+			if (span == 1) {
+				if (w > raw[col])
+					raw[col] = w;
+			}
+			if (col + span > cols)
+				cols = col + span;
+			col += span;
 		}
 	}
-	for (c = 0; c < (unsigned int)cols; c++)
+	/* A colspan cell only has to be as wide as the sum of its columns. */
+	for (r = doc.nodes[table].first; r; r = doc.nodes[r].next) {
+		struct br_node *rn = &doc.nodes[r];
+		int col = 0;
+
+		if (rn->type != BR_NODE_ELEM || rn->tag != BR_TAG_TR)
+			continue;
+		for (c = rn->first; c; c = doc.nodes[c].next) {
+			struct br_node *cn = &doc.nodes[c];
+			struct br_style cs;
+			int span, w, sum, i;
+
+			if (cn->type != BR_NODE_ELEM ||
+			    (cn->tag != BR_TAG_TD && cn->tag != BR_TAG_TH))
+				continue;
+			span = cn->colspan ? cn->colspan : 1;
+			if (col + span > maxcols)
+				span = maxcols - col;
+			if (span < 1)
+				break;
+			if (span > 1) {
+				br_style_for(&doc, c, pst, &cs);
+				if (cs.display != BR_DISPLAY_NONE) {
+					w = intrinsic_width(l->ui, c, &cs, 0) +
+					    cs.pl + cs.pr + cs.ml + cs.mr +
+					    cs.border_w[0] + cs.border_w[1] +
+					    cs.border_w[2] + cs.border_w[3];
+					sum = 0;
+					for (i = 0; i < span; i++)
+						sum += raw[col + i];
+					if (w > sum)
+						raw[col + span - 1] += w - sum;
+				}
+			}
+			col += span;
+		}
+	}
+	/* Explicit and percentage widths override intrinsic widths. */
+	for (r = doc.nodes[table].first; r; r = doc.nodes[r].next) {
+		struct br_node *rn = &doc.nodes[r];
+		int col = 0;
+
+		if (rn->type != BR_NODE_ELEM || rn->tag != BR_TAG_TR)
+			continue;
+		for (c = rn->first; c; c = doc.nodes[c].next) {
+			struct br_node *cn = &doc.nodes[c];
+			struct br_style cs;
+			int span;
+
+			if (cn->type != BR_NODE_ELEM ||
+			    (cn->tag != BR_TAG_TD && cn->tag != BR_TAG_TH))
+				continue;
+			span = cn->colspan ? cn->colspan : 1;
+			if (col + span > maxcols)
+				span = maxcols - col;
+			if (span < 1)
+				break;
+			if (span == 1) {
+				br_style_for(&doc, c, pst, &cs);
+				if (cs.display != BR_DISPLAY_NONE) {
+					if (cs.width_kind == 1) {
+						raw[col] = cs.width;
+						fixed[col] = 1;
+					} else if (cs.width_kind == 2) {
+						raw[col] = avail * cs.width / 100;
+						fixed[col] = 1;
+					}
+				}
+			}
+			col += span;
+		}
+	}
+	for (c = 0; c < (unsigned int)cols; c++) {
+		if (raw[c] < 8)
+			raw[c] = 8;
 		total += raw[c];
+		if (fixed[c])
+			fixed_sum += raw[c];
+		else {
+			free_raw += raw[c];
+			free_cols++;
+		}
+	}
+	if (fixed_sum > 0 && fixed_sum < avail) {
+		int free_avail = avail - fixed_sum;
+		int i;
+
+		if (free_raw > 0) {
+			for (i = 0; i < cols; i++)
+				if (!fixed[i])
+					raw[i] = free_avail * raw[i] /
+						 free_raw;
+		} else if (free_cols > 0) {
+			for (i = 0; i < cols; i++)
+				if (!fixed[i])
+					raw[i] = free_avail / free_cols;
+		}
+		total = 0;
+		for (i = 0; i < cols; i++)
+			total += raw[i];
+	} else if (total < avail && total > 0) {
+		int i;
+
+		for (i = 0; i < cols; i++)
+			raw[i] = raw[i] * avail / total;
+		total = 0;
+		for (i = 0; i < cols; i++)
+			total += raw[i];
+	}
 	*out_cols = cols;
 	*out_total = total;
 }
@@ -4175,14 +4665,17 @@ static void layout_table_row(struct lay *l, unsigned int row,
 			     unsigned short link)
 {
 	unsigned int n, cell[12];
-	int raw[12], ncell = 0, total = 0, cols = 0;
+	int raw[12], colstart[12], colspan[12];
+	int prefix[13];
+	int ncell = 0, total = 0, cols = 0, col = 0;
 	int row_left = l->left, row_right = l->right;
 	int avail = row_right - row_left;
-	int x = row_left, y = l->y, bottom = l->y;
+	int y = l->y, bottom = l->y;
 
 	for (n = doc.nodes[row].first; n; n = doc.nodes[n].next) {
 		struct br_node *nd = &doc.nodes[n];
 		struct br_style cs;
+		int span;
 
 		if (nd->type == BR_NODE_TEXT) {
 			if (text_node_blank(nd))
@@ -4201,14 +4694,23 @@ static void layout_table_row(struct lay *l, unsigned int row,
 			layout_children(l, row, pst, depth, link);
 			return;
 		}
+		span = nd->colspan ? nd->colspan : 1;
+		if (span > 12 - col)
+			span = 12 - col;
+		if (span < 1)
+			continue;
 		cell[ncell] = n;
+		colstart[ncell] = col;
+		colspan[ncell] = span;
+		col += span;
 		ncell++;
 	}
-	if (ncell < 2 || avail < 32) {
+	if (ncell < 1 || avail < 32) {
 		layout_children(l, row, pst, depth, link);
 		return;
 	}
-	table_columns(l, doc.nodes[row].parent, pst, raw, 12, &cols, &total);
+	table_columns(l, doc.nodes[row].parent, pst, avail, raw, 12, &cols,
+		      &total);
 	if (cols < 2 || total <= 0) {
 		int c;
 
@@ -4223,17 +4725,30 @@ static void layout_table_row(struct lay *l, unsigned int row,
 			total += raw[c];
 		}
 	}
+	prefix[0] = row_left;
+	for (n = 0; n < (unsigned int)cols && n < 12; n++)
+		prefix[n + 1] = prefix[n] + raw[n];
 	for (n = 0; n < (unsigned int)ncell; n++) {
 		struct br_style cs;
-		int w = (int)((long)raw[n] * avail / total);
+		int start = colstart[n];
+		int end = start + colspan[n];
+		int w;
 
+		if (end > cols)
+			end = cols;
+		if (start >= cols)
+			continue;
+		w = prefix[end] - prefix[start];
 		br_style_for(&doc, cell[n], pst, &cs);
+		/* The column width already reflects the cell's width property. */
+		cs.width_kind = 0;
+		cs.max_width_kind = 0;
 		if (w < 24)
 			w = 24;
 		if (w < 8)
 			w = 8;
-		l->left = x;
-		l->right = x + w;
+		l->left = prefix[start];
+		l->right = l->left + w;
 		l->y = y;
 		l->line_x = l->left;
 		l->run_x = l->left;
@@ -4245,7 +4760,6 @@ static void layout_table_row(struct lay *l, unsigned int row,
 		layout_block(l, cell[n], &cs, depth + 1, link);
 		if (l->y > bottom)
 			bottom = l->y;
-		x += w;
 	}
 	l->left = row_left;
 	l->right = row_right;
@@ -4265,6 +4779,9 @@ struct br_deferred {
 	unsigned int node;
 	int flow_y, flow_left, flow_right;
 	unsigned short link;
+	signed short z_index;
+	unsigned char z_set;
+	unsigned int order;
 };
 static struct br_deferred deferred[16];
 static int ndeferred;
@@ -4296,13 +4813,16 @@ static void layout_children(struct lay *l, unsigned int parent,
 		}
 		if (nd->tag == BR_TAG_A && nd->href_off)
 			lk = (unsigned short)n;
-		if (cs.pos) {
+		if (cs.pos == 1 || cs.pos == 2) {
 			if (l->draw && ndeferred < 16) {
 				deferred[ndeferred].node = n;
 				deferred[ndeferred].flow_y = l->y;
 				deferred[ndeferred].flow_left = l->left;
 				deferred[ndeferred].flow_right = l->right;
 				deferred[ndeferred].link = lk;
+				deferred[ndeferred].z_index = cs.z_index;
+				deferred[ndeferred].z_set = cs.z_set;
+				deferred[ndeferred].order = (unsigned int)ndeferred;
 				ndeferred++;
 			} else {
 				layout_block(l, n, &cs, depth + 1, lk);
@@ -4404,6 +4924,35 @@ static int measure_page(int left, int right)
 	return l->y + 8;
 }
 
+static int deferred_cmp(const struct br_deferred *a,
+			const struct br_deferred *b)
+{
+	int az = a->z_set ? a->z_index : 0;
+	int bz = b->z_set ? b->z_index : 0;
+
+	if (az != bz)
+		return az < bz ? -1 : 1;
+	if (a->order != b->order)
+		return a->order < b->order ? -1 : 1;
+	return 0;
+}
+
+static void sort_deferred(void)
+{
+	int i;
+
+	for (i = 1; i < ndeferred; i++) {
+		struct br_deferred key = deferred[i];
+		int j = i;
+
+		while (j > 0 && deferred_cmp(&deferred[j - 1], &key) > 0) {
+			deferred[j] = deferred[j - 1];
+			j--;
+		}
+		deferred[j] = key;
+	}
+}
+
 static void render_page(int left, int right, int y0)
 {
 	struct lay *l = &layout_state;
@@ -4424,6 +4973,7 @@ static void render_page(int left, int right, int y0)
 	nhits = 0;
 	ndeferred = 0;
 	layout_children(l, doc.root, &base, 0, 0);
+	sort_deferred();
 	{
 		int i;
 

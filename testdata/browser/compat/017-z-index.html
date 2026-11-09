@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>017 z-index</title>
+<style>
+html, body { margin: 0; padding: 0; background: #ffffff; color: #202020; }
+body { font-family: sans-serif; font-size: 13px; }
+h1 { font-size: 20px; margin: 10px 0 4px 10px; }
+p { margin: 0 0 10px 10px; }
+.pane { float: left; width: 440px; margin-left: 10px; }
+.label { background: #eeeeee; padding: 4px 6px; margin-bottom: 4px; }
+.stage { background: #eeeeee; padding: 8px; border: 1px solid #999999; }
+.cover { position: relative; width: 150px; height: 150px; }
+.box { position: absolute; width: 80px; height: 80px; }
+.after { background: #333333; color: #ffffff; height: 24px; margin-top: 8px; padding-left: 4px; }
+</style>
+</head>
+<body>
+<h1>017 &middot; z-index</h1>
+<p>Red must be on top, then green, then blue, in both panes.</p>
+<div class="pane">
+<div class="label">A: z-index</div>
+<div class="stage">
+  <div class="cover">
+    <div class="box" style="left: 0; top: 0; background: #cc2222; z-index: 3"></div>
+    <div class="box" style="left: 30px; top: 30px; background: #22aa44; z-index: 2"></div>
+    <div class="box" style="left: 60px; top: 60px; background: #2244cc; z-index: 1"></div>
+  </div>
+  <div class="after">after</div>
+</div>
+</div>
+<div class="pane">
+<div class="label">B: document order reference</div>
+<div class="stage">
+  <div class="cover">
+    <div class="box" style="left: 60px; top: 60px; background: #2244cc"></div>
+    <div class="box" style="left: 30px; top: 30px; background: #22aa44"></div>
+    <div class="box" style="left: 0; top: 0; background: #cc2222"></div>
+  </div>
+  <div class="after">after</div>
+</div>
+</div>
+</body>
+</html>

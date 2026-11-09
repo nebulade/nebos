@@ -78,6 +78,7 @@ make test-libc  # host tests for ring-3 malloc, stdio, math, div64 and setjmp
 make test-mujs  # host smoke test for the vendored MuJS engine
 make test-font  # host TrueType parser/rasterizer specimen test
 make test-font-asan  # ASan/UBSan variant
+make compat-serve  # serve the browser A/B ladder on port 8000
 make fonts      # regenerate fonts/*.ttf with pyftsubset + system fonts
 make clean
 ```
@@ -773,13 +774,21 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   the browser both use it.  `browser_html.c/h` is a tolerant HTML tree + the
   CSS subset: external `<link rel=stylesheet>` sheets (in document order,
   inline `<style>` last), tag/class/id and descendant/child selectors,
-  colours/`rgba()`, backgrounds, font size (`px`/`%`/`em`/`rem`), numeric
-  weights, `!important`, line-height, alignment, margins, padding, borders,
-  `list-style: none`, `text-transform: uppercase`, `display`, percentage
-  `width`/`height`/`max-width`, and basic `float: left/right` columns.
+  colours/`rgba()`, solid backgrounds and a stretched `background-image`,
+  font size (`px`/`%`/`em`/`rem`, resolved against the parent for `em`/`%`),
+  the `font` shorthand, numeric weights, `!important`, line-height,
+  alignment, margins, padding, per-side borders, `list-style: none`,
+  `text-transform: uppercase`, `display`, explicit/percentage block
+  `width`/`height` with `min`/`max` and `box-sizing: border-box`,
+  `margin: 0 auto`, `calc(percent ± px)`, `white-space: nowrap`,
+  `position: relative`/`absolute`/`fixed`/`sticky`, `right`/`bottom`,
+  `z-index`, `transform: translate`, flex rows with `justify-content`/
+  `align-items`, two-column grids, table colspan and percentage columns,
+  and basic `float: left/right` columns.
   `@media (min-width/max-width)` blocks are evaluated against the browser
   canvas width when the page is parsed; `@font-face`/`@import`/`@keyframes` are
-  skipped.  Inline
+  skipped.  The compatibility ladder is `testdata/browser/compat/`
+  (`make compat-serve`); pages 010–029 pass.  Inline
   `<svg>` subtrees and closed `<details>` are skipped (not renderable), and
   `<video>` gets a placeholder box.  The default page canvas follows
   `ngui_theme_dark` (dark page, light text, `theme.panel` for `<pre>`);
@@ -1462,35 +1471,44 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     assigned to `innerHTML`, and `style`/`dataset` cover inline state rather
     than computed style.  Libraries that need those APIs (jQuery plugins
     beyond Bootstrap's tooltip, Angular apps that use `$http`) still log
-    errors even though the static page renders.  CSS also lacks
-    border-radius clipping of descendant content, gradients/box-shadow/
-    transitions (a gradient background falls back to its last solid colour),
-    or CSS `color-mix`.  CSS custom properties (`var()`), flex rows with
-    wrap/grow/gap, two-track and `repeat(auto-fit, minmax(...))` grids,
-    inline-block runs, basic proportional table columns and inline SVG
-    (`rect`, `line`, `path` with M/L/H/V, and `text`) are supported.
-    `position:fixed` boxes are deferred and painted above the flow;
-    `position:sticky` is treated as static.  `prefers-color-scheme` media
-    queries are ignored so the page's base palette is used.  `width`/
-    `max-width` are not applied to block flow (they collapsed nested
-    percentage columns); flex/grid items still use them.  Float support is
-    the basic Bootstrap-grid case: consecutive floated blocks are laid side
-    by side with percentage/px widths, left floats pack from the row's left
-    edge and right floats from its right edge, inline floats are blockified
-    (Bootstrap floats the navbar brand and its text links), there is no
-    `clear`, percentage margins are approximated as pixels, and a float
-    without a width uses a text-width estimate.  `@media` width
+    errors even though the static page renders.  CSS also lacks table
+    `rowspan`, text wrap around floats and a real `clear` (the row-based
+    float model puts following blocks below the row), percentage margins/
+    padding (still resolved against the viewport), `@font-face`,
+    `background-repeat`/`position`/`size` (a background image is stretched
+    to its box), the rest of `transform` (`translate` only), sticky beyond
+    the top edge, border-radius clipping of descendant content, gradients/
+    box-shadow/transitions (a gradient background falls back to its last
+    solid colour), or CSS `color-mix`.  CSS custom properties (`var()`),
+    flex rows with wrap/grow/gap/justify/align, two-track and
+    `repeat(auto-fit, minmax(...))` grids, inline-block runs, basic
+    proportional table columns, table colspan/percentage columns and inline
+    SVG (`rect`, `line`, `path` with M/L/H/V, and `text`) are supported.
+    `position:fixed`/`absolute` boxes are deferred and painted above the
+    flow; `z-index` sorts that deferred list; `position:relative` shifts
+    painting without moving flow, and `position:sticky` clamps against the
+    top edge (no bottom/container clamping).  `prefers-color-scheme` media
+    queries are ignored so the page's base palette is used.  Block
+    `width`/`max-width`/`min-width`, content-box `height` with `min`/`max`,
+    `box-sizing: border-box`, `margin: 0 auto` and `calc(percent ± px)` work;
+    percentage widths resolve against the containing block.  Float support
+    is the basic Bootstrap-grid case: consecutive floated blocks are laid
+    side by side with percentage/px widths, left floats pack from the row's
+    left edge and right floats from its right edge, inline floats are
+    blockified (Bootstrap floats the navbar brand and its text links), there
+    is no `clear`, percentage margins are approximated as pixels, and a
+    float without a width uses a text-width estimate.  `@media` width
     blocks are evaluated against the canvas width at page-parse time, so a
     window resize does not re-evaluate them until the next load, and
-    pseudo-classes are never matched.  `font-size` now maps to real pixel
-    sizes (8..48), `font-weight` selects the bold face, `font-style: italic`
-    selects the italic face, `font-family: monospace` selects Liberation Mono,
-    and `em`/`rem` use a 16 px root.  Text is Latin-1 only (non-Latin-1
-    characters become `?`); there is no shaping, bidi, `@font-face` or
-    full-Unicode fallback.
-    Pages that need flex alignment/justification, multi-row grid templates
-    or CSS variables inside `calc()`/`color-mix()` can still lay out
-    imperfectly.  Images are decoded into a per-image `img_estimate()`-sized
+    pseudo-classes are never matched.  `font-size` maps to real pixel sizes
+    (8..48), `font-weight` selects the bold face, `font-style: italic`
+    selects the italic face, `font-family: monospace` selects Liberation
+    Mono, and nested `em`/`%` font sizes and `em`/`rem` widths resolve
+    against the parent/root; margin/padding `em` is still root-based.  Text
+    is Latin-1 only (non-Latin-1 characters become `?`); there is no shaping,
+    bidi, `@font-face` or full-Unicode fallback.
+    Pages that need multi-row grid templates, `color-mix()` or full
+    transforms can still lay out imperfectly.  Images are decoded into a per-image `img_estimate()`-sized
     arena that is freed after the 1000 px display bitmap is made (16 images,
     512 KB files / 8 MP decodes); a large image-heavy page can still exhaust
     the 32 MB heap because the scaled bitmaps live until navigation, and the

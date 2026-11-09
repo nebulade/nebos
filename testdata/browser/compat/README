@@ -1,0 +1,30 @@
+NebOS browser compatibility ladder
+=================================
+
+One page per behaviour.  Each failing page is a small, isolated test:
+
+  left pane  (A) uses the feature under test
+  right pane (B) produces the same result with primitives that already work
+
+When the two panes look identical the feature is correct.  Later the panes can
+be screenshotted and diffed automatically because they are at fixed offsets.
+
+Serve this directory from the host and open it on the board:
+
+  make compat-serve
+  # or: python3 -m http.server -d testdata/browser/compat 8000
+
+  browser http://<host>:8000/            # board
+  browser http://10.0.2.2:8000/         # QEMU with -netdev user
+
+Status: 010-029 pass.  Still missing from the ladder: table rowspan,
+float text wrap/clear, @font-face, percentage margins/padding, and the
+full CSS background/transform property sets (the pages cover the forms
+that the engine implements).
+
+Rules for new pages:
+  - one behaviour per page;
+  - no JavaScript and no network assets outside this directory;
+  - explicit white background and dark text;
+  - page chrome uses only primitives introduced earlier in the ladder;
+  - keep the two panes at fixed offsets: floats with explicit px widths.

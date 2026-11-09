@@ -180,6 +180,7 @@
 					<tr><td><code>make test-libc</code></td><td>Host tests for the ring-3 malloc, stdio/float formatting, math, 64-bit division helpers and setjmp/longjmp.</td></tr>
 					<tr><td><code>make test-mujs</code></td><td>Host smoke test for the vendored MuJS engine: arithmetic, strings, Math, Date, JSON, exceptions and the run limit.</td></tr>
 					<tr><td><code>make test-font</code> / <code>test-font-asan</code></td><td>Host specimen test for the fixed-point TrueType parser/rasterizer and glyph cache, with an AddressSanitizer/UBSan variant.</td></tr>
+					<tr><td><code>make compat-serve</code></td><td>Serve the browser compatibility ladder from <code>testdata/browser/compat/</code> on port 8000 for the board or QEMU guest.</td></tr>
 					<tr><td><code>make fonts</code></td><td>Regenerate the checked-in Arimo/Liberation Mono subsets with <code>pyftsubset</code>.</td></tr>
 				</tbody>
 			</table>
@@ -264,6 +265,7 @@ make net-cmds                   # replace /ramfs only</code></pre>
 			<li><strong>Crypto.</strong> <code>make test-crypto</code> runs host vectors for the freestanding crypto code.</li>
 			<li><strong>Ring-3 libc.</strong> <code>make test-libc</code> runs the malloc stress test (32 MB simulated arena with poisoned pages), exact <code>snprintf</code> float/string checks against the host, x87 math values, the 64-bit division helpers and a 32-bit setjmp/longjmp test.</li>
 			<li><strong>Fonts.</strong> <code>make test-font</code> parses the checked-in Arimo subset on the host, measures Latin-1 text, renders composites (for example <code>Äé</code>) and writes a specimen PPM. The browser must also be exercised across a navigation to verify detach/reattach around <code>heap_reset()</code>.</li>
+			<li><strong>Browser compatibility.</strong> <code>make compat-serve</code> serves the numbered A/B ladder in <code>testdata/browser/compat/</code>. Open the index on the board (or at <code>http://10.0.2.2:8000/</code> from a QEMU guest with user networking) and compare each pair; the index table records the current status.</li>
 			<li><strong>UEFI.</strong> <code>make test-uefi</code> boots the dual image under OVMF headless and greps the serial log for the boot line.</li>
 			<li><strong>Compositor stats.</strong> The ring-3 WM overwrites <code>/share/wmstats</code> every two seconds with <code>frames</code>, total and worst compositing time in milliseconds, and the pixels drawn in the interval. Read it in a terminal or fetch it over WebDAV to measure a target.</li>
 		</ul>

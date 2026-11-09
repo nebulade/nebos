@@ -66,7 +66,7 @@ EFI_LDFLAGS = -nostdlib -Wl,--subsystem,10 -Wl,-e,efi_main \
               -Wl,--image-base,0x0 -Wl,--dynamicbase \
               -Wl,--enable-reloc-section -Wl,--no-insert-timestamp
 
-.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-ehci run-ehci-asix run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash dev net-dev cmds-dev net-cmds browser-dev gallery-dev netmon monitor test-crypto test-images test-images-asan test-libc test-font test-font-asan fonts kernel-dev kernel-net-dev rootfs
+.PHONY: all clean run run-smp run-floppy run-usb run-uhci run-ehci run-ehci-asix run-xhci run-xhci-asix run-net run-e1000 run-ahci test-usb run-serial floppy usb uefi run-uefi test-uefi flash dev net-dev cmds-dev net-cmds browser-dev gallery-dev compat-serve netmon monitor test-crypto test-images test-images-asan test-libc test-font test-font-asan fonts kernel-dev kernel-net-dev rootfs
 
 all: floppy.img usb.img final.bin root.img
 
@@ -1137,6 +1137,13 @@ browser-dev: browser.elf
 gallery-dev: gallery.elf
 	@echo "Uploading gallery.elf to http://$(BOARD_IP):8080/share/GALLERY..."
 	curl -f -T gallery.elf http://$(BOARD_IP):8080/share/GALLERY
+
+# Browser compatibility ladder: serve testdata/browser/compat so the board
+# or a QEMU guest can open http://<host>:$(COMPAT_PORT)/.
+COMPAT_PORT ?= 8000
+compat-serve:
+	@echo "Serving the browser compatibility ladder on port $(COMPAT_PORT)"
+	python3 -m http.server -d testdata/browser/compat $(COMPAT_PORT)
 
 # Show the board's netlog stream (kernel debug + terminal text) like `make
 # monitor` does over serial.

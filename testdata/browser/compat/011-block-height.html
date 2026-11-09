@@ -1,0 +1,41 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>011 block height</title>
+<style>
+html, body { margin: 0; padding: 0; background: #ffffff; color: #202020; }
+body { font-family: sans-serif; font-size: 13px; }
+h1 { font-size: 20px; margin: 10px 0 4px 10px; }
+p { margin: 0 0 10px 10px; }
+.pane { float: left; width: 440px; margin-left: 10px; }
+.label { background: #eeeeee; padding: 4px 6px; margin-bottom: 4px; }
+.stage { background: #ffffff; padding: 8px; border: 1px solid #999999; }
+.red { background: #cc3333; }
+.after { background: #333333; color: #ffffff; height: 24px; margin-top: 4px; padding-left: 4px; }
+.row { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<h1>011 &middot; block height</h1>
+<p>Each red box must have the same total height in both panes.</p>
+<div class="pane">
+<div class="label">A: height / min-height / max-height</div>
+<div class="stage">
+  <div class="row"><div class="red" style="height: 60px; padding: 10px"></div></div>
+  <div class="row"><div class="red" style="height: 20px; min-height: 80px"></div></div>
+  <div class="row"><div class="red" style="height: 200px; max-height: 80px"></div></div>
+  <div class="after">after</div>
+</div>
+</div>
+<div class="pane">
+<div class="label">B: explicit reference</div>
+<div class="stage">
+  <div class="row"><div class="red" style="height: 80px"></div></div>
+  <div class="row"><div class="red" style="height: 80px"></div></div>
+  <div class="row"><div class="red" style="height: 80px"></div></div>
+  <div class="after">after</div>
+</div>
+</div>
+</body>
+</html>

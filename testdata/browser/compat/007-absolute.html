@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>007 absolute</title>
+<style>
+html,body{margin:0;padding:0;background:#fff;color:#202020;font-family:sans-serif;font-size:13px}
+h1{font-size:20px;margin:10px 0 4px 10px}p{margin:0 0 10px 10px}
+.pane{float:left;width:440px;margin-left:10px}.label{background:#eee;padding:4px 6px;margin-bottom:4px}
+.stage{background:#fff;padding:8px;border:1px solid #999}
+.cover{width:200px;height:100px;background:#eee}
+.box{position:absolute;width:50px;height:40px}
+</style></head><body>
+<h1>007 &middot; absolute positioning</h1>
+<p>Both panes must show the red box at 20,10 and the blue box at 120,50.</p>
+<div class="pane"><div class="label">A: absolute</div><div class="stage">
+<div class="cover"><div class="box" style="left:20px;top:10px;background:#cc3333"></div><div class="box" style="left:120px;top:50px;background:#2244cc"></div></div>
+</div></div>
+<div class="pane"><div class="label">B: margins</div><div class="stage">
+<div class="cover" style="position:relative"><div class="box" style="position:static;margin-left:20px;margin-top:10px;background:#cc3333"></div><div class="box" style="position:static;margin-left:120px;margin-top:0;background:#2244cc"></div></div>
+</div></div>
+</body></html>

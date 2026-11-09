@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>020 table colspan</title>
+<style>
+html, body { margin: 0; padding: 0; background: #ffffff; color: #202020; }
+body { font-family: sans-serif; font-size: 13px; }
+h1 { font-size: 20px; margin: 10px 0 4px 10px; }
+p { margin: 0 0 10px 10px; }
+.pane { float: left; width: 440px; margin-left: 10px; }
+.label { background: #eeeeee; padding: 4px 6px; margin-bottom: 4px; }
+.stage { background: #ffffff; padding: 8px; border: 1px solid #999999; }
+td { padding: 4px; border: 1px solid #999999; }
+.red { background: #cc3333; color: #ffffff; }
+.after { background: #333333; color: #ffffff; height: 24px; margin-top: 8px; padding-left: 4px; }
+</style>
+</head>
+<body>
+<h1>020 &middot; table colspan</h1>
+<p>The red row must span all three columns in both panes.</p>
+<div class="pane">
+<div class="label">A: colspan=3</div>
+<div class="stage">
+  <table style="width: 422px">
+    <tr><td colspan="3" class="red" style="height: 24px">spanning row</td></tr>
+    <tr><td style="width: 90px">90</td><td style="width: 200px">200</td><td style="width: 132px">132</td></tr>
+  </table>
+  <div class="after">after</div>
+</div>
+</div>
+<div class="pane">
+<div class="label">B: full-width row</div>
+<div class="stage">
+  <div class="red" style="width: 422px; height: 34px; padding: 4px; border: 1px solid #999999; box-sizing: border-box">spanning row</div>
+  <table style="width: 422px">
+    <tr><td style="width: 90px">90</td><td style="width: 200px">200</td><td style="width: 132px">132</td></tr>
+  </table>
+  <div class="after">after</div>
+</div>
+</div>
+</body>
+</html>

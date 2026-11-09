@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>014 em units</title>
+<style>
+html { font-size: 10px; }
+body { margin: 0; padding: 0; background: #ffffff; color: #202020; font-size: 13px; font-family: sans-serif; }
+h1 { font-size: 20px; margin: 10px 0 4px 10px; }
+p { margin: 0 0 10px 10px; }
+.pane { float: left; width: 440px; margin-left: 10px; }
+.label { background: #eeeeee; padding: 4px 6px; margin-bottom: 4px; font-size: 13px; }
+.stage { background: #ffffff; padding: 8px; border: 1px solid #999999; }
+.red { background: #cc3333; }
+.after { background: #333333; color: #ffffff; height: 24px; margin-top: 4px; padding-left: 4px; }
+.row { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<h1>014 &middot; em units</h1>
+<p>Each red box must have the same size and position in both panes.</p>
+<div class="pane">
+<div class="label">A: em</div>
+<div class="stage">
+  <div class="row"><div class="red" style="width: 20em; height: 20px; padding: 1em; border: 0.5em solid #333333"></div></div>
+  <div class="row"><div class="red" style="width: 10em; height: 20px; margin-left: 2em"></div></div>
+  <div class="after">after</div>
+</div>
+</div>
+<div class="pane">
+<div class="label">B: px reference</div>
+<div class="stage">
+  <div class="row"><div class="red" style="width: 200px; height: 20px; padding: 10px; border: 5px solid #333333"></div></div>
+  <div class="row"><div class="red" style="width: 100px; height: 20px; margin-left: 20px"></div></div>
+  <div class="after">after</div>
+</div>
+</div>
+</body>
+</html>
