@@ -439,7 +439,7 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   see the panic section below.
 - **Filesystem**: `fat.c` (FAT12/16/32 read/write, device-parameterized),
   `vfs.c` (mounts every FAT device under `/`), `fatdetect.c`/`fatformat.c`,
-  `blkdev.c` (floppy + IDE + SATA registry), `ata.c` (ATA PIO, either the
+  `blkdev.c` (floppy + IDE + SATA + eMMC registry), `ata.c` (ATA PIO, either the
   legacy ports or the PCI IDE interface's native BARs — `ata_init_ports()`;
   multi-sector PIO waits for DRQ before every sector, since drives drop it
   between sectors, polls the command-block status rather than the alt-status
@@ -477,6 +477,19 @@ it to `0x7E00`.  The kernel region itself only has one wall (`_end` below
   as `sata0`..`sataN` (named by AHCI port index) and mount like IDE disks
   (`sata0p1` for an MBR partition). >2 TB disks are clamped to 32-bit LBA;
   a disk added after boot needs a rescan (no COMRESET hotplug).
+- **eMMC/SDHCI**: `sdhci.c/h` — polled SDHCI driver for the Intel Braswell
+  MMC function at PCI `00:10.0` (8086:2294, class 0805, the HP Chromebook
+  eMMC). `sdhci_init()` resets the host, selects the 1.8 V rail from the
+  capabilities and enables Host Control 2's 1.8 V signalling, runs a 400 kHz
+  init clock, then CMD0/1/2/3/7/16 and CMD8 to read the 512-byte EXT_CSD
+  (`SEC_COUNT` at 212, `CACHE_SIZE` at 249), and switches to a 25 MHz data
+  clock. Sector I/O is CMD17/CMD24 over the polled PIO buffer port (one
+  512-byte block per command; no DMA, IRQ, CMD6 bus-width/high-speed switch
+  or hotplug). `blkdev.c` registers it as `mmc0`, so `storage`, the VFS MBR+
+  FAT mount path and `format mmc0` work exactly like an IDE/SATA disk;
+  `sdhci_flush()` issues the CMD6 `FLUSH_CACHE` when the card reports a
+  write-back cache. A stock eMMC holds the ChromeOS image, so formatting it
+  is destructive.
 - **Serial**: `serial.c`, `serial_ring_buf.c/h`, `serial_loop.c` — 16550 UART
   with an IRQ-driven ring buffer and the `serial test` loopback check.
 - **Network**: `netdev.c/h` — NIC driver registry (`struct netdev`, first probe
@@ -1617,3 +1630,11 @@ and the WM falls back to polling (`io_keyboard_irq_masked()`).
     of 0xffff.  The lid/power-button switches are read by `sensors` but do
     not trigger a power-off or display blank; suspend/S0ix is not
     implemented.
+
+31. eMMC/SDHCI: the Chromebook eMMC is driven polled at 1-bit/25 MHz, with
+    no DMA, IRQ, CMD6 bus-width/high-speed/DDR switch or hotplug; only the
+    eMMC function (8086:2294) is handled, not the SDIO/SD functions or the
+    SD card reader.  The write path uses CMD24 PIO and the format command's
+    cache flush uses CMD6 FLUSH_CACHE when EXT_CSD CACHE_SIZE is non-zero.
+    The eMMC contains the stock ChromeOS image, so `format mmc0` is
+    destructive; the board boots from USB.

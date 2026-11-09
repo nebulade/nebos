@@ -3,10 +3,11 @@
 #ifndef BLKDEV_H
 #define BLKDEV_H
 
-typedef enum { BLK_FLOPPY, BLK_IDE, BLK_SATA } blk_kind_t;
+typedef enum { BLK_FLOPPY, BLK_IDE, BLK_SATA, BLK_MMC } blk_kind_t;
 
 typedef struct {
-	const char *name;          /* "floppy0","floppy1","ide0".."ide3","sata0".. */
+	const char *name;          /* "floppy0","floppy1","ide0".."ide3",
+				    * "sata0".., "mmc0" */
 	blk_kind_t kind;
 	unsigned int bus;          /* floppy: drive #; ide: 0=primary,1=secondary;
 				    * sata: controller index (0) */

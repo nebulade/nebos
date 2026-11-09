@@ -412,7 +412,7 @@ struct sys_storage_info {
 struct sys_blkdev {
 	char name[8];
 	char model[41];
-	unsigned int kind;       /* 0 = floppy, 1 = IDE, 2 = SATA */
+	unsigned int kind;       /* 0 = floppy, 1 = IDE, 2 = SATA, 3 = MMC */
 	unsigned int present;
 	unsigned int total_sectors;
 };

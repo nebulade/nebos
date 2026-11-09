@@ -1,9 +1,11 @@
-/* Block device registry: floppy (via FDC) + IDE (via ATA PIO) + SATA (AHCI). */
+/* Block device registry: floppy (via FDC) + IDE (via ATA PIO) + SATA (AHCI)
+ * + eMMC (SDHCI). */
 
 #include "blkdev.h"
 #include "ahci.h"
 #include "ata.h"
 #include "disk.h"
+#include "sdhci.h"
 #include "serial.h"
 #include "timer.h"
 
@@ -130,6 +132,28 @@ void blk_scan(void)
 			d->model[40] = '\0';
 		}
 	}
+
+	/* eMMC: the Intel Braswell SDHCI controller, one soldered card. */
+	{
+		struct sdhci_disk disk;
+		unsigned int n;
+
+		t0 = get_ticks_ms();
+		n = sdhci_scan(&disk, 1);
+		blk_trace("mmc0", n ? 1 : 0, get_ticks_ms() - t0);
+		if (n) {
+			unsigned int j;
+
+			d = add("mmc0", BLK_MMC, 0, 0);
+			if (d) {
+				d->present = 1;
+				d->total_sectors = disk.sectors;
+				for (j = 0; j < 40; j++)
+					d->model[j] = disk.model[j];
+				d->model[40] = '\0';
+			}
+		}
+	}
 }
 
 static int name_eq(const char *a, const char *b)
@@ -162,6 +186,8 @@ int blk_read(blk_dev_t *d, unsigned int lba, void *buf, unsigned int count)
 	}
 	if (d->kind == BLK_SATA)
 		return ahci_read_sectors(d->unit, lba, buf, count);
+	if (d->kind == BLK_MMC)
+		return sdhci_read_sectors(lba, buf, count);
 	return ata_read_sectors(d->bus, d->unit, lba, buf, count);
 }
 
@@ -175,6 +201,8 @@ int blk_write(blk_dev_t *d, unsigned int lba, const void *buf, unsigned int coun
 	}
 	if (d->kind == BLK_SATA)
 		return ahci_write_sectors(d->unit, lba, buf, count);
+	if (d->kind == BLK_MMC)
+		return sdhci_write_sectors(lba, buf, count);
 	return ata_write_sectors(d->bus, d->unit, lba, buf, count);
 }
 
@@ -186,5 +214,7 @@ int blk_flush(blk_dev_t *d)
 		return 0;
 	if (d->kind == BLK_SATA)
 		return ahci_flush(d->unit);
+	if (d->kind == BLK_MMC)
+		return sdhci_flush();
 	return ata_flush(d->bus, d->unit);
 }

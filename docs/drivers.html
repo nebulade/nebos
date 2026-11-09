@@ -81,6 +81,7 @@
 					<tr><td>Floppy</td><td><span class="file">disk.c</span></td><td>ISA FDC + DMA channel 2</td><td>IRQ 6; FAT operations set <code>sys_fs_busy</code></td></tr>
 					<tr><td>PATA</td><td><span class="file">ata.c</span></td><td>Legacy ports or PCI native BARs</td><td>Polled PIO, DRQ wait per sector</td></tr>
 					<tr><td>SATA</td><td><span class="file">ahci.c</span></td><td>PCI AHCI MMIO</td><td>Polled, READ/WRITE DMA EXT</td></tr>
+					<tr><td>eMMC</td><td><span class="file">sdhci.c</span></td><td>Intel Braswell SDHCI, PCI <code>00:10.0</code> (<code>8086:2294</code>)</td><td>Polled PIO, 1-bit/25 MHz; no DMA/IRQ</td></tr>
 					<tr><td>USB</td><td><span class="file">usb.c</span> + <span class="file">uhci.c</span> <span class="file">ohci.c</span> <span class="file">ehci.c</span> <span class="file">xhci.c</span></td><td>PCI I/O ports or MMIO</td><td>Polled; hotplug watcher in the WM loop</td></tr>
 					<tr><td>Network</td><td><span class="file">e1000e.c</span> <span class="file">r8168.c</span> <span class="file">ne2000.c</span> <span class="file">asix.c</span></td><td>PCI or USB</td><td>Polled, one active receiver</td></tr>
 					<tr><td>PS/2</td><td><span class="file">mouse.c</span>, <span class="file">io.c</span></td><td>i8042</td><td>IRQ 1 keyboard, IRQ 12 mouse; polling fallback</td></tr>
@@ -118,7 +119,7 @@
 			devices. Each device exposes sector read/write plus geometry; FAT and
 			the format command sit above that interface and never talk to a
 			controller directly. Devices are named <code>floppy0</code>,
-			<code>ide0</code>, <code>sata0</code> and so on; partitions append
+			<code>ide0</code>, <code>sata0</code>, <code>mmc0</code> and so on; partitions append
 			<code>p1</code>, <code>p2</code>.
 		</p>
 
@@ -137,7 +138,7 @@
 
 				<rect class="svg-box" x="650" y="30" width="230" height="62" rx="9"/>
 				<text class="svg-text" x="670" y="57">driver</text>
-				<text class="svg-sub" x="670" y="77">FDC · ATA · AHCI</text>
+				<text class="svg-sub" x="670" y="77">FDC · ATA · AHCI · SDHCI</text>
 
 				<path class="svg-line blue" d="M270 61h67"/>
 				<path class="svg-line blue" d="M330 55l7 6-7 6"/>
@@ -153,8 +154,8 @@
 				<text class="svg-sub" x="365" y="189">PIO, legacy or native BARs</text>
 
 				<rect class="svg-box green" x="650" y="142" width="230" height="62" rx="9"/>
-				<text class="svg-text" x="670" y="169">sata0 / sata0pN</text>
-				<text class="svg-sub" x="670" y="189">AHCI port index</text>
+				<text class="svg-text" x="670" y="169">sata0 · mmc0</text>
+				<text class="svg-sub" x="670" y="189">AHCI port · SDHCI PIO</text>
 
 				<path class="svg-line" d="M175 92v42"/>
 				<path class="svg-line" d="M169 126l6 7 6-7"/>
@@ -165,8 +166,8 @@
 			</svg>
 			<figcaption>
 				<strong>One narrow waist.</strong> Filesystems and tools only see
-				<code>struct blk_dev</code>. The floppy still needs IRQ 6, but ATA
-				and AHCI are polled; a FAT operation takes <code>sys_fs_busy</code>
+				<code>struct blk_dev</code>. The floppy still needs IRQ 6, but ATA,
+				AHCI and SDHCI are polled; a FAT operation takes <code>sys_fs_busy</code>
 				so the scheduler does not switch away mid-transfer.
 			</figcaption>
 		</figure>
@@ -193,6 +194,22 @@
 			shared <code>ata_identify_parse()</code>, and READ/WRITE DMA EXT
 			through a page-allocated bounce buffer. A disk added after boot needs
 			a rescan; there is no COMRESET hotplug.
+		</p>
+		<h3>eMMC/SDHCI</h3>
+		<p>
+			<span class="file">sdhci.c</span> drives the Intel Braswell MMC
+			function at PCI <code>00:10.0</code> (<code>8086:2294</code>, class
+			<code>0805</code>), the HP Chromebook's eMMC. It resets the SDHCI
+			host, selects the 1.8 V rail and Host Control 2's 1.8 V signalling,
+			runs a 400 kHz initialization clock, then CMD0/1/2/3/7/16 and CMD8
+			to read EXT_CSD (<code>SEC_COUNT</code> at 212,
+			<code>CACHE_SIZE</code> at 249), and switches to a 25 MHz data clock.
+			Sector I/O is CMD17/CMD24 through the polled PIO buffer port at
+			1-bit/25 MHz; there is no DMA, IRQ, bus-width/high-speed switch or
+			hotplug. The eMMC appears as <code>mmc0</code>, and
+			<code>format mmc0</code> writes an MBR + FAT partition exactly like
+			an IDE/SATA disk. The write path flushes the card cache with CMD6
+			<code>FLUSH_CACHE</code> when EXT_CSD reports one.
 		</p>
 	</section>
 
@@ -421,6 +438,7 @@
 			<li><strong>xHCI.</strong> USB2 root ports only; USB3 SuperSpeed devices are not handled.</li>
 			<li><strong>HID.</strong> Report IDs are not handled, absolute pointers/tablets are ignored, and there is no wheel support.</li>
 			<li><strong>AHCI.</strong> First controller only, no hotplug after boot, disks above 2 TB are clamped to 32-bit LBA.</li>
+			<li><strong>eMMC.</strong> Polled 1-bit/25 MHz PIO; no DMA, IRQ, CMD6 bus-width/high-speed/DDR switch or hotplug. Only the eMMC function is driven; the SDIO/SD functions and SD card reader are not.</li>
 			<li><strong>Storage serialization.</strong> A FAT/floppy operation sets <code>sys_fs_busy</code> and stalls process switching for its duration; the PIT keeps ticking.</li>
 			<li><strong>EC.</strong> The Chrome EC path uses the ACPI v2 memmap only: no MEC host-command interface, EC SCI events, charger current/voltage, charging limit or EC firmware version. The ThinkPad H8 path is limited to its page-selected battery window and has no SCI handler. Battery/AC is polled by the WM once a second.</li>
 			<li><strong>Suspend.</strong> There is no S0ix/suspend path; package C-states and the EC sleep handshake remain firmware-managed.</li>
@@ -432,6 +450,7 @@
 		<ul class="filelist">
 			<li><code>pci.c</code>, <code>pci.h</code> — enumeration</li>
 			<li><code>blkdev.c</code> — block registry</li>
+			<li><code>sdhci.c</code>, <code>sdhci.h</code> — Intel Braswell eMMC</li>
 			<li><code>disk.c</code> — floppy / DMA</li>
 			<li><code>ata.c</code>, <code>ahci.c</code> — PATA/SATA</li>
 			<li><code>usb.c</code>, <code>usb_hcd.h</code> — USB core</li>
